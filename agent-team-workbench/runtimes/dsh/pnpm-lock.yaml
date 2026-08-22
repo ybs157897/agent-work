@@ -1,0 +1,61 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@deepseek-ai/dsh-agent-spine-demo':
+        specifier: link:../../../../deepseek-harness/packages/examples/agent-spine-demo
+        version: link:../../../../deepseek-harness/packages/examples/agent-spine-demo
+      '@deepseek-ai/dsh-bash-local':
+        specifier: link:../../../../deepseek-harness/packages/shell/bash-local
+        version: link:../../../../deepseek-harness/packages/shell/bash-local
+      '@deepseek-ai/dsh-fs-local':
+        specifier: link:../../../../deepseek-harness/packages/fs/fs-local
+        version: link:../../../../deepseek-harness/packages/fs/fs-local
+      '@deepseek-ai/dsh-fs-observation-policy':
+        specifier: link:../../../../deepseek-harness/packages/fs/fs-observation-policy
+        version: link:../../../../deepseek-harness/packages/fs/fs-observation-policy
+      '@deepseek-ai/dsh-llm-deepseek':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm-deepseek
+        version: link:../../../../deepseek-harness/packages/llm/llm-deepseek
+      '@deepseek-ai/dsh-sandbox-local':
+        specifier: link:../../../../deepseek-harness/packages/sandbox/sandbox-local
+        version: link:../../../../deepseek-harness/packages/sandbox/sandbox-local
+      '@deepseek-ai/dsh-sandbox-policy':
+        specifier: link:../../../../deepseek-harness/packages/sandbox/sandbox-policy
+        version: link:../../../../deepseek-harness/packages/sandbox/sandbox-policy
+      '@deepseek-ai/dsh-sdk-jsonrpc-demo':
+        specifier: link:../../../../deepseek-harness/packages/examples/jsonrpc-demo
+        version: link:../../../../deepseek-harness/packages/examples/jsonrpc-demo
+      '@deepseek-ai/dsh-sdk-jsonrpc-server':
+        specifier: link:../../../../deepseek-harness/packages/sdk/server
+        version: link:../../../../deepseek-harness/packages/sdk/server
+      '@deepseek-ai/dsh-session-persistence-jsonl':
+        specifier: link:../../../../deepseek-harness/packages/session/session-persistence-jsonl
+        version: link:../../../../deepseek-harness/packages/session/session-persistence-jsonl
+      '@deepseek-ai/dsh-subprocess-local':
+        specifier: link:../../../../deepseek-harness/packages/subprocess/subprocess-local
+        version: link:../../../../deepseek-harness/packages/subprocess/subprocess-local
+      '@deepseek-ai/dsh-terminal':
+        specifier: link:../../../../deepseek-harness/packages/terminal/terminal
+        version: link:../../../../deepseek-harness/packages/terminal/terminal
+      '@deepseek-ai/dsh-terminal-bash':
+        specifier: link:../../../../deepseek-harness/packages/terminal/terminal-bash
+        version: link:../../../../deepseek-harness/packages/terminal/terminal-bash
+      '@deepseek-ai/dsh-tool-bash-persistent':
+        specifier: link:../../../../deepseek-harness/packages/shell/tool-bash-persistent
+        version: link:../../../../deepseek-harness/packages/shell/tool-bash-persistent
+      '@deepseek-ai/dsh-tool-fs':
+        specifier: link:../../../../deepseek-harness/packages/fs/tool-fs
+        version: link:../../../../deepseek-harness/packages/fs/tool-fs
+      '@deepseek-ai/dsh-tool-str-replace-editor':
+        specifier: link:../../../../deepseek-harness/packages/fs/tool-str-replace-editor
+        version: link:../../../../deepseek-harness/packages/fs/tool-str-replace-editor
+      '@deepseek-ai/dsh-tool-todo':
+        specifier: link:../../../../deepseek-harness/packages/todo/tool-todo
+        version: link:../../../../deepseek-harness/packages/todo/tool-todo

@@ -1,0 +1,78 @@
+asyncapi: 3.0.0
+info:
+  title: Agent Team Workbench SSE Events
+  version: 0.1.0
+  description: |
+    浏览器实时事件契约（协议文档 §6）。SSE 单向通道：
+    GET /api/v1/workspaces/{workspace_id}/events，Last-Event-ID 补发，
+    heartbeat 每 15s，慢客户端超缓冲上限主动断开走 replay。
+    Envelope 中 stream_seq 为 Workspace 投影序号，run_seq 为 Run 内序号，
+    均由控制平面分配，不复用 Provider id。游标过保留窗口返回 410 cursor_expired。
+
+defaultContentType: application/json
+
+channels:
+  workspaceEvents:
+    address: /api/v1/workspaces/{workspace_id}/events
+    messages:
+      canonicalEvent:
+        $ref: "#/components/messages/CanonicalEvent"
+
+operations:
+  receiveWorkspaceEvents:
+    action: receive
+    channel:
+      $ref: "#/channels/workspaceEvents"
+    summary: 浏览器订阅 Workspace 事件流（SSE）
+
+components:
+  messages:
+    CanonicalEvent:
+      contentType: application/json
+      payload:
+        $ref: "#/components/schemas/CanonicalEventEnvelope"
+
+  schemas:
+    CanonicalEventEnvelope:
+      type: object
+      required: [contract_version, event_id, workspace_id, stream_seq, aggregate, type, occurred_at]
+      properties:
+        contract_version: { type: string, const: "events/v1" }
+        event_id: { type: string, description: "evt_ 前缀，浏览器去重键" }
+        workspace_id: { type: string }
+        stream_seq: { type: integer, format: int64, description: "Workspace 投影序号，单调递增" }
+        aggregate:
+          type: object
+          required: [type, id, version]
+          properties:
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner] }
+            id: { type: string }
+            version: { type: integer }
+        run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
+        type: { type: string, description: "事件名，必须来自下方白名单" }
+        occurred_at: { type: string, format: date-time }
+        actor:
+          type: object
+          properties:
+            kind: { type: string, enum: [user, runtime, system] }
+            id: { type: string }
+        correlation_id: { type: string, description: 触发命令 id" }
+        data: { type: object, description: 事件负载，按 type 区分 }
+
+    # ── 事件白名单（SSE event name 只允许以下值）──────────────────────
+    # Dashboard: dashboard.metrics.updated / activity.appended / system.health_changed
+    # Agent:     agent_profile.created / agent_profile.updated /
+    #            agent_availability.changed / agent_presence.updated
+    # WorkItem:  work_item.created / work_item.updated / work_item.moved /
+    #            work_item.assigned / work_item.blocked / work_item.unblocked /
+    #            work_item.completed
+    # Run:       run.created / run.started / run.status_changed /
+    #            run.progress_updated / run.completed / run.failed /
+    #            run.cancelled / run.lost
+    # Message:   message.delta / message.completed
+    # Tool:      tool.started / tool.progress / tool.completed / tool.failed
+    # Approval:  approval.requested / approval.resolved / approval.expired
+    # Artifact:  artifact.created / artifact.updated
+    # Usage:     usage.updated
+    # Runtime:   runtime.health_changed / runner.connected / runner.disconnected /
+    #            run.recovery_started / run.recovery_completed / run.recovery_failed

@@ -1,0 +1,15 @@
+name: Sentinel
+role: reviewer
+skills:
+  - 代码评审
+  - 验收
+runtime:
+  preferred: mock
+  fallbacks: []
+model:
+  provider: deepseek
+  model: deepseek-v4-flash
+permissions:
+  tools: [fs]
+  approval_policy: manual
+  sandbox: workspace_only

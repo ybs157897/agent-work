@@ -1,0 +1,7 @@
+{
+  "visual_direction_raw": "融合方向 A+C：亲和效能 × 空间呼吸\n- Feel: 轻盈亲和，有空间呼吸感，像一个整洁的指挥舱\n- Color: 白色/浅灰基底，面板间微妙色温差异；蓝绿点缀(#3B82F6→#0EA5E9)，局部米白/暖灰卡片\n- Texture: 柔和卡片阴影 + 极轻微磨砂/半透明效果，克制不过度\n- Motion: 卡片悬浮轻微上浮(y:-3px)，状态切换柔和渐变，看板拖拽弹簧回弹\n- Layout: 三栏规整结构，卡片有大小节奏变化，不均等网格\n- Nav: 左侧极简图标导航，active state 蓝色填充方块",
+  "pages_raw": "1. 总览 Dashboard — Welcome + 统计卡 + Agent状态快预览 + 任务进度快照 + 日志流\n2. 智能体团队 — Agent卡片网格(有节奏变化) + 右侧详情面板(280px滑入)\n3. 任务看板 — Kanban 4列(待办/进行中/完成/阻塞) + 视图切换 + 筛选",
+  "navigation_raw": "左侧 60px 图标导航栏，icon-only，5项：总览/智能体/任务/日志/设置\nActive state: 蓝色填充方块背景\n顶部：面包屑 + 用户头像",
+  "frozen_structure": "Layout: sidebar(60px fixed) + main content(fluid) + detail panel(280px, conditional)\nSpatial ratio: ~5% sidebar + ~70% main + ~25% detail panel\nThree pages served by same shell, content area swaps on nav click",
+  "wireframe_resource_id": "image-4IZH"
+}

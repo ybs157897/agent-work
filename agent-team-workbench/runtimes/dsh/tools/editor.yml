@@ -1,0 +1,5 @@
+# 工具片段：editor（字符串替换编辑器，写文件）。
+- id: str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 16000

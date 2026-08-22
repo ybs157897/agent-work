@@ -1,0 +1,272 @@
+/**
+ * 与控制平面 DTO 对应的类型（协议文档 §5.1：snake_case）。
+ * 字段以 internal/httpapi/dto.go 为准；Provider 原始字段不会出现在这里。
+ */
+
+export type AgentAvailability = 'enabled' | 'disabled';
+export type AgentPresence = 'idle' | 'busy' | 'degraded' | 'offline';
+
+export type WorkItemStatus = 'todo' | 'in_progress' | 'blocked' | 'completed' | 'cancelled';
+export type WorkItemPhase = 'execution' | 'review' | 'acceptance' | '';
+export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+
+export type RunStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting_approval'
+  | 'interrupting'
+  | 'cancelling'
+  | 'reconnecting'
+  | 'succeeding'
+  | 'succeeded'
+  | 'interrupted'
+  | 'cancelled'
+  | 'lost'
+  | 'failed';
+
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+
+export interface Workspace {
+  id: string;
+  name: string;
+  timezone: string;
+  version: number;
+}
+
+export interface AgentProfile {
+  id: string;
+  slug?: string;
+  name: string;
+  role: string;
+  skills: string[];
+  instructions?: string;
+  availability: AgentAvailability;
+  presence: AgentPresence;
+  avatar?: string;
+  runtime_preference?: { preferred?: string; fallbacks?: string[] };
+  model_override?: { provider?: string; model?: string };
+  policy?: AgentPolicy;
+  version: number;
+}
+
+/** Agent 权限配置：工具白名单 + 审批策略（协议 §8）。 */
+export interface AgentPolicy {
+  tools?: string[];
+  approval_policy?: 'auto' | 'approve_high_risk' | 'manual' | '';
+  sandbox?: string;
+}
+
+export interface Blocker {
+  code: string;
+  message: string;
+  source: string;
+  created_at: string;
+}
+
+export interface WorkItem {
+  id: string;
+  workspace_id: string;
+  title: string;
+  description: string;
+  status: WorkItemStatus;
+  phase?: WorkItemPhase;
+  priority: Priority;
+  due_date: string | null;
+  agent_profile_id?: string;
+  blocker?: Blocker;
+  runs_count: number;
+  latest_run_id?: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RunFailure {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export interface ExecutionRun {
+  id: string;
+  work_item_id: string;
+  agent_profile_id?: string;
+  status: RunStatus;
+  runtime_label?: string;
+  progress?: number | null;
+  retry_of?: string;
+  failure?: RunFailure;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApprovalRequest {
+  id: string;
+  run_id: string;
+  work_item_id: string;
+  kind: string;
+  risk: string;
+  status: ApprovalStatus;
+  summary: string;
+  resolved_by?: string;
+  resolved_at?: string;
+}
+
+export interface Artifact {
+  id: string;
+  run_id: string;
+  logical_path: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  status: 'draft' | 'accepted';
+  created_at: string;
+}
+
+export interface Activity {
+  id: string;
+  kind: string;
+  message: string;
+  occurred_at: string;
+}
+
+export interface BoardCounts {
+  todo: number;
+  in_progress: number;
+  blocked: number;
+  completed: number;
+}
+
+export interface Dashboard {
+  active_agents: number;
+  running_tasks: number;
+  completed_today: number;
+  board_counts: BoardCounts;
+  recent_activities: Activity[];
+}
+
+export interface Health {
+  control_plane: string;
+  runners: unknown[];
+}
+
+/** RuntimeBinding：凭据只含引用，绝不明文（协议 §10.1）。 */
+export interface RuntimeBinding {
+  id: string;
+  runtime_label: string;
+  adapter_id: string;
+  adapter_version: string;
+  provider_version?: string;
+  provider: string;
+  model: string;
+  credential_ref?: string;
+  capabilities: Record<string, string>;
+  status: string;
+  version: number;
+}
+
+export interface ProbeResult {
+  runtime_binding_id: string;
+  ok: boolean;
+  provider_version?: string;
+  capabilities: Record<string, string>;
+  error: string | null;
+}
+
+export interface Bootstrap {
+  workspace: Workspace;
+  dashboard: Dashboard;
+  agents: { items: AgentProfile[] };
+  work_items: { items: WorkItem[] };
+  health: Health;
+  event_cursor: number;
+}
+
+export interface Me {
+  user_id: string;
+  name: string;
+  role: string;
+  feature_flags: Record<string, boolean>;
+}
+
+/** application/problem+json（协议文档 §5.5） */
+export interface Problem {
+  type: string;
+  title: string;
+  status: number;
+  code?: string;
+  detail?: string;
+  instance?: string;
+  request_id?: string;
+  retryable?: boolean;
+  current_version?: number;
+}
+
+/** Run 事件历史（GET /runs/{id}/events；按 run_seq 排序的只读投影） */
+export interface RunEvent {
+  run_seq: number;
+  event_type: string;
+  payload?: Record<string, unknown>;
+  occurred_at: string;
+}
+
+/** SSE Canonical Event Envelope（contracts/events/asyncapi.yaml） */
+export interface CanonicalEvent {
+  contract_version: string;
+  event_id: string;
+  workspace_id: string;
+  stream_seq: number;
+  aggregate: { type: string; id: string; version: number };
+  run_seq?: number;
+  type: string;
+  occurred_at: string;
+  actor?: { kind: 'user' | 'runtime' | 'system'; id: string };
+  correlation_id?: string;
+  data?: Record<string, unknown>;
+}
+
+/** SSE event name 白名单（与 domain/events.go 一致） */
+export const EVENT_NAMES = [
+  'dashboard.metrics.updated',
+  'activity.appended',
+  'system.health_changed',
+  'agent_profile.created',
+  'agent_profile.updated',
+  'agent_availability.changed',
+  'agent_presence.updated',
+  'work_item.created',
+  'work_item.updated',
+  'work_item.moved',
+  'work_item.assigned',
+  'work_item.blocked',
+  'work_item.unblocked',
+  'work_item.completed',
+  'run.created',
+  'run.started',
+  'run.status_changed',
+  'run.progress_updated',
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+  'run.lost',
+  'message.delta',
+  'message.completed',
+  'tool.started',
+  'tool.progress',
+  'tool.completed',
+  'tool.failed',
+  'approval.requested',
+  'approval.resolved',
+  'approval.expired',
+  'artifact.created',
+  'artifact.updated',
+  'usage.updated',
+  'runtime.health_changed',
+  'runner.connected',
+  'runner.disconnected',
+  'run.recovery_started',
+  'run.recovery_completed',
+  'run.recovery_failed',
+] as const;

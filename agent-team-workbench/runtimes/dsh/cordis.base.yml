@@ -1,0 +1,48 @@
+# DSH SDK runtime 基础组合（每次 Run 由 control-plane 渲染：base + 工具白名单片段）。
+# 环境通道：DSH_SYSTEM_PROMPT=Agent persona；DSH_CWD=工作区根；DSH_SESSION_ROOT=会话持久化根；
+# DEEPSEEK_API_KEY=模型凭据（白名单传入，不进 argv/日志）。
+# stdout 只承载 JSON-RPC 帧；诊断全部走 stderr。
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: false
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKeyEnv: DEEPSEEK_API_KEY
+    streamIdleTimeoutMs: 172800000
+    models:
+      - id: !!js process.env.DSH_MODEL ?? 'deepseek-v4-flash'
+        contextWindow: !!js Number(process.env.DSH_CONTEXT_WINDOW ?? 1000000)
+
+- id: sandbox
+  name: '@deepseek-ai/dsh-sandbox-local'
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a helpful software engineer assistant.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false
+
+- id: sessions
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.sessions'
+    compression: none

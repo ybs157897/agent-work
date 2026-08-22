@@ -1,0 +1,5 @@
+# 工具片段：todo（任务清单）。
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true

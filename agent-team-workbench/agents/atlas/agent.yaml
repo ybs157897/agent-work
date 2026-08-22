@@ -1,0 +1,15 @@
+name: Atlas
+role: architect
+skills:
+  - 系统设计
+  - 契约评审
+runtime:
+  preferred: mock
+  fallbacks: []
+model:
+  provider: deepseek
+  model: deepseek-v4-flash
+permissions:
+  tools: [fs, todo]
+  approval_policy: approve_high_risk
+  sandbox: workspace_only

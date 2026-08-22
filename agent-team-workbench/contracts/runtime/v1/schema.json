@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workbench.example/contracts/runtime/v1/schema.json",
+  "title": "Canonical Runtime Contract v1",
+  "description": "Runtime Bridge 统一信封（架构文档 §6 / 协议文档 §8）。runId 归控制平面；sessionRef 为 Adapter 私有句柄。commandId 幂等；事件以 runId+seq 去重且单调。核心状态机只依赖 canonical event，extensions/raw_ref 仅供调试与回放。",
+  "$defs": {
+    "Provider": {
+      "type": "object",
+      "required": ["provider_id", "provider_version", "adapter_id", "adapter_version"],
+      "properties": {
+        "provider_id": { "type": "string" },
+        "provider_version": { "type": "string" },
+        "adapter_id": { "type": "string" },
+        "adapter_version": { "type": "string" }
+      }
+    },
+    "CapabilityLevel": {
+      "type": "string",
+      "enum": ["supported", "experimental", "adapter_translated", "unavailable"],
+      "description": "禁止使用单一 bool 掩盖能力限制"
+    },
+    "CapabilityMap": {
+      "type": "object",
+      "properties": {
+        "streaming": { "$ref": "#/$defs/CapabilityLevel" },
+        "resume": { "$ref": "#/$defs/CapabilityLevel" },
+        "interrupt": { "$ref": "#/$defs/CapabilityLevel" },
+        "approval": { "$ref": "#/$defs/CapabilityLevel" },
+        "mcp": { "$ref": "#/$defs/CapabilityLevel" },
+        "workspace_files": { "$ref": "#/$defs/CapabilityLevel" },
+        "terminal": { "$ref": "#/$defs/CapabilityLevel" },
+        "structured_output": { "$ref": "#/$defs/CapabilityLevel" },
+        "subagents": { "$ref": "#/$defs/CapabilityLevel" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/CapabilityLevel" }
+    },
+    "AdapterManifest": {
+      "type": "object",
+      "required": ["adapter_id", "adapter_version", "protocol", "capabilities", "schema_digest"],
+      "properties": {
+        "adapter_id": { "type": "string" },
+        "adapter_version": { "type": "string" },
+        "provider_version": { "type": ["string", "null"] },
+        "protocol": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        },
+        "capabilities": { "$ref": "#/$defs/CapabilityMap" },
+        "schema_digest": { "type": "string" }
+      }
+    },
+    "CapabilitySnapshot": {
+      "type": "object",
+      "required": ["snapshot_id", "required", "advertised"],
+      "properties": {
+        "snapshot_id": { "type": "string", "pattern": "^caps_" },
+        "required": {
+          "type": "object",
+          "additionalProperties": { "enum": ["required", "preferred", "optional"] }
+        },
+        "advertised": { "$ref": "#/$defs/CapabilityMap" },
+        "created_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "CommandEnvelope": {
+      "type": "object",
+      "required": ["contract_version", "provider", "run_id", "command_id"],
+      "properties": {
+        "contract_version": { "const": "runtime/v1" },
+        "provider": { "$ref": "#/$defs/Provider" },
+        "run_id": { "type": "string", "pattern": "^run_" },
+        "session_ref": { "type": ["string", "null"], "description": "Adapter 私有句柄，Resume 时必填" },
+        "command_id": { "type": "string", "description": "幂等键；重复提交返回原结果" },
+        "capability_snapshot": { "$ref": "#/$defs/CapabilitySnapshot" },
+        "command": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "enum": ["start", "input", "interrupt", "cancel", "resume", "approval.resolve"] },
+            "input": { "type": "object" },
+            "approval_decision": {
+              "type": "object",
+              "properties": {
+                "approval_id": { "type": "string" },
+                "decision": { "enum": ["approved", "rejected"] },
+                "updated_policy": { "type": "object" }
+              }
+            }
+          }
+        },
+        "workspace_context": {
+          "type": "object",
+          "properties": {
+            "workspace_id": { "type": "string" },
+            "workspace_alias": { "type": "string" }
+          }
+        }
+      }
+    },
+    "EventEnvelope": {
+      "type": "object",
+      "required": ["contract_version", "provider", "run_id", "seq", "event"],
+      "properties": {
+        "contract_version": { "const": "runtime/v1" },
+        "provider": { "$ref": "#/$defs/Provider" },
+        "run_id": { "type": "string" },
+        "session_ref": { "type": ["string", "null"] },
+        "seq": { "type": "integer", "format": "int64", "minimum": 1, "description": "Run 内单调序号，控制平面分配" },
+        "event": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run.started", "run.status_changed", "run.progress", "run.completed", "run.failed",
+                "message.delta", "message.completed",
+                "tool.started", "tool.progress", "tool.completed", "tool.failed",
+                "approval.requested", "approval.resolved",
+                "artifact.manifest", "usage.updated"
+              ]
+            },
+            "data": { "type": "object" }
+          }
+        },
+        "extensions": { "type": "object", "description": "Provider 专有字段；核心逻辑不得依赖" },
+        "raw_ref": { "type": ["string", "null"], "description": "原始载荷引用，进入受限对象存储" }
+      }
+    },
+    "ProbeResult": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "manifest": { "$ref": "#/$defs/AdapterManifest" },
+        "auth_ok": { "type": "boolean" },
+        "workspace_ok": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

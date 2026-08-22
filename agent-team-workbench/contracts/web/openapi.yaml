@@ -1,0 +1,798 @@
+openapi: 3.1.0
+info:
+  title: Agent Team Workbench Web API
+  version: 0.1.0
+  description: |
+    浏览器 ↔ Go Control Plane 协议（协议文档 §5）。
+    约定：/api/v1 前缀；资源 ID 带类型前缀（ws_/agent_/wi_/run_/approval_/artifact_）；
+    JSON 字段 snake_case；写命令要求 Idempotency-Key；可变资源带 version/ETag；
+    错误一律 application/problem+json。
+servers:
+  - url: /api/v1
+
+security:
+  - cookieAuth: []
+
+tags:
+  - name: workspace
+  - name: agent-profiles
+  - name: work-items
+  - name: runs
+  - name: approvals
+  - name: artifacts
+  - name: runtime-bindings
+  - name: events
+
+paths:
+  /me:
+    get:
+      tags: [workspace]
+      operationId: getCurrentUser
+      summary: 当前用户、Workspace 权限与功能标记
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CurrentUser" } } } }
+
+  /workspaces:
+    get:
+      tags: [workspace]
+      operationId: listWorkspaces
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceList" } } } }
+
+  /workspaces/{workspace_id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    patch:
+      tags: [workspace]
+      operationId: updateWorkspace
+      description: 更新名称、时区和策略；Owner/Admin。
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkspacePatch" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /workspaces/{workspace_id}/bootstrap:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: bootstrapWorkspace
+      summary: 首屏 dashboard、agents、board、health 与 event_cursor 一次返回
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Bootstrap" } } } }
+
+  /workspaces/{workspace_id}/dashboard:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: getDashboard
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Dashboard" } } } }
+
+  /workspaces/{workspace_id}/events:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [events]
+      operationId: subscribeEvents
+      summary: SSE 事件流；Last-Event-ID 补发；cursor 过期返回 410
+      responses:
+        "200":
+          description: text/event-stream
+          content: { text/event-stream: { schema: { type: string } } }
+        "410": { $ref: "#/components/responses/CursorExpired" }
+
+  /workspaces/{workspace_id}/agent-profiles:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [agent-profiles]
+      operationId: listAgentProfiles
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfileList" } } } }
+    post:
+      tags: [agent-profiles]
+      operationId: createAgentProfile
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfileCreate" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+
+  /agent-profiles/{agent_profile_id}:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    get:
+      tags: [agent-profiles]
+      operationId: getAgentProfile
+      parameters:
+        - name: include
+          in: query
+          schema: { type: string, example: "presence,current_run" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+    patch:
+      tags: [agent-profiles]
+      operationId: updateAgentProfile
+      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfilePatch" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /agent-profiles/{agent_profile_id}/commands/enable:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    post:
+      tags: [agent-profiles]
+      operationId: enableAgentProfile
+      description: 允许被调度；不等于立刻运行。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+
+  /agent-profiles/{agent_profile_id}/commands/disable:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    post:
+      tags: [agent-profiles]
+      operationId: disableAgentProfile
+      description: 停止新调度；活动 Run 按策略 interrupt（默认）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: "#/components/schemas/DisableOptions" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+
+  /workspaces/{workspace_id}/work-items:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItems
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: priority, in: query, schema: { type: string } }
+        - { name: assignee, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemList" } } } }
+    post:
+      tags: [work-items]
+      operationId: createWorkItem
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemCreate" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+
+  /work-items/{work_item_id}:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: getWorkItem
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+    patch:
+      tags: [work-items]
+      operationId: updateWorkItem
+      description: 普通字段修改；status 不允许任意 PATCH。
+      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemPatch" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/commands/assign:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: assignWorkItem
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_profile_id, expected_version]
+              properties:
+                agent_profile_id: { type: string }
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/commands/move:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: moveWorkItem
+      description: 看板移动、排序与状态机校验。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, expected_version]
+              properties:
+                status: { $ref: "#/components/schemas/WorkItemStatus" }
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /work-items/{work_item_id}/commands/block:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: blockWorkItem
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, message, expected_version]
+              properties:
+                code: { type: string }
+                message: { type: string }
+                source: { type: string }
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+
+  /work-items/{work_item_id}/commands/unblock:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: unblockWorkItem
+      description: 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              properties:
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+
+  /work-items/{work_item_id}/runs:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [runs]
+      operationId: createRun
+      description: 创建 ExecutionRun；立即 202，真正开始执行由 SSE 事件确认。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }, { $ref: "#/components/parameters/IfMatch" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RunCreate" } } } }
+      responses:
+        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
+
+  /runs/{run_id}:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRun
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionRun" } } } }
+
+  /runs/{run_id}/commands/input:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: sendRunInput
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              properties:
+                instruction: { type: string }
+      responses:
+        "202": { description: 命令已接受 }
+
+  /runs/{run_id}/commands/interrupt:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: interruptRun
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses: { "202": { description: 命令已接受 } }
+
+  /runs/{run_id}/commands/cancel:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses: { "202": { description: 命令已接受 } }
+
+  /runs/{run_id}/commands/retry:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: retryRun
+      description: 总是创建新 Run（retry_of=当前 run），不覆盖终态。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
+
+  /runs/{run_id}/commands/resume:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: resumeRun
+      description: 仅在能力声明 resume 时可用，否则 422。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { description: 命令已接受 }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /runs/{run_id}/approvals:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalList" } } } }
+
+  /runs/{run_id}/approvals/{approval_id}/commands/resolve:
+    parameters: [{ $ref: "#/components/parameters/RunId" }, { $ref: "#/components/parameters/ApprovalId" }]
+    post:
+      tags: [approvals]
+      operationId: resolveApproval
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+                reason: { type: string }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Approval" } } } }
+
+  /runs/{run_id}/artifacts:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [artifacts]
+      operationId: listArtifacts
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ArtifactList" } } } }
+
+  /workspaces/{workspace_id}/activities:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: listActivities
+      parameters: [{ $ref: "#/components/parameters/Cursor" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ActivityList" } } } }
+
+  /workspaces/{workspace_id}/runtime-bindings:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [runtime-bindings]
+      operationId: listRuntimeBindings
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBindingList" } } } }
+    post:
+      tags: [runtime-bindings]
+      operationId: createRuntimeBinding
+      description: 添加 Runtime 与模型配置（provider/model/CredentialRef）；凭据只存引用。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [runtime_label, adapter_id]
+              properties:
+                runtime_label: { type: string }
+                adapter_id: { type: string }
+                provider: { type: string }
+                model: { type: string }
+                credential_ref: { type: string }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBinding" } } } }
+    patch:
+      tags: [runtime-bindings]
+      operationId: updateRuntimeBindings
+      description: 兼容旧契约的批量入口；推荐使用 PATCH /runtime-bindings/{id}。
+      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBindingList" } } } }
+
+  /runtime-bindings/{runtime_binding_id}:
+    parameters: [{ $ref: "#/components/parameters/RuntimeBindingId" }]
+    patch:
+      tags: [runtime-bindings]
+      operationId: patchRuntimeBinding
+      description: 修改模型配置（provider/model/credential_ref），乐观锁保护。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              properties:
+                provider: { type: string }
+                model: { type: string }
+                credential_ref: { type: string }
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBinding" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /runtime-bindings/{runtime_binding_id}/commands/probe:
+    parameters: [{ $ref: "#/components/parameters/RuntimeBindingId" }]
+    post:
+      tags: [runtime-bindings]
+      operationId: probeRuntimeBinding
+      description: 探测版本、认证、协议与能力；不启动业务 Run。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/ProbeResult" } } } }
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+
+  parameters:
+    WorkspaceId: { name: workspace_id, in: path, required: true, schema: { type: string } }
+    AgentProfileId: { name: agent_profile_id, in: path, required: true, schema: { type: string } }
+    WorkItemId: { name: work_item_id, in: path, required: true, schema: { type: string } }
+    RunId: { name: run_id, in: path, required: true, schema: { type: string } }
+    ApprovalId: { name: approval_id, in: path, required: true, schema: { type: string } }
+    RuntimeBindingId: { name: runtime_binding_id, in: path, required: true, schema: { type: string } }
+    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+    IfMatch: { name: If-Match, in: header, required: false, schema: { type: string } }
+    Cursor: { name: cursor, in: query, required: false, schema: { type: string } }
+
+  responses:
+    Conflict:
+      description: 幂等冲突或乐观锁版本冲突
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    Unprocessable:
+      description: 领域校验失败（状态机非法迁移等）
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    CursorExpired:
+      description: SSE cursor 已过保留窗口；客户端需重新 bootstrap
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
+        instance: { type: string }
+        request_id: { type: string }
+        retryable: { type: boolean }
+        current_version: { type: integer }
+
+    CurrentUser:
+      type: object
+      properties:
+        user_id: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [owner, admin, operator, approver, viewer] }
+        workspace_ids: { type: array, items: { type: string } }
+        feature_flags: { type: object, additionalProperties: { type: boolean } }
+
+    WorkspaceList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Workspace" } }
+
+    Workspace:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        timezone: { type: string }
+        version: { type: integer }
+
+    WorkspacePatch:
+      type: object
+      properties:
+        name: { type: string }
+        timezone: { type: string }
+        expected_version: { type: integer }
+
+    Bootstrap:
+      type: object
+      properties:
+        workspace: { $ref: "#/components/schemas/Workspace" }
+        dashboard: { $ref: "#/components/schemas/Dashboard" }
+        agents: { $ref: "#/components/schemas/AgentProfileList" }
+        work_items: { $ref: "#/components/schemas/WorkItemList" }
+        health: { $ref: "#/components/schemas/SystemHealth" }
+        event_cursor: { type: integer }
+
+    Dashboard:
+      type: object
+      properties:
+        active_agents: { type: integer }
+        running_tasks: { type: integer }
+        completed_today: { type: integer }
+        board_counts:
+          type: object
+          properties:
+            todo: { type: integer }
+            in_progress: { type: integer }
+            blocked: { type: integer }
+            completed: { type: integer }
+        recent_activities: { $ref: "#/components/schemas/ActivityList" }
+
+    SystemHealth:
+      type: object
+      properties:
+        control_plane: { type: string, enum: [healthy, degraded, down] }
+        runners: { type: array, items: { type: object, properties: { runner_id: { type: string }, status: { type: string } } } }
+
+    AgentProfileList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/AgentProfile" } }
+
+    AgentProfileCreate:
+      type: object
+      required: [name, role]
+      properties:
+        name: { type: string }
+        role: { type: string, enum: [pm, architect, ui, developer, reviewer, custom] }
+        skills: { type: array, items: { type: string } }
+        runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        avatar: { type: string }
+
+    AgentProfilePatch:
+      type: object
+      properties:
+        name: { type: string }
+        role: { type: string }
+        skills: { type: array, items: { type: string } }
+        instructions: { type: string }
+        runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        expected_version: { type: integer }
+
+    DisableOptions:
+      type: object
+      properties:
+        active_run_policy: { type: string, enum: [interrupt, continue, cancel], default: interrupt }
+
+    AgentProfile:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        skills: { type: array, items: { type: string } }
+        availability: { type: string, enum: [enabled, disabled] }
+        presence: { type: string, enum: [idle, busy, degraded, offline] }
+        current_run_summary:
+          type: object
+          nullable: true
+          properties:
+            run_id: { type: string }
+            work_item_id: { type: string }
+            title: { type: string }
+            progress: { type: number }
+        runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        version: { type: integer }
+
+    RuntimePreference:
+      type: object
+      properties:
+        preferred: { type: string }
+        fallbacks: { type: array, items: { type: string } }
+
+    WorkItemList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
+        next_cursor: { type: string, nullable: true }
+
+    WorkItemCreate:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/WorkItemStatus", default: todo }
+        priority: { $ref: "#/components/schemas/Priority", default: medium }
+        due_date: { type: string, format: date }
+        agent_profile_id: { type: string, nullable: true }
+
+    WorkItemPatch:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        priority: { $ref: "#/components/schemas/Priority" }
+        due_date: { type: string, format: date }
+        expected_version: { type: integer }
+
+    WorkItemStatus:
+      type: string
+      enum: [todo, in_progress, blocked, completed, cancelled]
+
+    Priority:
+      type: string
+      enum: [low, medium, high, urgent]
+
+    WorkItem:
+      type: object
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { $ref: "#/components/schemas/WorkItemStatus" }
+        phase: { type: string, enum: [execution, review, acceptance], nullable: true }
+        priority: { $ref: "#/components/schemas/Priority" }
+        due_date: { type: string, format: date, nullable: true }
+        agent_profile_id: { type: string, nullable: true }
+        assignee_summary:
+          type: object
+          nullable: true
+          properties:
+            name: { type: string }
+            avatar: { type: string }
+        blocker:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            source: { type: string }
+            created_at: { type: string, format: date-time }
+        runs_count: { type: integer }
+        latest_run_id: { type: string, nullable: true }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunCreate:
+      type: object
+      required: [agent_profile_id, input]
+      properties:
+        agent_profile_id: { type: string }
+        runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        requirements:
+          type: object
+          additionalProperties: { type: string, enum: [required, preferred, optional] }
+        input:
+          type: object
+          required: [instruction]
+          properties:
+            instruction: { type: string }
+            acceptance_criteria: { type: array, items: { type: string } }
+
+    RunAccepted:
+      type: object
+      properties:
+        run_id: { type: string }
+        work_item_id: { type: string }
+        status: { type: string }
+        version: { type: integer }
+        capability_snapshot_id: { type: string, nullable: true }
+
+    ExecutionRun:
+      type: object
+      properties:
+        id: { type: string }
+        work_item_id: { type: string }
+        agent_profile_id: { type: string }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        provider: { type: string, nullable: true }
+        runtime_label: { type: string, nullable: true }
+        progress: { type: number, nullable: true }
+        retry_of: { type: string, nullable: true }
+        failure:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunStatus:
+      type: string
+      enum: [queued, starting, running, waiting_approval, interrupting, cancelling, reconnecting, succeeding, succeeded, interrupted, cancelled, lost, failed]
+
+    ApprovalList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Approval" } }
+
+    Approval:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        work_item_id: { type: string }
+        kind: { type: string }
+        risk: { type: string, enum: [low, medium, high] }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        summary: { type: string }
+        requested_by: { type: object }
+        expires_at: { type: string, format: date-time, nullable: true }
+        resolved_at: { type: string, format: date-time, nullable: true }
+        resolved_by: { type: string, nullable: true }
+
+    ArtifactList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Artifact" } }
+
+    Artifact:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        logical_path: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        sha256: { type: string }
+        status: { type: string, enum: [draft, accepted] }
+        created_at: { type: string, format: date-time }
+
+    ActivityList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Activity" } }
+        next_cursor: { type: string, nullable: true }
+
+    Activity:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        message: { type: string }
+        occurred_at: { type: string, format: date-time }
+
+    RuntimeBindingList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RuntimeBinding" } }
+
+    RuntimeBinding:
+      type: object
+      properties:
+        id: { type: string }
+        runtime_label: { type: string }
+        adapter_id: { type: string }
+        adapter_version: { type: string }
+        provider_version: { type: string, nullable: true }
+        provider: { type: string, description: "模型提供方，如 deepseek / openai" }
+        model: { type: string, description: "模型配置，如 deepseek-chat" }
+        credential_ref: { type: string, description: "CredentialRef；绝不返回凭据明文" }
+        capabilities: { type: object, additionalProperties: { type: string } }
+        status: { type: string, enum: [ready, probing, degraded, unavailable] }
+        version: { type: integer }
+
+    ProbeResult:
+      type: object
+      properties:
+        runtime_binding_id: { type: string }
+        ok: { type: boolean }
+        provider_version: { type: string, nullable: true }
+        capabilities: { type: object, additionalProperties: { type: string } }
+        error: { type: string, nullable: true }

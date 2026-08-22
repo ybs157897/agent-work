@@ -1,0 +1,25 @@
+{
+  "name": "atw-dsh-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH SDK runtime composition for agent-team-workbench (stdio JSON-RPC). link: 指向本机 deepseek-harness 仓库；npm 发布版存在未发布的传递依赖，不能直接 install。",
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-jsonrpc-demo": "link:../../../../deepseek-harness/packages/examples/jsonrpc-demo",
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "link:../../../../deepseek-harness/packages/sdk/server",
+    "@deepseek-ai/dsh-llm-deepseek": "link:../../../../deepseek-harness/packages/llm/llm-deepseek",
+    "@deepseek-ai/dsh-sandbox-local": "link:../../../../deepseek-harness/packages/sandbox/sandbox-local",
+    "@deepseek-ai/dsh-sandbox-policy": "link:../../../../deepseek-harness/packages/sandbox/sandbox-policy",
+    "@deepseek-ai/dsh-subprocess-local": "link:../../../../deepseek-harness/packages/subprocess/subprocess-local",
+    "@deepseek-ai/dsh-terminal": "link:../../../../deepseek-harness/packages/terminal/terminal",
+    "@deepseek-ai/dsh-terminal-bash": "link:../../../../deepseek-harness/packages/terminal/terminal-bash",
+    "@deepseek-ai/dsh-fs-local": "link:../../../../deepseek-harness/packages/fs/fs-local",
+    "@deepseek-ai/dsh-fs-observation-policy": "link:../../../../deepseek-harness/packages/fs/fs-observation-policy",
+    "@deepseek-ai/dsh-agent-spine-demo": "link:../../../../deepseek-harness/packages/examples/agent-spine-demo",
+    "@deepseek-ai/dsh-tool-bash-persistent": "link:../../../../deepseek-harness/packages/shell/tool-bash-persistent",
+    "@deepseek-ai/dsh-tool-str-replace-editor": "link:../../../../deepseek-harness/packages/fs/tool-str-replace-editor",
+    "@deepseek-ai/dsh-tool-fs": "link:../../../../deepseek-harness/packages/fs/tool-fs",
+    "@deepseek-ai/dsh-tool-todo": "link:../../../../deepseek-harness/packages/todo/tool-todo",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "link:../../../../deepseek-harness/packages/session/session-persistence-jsonl",
+    "@deepseek-ai/dsh-bash-local": "link:../../../../deepseek-harness/packages/shell/bash-local"
+  }
+}

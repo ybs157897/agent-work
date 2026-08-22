@@ -1,0 +1,10 @@
+{"kind":"run.status_changed","data":{"status":"starting"},"delay_ms":120}
+{"kind":"run.status_changed","data":{"status":"running"},"delay_ms":150}
+{"kind":"message.delta","data":{"text":"scripted fixture 回放中"},"delay_ms":100}
+{"kind":"run.progress","data":{"progress":0.5},"delay_ms":100}
+{"kind":"tool.started","data":{"tool":"render"},"delay_ms":80}
+{"kind":"tool.completed","data":{"tool":"render"},"delay_ms":80}
+{"kind":"message.completed","data":{"text":"scripted 回放完成"},"delay_ms":100}
+{"kind":"run.progress","data":{"progress":1.0},"delay_ms":60}
+{"kind":"run.status_changed","data":{"status":"succeeding"},"delay_ms":80}
+{"kind":"run.status_changed","data":{"status":"succeeded"},"delay_ms":80}

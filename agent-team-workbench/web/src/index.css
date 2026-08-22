@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
+@import url('https://font.emtech.cc/css/chironHeiHK');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 主题色通道（theme.json → tailwind.config.js 的 hsl(var()) 引用） */
+    --color-brand-primary: 199 89% 48%;
+    --color-brand-accent: 199 95% 42%;
+    --color-surface-base: 210 20% 98%;
+    --color-surface-warm: 60 14% 98%;
+    --color-surface-raised: 0 0% 100%;
+    --color-surface-glass: 0 0% 100%;
+    --color-text-primary: 215 16% 15%;
+    --color-text-secondary: 215 14% 34%;
+    --color-text-tertiary: 215 10% 55%;
+    --color-text-muted: 215 10% 55%;
+    --color-text-inverse: 0 0% 100%;
+    --color-border-subtle: 0 0% 94%;
+    --color-border-strong: 214 20% 82%;
+    --color-status-success: 142 71% 45%;
+    --color-status-warning: 38 92% 50%;
+    --color-status-error: 0 84% 60%;
+    --color-status-info: 199 89% 48%;
+    --color-status-standby: 215 10% 65%;
+
+    --layout-safe-width: 1440px;
+  }
+
+  html,
+  body {
+    @apply h-full antialiased font-zh text-text-primary bg-surface-base;
+  }
+
+  #root {
+    @apply h-full;
+  }
+}
+
+@layer utilities {
+  .layout-safe {
+    width: calc(100% - 48px);
+    max-width: var(--layout-safe-width);
+    margin-inline: auto;
+  }
+
+  @media (max-width: 1023px) {
+    .layout-safe {
+      width: calc(100% - 40px);
+    }
+  }
+
+  @media (max-width: 639px) {
+    .layout-safe {
+      width: calc(100% - 32px);
+    }
+  }
+}
+
+@keyframes statusPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.4);
+  }
+}
+
+.status-pulse {
+  animation: statusPulse 2s ease-in-out infinite;
+}

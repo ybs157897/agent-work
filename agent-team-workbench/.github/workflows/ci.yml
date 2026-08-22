@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: agent-team-workbench/go.sum
+
+      - name: gofmt
+        working-directory: agent-team-workbench
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: go vet
+        working-directory: agent-team-workbench
+        run: go vet ./...
+
+      - name: build
+        working-directory: agent-team-workbench
+        run: go build ./...
+
+      - name: test (race detector)
+        working-directory: agent-team-workbench
+        run: go test -race ./...
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate JSON contracts
+        working-directory: agent-team-workbench
+        run: |
+          python3 -c "import json; [json.load(open(f)) for f in ['contracts/runner/v1/schema.json','contracts/runtime/v1/schema.json']]"
+      - name: validate YAML contracts
+        working-directory: agent-team-workbench
+        run: |
+          pip install --quiet pyyaml
+          python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['contracts/web/openapi.yaml','contracts/events/asyncapi.yaml']]"
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: workbench
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: agent-team-workbench/go.sum
+      - name: apply migrations
+        working-directory: agent-team-workbench
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/workbench?sslmode=disable
+        run: go run ./cmd/migrate

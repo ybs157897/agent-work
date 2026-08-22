@@ -1,0 +1,16 @@
+name: Forge
+role: developer
+skills:
+  - Go
+  - React
+  - 测试
+runtime:
+  preferred: mock
+  fallbacks: []
+model:
+  provider: deepseek
+  model: deepseek-v4-flash
+permissions:
+  tools: [bash, editor, fs, todo]
+  approval_policy: approve_high_risk
+  sandbox: workspace_only

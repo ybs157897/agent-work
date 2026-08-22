@@ -1,0 +1,11 @@
+# 工具片段：fs（文件系统读写 + 观测策略）。
+- id: fs-local
+  name: '@deepseek-ai/dsh-fs-local'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'

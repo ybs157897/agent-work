@@ -1,0 +1,394 @@
+// Package kimi 实现 Kimi Code CLI Adapter（协议文档 §9：Kimi 行）。
+//
+// 首版采用 print mode（kimi -p --output-format stream-json）：
+// stdout NDJSON 以 role/type 区分（meta → assistant → result）；
+// 诊断与 provider 错误走 stderr（"error: failed to run prompt: ..."），
+// Adapter 捕获后 fail loud。ACP JSON-RPC 面（new/load/resume/prompt/cancel）
+// 在 M4 按部署需要接入；能力声明以 Manifest 为准，禁止静默降级。
+package kimi
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
+)
+
+// Engine 是 Adapter 依赖的应用层能力面。
+type Engine interface {
+	RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error
+	RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error
+}
+
+type Config struct {
+	BinPath       string   // kimi 可执行文件
+	Args          []string // 覆盖默认参数（测试用回放桩）
+	WorkspaceRoot string
+	Model         string // 可选 -m
+	MaxFrameBytes int
+	GracePeriod   time.Duration
+}
+
+type Adapter struct {
+	cfg    Config
+	engine Engine
+
+	mu     sync.Mutex
+	active map[string]*runProc
+}
+
+var _ runtime.RuntimeAdapter = (*Adapter)(nil)
+
+func New(cfg Config, engine Engine) *Adapter {
+	if cfg.MaxFrameBytes <= 0 {
+		cfg.MaxFrameBytes = 8 << 20
+	}
+	if cfg.GracePeriod <= 0 {
+		cfg.GracePeriod = 3 * time.Second
+	}
+	return &Adapter{cfg: cfg, engine: engine, active: make(map[string]*runProc)}
+}
+
+func (a *Adapter) Manifest(ctx context.Context) (runtime.AdapterManifest, error) {
+	return runtime.AdapterManifest{
+		AdapterID: "kimi", AdapterVersion: "1.0.0",
+		Protocol: runtime.Protocol{Name: "kimi-cli-stream-json", Version: "1"},
+		Capabilities: map[string]runtime.CapabilityLevel{
+			"streaming": runtime.CapSupported,
+			"resume":    runtime.CapAdapterTranslated, // -S/--continue（M4 接 ACP resume）
+			// print mode 无精确取消：进程组终止（process_scoped）。
+			"interrupt":         runtime.CapAdapterTranslated,
+			"approval":          runtime.CapUnavailable, // M4 接 ACP permission
+			"workspace_files":   runtime.CapSupported,
+			"terminal":          runtime.CapUnavailable,
+			"structured_output": runtime.CapSupported,
+		},
+		SchemaDigest: "sha256:kimi-cli-stream-json-v1",
+	}, nil
+}
+
+// Probe 校验 CLI 可用；不启动业务 Run。
+func (a *Adapter) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
+	m, _ := a.Manifest(ctx)
+	if _, err := exec.LookPath(a.cfg.BinPath); err != nil {
+		if _, serr := os.Stat(a.cfg.BinPath); serr != nil {
+			return runtime.ProbeResult{OK: false, Manifest: &m, Error: "kimi CLI 不可用"}, nil
+		}
+	}
+	return runtime.ProbeResult{OK: true, Manifest: &m}, nil
+}
+
+func (a *Adapter) Start(ctx context.Context, req runtime.StartRequest) (runtime.RuntimeHandle, error) {
+	if err := a.Dispatch(ctx, req.Run); err != nil {
+		return nil, err
+	}
+	return &handle{adapter: a, runID: req.Run.ID}, nil
+}
+
+// Dispatch 启动 CLI print mode 执行 Run。
+func (a *Adapter) Dispatch(ctx context.Context, run *domain.ExecutionRun) error {
+	instruction, _ := run.Input["instruction"].(string)
+	if instruction == "" {
+		return fmt.Errorf("%w: instruction required", domain.ErrValidation)
+	}
+	p := &runProc{adapter: a, runID: run.ID, instruction: instruction}
+	a.mu.Lock()
+	if _, busy := a.active[run.ID]; busy {
+		a.mu.Unlock()
+		return fmt.Errorf("%w: run %s already active", domain.ErrValidation, run.ID)
+	}
+	a.active[run.ID] = p
+	a.mu.Unlock()
+	go a.runProcess(context.Background(), p)
+	return nil
+}
+
+// Control 进程组级终止（cancel / interrupt 均为 process_scoped）。
+func (a *Adapter) Control(runID string, terminal domain.RunStatus) {
+	a.mu.Lock()
+	p := a.active[runID]
+	a.mu.Unlock()
+	if p == nil {
+		return
+	}
+	p.terminate(terminal)
+}
+
+func (a *Adapter) Close() {
+	a.mu.Lock()
+	procs := make([]*runProc, 0, len(a.active))
+	for _, p := range a.active {
+		procs = append(procs, p)
+	}
+	a.mu.Unlock()
+	for _, p := range procs {
+		p.terminate(domain.RunInterrupted)
+	}
+}
+
+type runProc struct {
+	adapter     *Adapter
+	runID       string
+	instruction string
+
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	wantTerm    domain.RunStatus
+	terminating bool
+	stderrErr   string // 捕获的 provider 错误（脱敏后落库）
+}
+
+func (p *runProc) setStderrErr(msg string) {
+	p.mu.Lock()
+	if p.stderrErr == "" {
+		p.stderrErr = msg
+	}
+	p.mu.Unlock()
+}
+
+func (p *runProc) getStderrErr() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stderrErr
+}
+
+func (p *runProc) terminate(terminal domain.RunStatus) {
+	p.mu.Lock()
+	if p.terminating {
+		p.mu.Unlock()
+		return
+	}
+	p.terminating = true
+	p.wantTerm = terminal
+	cmd := p.cmd
+	grace := p.adapter.cfg.GracePeriod
+	p.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	signalGroup(cmd, sigInt)
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(grace):
+	}
+	signalGroup(cmd, sigKill)
+	<-done
+}
+
+func (p *runProc) terminated() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.terminating
+}
+
+func (a *Adapter) runProcess(ctx context.Context, p *runProc) {
+	engine := a.engine
+	runID := p.runID
+	cfg := a.cfg
+
+	defer func() {
+		a.mu.Lock()
+		delete(a.active, runID)
+		a.mu.Unlock()
+	}()
+
+	_ = engine.RecordRunStatus(ctx, runID, domain.RunStarting, nil)
+
+	args := cfg.Args
+	if len(args) == 0 {
+		args = []string{"-p", p.instruction, "--output-format", "stream-json"}
+		if cfg.Model != "" {
+			args = append(args, "-m", cfg.Model)
+		}
+	}
+	cmd := exec.CommandContext(ctx, cfg.BinPath, args...)
+	cmd.Dir = cfg.WorkspaceRoot
+	cmd.Env = os.Environ()
+	setProcGroup(cmd)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		a.failRun(ctx, runID, "spawn_failed", err.Error())
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		a.failRun(ctx, runID, "spawn_failed", err.Error())
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		a.failRun(ctx, runID, "spawn_failed", err.Error())
+		return
+	}
+	p.mu.Lock()
+	p.cmd = cmd
+	p.mu.Unlock()
+	go p.drainStderr(stderr)
+
+	reader := bufio.NewReaderSize(stdout, 64*1024)
+	started := false
+	finished := false
+
+	for {
+		frame, err := readFrame(reader, cfg.MaxFrameBytes)
+		if err != nil {
+			if p.terminated() {
+				a.emitTerminal(ctx, runID, p)
+				return
+			}
+			if !finished {
+				// 流中断：优先用 stderr 捕获的 provider 错误（fail loud）。
+				if se := p.getStderrErr(); se != "" {
+					a.failRun(ctx, runID, "provider_error", se)
+				} else {
+					a.failRun(ctx, runID, "stream_failed", err.Error())
+				}
+			}
+			p.terminate(domain.RunInterrupted)
+			return
+		}
+		if frame == nil {
+			continue
+		}
+		switch {
+		case frame.Role == "meta":
+			if !started {
+				started = true
+				_ = engine.RecordRunStatus(ctx, runID, domain.RunRunning, nil)
+			}
+		case frame.Role == "assistant":
+			engine.RecordRunEvent(ctx, runID, domain.EventMessageCompleted, map[string]any{
+				"text": frame.Text,
+			})
+		case frame.Role == "result" || frame.Type == "result":
+			finished = true
+			if frame.IsError {
+				a.failRun(ctx, runID, "kimi_result_error", firstNonEmpty(frame.Text, "kimi result error"))
+			} else {
+				if started {
+					_ = engine.RecordRunStatus(ctx, runID, domain.RunSucceeding, nil)
+				}
+				_ = engine.RecordRunStatus(ctx, runID, domain.RunSucceeded, nil)
+			}
+			p.terminate(domain.RunInterrupted) // 回收进程；终态已确定
+			return
+		}
+	}
+}
+
+func (a *Adapter) emitTerminal(ctx context.Context, runID string, p *runProc) {
+	p.mu.Lock()
+	want := p.wantTerm
+	p.mu.Unlock()
+	switch want {
+	case domain.RunCancelled:
+		_ = a.engine.RecordRunStatus(ctx, runID, domain.RunCancelled, nil)
+	case domain.RunInterrupted:
+		_ = a.engine.RecordRunStatus(ctx, runID, domain.RunInterrupted, nil)
+	}
+}
+
+func (a *Adapter) failRun(ctx context.Context, runID, code, detail string) {
+	msg := strings.TrimSpace(detail)
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	_ = a.engine.RecordRunStatus(ctx, runID, domain.RunFailed,
+		map[string]any{"code": code, "message": msg})
+}
+
+// stream-json 帧：role/type 判别；尽力提取文本。
+type streamFrame struct {
+	Role    string `json:"role"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Content string `json:"content"`
+	IsError bool   `json:"is_error"`
+}
+
+func (p *runProc) drainStderr(stderr io.Reader) {
+	sc := bufio.NewScanner(stderr)
+	sc.Buffer(make([]byte, 0, 16*1024), 64*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "error:") {
+			p.setStderrErr(strings.TrimPrefix(line, "error: "))
+		}
+		if len(line) > 2048 {
+			line = line[:2048] + "…(truncated)"
+		}
+		log.Printf("kimi-stderr[%s]: %s", p.runID, line)
+	}
+}
+
+func readFrame(r *bufio.Reader, maxBytes int) (*streamFrame, error) {
+	line, err := r.ReadBytes('\n')
+	if err != nil && len(line) == 0 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	if len(line) > maxBytes {
+		return nil, fmt.Errorf("frame exceeds %d bytes", maxBytes)
+	}
+	trimmed := strings.TrimSpace(string(line))
+	if trimmed == "" {
+		if err != nil {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, nil
+	}
+	var f streamFrame
+	if err := json.Unmarshal([]byte(trimmed), &f); err != nil {
+		return nil, nil // 非 JSON 行：隔离不执行
+	}
+	return &f, nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+type handle struct {
+	adapter *Adapter
+	runID   string
+}
+
+func (h *handle) SessionRef() string { return "kimi://" + h.runID }
+func (h *handle) Send(ctx context.Context, instruction string) error {
+	return fmt.Errorf("%w: kimi print mode 单 Run 单 prompt（M4 接 ACP）", domain.ErrValidation)
+}
+func (h *handle) Interrupt(ctx context.Context) error {
+	h.adapter.Control(h.runID, domain.RunInterrupted)
+	return nil
+}
+func (h *handle) Cancel(ctx context.Context) error {
+	h.adapter.Control(h.runID, domain.RunCancelled)
+	return nil
+}
+func (h *handle) ResolveApproval(ctx context.Context, approvalID string, approved bool) error {
+	return runtime.ErrStartUnsupported
+}
+func (h *handle) Close(ctx context.Context) error {
+	h.adapter.Control(h.runID, domain.RunInterrupted)
+	return nil
+}

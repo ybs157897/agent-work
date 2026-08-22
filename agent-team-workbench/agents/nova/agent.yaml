@@ -1,0 +1,17 @@
+# Agent 配置文件（agents/<slug>/ 为真相源；Web 编辑会回写此文件）
+name: Nova
+role: pm
+skills:
+    - 需求分析
+    - 优先级管理
+runtime:
+    preferred: mock
+model:
+    provider: deepseek
+    model: deepseek-v4-flash
+permissions:
+    tools:
+        - todo
+        - fs
+    approval_policy: manual
+    sandbox: workspace_only

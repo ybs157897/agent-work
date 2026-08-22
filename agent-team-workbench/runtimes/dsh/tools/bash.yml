@@ -1,0 +1,13 @@
+# 工具片段：bash（持久 shell + 终端）。高风险，manual 审批策略下会被剔除。
+- id: pty
+  name: '@deepseek-ai/dsh-terminal'
+
+- id: terminal-bash
+  name: '@deepseek-ai/dsh-terminal-bash'
+  config:
+    timeoutMs: 300000
+
+- id: persistent-bash
+  name: '@deepseek-ai/dsh-tool-bash-persistent'
+  config:
+    timeoutMs: 300000
