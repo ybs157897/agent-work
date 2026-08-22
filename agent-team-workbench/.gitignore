@@ -5,3 +5,9 @@ coverage.out
 node_modules/
 web/dist/
 web/.next/
+
+# Runtime 产物（DSH 会话持久化 / 生成的 cordis 配置）
+.atw-data/
+.sessions/
+runtimes/dsh/.generated/
+runtimes/dsh/cordis.yml

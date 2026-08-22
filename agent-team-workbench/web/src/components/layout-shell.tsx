@@ -1,4 +1,4 @@
-import { Bot, KanbanSquare, LayoutDashboard, ScrollText, Settings } from 'lucide-react';
+import { Bot, KanbanSquare, LayoutDashboard, MessageSquare, ScrollText, Settings } from 'lucide-react';
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: '/', icon: <LayoutDashboard />, label: '总览', end: true },
   { to: '/agents', icon: <Bot />, label: '智能体团队' },
   { to: '/tasks', icon: <KanbanSquare />, label: '任务看板' },
+  { to: '/chat', icon: <MessageSquare />, label: '对话' },
   { to: '/logs', icon: <ScrollText />, label: '日志' },
   { to: '/settings', icon: <Settings />, label: '设置' },
 ];
@@ -15,6 +16,7 @@ const BREADCRUMBS: Record<string, string> = {
   '/': '总览',
   '/agents': '智能体团队',
   '/tasks': '任务看板',
+  '/chat': '对话',
   '/logs': '日志',
   '/settings': '设置',
 };

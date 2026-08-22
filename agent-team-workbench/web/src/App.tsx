@@ -5,6 +5,7 @@ import { ErrorState, Loading } from './components/async-state';
 import { LayoutShell } from './components/layout-shell';
 import { Toaster } from './components/toast';
 import AgentsPage from './pages/agents.page';
+import ChatPage from './pages/chat.page';
 import DashboardPage from './pages/dashboard.page';
 import LogsPage from './pages/logs.page';
 import SettingsPage from './pages/settings.page';
@@ -59,6 +60,7 @@ function AnimatedRoutes() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/chat" element={<ChatPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
