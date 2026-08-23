@@ -8,17 +8,20 @@ import (
 
 type TaskSessionRepo struct{ store *Store }
 
-const taskSessionCols = `id, workspace_id, agent_profile_id, adapter_id, task_key,
+const taskSessionCols = `id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 	session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at`
 
 func (r *TaskSessionRepo) scan(row interface{ Scan(...any) error }) (*domain.TaskSession, error) {
 	t := &domain.TaskSession{}
-	var displayID *string
+	var displayID, parentAnchor *string
 	var params string
 	var created, updated scanTime
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.AgentProfileID, &t.AdapterID, &t.TaskKey,
-		&params, &displayID, &t.RunsCount, &t.InputTokensCum, &created, &updated); err != nil {
+		&parentAnchor, &params, &displayID, &t.RunsCount, &t.InputTokensCum, &created, &updated); err != nil {
 		return nil, err
+	}
+	if parentAnchor != nil {
+		t.ParentAnchorID = *parentAnchor
 	}
 	_ = jsonInto(params, &t.SessionParams)
 	if displayID != nil {
@@ -40,41 +43,44 @@ func (r *TaskSessionRepo) Get(ctx context.Context, workspaceID, agentProfileID, 
 	return t, nil
 }
 
-// Upsert：params/display_id 整体替换；计数列按 delta 累加（见接口注释）。
+// Upsert：params/display_id/parent_anchor_id 整体替换；计数列按 delta 累加
+// （见接口注释）。parent_anchor_id 由应用层在每次锚点写入前解析。
 func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key,
+		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(workspace_id, agent_profile_id, adapter_id, task_key) DO UPDATE SET
+			parent_anchor_id=excluded.parent_anchor_id,
 			session_params=excluded.session_params,
 			display_id=excluded.display_id,
 			runs_count=task_sessions.runs_count+excluded.runs_count,
 			input_tokens_cum=task_sessions.input_tokens_cum+excluded.input_tokens_cum,
 			updated_at=excluded.updated_at`,
-		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey,
+		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID),
 		t.RunsCount, t.InputTokensCum, d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
-// StartGeneration 轮换换代：params/display 整体替换，计数按传入值覆盖重起、
+// StartGeneration 轮换换代：params/display/parent 整体替换，计数按传入值覆盖重起、
 // created_at 重置（新代际的轮换阈值从零计量；仅轮换 run 首次会话上报时调用）。
 func (r *TaskSessionRepo) StartGeneration(ctx context.Context, t *domain.TaskSession) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key,
+		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(workspace_id, agent_profile_id, adapter_id, task_key) DO UPDATE SET
+			parent_anchor_id=excluded.parent_anchor_id,
 			session_params=excluded.session_params,
 			display_id=excluded.display_id,
 			runs_count=excluded.runs_count,
 			input_tokens_cum=excluded.input_tokens_cum,
 			created_at=excluded.created_at,
 			updated_at=excluded.updated_at`,
-		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey,
+		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID),
 		t.RunsCount, t.InputTokensCum, d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
 	return r.store.mapErr(err)

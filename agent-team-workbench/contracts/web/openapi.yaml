@@ -932,8 +932,8 @@ components:
 
     PlanVerb:
       type: string
-      enum: [dispatch, defer, finish]
-      description: M1 词汇表子集；未知 verb 提交即 400。
+      enum: [dispatch, defer, finish, consult_knowledge]
+      description: M2 词汇表；未知 verb 提交即 400。consult_knowledge 检索结果写 step payload.results，供 dispatch.knowledge_from 引用。
 
     PlanSubmit:
       type: object
@@ -960,6 +960,11 @@ components:
         reason: { type: string, description: defer 挂起原因 }
         wake_at: { type: string, format: date-time, description: defer 可选出口；与活跃子任务至少居其一 }
         summary: { type: string, description: finish 收尾说明 }
+        evaluation: { type: boolean, description: finish 后追加验收评估 run（instruction 含验收标准与子任务摘要，agent 为 plan owner） }
+        corpus: { type: string, description: consult_knowledge 必填；单层目录名（拒绝路径分隔符与 `.`/`..`） }
+        terms: { type: array, items: { type: string }, description: consult_knowledge 检索词 }
+        limit: { type: integer, description: consult_knowledge 返回条数上限 }
+        knowledge_from: { type: integer, description: dispatch 可选；引用更早的 consult_knowledge 步骤（0 基序号），检索条目注入 instruction 附录 }
 
     Plan:
       type: object

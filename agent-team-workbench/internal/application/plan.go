@@ -1,6 +1,8 @@
-// plan.go M1 编排计划：SubmitPlan 确定性执行器 + 子任务静默唤醒钩子（设计 note
-// notes/implemented/orchestration/2026-08-23-m1-plan-executor.md）。
-// 词汇表：dispatch（建子任务+首 run）/ defer（批次终止挂起）/ finish（收尾）。
+// plan.go M1/M2 编排计划：SubmitPlan 确定性执行器 + 子任务静默唤醒钩子（设计 note
+// notes/implemented/orchestration/2026-08-23-m1-plan-executor.md 与
+// 2026-08-23-m2-lead-planner-evaluation.md）。
+// 词汇表：dispatch（建子任务+首 run）/ defer（批次终止挂起）/ finish（收尾，
+// evaluation=true 触发评估 run）/ consult_knowledge（预取检索注入）。
 // 执行器同一提交事务内顺序推进，副作用（Dispatch/Notify/wakeup 入队）在提交后执行。
 package application
 
@@ -8,9 +10,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
 )
 
@@ -38,8 +42,16 @@ type planTask struct {
 	instruction string
 	acceptance  []string
 	priority    domain.Priority
+	// dispatch 引用的 consult_knowledge 步骤 seq（knowledge_from）；-1 未引用。
+	knowledgeFrom int
+	// consult_knowledge 专属字段（检索参数）。
+	corpus string
+	terms  []string
+	limit  int
 	// defer 专属字段；nil 表示未指定 wake_at。
 	wakeAt *time.Time
+	// finish 专属字段：evaluation=true 时 plan 落 finished 后自动创建评估 run。
+	evaluation bool
 }
 
 // SubmitPlan 校验并同步执行一份 plan。同一 work item 同时最多一个 active/waiting plan：
@@ -177,6 +189,30 @@ func (s *Service) executePlanSteps(ctx context.Context, wi *domain.WorkItem, pla
 		t := tasks[i]
 		now := time.Now().UTC()
 		switch t.verb {
+		case domain.PlanVerbConsultKnowledge:
+			// 预取注入：检索结果（条目全文）写进本步骤 payload.results；
+			// 同 plan 的 dispatch 可经 knowledge_from 引用拼进子任务指令。
+			if s.Knowledge == nil {
+				return s.failStepAndPlan(ctx, plan, st, i+1, "no_retriever")
+			}
+			results, err := s.Knowledge.Retrieve(ctx, knowledge.Query{
+				Corpus: t.corpus, Terms: t.terms, Limit: t.limit,
+			})
+			if err != nil {
+				return s.failStepAndPlan(ctx, plan, st, i+1, err.Error())
+			}
+			if st.Payload == nil {
+				st.Payload = map[string]any{}
+			}
+			st.Payload["results"] = knowledgeResultPayload(results)
+			st.Status = domain.PlanStepExecuted
+			st.ExecutedAt = &now
+			if err := s.store.Plans().UpdateStep(ctx, st); err != nil {
+				return err
+			}
+			if err := s.emitStep(ctx, plan, st); err != nil {
+				return err
+			}
 		case domain.PlanVerbDispatch:
 			child := &domain.WorkItem{
 				ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: plan.WorkspaceID,
@@ -194,7 +230,7 @@ func (s *Service) executePlanSteps(ctx context.Context, wi *domain.WorkItem, pla
 			}
 			run, err := s.createRunLocked(ctx, child.ID, CreateRunParams{
 				AgentProfileID:     t.agentID,
-				Instruction:        t.instruction,
+				Instruction:        t.instruction + knowledgeAppendix(plan.Step(t.knowledgeFrom)),
 				AcceptanceCriteria: t.acceptance,
 			})
 			if err != nil {
@@ -256,7 +292,27 @@ func (s *Service) executePlanSteps(ctx context.Context, wi *domain.WorkItem, pla
 			if err := s.emitStep(ctx, plan, st); err != nil {
 				return err
 			}
-			return s.finishPlan(ctx, plan, i+1, "")
+			if err := s.finishPlan(ctx, plan, i+1, ""); err != nil {
+				return err
+			}
+			if !t.evaluation {
+				return nil
+			}
+			// finish{evaluation:true}：plan 落 finished 后自动为 plan owner 在
+			// 主任务上创建评估 run（确定性模板 + input.evaluation=true 固化，
+			// verdict 提取以此门控）；分派同 createdRuns 推迟到外层提交后。
+			instruction, err := s.buildEvaluationInstruction(ctx, plan)
+			if err != nil {
+				return fmt.Errorf("构建评估指令: %w", err)
+			}
+			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
+				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
+			})
+			if err != nil {
+				return fmt.Errorf("创建评估 run: %w", err)
+			}
+			*createdRuns = append(*createdRuns, evalRun)
+			return nil
 		}
 	}
 	// 所有 step 执行完（无 defer/finish）：顺序执行完即 finished。
@@ -280,6 +336,29 @@ func (s *Service) finishPlan(ctx context.Context, plan *domain.Plan, fromSeq int
 	}
 	return s.emit(ctx, plan.WorkspaceID, domain.EventPlanFinished,
 		domain.AggregatePlan, plan.ID, plan.Version, nil, data)
+}
+
+// failStepAndPlan 步骤失败收口：step 落 failed（error 记录原因），余下步骤
+// skipped，plan → failed（M1 生命周期：任一 step 失败即 plan 终态）。
+// 失败可观测面：plan.step_executed 事件 data.status=failed + data.error。
+func (s *Service) failStepAndPlan(ctx context.Context, plan *domain.Plan, st *domain.PlanStep, fromSeq int, stepErr string) error {
+	now := time.Now().UTC()
+	st.Status = domain.PlanStepFailed
+	st.Error = stepErr
+	st.ExecutedAt = &now
+	if err := s.store.Plans().UpdateStep(ctx, st); err != nil {
+		return err
+	}
+	if err := s.emitStep(ctx, plan, st); err != nil {
+		return err
+	}
+	if err := s.skipRemainingSteps(ctx, plan, fromSeq); err != nil {
+		return err
+	}
+	if err := plan.Transition(domain.PlanFailed, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.store.Plans().Update(ctx, plan, plan.Version-1)
 }
 
 // skipRemainingSteps 把 fromSeq 起的步骤标记 skipped（defer/finish 之后的步骤不执行）。
@@ -306,6 +385,9 @@ func (s *Service) emitStep(ctx context.Context, plan *domain.Plan, st *domain.Pl
 	}
 	if st.ResultRunID != "" {
 		data["result_run_id"] = st.ResultRunID
+	}
+	if st.Error != "" {
+		data["error"] = st.Error
 	}
 	return s.emit(ctx, plan.WorkspaceID, domain.EventPlanStepExecuted,
 		domain.AggregatePlan, plan.ID, plan.Version, nil, data)
@@ -419,7 +501,7 @@ func parsePlanSteps(inputs []PlanStepInput) ([]planTask, error) {
 	for i, in := range inputs {
 		verb := domain.PlanVerb(in.Verb)
 		if !domain.ValidPlanVerb(verb) {
-			return nil, fmt.Errorf("%w: step %d 未知 verb %q（M1 支持 dispatch/defer/finish）", domain.ErrValidation, i, in.Verb)
+			return nil, fmt.Errorf("%w: step %d 未知 verb %q（支持 dispatch/defer/finish/consult_knowledge）", domain.ErrValidation, i, in.Verb)
 		}
 		t := planTask{verb: verb, payload: in.Payload}
 		if t.payload == nil {
@@ -450,6 +532,37 @@ func parsePlanSteps(inputs []PlanStepInput) ([]planTask, error) {
 			default:
 				return nil, fmt.Errorf("%w: dispatch step %d priority %q 无效", domain.ErrValidation, i, t.priority)
 			}
+			// knowledge_from 必须引用更早的 consult_knowledge 步骤（同批次内，
+			// 执行序保证检索结果先于 dispatch 落在 payload）。
+			t.knowledgeFrom = -1
+			if v, ok := asPlanInt(t.payload["knowledge_from"]); ok {
+				if v < 0 || v >= i {
+					return nil, fmt.Errorf("%w: dispatch step %d knowledge_from=%d 必须指向更早的步骤", domain.ErrValidation, i, v)
+				}
+				if domain.PlanVerb(inputs[v].Verb) != domain.PlanVerbConsultKnowledge {
+					return nil, fmt.Errorf("%w: dispatch step %d knowledge_from=%d 指向的不是 consult_knowledge 步骤", domain.ErrValidation, i, v)
+				}
+				t.knowledgeFrom = v
+			}
+		case domain.PlanVerbConsultKnowledge:
+			t.corpus, _ = t.payload["corpus"].(string)
+			if t.corpus == "" {
+				return nil, fmt.Errorf("%w: consult_knowledge step %d 需要 corpus", domain.ErrValidation, i)
+			}
+			// corpus 直接拼进检索路径且来自不可信输入：单层目录名，拒绝分隔符与跳转。
+			if t.corpus == "." || t.corpus == ".." || strings.ContainsAny(t.corpus, `/\`) {
+				return nil, fmt.Errorf("%w: consult_knowledge step %d corpus %q 非法（单层目录名）", domain.ErrValidation, i, t.corpus)
+			}
+			if raw, ok := t.payload["terms"].([]any); ok {
+				for _, item := range raw {
+					if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+						t.terms = append(t.terms, text)
+					}
+				}
+			}
+			if v, ok := asPlanInt(t.payload["limit"]); ok {
+				t.limit = v
+			}
 		case domain.PlanVerbDefer:
 			if raw, ok := t.payload["wake_at"].(string); ok && raw != "" {
 				wakeAt, err := time.Parse(time.RFC3339, raw)
@@ -459,9 +572,70 @@ func parsePlanSteps(inputs []PlanStepInput) ([]planTask, error) {
 				t.wakeAt = &wakeAt
 			}
 		case domain.PlanVerbFinish:
-			// finish 无必填字段（summary 留在 payload 原文里）。
+			// finish 无必填字段（summary 留在 payload 原文里）；
+			// evaluation=true 触发评估 run（M2）。
+			if v, ok := t.payload["evaluation"].(bool); ok {
+				t.evaluation = v
+			}
 		}
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
+}
+
+// asPlanInt 兼容 JSON 解码（float64）与直接构造（int/int64）的整数载荷。
+func asPlanInt(raw any) (int, bool) {
+	switch v := raw.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	}
+	return 0, false
+}
+
+// knowledgeResultPayload 检索结果的结构化形态（consult_knowledge 执行后写入
+// 步骤 payload 的 results 键）：dispatch knowledge_from 以此为唯一输入源。
+func knowledgeResultPayload(results []knowledge.Result) []map[string]any {
+	out := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		out = append(out, map[string]any{
+			"id": r.Entry.ID, "title": r.Entry.Title, "version": r.Entry.Version,
+			"body": r.Entry.Body, "snippet": r.Snippet, "score": r.Score,
+		})
+	}
+	return out
+}
+
+// knowledgeAppendix 把 consult_knowledge 步骤的检索结果条目全文确定性拼装为
+// 子任务 instruction 的「## 参考条目」节（不经模型）。无结果返回空串。
+func knowledgeAppendix(st *domain.PlanStep) string {
+	if st == nil {
+		return ""
+	}
+	var entries []map[string]any
+	switch list := st.Payload["results"].(type) {
+	case []map[string]any:
+		entries = list
+	case []any:
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				entries = append(entries, m)
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## 参考条目\n")
+	for _, e := range entries {
+		id, _ := e["id"].(string)
+		title, _ := e["title"].(string)
+		body, _ := e["body"].(string)
+		fmt.Fprintf(&b, "\n### %s %s（v%v）\n%s\n", id, title, e["version"], body)
+	}
+	return b.String()
 }

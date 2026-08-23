@@ -27,6 +27,9 @@ type CreateRunParams struct {
 	AutoHealOf string
 	// WakeContext 非空表示本 run 由 wakeup 消费产生；固化进 input.wakeup 供审计。
 	WakeContext map[string]any
+	// Evaluation 表示本 run 是 plan finish{evaluation:true} 触发的评估 run；
+	// 固化进 input.evaluation（verdict 提取以此门控），对齐 wakeup/auto_heal_of 惯例。
+	Evaluation bool
 }
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
@@ -56,6 +59,39 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 		}
 	}
 	return run, nil
+}
+
+// emitSessionDecision 发布 CreateRun 会话决议事件（session.decision，
+// AggregateExecutionRun，纯观测面）。tier/reason 判定与 resolveResume 同源：
+//
+//	tier=resume    reason=resume_hit   锚点有效且 binding 声明 resume
+//	tier=rotation  reason=threshold    锚点轮换阈值超限（runs/tokens/age）
+//	tier=rotation  reason=budget       内联历史超模型窗口预算升级轮换
+//	tier=inline    reason=session_unknown  session_unknown 自愈 fresh 重试
+//	tier=inline    reason=config_drift 锚点指纹漂移，丢弃开新会话
+//	tier=inline    reason=fresh        无锚点/空墓碑/播种无果的全新会话
+func (s *Service) emitSessionDecision(ctx context.Context, r *domain.ExecutionRun, autoHealOf, resumeRef string,
+	outcome resumeOutcome, resumeSupported, budgetRotated bool) error {
+	tier, reason := "inline", "fresh"
+	sessionRef := ""
+	switch {
+	case resumeRef != "" && resumeSupported:
+		tier, reason, sessionRef = "resume", "resume_hit", resumeRef
+	case outcome == resumeOutcomeRotate:
+		tier, reason = "rotation", "threshold"
+	case budgetRotated:
+		tier, reason = "rotation", "budget"
+	case autoHealOf != "":
+		reason = "session_unknown"
+	case outcome == resumeOutcomeDrift:
+		reason = "config_drift"
+	}
+	data := map[string]any{"tier": tier, "reason": reason}
+	if sessionRef != "" {
+		data["session_ref"] = sessionRef
+	}
+	return s.emit(ctx, r.WorkspaceID, domain.EventSessionDecision,
+		domain.AggregateExecutionRun, r.ID, r.Version, nil, data)
 }
 
 // createRunLocked 在事务内创建 queued Run（权威写入）：校验、编排快照、run 行、
@@ -189,15 +225,16 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		"config_digest": configDigest,
 		"history":       history,
 	}
-	resumeRef, fromRunID, rotated := s.resolveResume(ctx, wi, p.AgentProfileID, r.AdapterID, label, configDigest, previousRuns)
+	resumeRef, fromRunID, outcome := s.resolveResume(ctx, wi, p.AgentProfileID, r.AdapterID, label, configDigest, previousRuns)
 	// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
 	// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
 	resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
 	// 内联档（tier-3）历史超模型窗口预算 → 升级为轮换：砍头截断会移动请求
 	// 前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。tier-1（resume
 	// 命中）上下文由 harness 持有，不适用本预算（其增长归锚点阈值管）。
-	if !(resumeRef != "" && resumeSupported) && !rotated && historyExceedsBudget(history, spec) {
-		rotated = true
+	budgetRotated := false
+	if !(resumeRef != "" && resumeSupported) && outcome != resumeOutcomeRotate && historyExceedsBudget(history, spec) {
+		budgetRotated = true
 	}
 	if resumeRef != "" && resumeSupported {
 		conversation["resume_session_ref"] = resumeRef
@@ -205,7 +242,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			conversation["resume_from_run_id"] = fromRunID
 		}
 		r.SessionBefore = resumeRef
-	} else if rotated {
+	} else if outcome == resumeOutcomeRotate || budgetRotated {
 		// 会话轮换：放弃 resume 开新会话，用 handoff 摘要代替全量历史
 		//（EffectiveInstruction 轮换档）；新会话首次上报时锚点计数清零重起。
 		conversation["session_rotation"] = true
@@ -219,6 +256,13 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	if p.WakeContext != nil {
 		r.Input["wakeup"] = p.WakeContext
+	}
+	if p.Evaluation {
+		r.Input["evaluation"] = true
+	}
+	// 会话决议显式化（纯观测面）：为什么换了会话可查可审计。
+	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, budgetRotated); err != nil {
+		return nil, err
 	}
 	if err := s.store.Runs().Create(ctx, r); err != nil {
 		return nil, err
@@ -541,6 +585,10 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	s.maybeSelfHeal(ctx, r)
 	// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
 	s.maybeAdvancePlans(ctx, r)
+	// M2 评估：verdict 处理先行（phase 迁移不依赖新 plan）。
+	s.maybeProcessVerdict(ctx, r)
+	// M2 lead-as-planner：从 lead 最终文本提取 plan（source_run_id 唯一索引兜底幂等）。
+	s.maybeExtractPlan(ctx, r)
 	return nil
 }
 

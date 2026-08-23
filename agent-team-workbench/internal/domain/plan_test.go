@@ -56,14 +56,14 @@ func TestPlanFinishRecordsSupersede(t *testing.T) {
 }
 
 func TestPlanVerbWhitelist(t *testing.T) {
-	for _, v := range []PlanVerb{PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish} {
+	for _, v := range []PlanVerb{PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge} {
 		if !ValidPlanVerb(v) {
 			t.Errorf("%s 应为合法 verb", v)
 		}
 	}
-	for _, v := range []PlanVerb{"join", "consult_knowledge", "use_session", ""} {
+	for _, v := range []PlanVerb{"join", "use_session", ""} {
 		if ValidPlanVerb(v) {
-			t.Errorf("%q 不属于 M1 词汇表，应被拒绝", v)
+			t.Errorf("%q 不在词汇表内，应被拒绝", v)
 		}
 	}
 }

@@ -58,36 +58,46 @@ func (s *Service) conversationHistory(ctx context.Context, runs []*domain.Execut
 		if text := strings.TrimSpace(instruction); text != "" {
 			messages = appendHistoryMessage(messages, "user", text)
 		}
-		events, err := s.store.Events().ListRunEvents(ctx, run.ID)
+		assistant, err := s.runFinalText(ctx, run.ID)
 		if err != nil {
 			return nil, err
-		}
-		var completed []string
-		var deltas strings.Builder
-		for _, event := range events {
-			switch event.EventType {
-			case domain.EventMessageCompleted:
-				if text := eventText(event.Payload); text != "" {
-					completed = append(completed, text)
-				}
-			case domain.EventMessageDelta:
-				if role, _ := event.Payload["role"].(string); role == "user" {
-					continue
-				}
-				if text := eventDeltaText(event.Payload); text != "" {
-					deltas.WriteString(text)
-				}
-			}
-		}
-		assistant := strings.TrimSpace(strings.Join(completed, "\n"))
-		if assistant == "" {
-			assistant = strings.TrimSpace(deltas.String())
 		}
 		if assistant != "" {
 			messages = appendHistoryMessage(messages, "assistant", assistant)
 		}
 	}
 	return messages, nil
+}
+
+// runFinalText 单个 run 的助手最终文本：message.completed 按序拼接，
+// 无 completed 时以 delta 全量兜底（与 plan/verdict 提取同一文本来源）。
+func (s *Service) runFinalText(ctx context.Context, runID string) (string, error) {
+	events, err := s.store.Events().ListRunEvents(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	var completed []string
+	var deltas strings.Builder
+	for _, event := range events {
+		switch event.EventType {
+		case domain.EventMessageCompleted:
+			if text := eventText(event.Payload); text != "" {
+				completed = append(completed, text)
+			}
+		case domain.EventMessageDelta:
+			if role, _ := event.Payload["role"].(string); role == "user" {
+				continue
+			}
+			if text := eventDeltaText(event.Payload); text != "" {
+				deltas.WriteString(text)
+			}
+		}
+	}
+	assistant := strings.TrimSpace(strings.Join(completed, "\n"))
+	if assistant == "" {
+		assistant = strings.TrimSpace(deltas.String())
+	}
+	return assistant, nil
 }
 
 func appendHistoryMessage(messages []map[string]any, role, text string) []map[string]any {

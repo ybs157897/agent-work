@@ -77,6 +77,44 @@ func TestWorkItemVersionConflict(t *testing.T) {
 	}
 }
 
+// TestWorkItemAcceptanceGate M2 评估链路：acceptance 仅可从 review 进入
+// （评估 run succeeded 先经 EnterReview）；execution/todo/completed 态一律拒绝。
+func TestWorkItemAcceptanceGate(t *testing.T) {
+	// 合法路径：in_progress(execution) → review → acceptance → completed。
+	w := &WorkItem{ID: NewID(PrefixWorkItem), Status: WorkItemTodo, Version: 1}
+	if err := w.Transition(WorkItemInProgress, now); err != nil {
+		t.Fatal(err)
+	}
+	if w.Phase != PhaseExecution {
+		t.Fatalf("in_progress 首次迁移后 phase 应为 execution，实际 %q", w.Phase)
+	}
+	if err := w.EnterAcceptance(now); err == nil {
+		t.Fatal("execution 态不得直接进入 acceptance（必须先经 review）")
+	}
+	if err := w.EnterReview(now); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.EnterAcceptance(now); err != nil {
+		t.Fatal(err)
+	}
+	if w.Phase != PhaseAcceptance {
+		t.Fatalf("expected phase acceptance, got %q", w.Phase)
+	}
+	if err := w.Accept(now); err != nil {
+		t.Fatalf("acceptance 是合法验收入口: %v", err)
+	}
+
+	// 非法迁移：todo（phase 空）与 completed（终态）拒绝。
+	todo := &WorkItem{ID: NewID(PrefixWorkItem), Status: WorkItemTodo, Version: 1}
+	if err := todo.EnterAcceptance(now); err == nil || !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("todo 态 EnterAcceptance 应报 ErrIllegalTransition，实际 %v", err)
+	}
+	done := &WorkItem{ID: NewID(PrefixWorkItem), Status: WorkItemCompleted, Phase: PhaseReview, Version: 1}
+	if err := done.EnterAcceptance(now); err == nil || !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("completed 态 EnterAcceptance 应报 ErrIllegalTransition，实际 %v", err)
+	}
+}
+
 func TestRunStateMachine(t *testing.T) {
 	cases := []struct {
 		from, to RunStatus
