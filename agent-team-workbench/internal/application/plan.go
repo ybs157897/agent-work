@@ -123,7 +123,7 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			}
 			if err := s.emit(ctx, workspaceID, domain.EventPlanFinished,
 				domain.AggregatePlan, existing.ID, existing.Version, nil,
-				map[string]any{"superseded_by": plan.ID}); err != nil {
+				map[string]any{"work_item_id": wi.ID, "superseded_by": plan.ID}); err != nil {
 				return err
 			}
 		}
@@ -297,8 +297,10 @@ func (s *Service) skipRemainingSteps(ctx context.Context, plan *domain.Plan, fro
 }
 
 // emitStep 发布单个步骤执行事件（步骤级行级审计的事件面）。
+// 事件信封契约（前端 store 路由依据）：aggregate.type=plan、aggregate id=plan id、
+// data 携带 work_item_id。
 func (s *Service) emitStep(ctx context.Context, plan *domain.Plan, st *domain.PlanStep) error {
-	data := map[string]any{"seq": st.Seq, "verb": string(st.Verb), "status": string(st.Status)}
+	data := map[string]any{"work_item_id": plan.WorkItemID, "seq": st.Seq, "verb": string(st.Verb), "status": string(st.Status)}
 	if st.ResultWorkItemID != "" {
 		data["result_work_item_id"] = st.ResultWorkItemID
 	}
@@ -312,6 +314,19 @@ func (s *Service) emitStep(ctx context.Context, plan *domain.Plan, st *domain.Pl
 // Plan 读取 plan（含步骤执行结果）。
 func (s *Service) Plan(ctx context.Context, id string) (*domain.Plan, error) {
 	return s.store.Plans().Get(ctx, id)
+}
+
+// LatestPlanForWorkItem 返回主任务最新一份 plan（按 created_at 最新，不限状态）；
+// 无 plan 返回 ErrNotFound。任务详情页冷启动（无 SSE 回放）的 plan 投影入口。
+func (s *Service) LatestPlanForWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error) {
+	plan, err := s.store.Plans().LatestByWorkItem(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	if plan == nil {
+		return nil, domain.ErrNotFound
+	}
+	return plan, nil
 }
 
 // WorkItemTree 先序返回以 workItemID 为根的整棵子树（含根；同级按创建序）。

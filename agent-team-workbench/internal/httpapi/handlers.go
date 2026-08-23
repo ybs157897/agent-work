@@ -122,6 +122,8 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 		Status:   domain.WorkItemStatus(r.URL.Query().Get("status")),
 		Priority: domain.Priority(r.URL.Query().Get("priority")),
 		Assignee: r.URL.Query().Get("assignee"),
+		// parent_id：缺省不过滤；none = 只看根任务（无父链接）。
+		ParentID: r.URL.Query().Get("parent_id"),
 		Cursor:   r.URL.Query().Get("cursor"),
 	}
 	items, next, err := s.svc.WorkItems(r.Context(), wsID, f)

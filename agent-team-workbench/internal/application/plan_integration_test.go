@@ -286,6 +286,26 @@ func TestSubmitPlanSupersedesWaitingPlan(t *testing.T) {
 	if newPlan.Status != domain.PlanFinished {
 		t.Fatalf("新 plan（finish step）应 finished，实际 %s", newPlan.Status)
 	}
+	// supersede 的 plan.finished 事件信封：aggregate 指旧 plan、data 带
+	// work_item_id + superseded_by（前端 store 路由与预建索引依据）。
+	events, err := store.Events().Since(ctx, wsID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersedeSeen := false
+	for _, ev := range events {
+		if ev.Type != domain.EventPlanFinished || ev.Aggregate.ID != oldPlan.ID {
+			continue
+		}
+		supersedeSeen = true
+		if ev.Aggregate.Type != domain.AggregatePlan || ev.Data["work_item_id"] != main.ID ||
+			ev.Data["superseded_by"] != newPlan.ID {
+			t.Fatalf("supersede finished 事件信封异常: %#v", ev)
+		}
+	}
+	if !supersedeSeen {
+		t.Fatal("旧 plan 的 finished（superseded_by）事件未发布")
+	}
 	// 唯一活跃约束：active plan 存在时提交必须拒绝。同步执行路径下 active 只在事务内
 	// 瞬时存在，这里直接落一行 active plan 钉住约束语义（防未来异步执行路径破坏不变量）。
 	now := time.Now().UTC()
@@ -485,6 +505,115 @@ func TestSubmitPlanDeferWakeAt(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("defer wake_at 未入队 automation wakeup: %#v", wakeups)
+	}
+}
+
+// TestPlanEventEnvelope 事件信封契约钉死（前端 store 路由依据）：全部 plan.* 事件
+// aggregate.type="plan"、aggregate id=plan id、data 携带 work_item_id。
+// 场景 A（dispatch+defer）覆盖 submitted/step_executed/waiting；场景 B（双 dispatch
+// 自然收尾）覆盖 finished。
+func TestPlanEventEnvelope(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)
+	mainA, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "主任务A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planA, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: mainA.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{dispatchStep(workerID, "子A", "做 A"), deferStep()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainB, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "主任务B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planB, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: mainB.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{dispatchStep(workerID, "子B", "做 B")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.Events().Since(ctx, wsID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, ev := range events {
+		if !strings.HasPrefix(ev.Type, "plan.") {
+			continue
+		}
+		expectMain, ok := map[string]string{planA.ID: mainA.ID, planB.ID: mainB.ID}[ev.Aggregate.ID]
+		if !ok {
+			t.Fatalf("plan 事件 aggregate id=%s 不属于任一测试 plan", ev.Aggregate.ID)
+		}
+		if ev.Aggregate.Type != domain.AggregatePlan {
+			t.Fatalf("%s aggregate.type=%q，应为 %q", ev.Type, ev.Aggregate.Type, domain.AggregatePlan)
+		}
+		if ev.Data["work_item_id"] != expectMain {
+			t.Fatalf("%s data.work_item_id=%v（aggregate %s），应为 %s", ev.Type, ev.Data["work_item_id"], ev.Aggregate.ID, expectMain)
+		}
+		seen[ev.Type+"/"+ev.Aggregate.ID] = true
+	}
+	for _, miss := range []string{
+		domain.EventPlanSubmitted + "/" + planA.ID,
+		domain.EventPlanStepExecuted + "/" + planA.ID,
+		domain.EventPlanWaiting + "/" + planA.ID,
+		domain.EventPlanFinished + "/" + planB.ID,
+	} {
+		if !seen[miss] {
+			t.Fatalf("事件 %s 未出现（出现集合: %v）", miss, seen)
+		}
+	}
+}
+
+// TestLatestPlanForWorkItem 任务详情页冷启动拉取：返回主任务最新一份 plan
+// （不限状态、被 supersede 的旧 plan 不再返回）；无 plan 报 ErrNotFound。
+func TestLatestPlanForWorkItem(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)
+	main, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "主任务"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 无 plan → ErrNotFound。
+	if _, err := svc.LatestPlanForWorkItem(ctx, main.ID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("无 plan 应报 ErrNotFound，实际 %v", err)
+	}
+	// plan A（dispatch+defer → waiting）被 plan B supersede 后，最新 = plan B。
+	if _, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: main.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{dispatchStep(workerID, "子任务A", "实现 A"), deferStep()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	planB, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: main.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{{Verb: "finish", Payload: map[string]any{"summary": "收口"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := svc.LatestPlanForWorkItem(ctx, main.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != planB.ID || latest.Status != domain.PlanFinished {
+		t.Fatalf("最新 plan 应为 %s（finished），实际 %s（%s）", planB.ID, latest.ID, latest.Status)
 	}
 }
 

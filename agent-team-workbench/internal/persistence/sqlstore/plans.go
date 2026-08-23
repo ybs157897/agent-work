@@ -165,4 +165,20 @@ func (r *PlanRepo) ActiveByWorkItem(ctx context.Context, workItemID string) (*do
 	return p, r.loadSteps(ctx, p)
 }
 
+// LatestByWorkItem 返回该 work item 最新一份 plan（按 created_at 倒序，不限状态；
+// 无则返回 nil）。供任务详情页冷启动拉取当前 plan 投影。
+func (r *PlanRepo) LatestByWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error) {
+	p := &domain.Plan{}
+	row := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT `+planCols+` FROM plans
+		 WHERE work_item_id=? ORDER BY created_at DESC, id DESC LIMIT 1`, workItemID)
+	if err := r.scan(row, p); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, r.store.mapErr(err)
+	}
+	return p, r.loadSteps(ctx, p)
+}
+
 var _ application.PlanRepo = (*PlanRepo)(nil)

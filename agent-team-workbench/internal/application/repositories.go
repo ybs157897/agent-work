@@ -85,6 +85,8 @@ type PlanRepo interface {
 	UpdateStep(ctx context.Context, st *domain.PlanStep) error
 	// ActiveByWorkItem 返回 active/waiting plan（至多一个；无则 nil）。
 	ActiveByWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error)
+	// LatestByWorkItem 返回最新一份 plan（不限状态；无则 nil）。
+	LatestByWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error)
 }
 
 type RunRepo interface {
