@@ -410,22 +410,7 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
-		if agentID != "" {
-			if _, err := s.store.Agents().Get(ctx, agentID); err != nil {
-				return err
-			}
-		}
-		w.AgentProfileID = agentID
-		// 与 Transition 路径同一约定：内存版本与 DB（version=version+1）保持同步。
-		expected := w.Version
-		w.Version++
-		w.UpdatedAt = time.Now().UTC()
-		if err := s.store.WorkItems().Update(ctx, w, expected); err != nil {
-			return err
-		}
-		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
-			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"agent_profile_id": agentID}); err != nil {
+		if err := s.assignLocked(ctx, w, agentID); err != nil {
 			return err
 		}
 		wi = w
@@ -440,6 +425,27 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 		s.enqueueAssignmentWake(context.WithoutCancel(ctx), wi, agentID)
 	}
 	return wi, nil
+}
+
+// assignLocked 事务内指派核心：写 assignee、乐观锁更新并发布 work_item.assigned
+// 事件（AssignWorkItem 与 ClaimWorkItem 共用；agent 存在性在此校验）。
+func (s *Service) assignLocked(ctx context.Context, w *domain.WorkItem, agentID string) error {
+	if agentID != "" {
+		if _, err := s.store.Agents().Get(ctx, agentID); err != nil {
+			return err
+		}
+	}
+	w.AgentProfileID = agentID
+	// 与 Transition 路径同一约定：内存版本与 DB（version=version+1）保持同步。
+	expected := w.Version
+	w.Version++
+	w.UpdatedAt = time.Now().UTC()
+	if err := s.store.WorkItems().Update(ctx, w, expected); err != nil {
+		return err
+	}
+	return s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
+		domain.AggregateWorkItem, w.ID, w.Version, nil,
+		map[string]any{"agent_profile_id": agentID})
 }
 
 type BlockParams struct {
