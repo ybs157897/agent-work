@@ -11,6 +11,7 @@ import type {
   ExecutionRun,
   Me,
   ModelEntry,
+  Plan,
   Priority,
   ProbeResult,
   RunEvent,
@@ -73,6 +74,8 @@ export interface WorkItemFilter {
   status?: WorkItemStatus;
   priority?: Priority;
   assignee?: string;
+  /** 父任务过滤：任务 id 精确匹配；`'none'` 表示只看根任务（协议 §5.2）。 */
+  parent_id?: string | 'none';
   cursor?: string;
 }
 
@@ -81,6 +84,7 @@ export const listWorkItems = (workspaceId: string, filter: WorkItemFilter = {}) 
   if (filter.status) params.set('status', filter.status);
   if (filter.priority) params.set('priority', filter.priority);
   if (filter.assignee) params.set('assignee', filter.assignee);
+  if (filter.parent_id) params.set('parent_id', filter.parent_id);
   if (filter.cursor) params.set('cursor', filter.cursor);
   const qs = params.toString();
   return apiFetch<{ items: WorkItem[]; next_cursor: string | null }>(
@@ -103,10 +107,16 @@ export interface CreateWorkItemInput {
   priority?: Priority;
   due_date?: string | null;
   agent_profile_id?: string;
+  /** 作为子任务创建时指定；缺省为根任务。 */
+  parent_id?: string;
 }
 
 export const createWorkItem = (workspaceId: string, input: CreateWorkItemInput) =>
   apiFetch<WorkItem>(`/workspaces/${workspaceId}/work-items`, { method: 'POST', body: input });
+
+/** 任务子树（先序遍历，含自身；树状列表/子任务面板的权威快照）。 */
+export const getWorkItemTree = (workItemId: string) =>
+  apiFetch<{ items: WorkItem[] }>(`/work-items/${workItemId}/tree`);
 
 export const moveWorkItem = (workItemId: string, status: WorkItemStatus, expectedVersion: number) =>
   apiFetch<WorkItem>(`/work-items/${workItemId}/commands/move`, {
@@ -141,6 +151,44 @@ export const acceptWorkItem = (workItemId: string, expectedVersion: number) =>
     method: 'POST',
     body: { expected_version: expectedVersion },
   });
+
+// ── Plan（M1 编排：提交即同步执行；契约见 notes orchestration m1-plan-executor）──
+
+export interface DispatchStepInput {
+  verb: 'dispatch';
+  agent_id: string;
+  title: string;
+  instruction: string;
+  acceptance?: string[];
+  priority?: Priority;
+}
+
+export interface DeferStepInput {
+  verb: 'defer';
+  reason: string;
+  /** RFC3339；与「存在未静默子任务」至少居其一，否则 400（防死等）。 */
+  wake_at?: string;
+}
+
+export interface FinishStepInput {
+  verb: 'finish';
+  summary: string;
+}
+
+export type PlanStepInput = DispatchStepInput | DeferStepInput | FinishStepInput;
+
+export interface CreatePlanInput {
+  work_item_id: string;
+  agent_profile_id: string;
+  source_run_id?: string;
+  steps: PlanStepInput[];
+}
+
+/** 提交 plan（201 返回含 steps 执行结果；未知 verb / 非法 defer → 400 problem+json）。 */
+export const createPlan = (workspaceId: string, input: CreatePlanInput) =>
+  apiFetch<Plan>(`/workspaces/${workspaceId}/plans`, { method: 'POST', body: input });
+
+export const getPlan = (planId: string) => apiFetch<Plan>(`/plans/${planId}`);
 
 // ── Run / Approval / Artifact ───────────────────────────────────────
 

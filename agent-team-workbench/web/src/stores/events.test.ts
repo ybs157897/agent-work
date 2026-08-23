@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
 import { createDebounced, routeEvent, SSE_REFRESH_DEBOUNCE_MS } from './events';
+import { usePlansStore } from './plans.store';
 import { useWorkspaceStore } from './workspace.store';
 
 const envelope = (type: string): CanonicalEvent => ({
@@ -77,6 +78,46 @@ describe('routeEvent SSE→refresh debounce', () => {
     await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 10);
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes('/work-items?assignee=agent_1'))).toBe(true);
+  });
+});
+
+describe('routeEvent plan 域路由', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  const plan = {
+    id: 'plan_1',
+    workspace_id: 'ws_1',
+    work_item_id: 'wi_1',
+    agent_profile_id: 'agent_lead',
+    source_run_id: null,
+    status: 'active',
+    superseded_by: null,
+    steps: [],
+    version: 1,
+    created_at: '',
+    updated_at: '',
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    usePlansStore.setState({ byWorkItem: {}, workItemOf: {} });
+  });
+
+  it('plan.submitted 路由进 plans store，不触发看板/仪表盘刷新', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json(plan)));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('plan.submitted');
+    ev.aggregate = { type: 'plan', id: 'plan_1', version: 1 };
+    ev.data = { work_item_id: 'wi_1' };
+    routeEvent(ev);
+
+    await vi.waitFor(() => {
+      expect(usePlansStore.getState().byWorkItem['wi_1']?.id).toBe('plan_1');
+    });
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls).toEqual(['/api/v1/plans/plan_1']); // 看板刷新由 dispatch 建子任务的 work_item.created 承担
   });
 });
 
