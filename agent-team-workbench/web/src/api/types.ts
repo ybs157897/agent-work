@@ -327,6 +327,7 @@ export const EVENT_NAMES = [
   'plan.step_executed',
   'plan.waiting',
   'plan.finished',
+  'session.decision',
   'run.created',
   'run.started',
   'run.status_changed',
