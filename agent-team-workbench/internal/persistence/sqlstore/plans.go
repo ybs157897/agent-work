@@ -14,16 +14,17 @@ import (
 type PlanRepo struct{ store *Store }
 
 const planCols = `id, workspace_id, work_item_id, agent_profile_id, source_run_id,
-	status, superseded_by, version, created_at, updated_at`
+	status, superseded_by, guardrails, error, version, created_at, updated_at`
 
 const planStepCols = `plan_id, seq, verb, payload, status, result_work_item_id,
 	result_run_id, error, created_at, executed_at`
 
 func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) error {
-	var sourceRunID, supersededBy *string
+	var sourceRunID, supersededBy, planErr *string
+	var guardrails string
 	var created, updated scanTime
 	if err := row.Scan(&p.ID, &p.WorkspaceID, &p.WorkItemID, &p.AgentProfileID, &sourceRunID,
-		&p.Status, &supersededBy, &p.Version, &created, &updated); err != nil {
+		&p.Status, &supersededBy, &guardrails, &planErr, &p.Version, &created, &updated); err != nil {
 		return err
 	}
 	if sourceRunID != nil {
@@ -31,6 +32,12 @@ func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) err
 	}
 	if supersededBy != nil {
 		p.SupersededBy = *supersededBy
+	}
+	if err := jsonInto(guardrails, &p.Guardrails); err != nil {
+		return err
+	}
+	if planErr != nil {
+		p.Error = *planErr
 	}
 	p.CreatedAt, p.UpdatedAt = mustTime(created), mustTime(updated)
 	return nil
@@ -40,9 +47,9 @@ func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) err
 func (r *PlanRepo) Create(ctx context.Context, p *domain.Plan) error {
 	d := r.store.dialect
 	if _, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO plans(`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO plans(`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.WorkspaceID, p.WorkItemID, p.AgentProfileID, nullString(p.SourceRunID),
-		p.Status, nullString(p.SupersededBy), p.Version,
+		p.Status, nullString(p.SupersededBy), jsonText(p.Guardrails), nullString(p.Error), p.Version,
 		d.TimeParam(p.CreatedAt), d.TimeParam(p.UpdatedAt)); err != nil {
 		return r.store.mapErr(err)
 	}
@@ -116,13 +123,13 @@ func (r *PlanRepo) loadSteps(ctx context.Context, p *domain.Plan) error {
 }
 
 // Update 迁移 plan 状态（乐观锁 expectedVersion，成功后 DB version+1）。
-// superseded_by 随对象字段一并落库。
+// superseded_by 与 error 随对象字段一并落库；guardrails 提交后不可变（Create 固化）。
 func (r *PlanRepo) Update(ctx context.Context, p *domain.Plan, expectedVersion int) error {
 	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`UPDATE plans SET status=?, superseded_by=?, version=version+1, updated_at=?
+		`UPDATE plans SET status=?, superseded_by=?, error=?, version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
-		p.Status, nullString(p.SupersededBy), d.TimeParam(p.UpdatedAt), p.ID, expectedVersion)
+		p.Status, nullString(p.SupersededBy), nullString(p.Error), d.TimeParam(p.UpdatedAt), p.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}

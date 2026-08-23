@@ -577,6 +577,10 @@ func parsePlanSteps(inputs []PlanStepInput) ([]planTask, error) {
 			if v, ok := t.payload["evaluation"].(bool); ok {
 				t.evaluation = v
 			}
+		default:
+			// 白名单内但解析器未覆盖的 verb（域层先于执行器扩展的中间态）：
+			// 响亮拒绝，绝不静默跳过（提交期 400 胜过执行期无声 no-op）。
+			return nil, fmt.Errorf("%w: step %d verb %q 未接入执行器", domain.ErrValidation, i, verb)
 		}
 		tasks = append(tasks, t)
 	}

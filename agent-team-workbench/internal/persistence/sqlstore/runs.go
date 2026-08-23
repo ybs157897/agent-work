@@ -173,13 +173,15 @@ func (r *RunRepo) ActiveCount(ctx context.Context, workspaceID string) (int, err
 	return n, r.store.mapErr(err)
 }
 
+// CreateApproval 落库审批。plan_dispatch 闸门审批无关联 run（RunID 空串存 NULL，
+// 0010 起 run_id 可空）；requested_by 记录请求方（runtime 或 plan 执行器）。
 func (r *RunRepo) CreateApproval(ctx context.Context, a *domain.ApprovalRequest) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO approvals(id, run_id, work_item_id, kind, risk, status, summary,
 			requested_by, sensitive_input_ref, policy_snapshot_id, expires_at, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.RunID, a.WorkItemID, a.Kind, a.Risk, a.Status, a.Summary,
+		a.ID, nullString(a.RunID), a.WorkItemID, a.Kind, a.Risk, a.Status, a.Summary,
 		jsonText(a.RequestedBy), nullString(a.SensitiveInputRef), nullString(a.PolicySnapshotID),
 		d.NullTimeParam(a.ExpiresAt), d.TimeParam(a.CreatedAt))
 	return r.store.mapErr(err)
@@ -190,12 +192,16 @@ const approvalCols = `id, run_id, work_item_id, kind, risk, status, summary, req
 
 func (r *RunRepo) scanApproval(row interface{ Scan(...any) error }, a *domain.ApprovalRequest) error {
 	var requestedBy string
+	var runID *string
 	var sensitiveRef, policyID, resolvedBy, resolveReason *string
 	var expires, resolved, created scanTime
-	if err := row.Scan(&a.ID, &a.RunID, &a.WorkItemID, &a.Kind, &a.Risk, &a.Status, &a.Summary,
+	if err := row.Scan(&a.ID, &runID, &a.WorkItemID, &a.Kind, &a.Risk, &a.Status, &a.Summary,
 		&requestedBy, &sensitiveRef, &policyID, &expires,
 		&resolved, &resolvedBy, &resolveReason, &created); err != nil {
 		return err
+	}
+	if runID != nil {
+		a.RunID = *runID
 	}
 	_ = jsonInto(requestedBy, &a.RequestedBy)
 	if sensitiveRef != nil {

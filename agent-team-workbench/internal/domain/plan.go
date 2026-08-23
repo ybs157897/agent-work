@@ -37,8 +37,8 @@ func (s PlanStatus) CanTransitionTo(to PlanStatus) bool {
 	return false
 }
 
-// PlanVerb 词汇表：M1 三动词 + M2 consult_knowledge；use_session 是默认行为、
-// join 归后续里程碑，未知 verb 由提交校验拒绝（不进状态机）。
+// PlanVerb 词汇表：M1 三动词 + M2 consult_knowledge + M4 join；use_session 是
+// 默认行为，未知 verb 由提交校验拒绝（不进状态机）。
 type PlanVerb string
 
 const (
@@ -48,12 +48,15 @@ const (
 	// PlanVerbConsultKnowledge M2：预取检索知识语料，结果写进步骤 payload 的
 	// results 键，供后续 dispatch 的 knowledge_from 确定性注入子任务指令。
 	PlanVerbConsultKnowledge PlanVerb = "consult_knowledge"
+	// PlanVerbJoin M4：带显式等待集的 defer 变体（children="all" 或子任务 id
+	// 列表）；批次同样终止挂起，静默钩子只判定等待集内子任务。
+	PlanVerbJoin PlanVerb = "join"
 )
 
-// ValidPlanVerb 报告 v 是否为支持的动词（M1 dispatch/defer/finish + M2 consult_knowledge）。
+// ValidPlanVerb 报告 v 是否为支持的动词（dispatch/defer/finish/consult_knowledge/join）。
 func ValidPlanVerb(v PlanVerb) bool {
 	switch v {
-	case PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge:
+	case PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge, PlanVerbJoin:
 		return true
 	}
 	return false
@@ -85,6 +88,17 @@ type PlanStep struct {
 	ExecutedAt       *time.Time
 }
 
+// PlanGuardrails M4 预算护栏（提交时固化进 plan，plans.guardrails JSON 列）：
+// nil 字段表示未设限。max_dispatch 提交时校验（整单拒绝）；max_tokens 在
+// 子任务静默唤醒点核算（主任务树全部 run 的 UsageIn+UsageOut 合计）。
+type PlanGuardrails struct {
+	MaxDispatch *int   `json:"max_dispatch,omitempty"`
+	MaxTokens   *int64 `json:"max_tokens,omitempty"`
+}
+
+// PlanErrorBudgetExceeded 预算护栏收口的 plan 级错误码（plans.error 列）。
+const PlanErrorBudgetExceeded = "budget_exceeded"
+
 // Plan 一份由 lead agent（或用户经 API）提交的有序动作批次。
 // 执行器确定性推进：同一 plan 提交永远产生同样效果，不依赖任何模型行为。
 type Plan struct {
@@ -96,9 +110,13 @@ type Plan struct {
 	Status         PlanStatus
 	SupersededBy   string
 	Steps          []PlanStep
-	Version        int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Guardrails 提交时固化的预算护栏（零值表示未设限）。
+	Guardrails PlanGuardrails
+	// Error plan 级失败原因码（budget_exceeded）；步骤级失败原因在 PlanStep.Error。
+	Error     string
+	Version   int
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Transition 状态机校验迁移；终态不可逆。成功后 bump version/updated_at
