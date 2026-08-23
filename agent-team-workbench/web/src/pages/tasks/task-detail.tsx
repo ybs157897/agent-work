@@ -13,7 +13,9 @@ import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
+import { isAwaitingAcceptance } from '../../utils/task-phase';
 import { sortTasksTree } from '../../utils/task-tree';
+import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 
 const STATUS_TEXT: Record<string, string> = {
@@ -81,6 +83,7 @@ export function TaskDetail({
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const [assigning, setAssigning] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [returning, setReturning] = useState(false);
   // 子任务树快照：null = 未加载/加载失败（回退列表本地推导）。
   const [treeChildren, setTreeChildren] = useState<WorkItem[] | null>(null);
   // 树接口带回的任务缓存：点子任务即时渲染，权威快照仍由 getWorkItem 补齐。
@@ -325,12 +328,20 @@ export function TaskDetail({
                       标记阻塞
                     </button>
                     {(task.phase === 'review' || task.phase === 'acceptance') && (
-                      <button
-                        onClick={() => void onTransition(task, 'completed')}
-                        className="bg-status-success text-white rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
-                      >
-                        验收通过
-                      </button>
+                      <>
+                        <button
+                          onClick={() => void onTransition(task, 'completed')}
+                          className="bg-status-success text-white rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
+                        >
+                          验收通过
+                        </button>
+                        <button
+                          onClick={() => setReturning(true)}
+                          className="bg-transparent border border-status-warning text-status-warning rounded-button px-base py-tight text-body font-medium transition-colors hover:bg-status-warning/5 active:scale-[0.98]"
+                        >
+                          打回重做
+                        </button>
+                      </>
                     )}
                   </>
                 )}
@@ -359,6 +370,10 @@ export function TaskDetail({
               }}
             />
           )}
+          <ReturnTaskModal
+            task={returning && isAwaitingAcceptance(task) ? task : null}
+            onClose={() => setReturning(false)}
+          />
         </div>
       )}
     </Drawer>

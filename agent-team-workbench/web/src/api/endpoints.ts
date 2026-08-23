@@ -152,6 +152,13 @@ export const acceptWorkItem = (workItemId: string, expectedVersion: number) =>
     body: { expected_version: expectedVersion },
   });
 
+/** 打回重做：review/acceptance 退回 execution（M4 契约：reason 可选，落审计）。 */
+export const returnWorkItem = (workItemId: string, reason: string | undefined, expectedVersion: number) =>
+  apiFetch<WorkItem>(`/work-items/${workItemId}/commands/return`, {
+    method: 'POST',
+    body: { ...(reason ? { reason } : {}), expected_version: expectedVersion },
+  });
+
 // ── Plan（M1 编排：提交即同步执行；契约见 notes orchestration m1-plan-executor）──
 
 export interface DispatchStepInput {
