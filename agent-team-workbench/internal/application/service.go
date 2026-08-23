@@ -52,19 +52,30 @@ func (s *Service) emit(ctx context.Context, workspaceID, evType, aggType, aggID 
 	return nil
 }
 
-// activity 写 activity 流并发布 activity.appended 事件。
+// activity 写 activity 流并发布 activity.appended 事件（无归因形态）。
 // 自包 InTx：外层无事务时独立成事务；外层已在事务内时 store.InTx 幂等复用。
 // activities 行与 stream_events/outbox 必须同事务提交——两条独立 autocommit
 // 在中途崩溃时会留下「有事件无活动」或反向的分裂状态。
 func (s *Service) activity(ctx context.Context, workspaceID, kind, message string) error {
+	return s.activityFor(ctx, workspaceID, "", kind, message)
+}
+
+// activityFor 写带 work item 归因的 activity（M4：verdict 处理与 blocker 落库
+// 需能回溯到任务）。workItemID 非空时 activity 行与 activity.appended 事件
+// data 同步携带 work_item_id；空串等价无归因。
+func (s *Service) activityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error {
 	return s.store.InTx(ctx, func(ctx context.Context) error {
-		if err := s.store.Events().AppendActivity(ctx, workspaceID, kind, message); err != nil {
+		if err := s.store.Events().AppendActivityFor(ctx, workspaceID, workItemID, kind, message); err != nil {
 			return err
 		}
+		data := map[string]any{
+			"kind": kind, "message": message,
+		}
+		if workItemID != "" {
+			data["work_item_id"] = workItemID
+		}
 		return s.emit(ctx, workspaceID, domain.EventActivityCreated,
-			domain.AggregateWorkspace, workspaceID, 0, nil, map[string]any{
-				"kind": kind, "message": message,
-			})
+			domain.AggregateWorkspace, workspaceID, 0, nil, data)
 	})
 }
 
@@ -499,7 +510,9 @@ func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockPa
 		map[string]any{"code": p.Code, "message": p.Message}); err != nil {
 		return err
 	}
-	return s.activity(ctx, w.WorkspaceID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
+	// blocker activity 归因到任务（M4：plan_parse_failed / verdict_parse_failed /
+	// budget_exceeded 等控制平面 blocker 需能回溯）。
+	return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
 }
 
 // UnblockWorkItem 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。

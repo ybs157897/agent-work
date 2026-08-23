@@ -171,7 +171,8 @@ func (s *Service) applyVerdictPass(ctx context.Context, wi *domain.WorkItem) {
 		log.Printf("evaluation: verdict pass 迁移 acceptance 失败（work item %s）: %v", wi.ID, err)
 		return
 	}
-	_ = s.activity(ctx, wi.WorkspaceID, "plan.verdict_passed",
+	// activity 归因 work_item_id（M4：verdict 级事件回溯到评估的主任务）。
+	_ = s.activityFor(ctx, wi.WorkspaceID, wi.ID, "plan.verdict_passed",
 		fmt.Sprintf("评估通过，任务「%s」进入待验收", wi.Title))
 }
 
@@ -196,5 +197,6 @@ func (s *Service) applyVerdictFail(ctx context.Context, wi *domain.WorkItem, rea
 	if len(reasons) > 0 {
 		message += "：" + strings.Join(reasons, "；")
 	}
-	_ = s.activity(ctx, wi.WorkspaceID, "plan.verdict_rejected", message)
+	// activity 归因 work_item_id（M4：verdict 级事件回溯到评估的主任务）。
+	_ = s.activityFor(ctx, wi.WorkspaceID, wi.ID, "plan.verdict_rejected", message)
 }

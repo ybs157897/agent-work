@@ -158,14 +158,21 @@ func toArtifactDTO(a *domain.Artifact) artifactDTO {
 }
 
 type activityDTO struct {
-	ID         string    `json:"id"`
+	ID string `json:"id"`
+	// WorkItemID 归因任务（M4；verdict/blocker 级 activity 非空，缺省 null）。
+	WorkItemID *string   `json:"work_item_id"`
 	Kind       string    `json:"kind"`
 	Message    string    `json:"message"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
 func toActivityDTO(a application.Activity) activityDTO {
-	return activityDTO{ID: a.ID, Kind: a.Kind, Message: a.Message, OccurredAt: a.OccurredAt}
+	dto := activityDTO{ID: a.ID, Kind: a.Kind, Message: a.Message, OccurredAt: a.OccurredAt}
+	if a.WorkItemID != "" {
+		wi := a.WorkItemID
+		dto.WorkItemID = &wi
+	}
+	return dto
 }
 
 // ── 请求体 ───────────────────────────────────────────────────────────

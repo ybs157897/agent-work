@@ -42,6 +42,7 @@ func openIdempotencyTestDB(t *testing.T) *sqlstore.Store {
 		"0008_plan_source_run_unique.sql",
 		"0009_plan_consult_knowledge.sql",
 		"0010_plan_join_guardrails.sql",
+		"0011_activity_work_item.sql",
 	} {
 		body, err := os.ReadFile(filepath.Join(migrationDir, name))
 		if err != nil {

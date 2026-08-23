@@ -1219,6 +1219,7 @@ components:
       type: object
       properties:
         id: { type: string }
+        work_item_id: { type: string, nullable: true, description: 归因任务（M4；verdict/blocker 级 activity 非空；activity.appended 事件 data 同键） }
         kind: { type: string }
         message: { type: string }
         occurred_at: { type: string, format: date-time }
