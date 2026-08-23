@@ -326,7 +326,15 @@ func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun
 			adapterID = b.AdapterID
 		}
 	}
-	if c.gw.Available(adapterID) {
+	// 远程分派前校验 runner 上报的 manifest digest 与控制面本地真相一致；
+	// 无本地模块时 digest 为空，校验退化为在线性判断。
+	wantDigest := ""
+	if m, ok := c.modules.Module(adapterID); ok {
+		if mf, err := m.Manifest(ctx); err == nil {
+			wantDigest = mf.SchemaDigest
+		}
+	}
+	if c.gw.VerifyAdapterDigest(adapterID, wantDigest) {
 		log.Printf("dispatch: run %s → 在线 Runner（adapter=%s）", run.ID, adapterID)
 		return c.gw.Dispatch(ctx, run, adapterID)
 	}
