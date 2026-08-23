@@ -90,7 +90,7 @@ func main() {
 		header["Authorization"] = []string{"Bearer " + token}
 	}
 	r := &runner{
-		id: runnerID,
+		id:         runnerID,
 		pending:    make(map[int64][]byte),
 		approvals:  make(map[string]chan bool),
 		controls:   make(map[string]chan string),
@@ -402,7 +402,7 @@ func (r *runner) emitEvent(runID, kind string, data map[string]any) error {
 }
 
 // resendPending 重连后按 seq 有序重发未 ACK 帧。乱序重发会被状态机拒收
-//（如 succeeded 先于 running 到达），有序 + 服务端按 (run_id, runner_seq)
+// （如 succeeded 先于 running 到达），有序 + 服务端按 (run_id, runner_seq)
 // 去重 = 至少一次且语义等价的投递。
 func (r *runner) resendPending() error {
 	r.mu.Lock()

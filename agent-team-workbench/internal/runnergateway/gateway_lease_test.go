@@ -24,6 +24,10 @@ func (f *fakeRunnerRepo) SetStatus(ctx context.Context, runnerID, status string,
 	return nil
 }
 
+func (f *fakeRunnerRepo) Upsert(ctx context.Context, r *application.Runner) error {
+	return nil
+}
+
 func (f *fakeRunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string, error) {
 	return nil, nil
 }

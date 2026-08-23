@@ -36,6 +36,24 @@ type Engine interface {
 
 var _ Engine = (*application.Service)(nil)
 
+// adapterInfo hello 上报的 adapter manifest 摘要：分派前能力校验的 runner 侧
+// 真相（schema_digest 与控制面本地 manifest 不一致即执行面分叉）。
+type adapterInfo struct {
+	ID           string `json:"adapter_id"`
+	Version      string `json:"adapter_version"`
+	SchemaDigest string `json:"schema_digest"`
+}
+
+// helloPayload 对应 contracts/runner/v1 RunnerHelloPayload。
+type helloPayload struct {
+	ProtocolVersions []int         `json:"protocol_versions"`
+	RunnerVersion    string        `json:"runner_version"`
+	OS               string        `json:"os"`
+	Arch             string        `json:"arch"`
+	Slots            int           `json:"slots"`
+	Adapters         []adapterInfo `json:"adapters"`
+}
+
 // Envelope 对应 contracts/runner/v1/schema.json。
 type Envelope struct {
 	V         int             `json:"v"`
@@ -75,12 +93,22 @@ type runnerConn struct {
 	gw          *Gateway
 	runnerID    string
 	workspaceID string
-	adapters    []string
-	conn        *websocket.Conn
-	send        chan []byte
-	mu          sync.Mutex
-	activeRuns  map[string]string // run_id -> lease_id
-	closed      bool
+	// adapters hello 上报后不可变（重建连接才会换代），读取无需连接级锁。
+	adapters   []adapterInfo
+	conn       *websocket.Conn
+	send       chan []byte
+	mu         sync.Mutex
+	activeRuns map[string]string // run_id -> lease_id
+	closed     bool
+}
+
+// adapterIDs 返回承接的 adapter ID 列表（日志与在线性判断用）。
+func (rc *runnerConn) adapterIDs() []string {
+	ids := make([]string, 0, len(rc.adapters))
+	for _, a := range rc.adapters {
+		ids = append(ids, a.ID)
+	}
+	return ids
 }
 
 func New(store application.Store, engine Engine, notifier application.Notifier) *Gateway {
@@ -134,16 +162,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		conn.Close()
 		return
 	}
-	var hp struct {
-		ProtocolVersions []int  `json:"protocol_versions"`
-		RunnerVersion    string `json:"runner_version"`
-		OS               string `json:"os"`
-		Arch             string `json:"arch"`
-		Slots            int    `json:"slots"`
-		Adapters         []struct {
-			AdapterID string `json:"adapter_id"`
-		} `json:"adapters"`
-	}
+	var hp helloPayload
 	if err := json.Unmarshal(hello.Payload, &hp); err != nil {
 		conn.Close()
 		return
@@ -160,13 +179,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workspaceID := g.defaultWorkspace(r.Context())
-	adapterIDs := make([]string, 0, len(hp.Adapters))
-	for _, a := range hp.Adapters {
-		adapterIDs = append(adapterIDs, a.AdapterID)
-	}
 	rc := &runnerConn{
 		gw: g, runnerID: hello.RunnerID, workspaceID: workspaceID,
-		adapters: adapterIDs, conn: conn, send: make(chan []byte, 64),
+		adapters: hp.Adapters, conn: conn, send: make(chan []byte, 64),
 		activeRuns: make(map[string]string),
 	}
 
@@ -200,7 +215,7 @@ func (g *Gateway) registerRunner(ctx context.Context, rc *runnerConn, version, o
 	g.conns[rc.runnerID] = rc
 	g.mu.Unlock()
 	g.emitRunnerEvent(ctx, rc.workspaceID, domain.EventRunnerConnected, rc.runnerID)
-	log.Printf("runnergateway: %s 已连接（adapters=%v）", rc.runnerID, rc.adapters)
+	log.Printf("runnergateway: %s 已连接（adapters=%v）", rc.runnerID, rc.adapterIDs())
 }
 
 func maxInt(a, b int) int {

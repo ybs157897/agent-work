@@ -27,7 +27,7 @@ func (g *Gateway) Available(adapterID string) bool {
 
 func (rc *runnerConn) hasAdapter(adapterID string) bool {
 	for _, a := range rc.adapters {
-		if a == adapterID {
+		if a.ID == adapterID {
 			return true
 		}
 	}
