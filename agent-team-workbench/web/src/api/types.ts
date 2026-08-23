@@ -210,6 +210,7 @@ export interface Activity {
   kind: string;
   message: string;
   occurred_at: string;
+  work_item_id?: string;
 }
 
 export interface BoardCounts {
@@ -327,6 +328,7 @@ export const EVENT_NAMES = [
   'plan.step_executed',
   'plan.waiting',
   'plan.finished',
+  'plan.failed',
   'session.decision',
   'run.created',
   'run.started',
