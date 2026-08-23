@@ -3,7 +3,6 @@ package application
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
@@ -30,20 +29,46 @@ func TestResumablePreviousRunRequiresSameConfigAndSuccessfulSession(t *testing.T
 	}
 }
 
-func TestTrimRecentHistoryKeepsLatestUTF8(t *testing.T) {
-	messages := []map[string]any{
-		{"role": "user", "text": strings.Repeat("旧", maxConversationHistoryBytes)},
-		{"role": "assistant", "text": "最新回复"},
+// TestHistoryBudgetDerivation 预算随注册表窗口推导；缺窗口回退保守值。
+func TestHistoryBudgetDerivation(t *testing.T) {
+	if got := historyBudgetTokens(orchestrator.ModelSpec{ContextWindow: 128000}); got != 44800 {
+		t.Fatalf("128K 窗口预算应为其 35%%: %d", got)
 	}
-	trimmed := trimRecentHistory(messages)
-	last := trimmed[len(trimmed)-1]["text"]
-	if last != "最新回复" {
-		t.Fatalf("必须保留最新历史，实际 %v", last)
+	fallback := historyBudgetTokens(orchestrator.ModelSpec{})
+	if fallback != historyBudgetFallbackWindow*35/100 || fallback <= 0 {
+		t.Fatalf("缺窗口回退预算异常: %d", fallback)
 	}
-	for _, message := range trimmed {
-		if !utf8.ValidString(message["text"].(string)) {
-			t.Fatalf("历史裁剪破坏 UTF-8: %q", message["text"])
-		}
+}
+
+// TestEstimateTokens CJK 一字一 token、其余四字符一 token 的粗估。
+func TestEstimateTokens(t *testing.T) {
+	if got := estimateTokens("你好世界"); got != 4 {
+		t.Fatalf("CJK 估 Token 异常: %d", got)
+	}
+	if got := estimateTokens("abcdefgh"); got != 2 {
+		t.Fatalf("ASCII 估 Token 异常: %d", got)
+	}
+	if got := estimateTokens("你好abcd"); got != 3 {
+		t.Fatalf("混合估 Token 异常: %d", got)
+	}
+}
+
+// TestHistoryExceedsBudget 超预算判定：防回归——内联历史超模型窗口预算
+// 必须触发轮换而非头部截断（截断会移动请求前缀、清零 provider 缓存）。
+func TestHistoryExceedsBudget(t *testing.T) {
+	spec := orchestrator.ModelSpec{} // 回退窗口 32768 → 预算 11468 token
+	over := []map[string]any{
+		{"role": "assistant", "text": strings.Repeat("长", 12000)},
+	}
+	if !historyExceedsBudget(over, spec) {
+		t.Fatal("超预算历史必须判定为超限")
+	}
+	under := []map[string]any{
+		{"role": "user", "text": "你好"},
+		{"role": "assistant", "text": "在"},
+	}
+	if historyExceedsBudget(under, spec) {
+		t.Fatal("未超预算不得误判")
 	}
 }
 
