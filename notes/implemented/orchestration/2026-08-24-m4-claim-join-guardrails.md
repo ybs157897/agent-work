@@ -68,3 +68,24 @@ plan（plans 表加 `guardrails` JSON 列，迁移 0010 双方言）。
   plan failed + blocker。
 - return：acceptance 态打回 → phase=execution + activity；completed 态打回 → 409。
 - 触面验证同前 + 迁移 0010 双跑。
+
+## 实施补记（随实现落地，超出上文决策面的结构性补充）
+
+- **approvals.run_id 放开非空**（迁移 0010）：plan_dispatch 审批不挂 run，RunID 留
+  NULL（PG DROP NOT NULL 保 FK；SQLite 整表重建）。发现面 = approval.requested 事件
+  （data.plan_id/seq，聚合 id 即审批 id）；按 run_id 的既有查询不受影响。
+- **plans.error 列**（迁移 0010）：plan 级失败码（budget_exceeded）需要权威落点；
+  步骤级失败仍在 plan_steps.error。
+- **plan.failed 事件**：域白名单 + asyncapi 注释注册；failStepAndPlan 统一发布
+  （plan 终态自此全部有事件面），预算收口与审批拒绝路径复用。
+- **todo→blocked 迁移边**：认领模式下主任务可能尚未 in_progress，预算 blocker 仍需
+  可落；Unblock 回 in_progress 既有路径不变。
+- **waiting→active 唯一回拨**（审批放行续跑）：waitingPlanJoinStep 区分审批挂起
+  （无 defer/join 锚点，静默钩子跳过）与 join 挂起（静默钩子驱动）。
+- **join 同批次引用不可能**：同批次 dispatch 的子任务 id 执行期才生成，join 引用的
+  总是先前批次产物——提交期按「主任务既有子任务」校验即完备。
+- **迁移 0011（追加指令）**：activities.work_item_id 归因列；verdict 与 blocker
+  落库的 activity 行与 activity.appended 事件 data 同步携带。
+- 残留风险：waiting plan 被 supersede 后孤儿 pending plan_dispatch 审批（迟到决定
+  只持久化不触碰 plan）；审批放行续跑的 run 分派失败回滚审批解决事务；plan_dispatch
+  审批过期后 plan 停留 waiting（人可 supersede 收口）。
