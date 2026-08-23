@@ -1,16 +1,19 @@
-import { Pencil } from 'lucide-react';
+import { MessageSquare, Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
-import { assignWorkItem, getWorkItem, patchWorkItem } from '../../api/endpoints';
-import type { Priority, WorkItem, WorkItemStatus } from '../../api/types';
+import { assignWorkItem, getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
+import type { Plan, PlanStep, Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Drawer } from '../../components/drawer';
 import { Modal } from '../../components/modal';
 import { PriorityBadge } from '../../components/priority-badge';
 import { useAgentsStore } from '../../stores/agents.store';
+import { usePlansStore } from '../../stores/plans.store';
 import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
+import { sortTasksTree } from '../../utils/task-tree';
 import { RunPanel } from './run-panel';
 
 const STATUS_TEXT: Record<string, string> = {
@@ -27,7 +30,36 @@ const PHASE_TEXT: Record<string, string> = {
   acceptance: '待验收',
 };
 
-/** 任务详情抽屉：字段、指派、阻塞/验收操作、Run 面板（协议 §5.2 任务详情/启动）。 */
+const PLAN_STATUS_TEXT: Record<string, string> = {
+  active: '执行中',
+  waiting: '等待唤醒',
+  finished: '已完成',
+  cancelled: '已取消',
+  failed: '失败',
+};
+
+const PLAN_STATUS_CLS: Record<string, string> = {
+  active: 'bg-brand-primary/10 text-brand-accent border-brand-primary/20',
+  waiting: 'bg-status-warning/10 text-status-warning border-status-warning/20',
+  finished: 'bg-status-success/10 text-status-success border-status-success/20',
+  cancelled: 'bg-surface-base text-text-tertiary border-border-subtle',
+  failed: 'bg-status-error/10 text-status-error border-status-error/20',
+};
+
+const VERB_TEXT: Record<string, string> = {
+  dispatch: '派工',
+  defer: '挂起',
+  finish: '收尾',
+};
+
+const STEP_STATUS_TEXT: Record<string, string> = {
+  pending: '待执行',
+  executed: '已执行',
+  skipped: '已跳过',
+  failed: '失败',
+};
+
+/** 任务详情抽屉：字段、指派、子任务、编排计划、阻塞/验收操作、Run 面板。 */
 export function TaskDetail({
   taskId,
   onClose,
@@ -37,13 +69,24 @@ export function TaskDetail({
   onClose: () => void;
   onTransition: (item: WorkItem, to: WorkItemStatus) => Promise<void>;
 }) {
-  const task = useTasksStore((s) => (taskId ? s.items.find((t) => t.id === taskId) : undefined));
+  const navigate = useNavigate();
+  const storeTask = useTasksStore((s) => (taskId ? s.items.find((t) => t.id === taskId) : undefined));
   const upsert = useTasksStore((s) => s.upsert);
+  const selectTask = useTasksStore((s) => s.selectTask);
+  const storeItems = useTasksStore((s) => s.items);
   const agents = useAgentsStore((s) => s.agents);
+  const plan = usePlansStore((s) => (taskId ? s.byWorkItem[taskId] : undefined));
+  const refreshPlan = usePlansStore((s) => s.refreshFor);
   const watchRun = useRunsStore((s) => s.watchRun);
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const [assigning, setAssigning] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  // 子任务树快照：null = 未加载/加载失败（回退列表本地推导）。
+  const [treeChildren, setTreeChildren] = useState<WorkItem[] | null>(null);
+  // 树接口带回的任务缓存：点子任务即时渲染，权威快照仍由 getWorkItem 补齐。
+  const [known, setKnown] = useState<Record<string, WorkItem>>({});
+
+  const task = storeTask ?? (taskId ? known[taskId] : undefined);
 
   // 打开时拉取权威快照（含 blocker/runs_count/version），防止列表数据陈旧。
   useEffect(() => {
@@ -59,6 +102,33 @@ export function TaskDetail({
     };
   }, [taskId, upsert]);
 
+  // 子任务树：直接子任务以树返回项自身的 parent_id 判定（不依赖「树是否含根」的顺序假设）。
+  useEffect(() => {
+    if (!taskId) return;
+    let cancelled = false;
+    setTreeChildren(null);
+    getWorkItemTree(taskId)
+      .then(({ items }) => {
+        if (cancelled) return;
+        setTreeChildren(items.filter((t) => t.parent_id === taskId));
+        setKnown((prev) => {
+          const next = { ...prev };
+          for (const t of items) next[t.id] = t;
+          return next;
+        });
+      })
+      // 只吞树接口失败：子任务区回退列表推导（可能受看板筛选影响），不影响其余区块。
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId]);
+
+  // 编排计划：按主任务刷新最新 plan（冷启动无索引时空操作，等 SSE plan.* 事件）。
+  useEffect(() => {
+    if (taskId) void refreshPlan(taskId);
+  }, [taskId, refreshPlan]);
+
   // 订阅最新 Run 的实时事件。
   const latestRunId = task?.latest_run_id;
   useEffect(() => {
@@ -66,6 +136,16 @@ export function TaskDetail({
     watchRun(latestRunId);
     return () => unwatchRun(latestRunId);
   }, [latestRunId, watchRun, unwatchRun]);
+
+  // 子任务展示序：同一父下按 created_at（sortTasksTree 对同源兄弟退化为排序）。
+  const children = sortTasksTree(
+    treeChildren ?? (taskId ? storeItems.filter((t) => t.parent_id === taskId) : []),
+  ).map((e) => e.item);
+
+  const openChildChat = (child: WorkItem) => {
+    if (!child.agent_profile_id) return;
+    navigate(`/chat?agent=${encodeURIComponent(child.agent_profile_id)}&c=${encodeURIComponent(child.id)}`);
+  };
 
   const onAssign = async (agentProfileId: string) => {
     if (!task) return;
@@ -157,6 +237,69 @@ export function TaskDetail({
               )}
             </section>
 
+            {/* 子任务（编排 dispatch 派生） */}
+            <section className="space-y-snug">
+              <h3 className="text-caption font-medium text-text-tertiary">
+                子任务{children.length > 0 ? `（${children.length}）` : ''}
+              </h3>
+              {children.length === 0 ? (
+                <p className="text-body text-text-tertiary">暂无子任务</p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {children.map((child) => {
+                    const assignee = child.agent_profile_id
+                      ? agents.find((a) => a.id === child.agent_profile_id)?.name ?? child.agent_profile_id
+                      : '未指派';
+                    return (
+                      <li
+                        key={child.id}
+                        className="flex items-center gap-2 p-2 rounded-lg border border-border-subtle bg-surface-base"
+                      >
+                        <button
+                          onClick={() => selectTask(child.id)}
+                          className="flex-1 min-w-0 text-left"
+                          title="打开子任务详情"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="shrink-0 inline-flex items-center px-1.5 py-0.5 rounded-sm text-caption text-text-secondary bg-surface-raised border border-border-subtle">
+                              {STATUS_TEXT[child.status] ?? child.status}
+                            </span>
+                            <span
+                              className={`text-body truncate ${
+                                child.status === 'completed' ? 'line-through opacity-60 text-text-primary' : 'text-text-primary'
+                              }`}
+                            >
+                              {child.title}
+                            </span>
+                          </div>
+                          <span className="text-caption text-text-tertiary">{assignee}</span>
+                        </button>
+                        <button
+                          onClick={() => openChildChat(child)}
+                          disabled={!child.agent_profile_id}
+                          title={child.agent_profile_id ? `与 ${assignee} 就该子任务对话` : '未指派，无法对话'}
+                          className="shrink-0 inline-flex items-center gap-1 text-caption border border-border-strong text-text-secondary rounded-button px-2 py-1 hover:bg-surface-raised hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          对话
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            {/* 编排计划（该任务最新 plan） */}
+            <section className="space-y-snug">
+              <h3 className="text-caption font-medium text-text-tertiary">编排计划</h3>
+              {plan ? (
+                <PlanPanel plan={plan} agents={agents} onOpenWorkItem={selectTask} />
+              ) : (
+                <p className="text-body text-text-tertiary">暂无编排计划</p>
+              )}
+            </section>
+
             {/* 阻塞信息 */}
             {task.status === 'blocked' && task.blocker && (
               <section className="rounded-lg border border-status-error/20 bg-status-error/5 p-snug">
@@ -219,6 +362,110 @@ export function TaskDetail({
         </div>
       )}
     </Drawer>
+  );
+}
+
+/** plan 摘要面板：状态徽标 + steps 执行明细。 */
+function PlanPanel({
+  plan,
+  agents,
+  onOpenWorkItem,
+}: {
+  plan: Plan;
+  agents: { id: string; name: string }[];
+  onOpenWorkItem: (workItemId: string) => void;
+}) {
+  const ownerName = agents.find((a) => a.id === plan.agent_profile_id)?.name ?? plan.agent_profile_id;
+  return (
+    <div className="rounded-lg border border-border-subtle bg-surface-base p-snug space-y-snug">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded-sm text-caption font-medium border ${
+            PLAN_STATUS_CLS[plan.status] ?? 'bg-surface-base text-text-secondary border-border-subtle'
+          }`}
+        >
+          {PLAN_STATUS_TEXT[plan.status] ?? plan.status}
+        </span>
+        <span className="text-caption text-text-tertiary">
+          {ownerName} · {formatDateTime(plan.updated_at)}
+        </span>
+      </div>
+      {plan.superseded_by && (
+        <p className="text-caption text-text-tertiary">已被后续计划 {plan.superseded_by} 取代</p>
+      )}
+      <ol className="space-y-1.5">
+        {plan.steps.map((step) => (
+          <PlanStepRow key={step.seq} step={step} agents={agents} onOpenWorkItem={onOpenWorkItem} />
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** 单个 plan step：verb/状态/摘要/dispatch 结果链接。 */
+function PlanStepRow({
+  step,
+  agents,
+  onOpenWorkItem,
+}: {
+  step: PlanStep;
+  agents: { id: string; name: string }[];
+  onOpenWorkItem: (workItemId: string) => void;
+}) {
+  const text = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const summary =
+    step.verb === 'dispatch'
+      ? text(step.payload?.title) || text(step.payload?.instruction)
+      : step.verb === 'defer'
+        ? text(step.payload?.reason)
+        : text(step.payload?.summary);
+  const targetAgent = step.verb === 'dispatch' ? text(step.payload?.agent_id) : '';
+  const targetName = targetAgent ? agents.find((a) => a.id === targetAgent)?.name ?? targetAgent : '';
+  const resultWorkItemId = step.result_work_item_id ?? undefined;
+
+  return (
+    <li className="flex items-start gap-2 p-2 rounded-lg border border-border-subtle bg-surface-raised">
+      <span className="text-caption text-text-tertiary tabular-nums mt-0.5">{step.seq}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-caption font-medium bg-surface-base text-text-secondary border border-border-subtle">
+            {VERB_TEXT[step.verb] ?? step.verb}
+          </span>
+          <span
+            className={`text-caption font-medium ${
+              step.status === 'failed'
+                ? 'text-status-error'
+                : step.status === 'executed'
+                  ? 'text-status-success'
+                  : 'text-text-tertiary'
+            }`}
+          >
+            {STEP_STATUS_TEXT[step.status] ?? step.status}
+          </span>
+          {targetName && <span className="text-caption text-text-tertiary">→ {targetName}</span>}
+        </div>
+        {summary && (
+          <p className="text-body text-text-secondary truncate mt-0.5" title={summary}>
+            {summary}
+          </p>
+        )}
+        {step.error && <p className="text-caption text-status-error mt-0.5">{step.error}</p>}
+        <div className="flex items-center gap-comfortable mt-0.5">
+          {resultWorkItemId && (
+            <button
+              onClick={() => onOpenWorkItem(resultWorkItemId)}
+              className="text-caption text-brand-accent hover:underline"
+              title="打开派生的子任务详情"
+            >
+              子任务 {resultWorkItemId} →
+            </button>
+          )}
+          {step.result_run_id && (
+            <span className="text-caption text-text-tertiary">run {step.result_run_id}</span>
+          )}
+        </div>
+      </div>
+    </li>
   );
 }
 

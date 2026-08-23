@@ -1,5 +1,5 @@
-import { ChevronDown, KanbanSquare, List, Plus } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronDown, GitBranch, KanbanSquare, List, Plus } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { acceptWorkItem, unblockWorkItem } from '../api/endpoints';
@@ -9,10 +9,14 @@ import { PriorityBadge } from '../components/priority-badge';
 import { useAgentsStore } from '../stores/agents.store';
 import { useTasksStore, type ViewMode } from '../stores/tasks.store';
 import { toast } from '../stores/toast.store';
+import { childCountByParent, sortTasksTree } from '../utils/task-tree';
 import { formatDueDate } from '../utils/format';
 import { BlockTaskModal } from './tasks/block-modal';
 import { CreateTaskModal } from './tasks/create-task-modal';
 import { TaskDetail } from './tasks/task-detail';
+
+// 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
+export { sortTasksTree, childCountByParent } from '../utils/task-tree';
 
 const COLUMNS: { id: WorkItemStatus; title: string }[] = [
   { id: 'todo', title: '待办' },
@@ -107,6 +111,7 @@ export default function TasksPage() {
     ...c,
     tasks: items.filter((t) => t.status === c.id),
   }));
+  const childCounts = useMemo(() => childCountByParent(items), [items]);
 
   return (
     <div className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
@@ -172,6 +177,7 @@ export default function TasksPage() {
                 title={col.title}
                 tasks={col.tasks}
                 agents={agents}
+                childCounts={childCounts}
                 onDropTask={(taskId) => {
                   const item = items.find((t) => t.id === taskId);
                   if (item) void transitionTask(item, col.id);
@@ -193,28 +199,29 @@ export default function TasksPage() {
                     </span>
                   </h3>
                   <div className="space-y-2">
-                    {col.tasks.map((task) => (
+                    {sortTasksTree(col.tasks).map((entry) => (
                       <div
-                        key={task.id}
-                        onClick={() => selectTask(task.id)}
+                        key={entry.item.id}
+                        onClick={() => selectTask(entry.item.id)}
                         className="flex items-center justify-between p-3 border border-border-subtle rounded-lg hover:bg-surface-base transition-colors cursor-pointer"
                       >
-                        <div className="flex items-center gap-4">
-                          <PriorityBadge priority={task.priority} />
+                        <div className="flex items-center gap-4 min-w-0" style={{ paddingLeft: entry.depth * 24 }}>
+                          {entry.depth > 0 && <GitBranch className="w-3.5 h-3.5 text-text-tertiary shrink-0" />}
+                          <PriorityBadge priority={entry.item.priority} />
                           <span
-                            className={`font-medium text-sm ${
-                              task.status === 'completed'
+                            className={`font-medium text-sm truncate ${
+                              entry.item.status === 'completed'
                                 ? 'line-through opacity-60'
                                 : 'text-text-primary'
                             }`}
                           >
-                            {task.title}
+                            {entry.item.title}
                           </span>
                         </div>
                         <div className="flex items-center gap-6">
-                          <AssigneeTag agentId={task.agent_profile_id} agents={agents} size={20} />
+                          <AssigneeTag agentId={entry.item.agent_profile_id} agents={agents} size={20} />
                           <span className="text-xs text-text-tertiary tabular-nums w-12 text-right">
-                            {formatDueDate(task.due_date)}
+                            {formatDueDate(entry.item.due_date)}
                           </span>
                         </div>
                       </div>
@@ -283,6 +290,7 @@ function KanbanColumn({
   title,
   tasks,
   agents,
+  childCounts,
   onDropTask,
   onCreate,
   onOpen,
@@ -290,6 +298,7 @@ function KanbanColumn({
   title: string;
   tasks: WorkItem[];
   agents: ReturnType<typeof useAgentsStore.getState>['agents'];
+  childCounts: Map<string, number>;
   onDropTask: (taskId: string) => void;
   onCreate: () => void;
   onOpen: (taskId: string) => void;
@@ -331,7 +340,13 @@ function KanbanColumn({
 
       <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
         {tasks.map((task) => (
-          <TaskCard key={task.id} task={task} agents={agents} onOpen={() => onOpen(task.id)} />
+          <TaskCard
+            key={task.id}
+            task={task}
+            agents={agents}
+            childCount={childCounts.get(task.id) ?? 0}
+            onOpen={() => onOpen(task.id)}
+          />
         ))}
       </div>
     </div>
@@ -341,10 +356,12 @@ function KanbanColumn({
 function TaskCard({
   task,
   agents,
+  childCount,
   onOpen,
 }: {
   task: WorkItem;
   agents: ReturnType<typeof useAgentsStore.getState>['agents'];
+  childCount: number;
   onOpen: () => void;
 }) {
   const isCompleted = task.status === 'completed';
@@ -385,7 +402,26 @@ function TaskCard({
       )}
 
       <div className="flex items-center justify-between mt-auto">
-        <PriorityBadge priority={task.priority} />
+        <div className="flex items-center gap-1.5">
+          <PriorityBadge priority={task.priority} />
+          {task.parent_id && (
+            <span
+              title="编排派生的子任务"
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+            >
+              子任务
+            </span>
+          )}
+          {childCount > 0 && (
+            <span
+              title={`${childCount} 个直接子任务`}
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-surface-base text-text-secondary border border-border-subtle tabular-nums"
+            >
+              <GitBranch className="w-3 h-3" />
+              {childCount}
+            </span>
+          )}
+        </div>
         <span className="text-xs text-text-tertiary tabular-nums">{formatDueDate(task.due_date)}</span>
       </div>
     </div>

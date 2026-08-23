@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createWorkItem } from '../../api/endpoints';
-import type { Priority, WorkItemStatus } from '../../api/types';
+import type { Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Modal } from '../../components/modal';
 import { useAgentsStore } from '../../stores/agents.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
+import { sortTasksTree } from '../../utils/task-tree';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -15,7 +16,11 @@ const STATUS_LABEL: Record<string, string> = {
   blocked: '阻塞',
 };
 
-/** 列「+」创建任务：继承列状态（协议 §2.1）。 */
+/** 父任务候选：非终态任务（终态任务不再接收子任务），树序展示。 */
+const parentCandidates = (items: WorkItem[]) =>
+  sortTasksTree(items.filter((t) => t.status !== 'completed' && t.status !== 'cancelled'));
+
+/** 列「+」创建任务：继承列状态（协议 §2.1）；可选父任务挂为子任务。 */
 export function CreateTaskModal({
   open,
   initialStatus,
@@ -27,6 +32,7 @@ export function CreateTaskModal({
 }) {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const agents = useAgentsStore((s) => s.agents);
+  const tasks = useTasksStore((s) => s.items);
   const refresh = useTasksStore((s) => s.refresh);
 
   const [title, setTitle] = useState('');
@@ -34,6 +40,7 @@ export function CreateTaskModal({
   const [priority, setPriority] = useState<Priority>('medium');
   const [dueDate, setDueDate] = useState('');
   const [assignee, setAssignee] = useState('');
+  const [parentId, setParentId] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
@@ -47,6 +54,7 @@ export function CreateTaskModal({
         priority,
         due_date: dueDate || null,
         agent_profile_id: assignee || undefined,
+        parent_id: parentId || undefined,
       });
       await refresh();
       toast.success(`已创建任务「${title.trim()}」`);
@@ -55,6 +63,7 @@ export function CreateTaskModal({
       setPriority('medium');
       setDueDate('');
       setAssignee('');
+      setParentId('');
       onClose();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : '创建失败');
@@ -109,6 +118,17 @@ export function CreateTaskModal({
             </select>
           </label>
         </div>
+        <label className="block">
+          <span className="text-body text-text-secondary">父任务（可选）</span>
+          <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls}>
+            <option value="">无 · 作为根任务</option>
+            {parentCandidates(tasks).map((entry) => (
+              <option key={entry.item.id} value={entry.item.id}>
+                {`${'　'.repeat(entry.depth)}${entry.item.title}`}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="flex justify-end gap-snug pt-tight">
           <button
             onClick={onClose}
