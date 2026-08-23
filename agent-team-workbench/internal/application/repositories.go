@@ -17,6 +17,7 @@ type Store interface {
 	Workspaces() WorkspaceRepo
 	Agents() AgentRepo
 	WorkItems() WorkItemRepo
+	Plans() PlanRepo
 	Runs() RunRepo
 	Events() EventRepo
 	Idempotency() IdempotencyRepo
@@ -48,10 +49,12 @@ type AgentRepo interface {
 }
 
 // WorkItemFilter 查询条件；cursor 为不透明 token，改变筛选必须重新分页。
+// ParentID："" 不过滤；"none" 只看根任务（parent IS NULL）；其他值按该 parent 过滤。
 type WorkItemFilter struct {
 	Status   domain.WorkItemStatus
 	Priority domain.Priority
 	Assignee string
+	ParentID string
 	Cursor   string
 	Limit    int
 }
@@ -61,6 +64,8 @@ type WorkItemRepo interface {
 	Get(ctx context.Context, id string) (*domain.WorkItem, error)
 	List(ctx context.Context, workspaceID string, f WorkItemFilter) ([]*domain.WorkItem, string, error)
 	Update(ctx context.Context, wi *domain.WorkItem, expectedVersion int) error
+	// ListByParent 按 created_at 升序返回直接子任务（子任务树遍历用）。
+	ListByParent(ctx context.Context, parentID string) ([]*domain.WorkItem, error)
 	ActiveBlocker(ctx context.Context, workItemID string) (*domain.Blocker, error)
 	CreateBlocker(ctx context.Context, b *domain.Blocker) error
 	ResolveBlockers(ctx context.Context, workItemID string, at time.Time) error
@@ -68,6 +73,18 @@ type WorkItemRepo interface {
 	// BoardCounts / CompletedToday 供 Dashboard Read Model 服务端聚合。
 	BoardCounts(ctx context.Context, workspaceID string) (map[domain.WorkItemStatus]int, error)
 	CompletedToday(ctx context.Context, workspaceID string, day time.Time) (int, error)
+}
+
+// PlanRepo M1 编排计划存储。Create 必须在事务内调用（plan + steps 同事务）；
+// Update/UpdateStep 乐观锁写回。同一 work item 至多一个 active/waiting plan
+// 由 SubmitPlan 在事务内校验（无 DB 部分唯一索引，SQLite 与 PG 保持同一语义）。
+type PlanRepo interface {
+	Create(ctx context.Context, p *domain.Plan) error
+	Get(ctx context.Context, id string) (*domain.Plan, error)
+	Update(ctx context.Context, p *domain.Plan, expectedVersion int) error
+	UpdateStep(ctx context.Context, st *domain.PlanStep) error
+	// ActiveByWorkItem 返回 active/waiting plan（至多一个；无则 nil）。
+	ActiveByWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error)
 }
 
 type RunRepo interface {
