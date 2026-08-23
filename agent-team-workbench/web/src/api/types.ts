@@ -117,10 +117,46 @@ export interface WorkItem {
   phase?: WorkItemPhase;
   priority: Priority;
   due_date: string | null;
+  /** 父任务 id（M1 编排 dispatch 建子任务；omitempty，根任务缺省）。 */
+  parent_id?: string;
   agent_profile_id?: string;
   blocker?: Blocker;
   runs_count: number;
   latest_run_id?: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Plan（M1 编排：lead agent 提交的有序动作批次）────────────────────
+
+export type PlanStatus = 'active' | 'waiting' | 'finished' | 'cancelled' | 'failed';
+export type PlanStepStatus = 'pending' | 'executed' | 'skipped' | 'failed';
+/** M1 词汇表子集；未知 verb 提交即 400（consult_knowledge/join 归后续里程碑）。 */
+export type PlanVerb = 'dispatch' | 'defer' | 'finish';
+
+/** PlanDTO step：payload 为提交时的 JSON 原文（按 verb 判别）。 */
+export interface PlanStep {
+  seq: number;
+  verb: PlanVerb;
+  status: PlanStepStatus;
+  payload: Record<string, unknown>;
+  /** dispatch 步执行后建出的子任务 / 首 run；缺省表示尚未产出。 */
+  result_work_item_id?: string | null;
+  result_run_id?: string | null;
+  error?: string | null;
+}
+
+export interface Plan {
+  id: string;
+  workspace_id: string;
+  work_item_id: string;
+  agent_profile_id: string;
+  source_run_id?: string | null;
+  status: PlanStatus;
+  /** 本 plan 被同主任务的新 waiting→新提交 supersede 时指向新 plan id。 */
+  superseded_by?: string | null;
+  steps: PlanStep[];
   version: number;
   created_at: string;
   updated_at: string;
@@ -287,6 +323,10 @@ export const EVENT_NAMES = [
   'work_item.blocked',
   'work_item.unblocked',
   'work_item.completed',
+  'plan.submitted',
+  'plan.step_executed',
+  'plan.waiting',
+  'plan.finished',
   'run.created',
   'run.started',
   'run.status_changed',

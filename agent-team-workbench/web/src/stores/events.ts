@@ -3,6 +3,7 @@ import { useAgentsStore } from './agents.store';
 import { useChatStore } from './chat.store';
 import { useDashboardStore } from './dashboard.store';
 import { useLogsStore } from './logs.store';
+import { usePlansStore } from './plans.store';
 import { useRunsStore } from './runs.store';
 import { useTasksStore } from './tasks.store';
 
@@ -33,7 +34,8 @@ const refreshChatConversations = createDebounced(() => void useChatStore.getStat
 /**
  * SSE 事件路由（协议 §6.3 事件目录）：
  * - 列表类资源采用失效重取（debounce 合并），保证与权威投影一致；
- * - run 域事件交给 runs store 就地更新（详情抽屉实时时间线）。
+ * - run 域事件交给 runs store 就地更新（详情抽屉实时时间线）；
+ * - plan 域事件交给 plans store 就地更新（任务详情编排计划面板）。
  */
 export function routeEvent(ev: CanonicalEvent): void {
   const logs = useLogsStore.getState();
@@ -51,6 +53,12 @@ export function routeEvent(ev: CanonicalEvent): void {
   }
   if (ev.type === 'dashboard.metrics.updated') {
     refreshDashboard();
+    return;
+  }
+  if (ev.type.startsWith('plan.')) {
+    // plan 域事件就地更新 plans store（按主任务覆盖）；dispatch 建出的子任务
+    // 会另行发 work_item.created，看板刷新由那条事件触发。
+    usePlansStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type === 'activity.appended') {
