@@ -505,6 +505,57 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 }
 
+// 防回归：prompt 排队/resume 期间，同会话旧 turn 的 tool.*/approval 帧不得
+// 归入本 run（只放行 activeTurn 的帧）。
+func TestForeignTurnEventsDropped(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			// 本 turn 尚未 started（activeSeen=false）时旧 turn 的在途帧。
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 98, "toolCallId": "tc_old", "name": "shell",
+			}, 1, false))
+			f.push(kapEvent("s_1", "event.approval.requested", map[string]any{
+				"approval_id": "ap_old", "session_id": "s_1", "turn_id": 98,
+				"tool_call_id": "tc_old", "tool_name": "shell", "action": "rm -rf /",
+			}, 2, false))
+			// 本 turn 开始后，排队中的旧 turn 帧仍会混入同一会话流。
+			f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 3, false))
+			f.push(kapEvent("s_1", "tool.result", map[string]any{
+				"turnId": 98, "toolCallId": "tc_old", "output": mustJSON("stale"),
+			}, 4, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_new", "name": "shell",
+			}, 5, false))
+			f.push(kapEvent("s_1", "tool.result", map[string]any{
+				"turnId": 1, "toolCallId": "tc_new", "output": mustJSON("fresh"),
+			}, 6, false))
+			f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 7, false))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if got := cb.count(domain.EventToolStarted); got != 1 {
+		t.Fatalf("旧 turn 的 tool.call.started 应被过滤，got %d", got)
+	}
+	if got := cb.count(domain.EventToolCompleted); got != 1 {
+		t.Fatalf("旧 turn 的 tool.result 应被过滤，got %d", got)
+	}
+	select {
+	case req := <-cb.approvals:
+		t.Fatalf("旧 turn 的审批不应进入 engine: %+v", req)
+	default:
+	}
+	started, _ := cb.find(domain.EventToolStarted)
+	if started.data["call_id"] != "tc_new" {
+		t.Fatalf("本 turn tool.started 不符: %+v", started.data)
+	}
+}
+
 func TestResumeHitReusesSession(t *testing.T) {
 	f := newFakeKap(t)
 	f.mu.Lock()
@@ -582,7 +633,8 @@ func TestApprovalResolveRoundtrip(t *testing.T) {
 			"tool_call_id": "tc_1", "tool_name": "shell", "action": "run rm -rf",
 		}, 2, false))
 		req := <-cb.approvals
-		if req.kind != "tool" || req.risk != "shell" {
+		// 防回归：risk 字段曾是工具名（如 "shell"）；kap 审批一律登记 high。
+		if req.kind != "tool" || req.risk != "high" || req.summary != "shell: run rm -rf" {
 			t.Fatalf("审批请求不符: %+v", req)
 		}
 		controls <- runtime.Control{Kind: runtime.ControlApproval, ApprovalID: req.id, Approved: true}

@@ -550,6 +550,9 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "tool.call.started":
 		var ev evToolCallStarted
 		_ = json.Unmarshal(frame.Payload, &ev)
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
 		p.ex.Callbacks.OnEvent(domain.EventToolStarted, map[string]any{
 			"tool": ev.Name, "call_id": ev.ToolCallID,
 		})
@@ -558,6 +561,9 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		var data map[string]any
 		_ = json.Unmarshal(frame.Payload, &ev)
 		_ = json.Unmarshal(frame.Payload, &data)
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
 		if ev.IsError != nil && *ev.IsError {
 			p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"raw": data})
 		} else {
@@ -566,6 +572,9 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "tool.progress":
 		var ev evToolProgress
 		_ = json.Unmarshal(frame.Payload, &ev)
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
 		payload := map[string]any{"tool_call_id": ev.ToolCallID, "text": ev.Update.Text}
 		if ev.Update.Percent != nil {
 			payload["percent"] = *ev.Update.Percent
@@ -587,6 +596,12 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	return false
 }
 
+// myTurn 只放行本轮 turn 的事件：prompt 排队/resume 期间，同会话旧 turn 的
+// 在途事件（tool.*/approval 等）不归入本 run 时间线（与 delta 过滤同一条件）。
+func (p *eventPump) myTurn(turnID int64) bool {
+	return p.state.activeSeen && turnID == p.state.activeTurn
+}
+
 // handleApproval 把服务端审批请求映射为 engine 审批；发起失败立即拒绝，
 // 防 harness 工具悬挂。
 func (p *eventPump) handleApproval(frame wsFrame) {
@@ -595,11 +610,18 @@ func (p *eventPump) handleApproval(frame wsFrame) {
 	if ev.ApprovalID == "" {
 		return
 	}
+	// 旧 turn 的在途审批不进本 run（turn_id 可缺省，缺省时无法判定、不过滤）；
+	// 丢弃即不答——在途 turn 的归属方（原 run 的事件泵）会自行决议。
+	if !p.state.activeSeen || (ev.TurnID != 0 && ev.TurnID != p.state.activeTurn) {
+		return
+	}
 	summary := ev.ToolName
 	if ev.Action != "" {
 		summary += ": " + ev.Action
 	}
-	engineID := p.ex.Callbacks.RequestApproval("tool", ev.ToolName, truncate(summary, 160))
+	// risk 与 codexapp 对齐：kap 只在策略要求时才发起审批，一律按 high 登记
+	//（kap 事件不携带风险分级；工具名属于 summary，不是 risk）。
+	engineID := p.ex.Callbacks.RequestApproval("tool", "high", truncate(summary, 160))
 	if engineID == "" {
 		if kerr := p.client.resolveApproval(context.WithoutCancel(p.ex.Ctx), p.sessionID, ev.ApprovalID, "rejected", ""); kerr != nil {
 			log.Printf("kimiapp: run %s 兜底拒绝审批失败: %v", p.ex.Run.ID, kerr)
