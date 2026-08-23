@@ -19,7 +19,7 @@ func TestPlanStateMachine(t *testing.T) {
 		{PlanWaiting, PlanFinished, true}, // supersede 路径
 		{PlanWaiting, PlanCancelled, true},
 		{PlanWaiting, PlanFailed, true},
-		{PlanWaiting, PlanActive, false}, // defer 即批次终止，无游标回拨
+		{PlanWaiting, PlanActive, true}, // M4 审批放行续跑（唯一回拨；静默唤醒不回拨）
 		{PlanFinished, PlanActive, false},
 		{PlanFinished, PlanWaiting, false},
 		{PlanCancelled, PlanActive, false},
@@ -56,12 +56,12 @@ func TestPlanFinishRecordsSupersede(t *testing.T) {
 }
 
 func TestPlanVerbWhitelist(t *testing.T) {
-	for _, v := range []PlanVerb{PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge} {
+	for _, v := range []PlanVerb{PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge, PlanVerbJoin} {
 		if !ValidPlanVerb(v) {
 			t.Errorf("%s 应为合法 verb", v)
 		}
 	}
-	for _, v := range []PlanVerb{"join", "use_session", ""} {
+	for _, v := range []PlanVerb{"use_session", "explode", ""} {
 		if ValidPlanVerb(v) {
 			t.Errorf("%q 不在词汇表内，应被拒绝", v)
 		}

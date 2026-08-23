@@ -115,6 +115,9 @@ type EventRepo interface {
 	Since(ctx context.Context, workspaceID string, afterSeq int64, limit int) ([]*domain.CanonicalEvent, error)
 	LatestSeq(ctx context.Context, workspaceID string) (int64, error)
 	AppendActivity(ctx context.Context, workspaceID, kind, message string) error
+	// AppendActivityFor 写带 work item 归因的 activity（M4：verdict/blocker 级
+	// 事件需回溯到任务）；workItemID 空串落 NULL（无归因）。
+	AppendActivityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error
 	ListActivities(ctx context.Context, workspaceID string, limit int) ([]Activity, error)
 	// ListRunEvents 按 run_seq 回放单个 Run 的事件（对话历史用）。
 	ListRunEvents(ctx context.Context, runID string) ([]RunEvent, error)
@@ -136,7 +139,10 @@ type RunEvent struct {
 }
 
 type Activity struct {
-	ID         string
+	ID string
+	// WorkItemID 归因任务（M4；verdict/blocker 级 activity 非空）。空串 =
+	// 无归因（runner 级、workspace 级公告）。
+	WorkItemID string
 	Kind       string
 	Message    string
 	OccurredAt time.Time

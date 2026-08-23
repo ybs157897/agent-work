@@ -320,6 +320,9 @@ func TestVerdictPassEntersAcceptance(t *testing.T) {
 	if wi.Status != domain.WorkItemInProgress || wi.Phase != domain.PhaseAcceptance {
 		t.Fatalf("verdict pass 后应 in_progress+acceptance，实际 %s/%s", wi.Status, wi.Phase)
 	}
+	// M4 归因防回归：verdict_passed activity 行与 activity.appended 事件 data
+	// 均携带 work_item_id。
+	assertActivityAttribution(t, ctx, store, wsID, main.ID, "plan.verdict_passed")
 	// 人工验收仍可走 Accept 唯一完工路径。
 	accepted, err := svc.AcceptWorkItem(ctx, main.ID, wi.Version)
 	if err != nil {
@@ -369,6 +372,8 @@ func TestVerdictFailReturnsToExecution(t *testing.T) {
 	if !found {
 		t.Fatalf("plan.verdict_rejected activity 未记录: %#v", activities)
 	}
+	// M4 归因防回归：activity 行与 activity.appended 事件 data 均携带 work_item_id。
+	assertActivityAttribution(t, ctx, store, wsID, main.ID, "plan.verdict_rejected")
 }
 
 // TestVerdictMissingBlocks 验收 5c：评估回复无 verdict 块 → blocker
@@ -396,6 +401,52 @@ func TestVerdictMissingBlocks(t *testing.T) {
 	blocker, err := store.WorkItems().ActiveBlocker(ctx, main.ID)
 	if err != nil || blocker == nil || blocker.Code != "verdict_parse_failed" {
 		t.Fatalf("verdict_parse_failed blocker 未落库: %v %#v", err, blocker)
+	}
+	// M4 归因防回归：blocker 落库的 work_item.blocked activity 同样归因。
+	assertActivityAttribution(t, ctx, store, wsID, main.ID, "work_item.blocked")
+}
+
+// assertActivityAttribution M4 归因不变量：kind 的 activity 行携带
+// work_item_id == expectWorkItemID，且对应 activity.appended 事件 data 的
+// work_item_id 一致（行与事件同步归因）。
+func assertActivityAttribution(t *testing.T, ctx context.Context, store *sqlstore.Store, wsID, expectWorkItemID, kind string) {
+	t.Helper()
+	activities, err := store.Events().ListActivities(ctx, wsID, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, a := range activities {
+		if a.Kind != kind {
+			continue
+		}
+		rows++
+		if a.WorkItemID != expectWorkItemID {
+			t.Fatalf("%s activity 行归因 %q，应为 %q", kind, a.WorkItemID, expectWorkItemID)
+		}
+	}
+	if rows == 0 {
+		t.Fatalf("%s activity 未记录: %#v", kind, activities)
+	}
+	events, err := store.Events().Since(ctx, wsID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted := false
+	for _, e := range events {
+		if e.Type != domain.EventActivityCreated {
+			continue
+		}
+		if k, _ := e.Data["kind"].(string); k != kind {
+			continue
+		}
+		emitted = true
+		if id, _ := e.Data["work_item_id"].(string); id != expectWorkItemID {
+			t.Fatalf("%s activity.appended 事件 data.work_item_id = %q，应为 %q", kind, id, expectWorkItemID)
+		}
+	}
+	if !emitted {
+		t.Fatalf("%s 的 activity.appended 事件未发射", kind)
 	}
 }
 

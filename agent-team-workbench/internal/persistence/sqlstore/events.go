@@ -131,10 +131,15 @@ func (r *EventRepo) LatestSeq(ctx context.Context, workspaceID string) (int64, e
 }
 
 func (r *EventRepo) AppendActivity(ctx context.Context, workspaceID, kind, message string) error {
+	return r.AppendActivityFor(ctx, workspaceID, "", kind, message)
+}
+
+// AppendActivityFor 带 work item 归因写入（M4）；workItemID 空串落 NULL。
+func (r *EventRepo) AppendActivityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO activities(id, workspace_id, kind, message, occurred_at) VALUES (?,?,?,?,?)`,
-		domain.NewID(domain.PrefixEvent), workspaceID, kind, message, d.TimeParam(timeNow()))
+		`INSERT INTO activities(id, workspace_id, work_item_id, kind, message, occurred_at) VALUES (?,?,?,?,?,?)`,
+		domain.NewID(domain.PrefixEvent), workspaceID, nullString(workItemID), kind, message, d.TimeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 
@@ -143,7 +148,7 @@ func (r *EventRepo) ListActivities(ctx context.Context, workspaceID string, limi
 		limit = 30
 	}
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT id, kind, message, occurred_at FROM activities
+		`SELECT id, work_item_id, kind, message, occurred_at FROM activities
 		 WHERE workspace_id=? ORDER BY occurred_at DESC LIMIT ?`, workspaceID, limit)
 	if err != nil {
 		return nil, err
@@ -152,9 +157,13 @@ func (r *EventRepo) ListActivities(ctx context.Context, workspaceID string, limi
 	var out []application.Activity
 	for rows.Next() {
 		var a application.Activity
+		var workItemID *string
 		var occurred scanTime
-		if err := rows.Scan(&a.ID, &a.Kind, &a.Message, &occurred); err != nil {
+		if err := rows.Scan(&a.ID, &workItemID, &a.Kind, &a.Message, &occurred); err != nil {
 			return nil, err
+		}
+		if workItemID != nil {
+			a.WorkItemID = *workItemID
 		}
 		a.OccurredAt = mustTime(occurred)
 		out = append(out, a)

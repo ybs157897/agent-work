@@ -73,7 +73,8 @@ components:
     # Tool:      tool.started / tool.progress / tool.completed / tool.failed
     # Approval:  approval.requested / approval.resolved / approval.expired
     # Artifact:  artifact.created / artifact.updated
-    # Plan:      plan.submitted / plan.step_executed / plan.waiting / plan.finished
+    # Plan:      plan.submitted / plan.step_executed / plan.waiting / plan.finished /
+    #            plan.failed
     # Session:   session.decision
     # Usage:     usage.updated
     # Runtime:   runtime.health_changed / runner.connected / runner.disconnected /

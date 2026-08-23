@@ -393,13 +393,13 @@ func TestSubmitPlanUnknownVerbRejected(t *testing.T) {
 		WorkItemID: main.ID, AgentProfileID: leadID,
 		Steps: []application.PlanStepInput{
 			dispatchStep(workerID, "子任务A", "实现 A"),
-			{Verb: "join", Payload: map[string]any{"agents": []any{leadID}}},
+			{Verb: "explode", Payload: map[string]any{"agents": []any{leadID}}},
 		},
 	})
 	if err == nil {
 		t.Fatal("未知 verb 应被拒绝")
 	}
-	if !strings.Contains(err.Error(), "join") {
+	if !strings.Contains(err.Error(), "explode") {
 		t.Fatalf("错误应指明未知 verb: %v", err)
 	}
 	active, err := store.Plans().ActiveByWorkItem(ctx, main.ID)

@@ -146,6 +146,12 @@ const (
 	ApprovalExpired  ApprovalStatus = "expired"
 )
 
+// ApprovalKindPlanDispatch M4 审批护栏：plan dispatch 步骤的人工闸门。
+// 与 run 内审批（工具调用等）不同，此类审批不挂 run（RunID 空，迁移 0010 放开
+// approvals.run_id 非空约束）；RequestedBy={"kind":"plan","id":<planID>,"seq":<seq>}
+// 定位挂起步骤，审批解决回调据此续跑或收口 plan。
+const ApprovalKindPlanDispatch = "plan_dispatch"
+
 // ApprovalRequest：UI 只展示最小必要摘要；敏感参数走 sensitive_input_ref。
 type ApprovalRequest struct {
 	ID                string

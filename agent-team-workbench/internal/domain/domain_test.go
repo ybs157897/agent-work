@@ -15,7 +15,7 @@ func TestWorkItemStateMachine(t *testing.T) {
 	}{
 		{WorkItemTodo, WorkItemInProgress, true},
 		{WorkItemTodo, WorkItemCancelled, true},
-		{WorkItemTodo, WorkItemBlocked, false},
+		{WorkItemTodo, WorkItemBlocked, true}, // M4 预算护栏：todo 主任务也可落 blocker
 		{WorkItemTodo, WorkItemCompleted, false},
 		{WorkItemInProgress, WorkItemBlocked, true},
 		{WorkItemInProgress, WorkItemCompleted, true},

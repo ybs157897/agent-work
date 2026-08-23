@@ -52,19 +52,30 @@ func (s *Service) emit(ctx context.Context, workspaceID, evType, aggType, aggID 
 	return nil
 }
 
-// activity 写 activity 流并发布 activity.appended 事件。
+// activity 写 activity 流并发布 activity.appended 事件（无归因形态）。
 // 自包 InTx：外层无事务时独立成事务；外层已在事务内时 store.InTx 幂等复用。
 // activities 行与 stream_events/outbox 必须同事务提交——两条独立 autocommit
 // 在中途崩溃时会留下「有事件无活动」或反向的分裂状态。
 func (s *Service) activity(ctx context.Context, workspaceID, kind, message string) error {
+	return s.activityFor(ctx, workspaceID, "", kind, message)
+}
+
+// activityFor 写带 work item 归因的 activity（M4：verdict 处理与 blocker 落库
+// 需能回溯到任务）。workItemID 非空时 activity 行与 activity.appended 事件
+// data 同步携带 work_item_id；空串等价无归因。
+func (s *Service) activityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error {
 	return s.store.InTx(ctx, func(ctx context.Context) error {
-		if err := s.store.Events().AppendActivity(ctx, workspaceID, kind, message); err != nil {
+		if err := s.store.Events().AppendActivityFor(ctx, workspaceID, workItemID, kind, message); err != nil {
 			return err
 		}
+		data := map[string]any{
+			"kind": kind, "message": message,
+		}
+		if workItemID != "" {
+			data["work_item_id"] = workItemID
+		}
 		return s.emit(ctx, workspaceID, domain.EventActivityCreated,
-			domain.AggregateWorkspace, workspaceID, 0, nil, map[string]any{
-				"kind": kind, "message": message,
-			})
+			domain.AggregateWorkspace, workspaceID, 0, nil, data)
 	})
 }
 
@@ -410,22 +421,7 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
-		if agentID != "" {
-			if _, err := s.store.Agents().Get(ctx, agentID); err != nil {
-				return err
-			}
-		}
-		w.AgentProfileID = agentID
-		// 与 Transition 路径同一约定：内存版本与 DB（version=version+1）保持同步。
-		expected := w.Version
-		w.Version++
-		w.UpdatedAt = time.Now().UTC()
-		if err := s.store.WorkItems().Update(ctx, w, expected); err != nil {
-			return err
-		}
-		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
-			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"agent_profile_id": agentID}); err != nil {
+		if err := s.assignLocked(ctx, w, agentID); err != nil {
 			return err
 		}
 		wi = w
@@ -440,6 +436,27 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 		s.enqueueAssignmentWake(context.WithoutCancel(ctx), wi, agentID)
 	}
 	return wi, nil
+}
+
+// assignLocked 事务内指派核心：写 assignee、乐观锁更新并发布 work_item.assigned
+// 事件（AssignWorkItem 与 ClaimWorkItem 共用；agent 存在性在此校验）。
+func (s *Service) assignLocked(ctx context.Context, w *domain.WorkItem, agentID string) error {
+	if agentID != "" {
+		if _, err := s.store.Agents().Get(ctx, agentID); err != nil {
+			return err
+		}
+	}
+	w.AgentProfileID = agentID
+	// 与 Transition 路径同一约定：内存版本与 DB（version=version+1）保持同步。
+	expected := w.Version
+	w.Version++
+	w.UpdatedAt = time.Now().UTC()
+	if err := s.store.WorkItems().Update(ctx, w, expected); err != nil {
+		return err
+	}
+	return s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
+		domain.AggregateWorkItem, w.ID, w.Version, nil,
+		map[string]any{"agent_profile_id": agentID})
 }
 
 type BlockParams struct {
@@ -458,32 +475,44 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
-		if err := w.Transition(domain.WorkItemBlocked, time.Now().UTC()); err != nil {
-			return err
-		}
-		if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
-			return err
-		}
-		b := &domain.Blocker{
-			ID: domain.NewID("blk_"), WorkItemID: w.ID, Code: p.Code,
-			Message: p.Message, Source: p.Source, CreatedAt: time.Now().UTC(),
-		}
-		if err := s.store.WorkItems().CreateBlocker(ctx, b); err != nil {
-			return err
-		}
-		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemBlocked,
-			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"code": p.Code, "message": p.Message}); err != nil {
+		if err := s.blockLocked(ctx, w, p); err != nil {
 			return err
 		}
 		wi = w
-		return s.activity(ctx, w.WorkspaceID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
 	return wi, nil
+}
+
+// blockLocked 事务内落 blocker：状态迁移 + blocker 行 + 事件 + activity。
+// BlockWorkItem（API 边界，带版本校验）与预算护栏收口（控制平面内部，无版本
+// 期望——todo 主任务也可能落 blocker）共用。
+func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockParams) error {
+	if err := w.Transition(domain.WorkItemBlocked, time.Now().UTC()); err != nil {
+		return err
+	}
+	if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
+		return err
+	}
+	b := &domain.Blocker{
+		ID: domain.NewID("blk_"), WorkItemID: w.ID, Code: p.Code,
+		Message: p.Message, Source: p.Source, CreatedAt: time.Now().UTC(),
+	}
+	if err := s.store.WorkItems().CreateBlocker(ctx, b); err != nil {
+		return err
+	}
+	if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemBlocked,
+		domain.AggregateWorkItem, w.ID, w.Version, nil,
+		map[string]any{"code": p.Code, "message": p.Message}); err != nil {
+		return err
+	}
+	// blocker activity 归因到任务（M4：plan_parse_failed / verdict_parse_failed /
+	// budget_exceeded 等控制平面 blocker 需能回溯）。
+	return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
 }
 
 // UnblockWorkItem 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。

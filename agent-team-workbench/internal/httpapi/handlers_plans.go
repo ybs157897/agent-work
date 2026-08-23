@@ -34,6 +34,9 @@ func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
 			SourceRunID:    req.SourceRunID,
 			Steps:          make([]application.PlanStepInput, 0, len(req.Steps)),
 		}
+		if req.Guardrails != nil {
+			p.Guardrails = *req.Guardrails
+		}
 		for _, raw := range req.Steps {
 			step := application.PlanStepInput{Payload: map[string]any{}}
 			for k, v := range raw {
