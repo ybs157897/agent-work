@@ -51,13 +51,12 @@ type sessionSummary struct {
 	ID string `json:"id"`
 }
 
-// createSessionRequest 对齐 POST /sessions body：metadata.cwd 必填；
-// agent_config 仅透传 model / system_prompt / plan_mode（服务端当前只应用
-// model 与 plan_mode，见 routes/sessionAgentConfig.ts —— system_prompt 由
-// 适配器前向透传，能力声明为 CapAdapterTranslated）。
+// createSessionRequest 对齐 POST /sessions body：metadata.cwd 必填。
+// 不透传 agent_config：创建路由完全忽略它，/profile 路由也只应用 model/
+// permission_mode 等少数字段（system_prompt 无任何应用通道）——persona/plan
+// 语义由适配器经 prompt 文本注入（见 kimiapp.submitPrompt）。
 type createSessionRequest struct {
-	Metadata    map[string]string `json:"metadata"`
-	AgentConfig map[string]any    `json:"agent_config,omitempty"`
+	Metadata map[string]string `json:"metadata"`
 }
 
 type promptContentPart struct {
@@ -65,12 +64,12 @@ type promptContentPart struct {
 	Text string `json:"text"`
 }
 
-// promptSubmitRequest 对齐 PromptSubmission：content ≥1 段；model/plan_mode/
-// permission_mode(manual|yolo|auto) 为可选前向字段。
+// promptSubmitRequest 对齐 PromptSubmission：content ≥1 段；model 与
+// permission_mode(manual|yolo|auto) 服务端逐 prompt 应用。plan_mode 服务端
+// 接受但不应用（routes/prompts.ts 无引用），不前向——plan 语义经文本注入。
 type promptSubmitRequest struct {
 	Content        []promptContentPart `json:"content"`
 	Model          string              `json:"model,omitempty"`
-	PlanMode       *bool               `json:"plan_mode,omitempty"`
 	PermissionMode string              `json:"permission_mode,omitempty"`
 }
 

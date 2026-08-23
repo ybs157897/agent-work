@@ -444,9 +444,8 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if meta == nil || meta["cwd"] != "/tmp/atw-kimiapp-test" {
 		t.Fatalf("create metadata.cwd 不符: %v", createBody)
 	}
-	agentCfg, _ := createBody["agent_config"].(map[string]any)
-	if agentCfg == nil || agentCfg["model"] != "test-model" {
-		t.Fatalf("create agent_config.model 不符: %v", createBody)
+	if _, ok := createBody["agent_config"]; ok {
+		t.Fatalf("agent_config 是服务端不应用的死透传，不应再发送: %v", createBody)
 	}
 	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
 	content, _ := promptBody["content"].([]any)
@@ -566,6 +565,61 @@ func TestForeignTurnEventsDropped(t *testing.T) {
 	started, _ := cb.find(domain.EventToolStarted)
 	if started.data["call_id"] != "tc_new" || started.data["args_summary"] != "ls" {
 		t.Fatalf("本 turn tool.started 契约不符: %+v", started.data)
+	}
+}
+
+// 防回归：persona/plan 语义只能靠 prompt 文本注入（kap 无 system_prompt 应用
+// 通道、prompt.plan_mode 不应用）——fresh 会话首 prompt 带 persona，plan 模式
+// 每个 prompt 带指令；resume 轮不重注 persona（会话上下文已含首轮注入）。
+func TestPersonaAndPlanInjectedIntoPrompt(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	ex := newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8))
+	ex.Run.Input = map[string]any{"system_prompt": "你是代码评审员", "mode": "plan"}
+	res := runKapExecute(t, m, ex, f, func(pid string) { pushHappyTurn(f, "s_1", 7, pid, 1) })
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
+	content, _ := promptBody["content"].([]any)
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "你是代码评审员") || !strings.Contains(text, "本轮指令：记住 ALPHA") {
+		t.Fatalf("persona 未注入 fresh 首 prompt: %q", text)
+	}
+	if !strings.Contains(text, "Plan mode") {
+		t.Fatalf("plan 指令未注入: %q", text)
+	}
+	if _, ok := promptBody["plan_mode"]; ok {
+		t.Fatalf("plan_mode 服务端不应用，不应前向: %v", promptBody)
+	}
+}
+
+func TestResumeTurnSkipsPersonaKeepsPlan(t *testing.T) {
+	f := newFakeKap(t)
+	f.mu.Lock()
+	f.sessions["s_known"] = true
+	f.mu.Unlock()
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	ex := newTestExec(context.Background(), "kimiapp://s_known", cb, make(chan runtime.Control, 8))
+	ex.Run.Input = map[string]any{"system_prompt": "你是代码评审员", "mode": "plan"}
+	res := runKapExecute(t, m, ex, f, func(pid string) { pushHappyTurn(f, "s_known", 3, pid, 1) })
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	promptBody := f.waitCall("/api/v1/sessions/s_known/prompts")
+	content, _ := promptBody["content"].([]any)
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if strings.Contains(text, "你是代码评审员") {
+		t.Fatalf("resume 轮不应重注 persona（会话上下文已含首轮注入）: %q", text)
+	}
+	if !strings.Contains(text, "Plan mode") {
+		t.Fatalf("plan 指令每个 plan prompt 都带: %q", text)
 	}
 }
 
