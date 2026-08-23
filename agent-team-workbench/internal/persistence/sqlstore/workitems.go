@@ -12,15 +12,18 @@ import (
 
 type WorkItemRepo struct{ store *Store }
 
-const workItemCols = `id, workspace_id, title, description, status, phase, priority,
+const workItemCols = `id, workspace_id, parent_id, title, description, status, phase, priority,
 	due_date, agent_profile_id, version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
-	var phase, dueDate, assignee *string
+	var parent, phase, dueDate, assignee *string
 	var created, updated scanTime
-	if err := row.Scan(&w.ID, &w.WorkspaceID, &w.Title, &w.Description, &w.Status, &phase, &w.Priority,
-		&dueDate, &assignee, &w.Version, &created, &updated); err != nil {
+	if err := row.Scan(&w.ID, &w.WorkspaceID, &parent, &w.Title, &w.Description, &w.Status, &phase,
+		&w.Priority, &dueDate, &assignee, &w.Version, &created, &updated); err != nil {
 		return err
+	}
+	if parent != nil {
+		w.ParentID = *parent
 	}
 	if phase != nil {
 		w.Phase = domain.WorkItemPhase(*phase)
@@ -44,9 +47,9 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 		due = wi.DueDate.Format("2006-01-02")
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		wi.ID, wi.WorkspaceID, wi.Title, wi.Description, wi.Status, nullString(string(wi.Phase)),
-		wi.Priority, due, nullString(wi.AgentProfileID), wi.Version,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		wi.ID, wi.WorkspaceID, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
+		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -81,6 +84,14 @@ func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f applicati
 	if f.Assignee != "" {
 		args = append(args, f.Assignee)
 		where = append(where, "agent_profile_id=?")
+	}
+	if f.ParentID != "" {
+		if f.ParentID == "none" {
+			where = append(where, "parent_id IS NULL")
+		} else {
+			args = append(args, f.ParentID)
+			where = append(where, "parent_id=?")
+		}
 	}
 	if f.Cursor != "" {
 		createdAt, id, err := decodeCursor(f.Cursor)
@@ -139,6 +150,26 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 		return domain.ErrVersionConflict
 	}
 	return nil
+}
+
+// ListByParent 按 created_at 升序返回直接子任务（子任务树先序遍历的基础查询）。
+func (r *WorkItemRepo) ListByParent(ctx context.Context, parentID string) ([]*domain.WorkItem, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx),
+		`SELECT `+workItemCols+` FROM work_items WHERE parent_id=? ORDER BY created_at ASC, id ASC`,
+		parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.WorkItem
+	for rows.Next() {
+		w := &domain.WorkItem{}
+		if err := r.scan(rows, w); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
 
 func (r *WorkItemRepo) ActiveBlocker(ctx context.Context, workItemID string) (*domain.Blocker, error) {

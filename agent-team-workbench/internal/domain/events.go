@@ -30,6 +30,11 @@ const (
 	EventRunCancelled       = "run.cancelled"
 	EventRunLost            = "run.lost"
 
+	EventPlanSubmitted    = "plan.submitted"
+	EventPlanStepExecuted = "plan.step_executed"
+	EventPlanWaiting      = "plan.waiting"
+	EventPlanFinished     = "plan.finished"
+
 	EventMessageDelta     = "message.delta"
 	EventMessageCompleted = "message.completed"
 
@@ -65,6 +70,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventRunCreated:        {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunCompleted: {}, EventRunFailed: {},
 	EventRunCancelled: {}, EventRunLost: {},
+	EventPlanSubmitted: {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},
 	EventApprovalRequested: {}, EventApprovalResolved: {}, EventApprovalExpired: {},
@@ -84,6 +90,7 @@ const (
 	AggregateWorkspace      = "workspace"
 	AggregateAgentProfile   = "agent_profile"
 	AggregateWorkItem       = "work_item"
+	AggregatePlan           = "plan"
 	AggregateExecutionRun   = "execution_run"
 	AggregateApproval       = "approval"
 	AggregateArtifact       = "artifact"

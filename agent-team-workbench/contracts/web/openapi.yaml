@@ -17,6 +17,7 @@ tags:
   - name: workspace
   - name: agent-profiles
   - name: work-items
+  - name: plans
   - name: runs
   - name: approvals
   - name: artifacts
@@ -145,6 +146,11 @@ paths:
         - { name: status, in: query, schema: { type: string } }
         - { name: priority, in: query, schema: { type: string } }
         - { name: assignee, in: query, schema: { type: string } }
+        - name: parent_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 缺省不过滤；值 `none` 只看根任务（无父链接）。
         - { $ref: "#/components/parameters/Cursor" }
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemList" } } } }
@@ -254,6 +260,49 @@ paths:
                 expected_version: { type: integer }
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+
+  /work-items/{work_item_id}/tree:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [plans]
+      operationId: getWorkItemTree
+      summary: 以该任务为根的整棵子树（先序；DTO 带 parent_id）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemTree" } } } }
+
+  /work-items/{work_item_id}/plan:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [plans]
+      operationId: getWorkItemPlan
+      summary: 该主任务最新一份 plan（created_at 最新，不限状态）；无 plan 404
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } } }
+        "404": { description: 该任务尚无 plan, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
+  /workspaces/{workspace_id}/plans:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [plans]
+      operationId: createPlan
+      description: |
+        提交并同步执行一份 plan（dispatch/defer/finish）。同一 work item 唯一
+        active/waiting plan：active 拒绝、waiting 同事务 supersede。
+        verb 未知 / defer 非法 / 校验失败 → 400 problem+json（plan 不落库）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PlanSubmit" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } } }
+        "400": { description: verb 未知 / defer 无出口 / 字段校验失败, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /plans/{plan_id}:
+    parameters: [{ $ref: "#/components/parameters/PlanId" }]
+    get:
+      tags: [plans]
+      operationId: getPlan
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } } }
 
   /work-items/{work_item_id}/runs:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
@@ -679,6 +728,7 @@ components:
     AgentProfileId: { name: agent_profile_id, in: path, required: true, schema: { type: string } }
     WorkItemId: { name: work_item_id, in: path, required: true, schema: { type: string } }
     RunId: { name: run_id, in: path, required: true, schema: { type: string } }
+    PlanId: { name: plan_id, in: path, required: true, schema: { type: string } }
     ApprovalId: { name: approval_id, in: path, required: true, schema: { type: string } }
     RuntimeBindingId: { name: runtime_binding_id, in: path, required: true, schema: { type: string } }
     ModelId: { name: model_id, in: path, required: true, schema: { type: string } }
@@ -870,6 +920,73 @@ components:
         items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
         next_cursor: { type: string, nullable: true }
 
+    WorkItemTree:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
+
+    PlanStatus:
+      type: string
+      enum: [active, waiting, finished, cancelled, failed]
+      description: finished/cancelled/failed 为终态；waiting 由同主任务新 plan 提交 supersede 收口。
+
+    PlanVerb:
+      type: string
+      enum: [dispatch, defer, finish]
+      description: M1 词汇表子集；未知 verb 提交即 400。
+
+    PlanSubmit:
+      type: object
+      required: [work_item_id, agent_profile_id, steps]
+      properties:
+        work_item_id: { type: string }
+        agent_profile_id: { type: string, description: plan owner（提交者 / lead agent） }
+        source_run_id: { type: string, nullable: true }
+        steps:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/PlanStepSubmit" }
+
+    PlanStepSubmit:
+      type: object
+      required: [verb]
+      properties:
+        verb: { $ref: "#/components/schemas/PlanVerb" }
+        agent_id: { type: string, description: dispatch 必填（目标执行 agent） }
+        title: { type: string, description: dispatch 必填 }
+        instruction: { type: string, description: dispatch 必填 }
+        acceptance: { type: array, items: { type: string } }
+        priority: { $ref: "#/components/schemas/Priority" }
+        reason: { type: string, description: defer 挂起原因 }
+        wake_at: { type: string, format: date-time, description: defer 可选出口；与活跃子任务至少居其一 }
+        summary: { type: string, description: finish 收尾说明 }
+
+    Plan:
+      type: object
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        work_item_id: { type: string }
+        agent_profile_id: { type: string }
+        source_run_id: { type: string, nullable: true }
+        status: { $ref: "#/components/schemas/PlanStatus" }
+        superseded_by: { type: string, nullable: true }
+        steps: { type: array, items: { $ref: "#/components/schemas/PlanStep" } }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PlanStep:
+      type: object
+      properties:
+        seq: { type: integer }
+        verb: { $ref: "#/components/schemas/PlanVerb" }
+        status: { type: string, enum: [pending, executed, skipped, failed] }
+        payload: { type: object, additionalProperties: true }
+        result_work_item_id: { type: string, nullable: true }
+        result_run_id: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+
     WorkItemCreate:
       type: object
       required: [title]
@@ -903,6 +1020,7 @@ components:
       properties:
         id: { type: string }
         workspace_id: { type: string }
+        parent_id: { type: string, nullable: true, description: 父任务 id；根任务缺省 }
         title: { type: string }
         description: { type: string }
         status: { $ref: "#/components/schemas/WorkItemStatus" }

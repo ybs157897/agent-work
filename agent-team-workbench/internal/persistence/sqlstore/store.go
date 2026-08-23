@@ -82,6 +82,7 @@ type Store struct {
 	workspaces *WorkspaceRepo
 	agents     *AgentRepo
 	workItems  *WorkItemRepo
+	plans      *PlanRepo
 	runs       *RunRepo
 	events     *EventRepo
 	idem       *IdempotencyRepo
@@ -101,6 +102,7 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	s.workspaces = &WorkspaceRepo{store: s}
 	s.agents = &AgentRepo{store: s}
 	s.workItems = &WorkItemRepo{store: s}
+	s.plans = &PlanRepo{store: s}
 	s.runs = &RunRepo{store: s}
 	s.events = &EventRepo{store: s}
 	s.idem = &IdempotencyRepo{store: s}
@@ -116,6 +118,7 @@ func New(db *sql.DB, dialect Dialect) *Store {
 func (s *Store) Workspaces() application.WorkspaceRepo     { return s.workspaces }
 func (s *Store) Agents() application.AgentRepo             { return s.agents }
 func (s *Store) WorkItems() application.WorkItemRepo       { return s.workItems }
+func (s *Store) Plans() application.PlanRepo               { return s.plans }
 func (s *Store) Runs() application.RunRepo                 { return s.runs }
 func (s *Store) Events() application.EventRepo             { return s.events }
 func (s *Store) Idempotency() application.IdempotencyRepo  { return s.idem }

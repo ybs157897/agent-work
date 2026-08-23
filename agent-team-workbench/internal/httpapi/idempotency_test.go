@@ -37,6 +37,7 @@ func openIdempotencyTestDB(t *testing.T) *sqlstore.Store {
 		"0003_agent_config.sql",
 		"0004_task_sessions.sql",
 		"0005_wakeup.sql",
+		"0006_plans.sql",
 	} {
 		body, err := os.ReadFile(filepath.Join(migrationDir, name))
 		if err != nil {

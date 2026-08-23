@@ -109,6 +109,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/block", s.guard(security.PermWorkItemWrite, s.handleBlockWorkItem))
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/unblock", s.guard(security.PermWorkItemWrite, s.handleUnblockWorkItem))
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/accept", s.guard(security.PermApproval, s.handleAcceptWorkItem))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/tree", s.guard(security.PermRead, s.handleWorkItemTree))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/plan", s.guard(security.PermRead, s.handleWorkItemPlan))
+
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/plans", s.guard(security.PermWorkItemWrite, s.handleCreatePlan))
+	mux.HandleFunc("GET /api/v1/plans/{plan_id}", s.guard(security.PermRead, s.handleGetPlan))
 
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRunControl, s.handleCreateRun))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRead, s.handleListWorkItemRuns))

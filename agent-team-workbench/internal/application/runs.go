@@ -36,208 +36,12 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 	}
 	var run *domain.ExecutionRun
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
-		wi, err := s.store.WorkItems().Get(ctx, workItemID)
+		r, err := s.createRunLocked(ctx, workItemID, p)
 		if err != nil {
-			return err
-		}
-		if err := wi.CheckVersion(p.ExpectedWorkItemVer); err != nil {
-			return err
-		}
-		if wi.Status.IsTerminal() {
-			return fmt.Errorf("%w: work item is terminal", domain.ErrValidation)
-		}
-		var agent *domain.AgentProfile
-		if p.AgentProfileID != "" {
-			a, err := s.store.Agents().Get(ctx, p.AgentProfileID)
-			if err != nil {
-				return err
-			}
-			if a.WorkspaceID != wi.WorkspaceID {
-				return fmt.Errorf("%w: agent 不属于当前 workspace", domain.ErrValidation)
-			}
-			if a.Availability != domain.AgentEnabled {
-				return fmt.Errorf("%w: agent 已停用", domain.ErrValidation)
-			}
-			agent = a
-		}
-		// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
-		// 第一个存在 RuntimeBinding 的候选胜出，调度原因写入快照（协议 §8.2）。
-		label, reason, binding := orchestrator.DefaultRuntimeLabel, "default", (*domain.RuntimeBinding)(nil)
-		for i, candidate := range orchestrator.ResolveRuntimeCandidates(p.RuntimePreference, agent) {
-			b, err := s.store.Bindings().GetByLabel(ctx, wi.WorkspaceID, candidate)
-			if err == nil {
-				label, binding = candidate, b
-				switch i {
-				case 0:
-					reason = "requested"
-				default:
-					reason = "fallback"
-				}
-				break
-			}
-		}
-		if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
-			return err
-		}
-		now := time.Now().UTC()
-		runID := domain.NewID(domain.PrefixRun)
-		// 能力快照：Run 启动时固化 required/advertised，运行中配置变化不影响当前 Run（架构文档 §7）。
-		var caps *CapabilitySnapshot
-		if binding != nil {
-			caps = &CapabilitySnapshot{
-				ID: domain.NewID(domain.PrefixCaps), RunID: runID,
-				Required:   map[string]any{"requirements": p.Requirements},
-				Advertised: map[string]any{"capabilities": binding.Capabilities},
-			}
-		}
-		capsID := ""
-		if caps != nil {
-			capsID = caps.ID
-		}
-		spec := orchestrator.EffectiveModel(agent, binding, s.ModelResolver)
-		if agent != nil && agent.ModelOverride.Ref != "" && spec.Ref == "" {
-			return fmt.Errorf("%w: 模型注册表条目 %q 不存在", domain.ErrValidation, agent.ModelOverride.Ref)
-		}
-		if err := validateAdapterModel(binding, spec); err != nil {
-			return err
-		}
-		r := &domain.ExecutionRun{
-			ID: runID, WorkspaceID: wi.WorkspaceID,
-			WorkItemID: wi.ID, AgentProfileID: p.AgentProfileID, Status: domain.RunQueued,
-			RuntimeLabel: label, CapabilitySnapshotID: capsID,
-			Input: orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
-				p.RuntimePreference, agent, label, reason),
-			Version: 1, CreatedAt: now, UpdatedAt: now,
-		}
-		if binding != nil {
-			r.AdapterID = binding.AdapterID
-			r.Provider = binding.Provider
-		}
-		// 编排产物补充进快照：有效模型（含注册表解析的协议/端点/凭据引用）与裁剪后权限策略（adapter 从 run.Input 读取）。
-		modelSnapshot := map[string]any{}
-		if spec.Ref != "" {
-			modelSnapshot["ref"] = spec.Ref
-		}
-		if spec.ProviderID != "" {
-			modelSnapshot["provider_id"] = spec.ProviderID
-		}
-		if spec.ProviderLabel != "" {
-			modelSnapshot["provider_label"] = spec.ProviderLabel
-		}
-		if spec.Provider != "" {
-			modelSnapshot["provider"] = spec.Provider
-		}
-		if spec.API != "" {
-			modelSnapshot["api"] = spec.API
-		}
-		if spec.Model != "" {
-			modelSnapshot["model"] = spec.Model
-		}
-		if spec.BaseURL != "" {
-			modelSnapshot["base_url"] = spec.BaseURL
-		}
-		if spec.APIKeyEnv != "" {
-			modelSnapshot["api_key_env"] = spec.APIKeyEnv
-		}
-		if spec.ContextWindow > 0 {
-			modelSnapshot["context_window"] = spec.ContextWindow
-		}
-		if spec.MaxTokens > 0 {
-			modelSnapshot["max_tokens"] = spec.MaxTokens
-		}
-		r.Input["model"] = modelSnapshot
-		r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
-		r.Input["policy"] = orchestrator.PolicySnapshot(agent)
-		configDigest := orchestrator.ConfigDigest(r.Input)
-		previousRuns, err := s.store.Runs().ListByWorkItem(ctx, wi.ID)
-		if err != nil {
-			return err
-		}
-		history, err := s.conversationHistory(ctx, previousRuns)
-		if err != nil {
-			return err
-		}
-		conversation := map[string]any{
-			"id":            wi.ID,
-			"turn_index":    len(previousRuns) + 1,
-			"config_digest": configDigest,
-			"history":       history,
-		}
-		resumeRef, fromRunID, rotated := s.resolveResume(ctx, wi, p.AgentProfileID, r.AdapterID, label, configDigest, previousRuns)
-		// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
-		// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
-		resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
-		// 内联档（tier-3）历史超模型窗口预算 → 升级为轮换：砍头截断会移动请求
-		// 前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。tier-1（resume
-		// 命中）上下文由 harness 持有，不适用本预算（其增长归锚点阈值管）。
-		if !(resumeRef != "" && resumeSupported) && !rotated && historyExceedsBudget(history, spec) {
-			rotated = true
-		}
-		if resumeRef != "" && resumeSupported {
-			conversation["resume_session_ref"] = resumeRef
-			if fromRunID != "" {
-				conversation["resume_from_run_id"] = fromRunID
-			}
-			r.SessionBefore = resumeRef
-		} else if rotated {
-			// 会话轮换：放弃 resume 开新会话，用 handoff 摘要代替全量历史
-			//（EffectiveInstruction 轮换档）；新会话首次上报时锚点计数清零重起。
-			conversation["session_rotation"] = true
-			conversation["handoff_summary"] = buildHandoffSummary(wi, history)
-		}
-		r.Input["conversation"] = conversation
-		if p.AutoHealOf != "" {
-			r.Input["auto_heal_of"] = p.AutoHealOf
-			// 自愈重试也是一次 retry：填 RetryOf 让重试链在领域层可追溯。
-			r.RetryOf = p.AutoHealOf
-		}
-		if p.WakeContext != nil {
-			r.Input["wakeup"] = p.WakeContext
-		}
-		if err := s.store.Runs().Create(ctx, r); err != nil {
-			return err
-		}
-		if caps != nil {
-			if err := s.store.Caps().Create(ctx, caps); err != nil {
-				return err
-			}
-		}
-		// 首版串行策略：创建 Run 时把 todo 推进到 in_progress。
-		if wi.Status == domain.WorkItemTodo {
-			if err := wi.Transition(domain.WorkItemInProgress, now); err != nil {
-				return err
-			}
-			if err := s.store.WorkItems().Update(ctx, wi, wi.Version-1); err != nil {
-				return err
-			}
-			if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemMoved,
-				domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-				map[string]any{"from": "todo", "to": "in_progress"}); err != nil {
-				return err
-			}
-		} else if wi.Status == domain.WorkItemInProgress && wi.Phase != domain.PhaseExecution {
-			expected := wi.Version
-			wi.BeginExecution(now)
-			if err := s.store.WorkItems().Update(ctx, wi, expected); err != nil {
-				return err
-			}
-			if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
-				domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-				map[string]any{"phase": string(wi.Phase)}); err != nil {
-				return err
-			}
-		}
-		if err := s.emit(ctx, wi.WorkspaceID, domain.EventRunCreated,
-			domain.AggregateExecutionRun, r.ID, r.Version,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
-				"instruction": p.Instruction,
-			}},
-			map[string]any{"work_item_id": wi.ID, "status": string(r.Status), "instruction": p.Instruction}); err != nil {
 			return err
 		}
 		run = r
-		return s.activity(ctx, wi.WorkspaceID, "run.created",
-			fmt.Sprintf("任务「%s」创建运行 %s", wi.Title, r.ID))
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -252,6 +56,216 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 		}
 	}
 	return run, nil
+}
+
+// createRunLocked 在事务内创建 queued Run（权威写入）：校验、编排快照、run 行、
+// 事件与 WorkItem 联动全部同事务。副作用（Notify/Dispatch）由调用方在提交后执行——
+// plan 执行器在 SubmitPlan 事务内复用本方法，子任务 run 的分派推迟到外层提交之后。
+func (s *Service) createRunLocked(ctx context.Context, workItemID string, p CreateRunParams) (*domain.ExecutionRun, error) {
+	wi, err := s.store.WorkItems().Get(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := wi.CheckVersion(p.ExpectedWorkItemVer); err != nil {
+		return nil, err
+	}
+	if wi.Status.IsTerminal() {
+		return nil, fmt.Errorf("%w: work item is terminal", domain.ErrValidation)
+	}
+	var agent *domain.AgentProfile
+	if p.AgentProfileID != "" {
+		a, err := s.store.Agents().Get(ctx, p.AgentProfileID)
+		if err != nil {
+			return nil, err
+		}
+		if a.WorkspaceID != wi.WorkspaceID {
+			return nil, fmt.Errorf("%w: agent 不属于当前 workspace", domain.ErrValidation)
+		}
+		if a.Availability != domain.AgentEnabled {
+			return nil, fmt.Errorf("%w: agent 已停用", domain.ErrValidation)
+		}
+		agent = a
+	}
+	// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
+	// 第一个存在 RuntimeBinding 的候选胜出，调度原因写入快照（协议 §8.2）。
+	label, reason, binding := orchestrator.DefaultRuntimeLabel, "default", (*domain.RuntimeBinding)(nil)
+	for i, candidate := range orchestrator.ResolveRuntimeCandidates(p.RuntimePreference, agent) {
+		b, err := s.store.Bindings().GetByLabel(ctx, wi.WorkspaceID, candidate)
+		if err == nil {
+			label, binding = candidate, b
+			switch i {
+			case 0:
+				reason = "requested"
+			default:
+				reason = "fallback"
+			}
+			break
+		}
+	}
+	if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	runID := domain.NewID(domain.PrefixRun)
+	// 能力快照：Run 启动时固化 required/advertised，运行中配置变化不影响当前 Run（架构文档 §7）。
+	var caps *CapabilitySnapshot
+	if binding != nil {
+		caps = &CapabilitySnapshot{
+			ID: domain.NewID(domain.PrefixCaps), RunID: runID,
+			Required:   map[string]any{"requirements": p.Requirements},
+			Advertised: map[string]any{"capabilities": binding.Capabilities},
+		}
+	}
+	capsID := ""
+	if caps != nil {
+		capsID = caps.ID
+	}
+	spec := orchestrator.EffectiveModel(agent, binding, s.ModelResolver)
+	if agent != nil && agent.ModelOverride.Ref != "" && spec.Ref == "" {
+		return nil, fmt.Errorf("%w: 模型注册表条目 %q 不存在", domain.ErrValidation, agent.ModelOverride.Ref)
+	}
+	if err := validateAdapterModel(binding, spec); err != nil {
+		return nil, err
+	}
+	r := &domain.ExecutionRun{
+		ID: runID, WorkspaceID: wi.WorkspaceID,
+		WorkItemID: wi.ID, AgentProfileID: p.AgentProfileID, Status: domain.RunQueued,
+		RuntimeLabel: label, CapabilitySnapshotID: capsID,
+		Input: orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
+			p.RuntimePreference, agent, label, reason),
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if binding != nil {
+		r.AdapterID = binding.AdapterID
+		r.Provider = binding.Provider
+	}
+	// 编排产物补充进快照：有效模型（含注册表解析的协议/端点/凭据引用）与裁剪后权限策略（adapter 从 run.Input 读取）。
+	modelSnapshot := map[string]any{}
+	if spec.Ref != "" {
+		modelSnapshot["ref"] = spec.Ref
+	}
+	if spec.ProviderID != "" {
+		modelSnapshot["provider_id"] = spec.ProviderID
+	}
+	if spec.ProviderLabel != "" {
+		modelSnapshot["provider_label"] = spec.ProviderLabel
+	}
+	if spec.Provider != "" {
+		modelSnapshot["provider"] = spec.Provider
+	}
+	if spec.API != "" {
+		modelSnapshot["api"] = spec.API
+	}
+	if spec.Model != "" {
+		modelSnapshot["model"] = spec.Model
+	}
+	if spec.BaseURL != "" {
+		modelSnapshot["base_url"] = spec.BaseURL
+	}
+	if spec.APIKeyEnv != "" {
+		modelSnapshot["api_key_env"] = spec.APIKeyEnv
+	}
+	if spec.ContextWindow > 0 {
+		modelSnapshot["context_window"] = spec.ContextWindow
+	}
+	if spec.MaxTokens > 0 {
+		modelSnapshot["max_tokens"] = spec.MaxTokens
+	}
+	r.Input["model"] = modelSnapshot
+	r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
+	r.Input["policy"] = orchestrator.PolicySnapshot(agent)
+	configDigest := orchestrator.ConfigDigest(r.Input)
+	previousRuns, err := s.store.Runs().ListByWorkItem(ctx, wi.ID)
+	if err != nil {
+		return nil, err
+	}
+	history, err := s.conversationHistory(ctx, previousRuns)
+	if err != nil {
+		return nil, err
+	}
+	conversation := map[string]any{
+		"id":            wi.ID,
+		"turn_index":    len(previousRuns) + 1,
+		"config_digest": configDigest,
+		"history":       history,
+	}
+	resumeRef, fromRunID, rotated := s.resolveResume(ctx, wi, p.AgentProfileID, r.AdapterID, label, configDigest, previousRuns)
+	// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
+	// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
+	resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
+	// 内联档（tier-3）历史超模型窗口预算 → 升级为轮换：砍头截断会移动请求
+	// 前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。tier-1（resume
+	// 命中）上下文由 harness 持有，不适用本预算（其增长归锚点阈值管）。
+	if !(resumeRef != "" && resumeSupported) && !rotated && historyExceedsBudget(history, spec) {
+		rotated = true
+	}
+	if resumeRef != "" && resumeSupported {
+		conversation["resume_session_ref"] = resumeRef
+		if fromRunID != "" {
+			conversation["resume_from_run_id"] = fromRunID
+		}
+		r.SessionBefore = resumeRef
+	} else if rotated {
+		// 会话轮换：放弃 resume 开新会话，用 handoff 摘要代替全量历史
+		//（EffectiveInstruction 轮换档）；新会话首次上报时锚点计数清零重起。
+		conversation["session_rotation"] = true
+		conversation["handoff_summary"] = buildHandoffSummary(wi, history)
+	}
+	r.Input["conversation"] = conversation
+	if p.AutoHealOf != "" {
+		r.Input["auto_heal_of"] = p.AutoHealOf
+		// 自愈重试也是一次 retry：填 RetryOf 让重试链在领域层可追溯。
+		r.RetryOf = p.AutoHealOf
+	}
+	if p.WakeContext != nil {
+		r.Input["wakeup"] = p.WakeContext
+	}
+	if err := s.store.Runs().Create(ctx, r); err != nil {
+		return nil, err
+	}
+	if caps != nil {
+		if err := s.store.Caps().Create(ctx, caps); err != nil {
+			return nil, err
+		}
+	}
+	// 首版串行策略：创建 Run 时把 todo 推进到 in_progress。
+	if wi.Status == domain.WorkItemTodo {
+		if err := wi.Transition(domain.WorkItemInProgress, now); err != nil {
+			return nil, err
+		}
+		if err := s.store.WorkItems().Update(ctx, wi, wi.Version-1); err != nil {
+			return nil, err
+		}
+		if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemMoved,
+			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
+			map[string]any{"from": "todo", "to": "in_progress"}); err != nil {
+			return nil, err
+		}
+	} else if wi.Status == domain.WorkItemInProgress && wi.Phase != domain.PhaseExecution {
+		expected := wi.Version
+		wi.BeginExecution(now)
+		if err := s.store.WorkItems().Update(ctx, wi, expected); err != nil {
+			return nil, err
+		}
+		if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
+			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
+			map[string]any{"phase": string(wi.Phase)}); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.emit(ctx, wi.WorkspaceID, domain.EventRunCreated,
+		domain.AggregateExecutionRun, r.ID, r.Version,
+		&RunEventRecord{RunID: r.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
+			"instruction": p.Instruction,
+		}},
+		map[string]any{"work_item_id": wi.ID, "status": string(r.Status), "instruction": p.Instruction}); err != nil {
+		return nil, err
+	}
+	if err := s.activity(ctx, wi.WorkspaceID, "run.created",
+		fmt.Sprintf("任务「%s」创建运行 %s", wi.Title, r.ID)); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 func validateRequiredCapabilities(requirements map[string]string, binding *domain.RuntimeBinding) error {
@@ -525,6 +539,8 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	}
 	// session_unknown 失败自愈：终态落库后清锚点并一次性 fresh 重试（maybeSelfHeal 自带防循环）。
 	s.maybeSelfHeal(ctx, r)
+	// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
+	s.maybeAdvancePlans(ctx, r)
 	return nil
 }
 

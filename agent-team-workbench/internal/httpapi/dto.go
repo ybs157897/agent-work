@@ -56,6 +56,7 @@ type blockerDTO struct {
 type workItemDTO struct {
 	ID             string      `json:"id"`
 	WorkspaceID    string      `json:"workspace_id"`
+	ParentID       string      `json:"parent_id,omitempty"`
 	Title          string      `json:"title"`
 	Description    string      `json:"description"`
 	Status         string      `json:"status"`
@@ -73,7 +74,8 @@ type workItemDTO struct {
 
 func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
 	d := workItemDTO{
-		ID: w.ID, WorkspaceID: w.WorkspaceID, Title: w.Title, Description: w.Description,
+		ID: w.ID, WorkspaceID: w.WorkspaceID, ParentID: w.ParentID,
+		Title: w.Title, Description: w.Description,
 		Status: string(w.Status), Phase: string(w.Phase), Priority: string(w.Priority),
 		AgentProfileID: w.AgentProfileID, Version: w.Version,
 		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
@@ -257,4 +259,56 @@ func toTaskSessionDTO(t *domain.TaskSession) taskSessionDTO {
 type resetTaskSessionRequest struct {
 	TaskKey   string `json:"task_key"`
 	AdapterID string `json:"adapter_id"`
+}
+
+// ── Plan ─────────────────────────────────────────────────────────────
+
+type planDTO struct {
+	ID             string        `json:"id"`
+	WorkspaceID    string        `json:"workspace_id"`
+	WorkItemID     string        `json:"work_item_id"`
+	AgentProfileID string        `json:"agent_profile_id"`
+	SourceRunID    string        `json:"source_run_id,omitempty"`
+	Status         string        `json:"status"`
+	SupersededBy   string        `json:"superseded_by,omitempty"`
+	Steps          []planStepDTO `json:"steps"`
+	Version        int           `json:"version"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+}
+
+type planStepDTO struct {
+	Seq              int            `json:"seq"`
+	Verb             string         `json:"verb"`
+	Status           string         `json:"status"`
+	Payload          map[string]any `json:"payload"`
+	ResultWorkItemID string         `json:"result_work_item_id,omitempty"`
+	ResultRunID      string         `json:"result_run_id,omitempty"`
+	Error            string         `json:"error,omitempty"`
+}
+
+func toPlanDTO(p *domain.Plan) planDTO {
+	steps := make([]planStepDTO, 0, len(p.Steps))
+	for i := range p.Steps {
+		st := &p.Steps[i]
+		steps = append(steps, planStepDTO{
+			Seq: st.Seq, Verb: string(st.Verb), Status: string(st.Status),
+			Payload: st.Payload, ResultWorkItemID: st.ResultWorkItemID,
+			ResultRunID: st.ResultRunID, Error: st.Error,
+		})
+	}
+	return planDTO{
+		ID: p.ID, WorkspaceID: p.WorkspaceID, WorkItemID: p.WorkItemID,
+		AgentProfileID: p.AgentProfileID, SourceRunID: p.SourceRunID,
+		Status: string(p.Status), SupersededBy: p.SupersededBy,
+		Steps: steps, Version: p.Version, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
+}
+
+// createPlanRequest steps 为动词原文（verb 键 + 动词专属字段），弹 verb 后余量为 payload。
+type createPlanRequest struct {
+	WorkItemID     string           `json:"work_item_id"`
+	AgentProfileID string           `json:"agent_profile_id"`
+	SourceRunID    string           `json:"source_run_id"`
+	Steps          []map[string]any `json:"steps"`
 }
