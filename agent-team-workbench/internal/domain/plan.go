@@ -37,20 +37,23 @@ func (s PlanStatus) CanTransitionTo(to PlanStatus) bool {
 	return false
 }
 
-// PlanVerb M1 词汇表子集；use_session 是默认行为、consult_knowledge/join 归后续里程碑，
-// 未知 verb 由提交校验拒绝（不进状态机）。
+// PlanVerb 词汇表：M1 三动词 + M2 consult_knowledge；use_session 是默认行为、
+// join 归后续里程碑，未知 verb 由提交校验拒绝（不进状态机）。
 type PlanVerb string
 
 const (
 	PlanVerbDispatch PlanVerb = "dispatch"
 	PlanVerbDefer    PlanVerb = "defer"
 	PlanVerbFinish   PlanVerb = "finish"
+	// PlanVerbConsultKnowledge M2：预取检索知识语料，结果写进步骤 payload 的
+	// results 键，供后续 dispatch 的 knowledge_from 确定性注入子任务指令。
+	PlanVerbConsultKnowledge PlanVerb = "consult_knowledge"
 )
 
-// ValidPlanVerb 报告 v 是否为 M1 支持的动作词。
+// ValidPlanVerb 报告 v 是否为支持的动词（M1 dispatch/defer/finish + M2 consult_knowledge）。
 func ValidPlanVerb(v PlanVerb) bool {
 	switch v {
-	case PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish:
+	case PlanVerbDispatch, PlanVerbDefer, PlanVerbFinish, PlanVerbConsultKnowledge:
 		return true
 	}
 	return false
@@ -68,6 +71,7 @@ const (
 
 // PlanStep 单个动作：payload 为提交时的 JSON 原文（不含 verb），
 // result_* 记录 dispatch 的落库产物（哪个子任务、哪个 run）。
+// 唯一增补：consult_knowledge 执行后写入 payload.results（检索结果，M2）。
 type PlanStep struct {
 	PlanID           string
 	Seq              int

@@ -23,6 +23,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
+	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/outbox"
@@ -251,6 +252,17 @@ func run() error {
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
+
+	// M2 consult_knowledge：知识语料检索器。root 缺省 <workbenchRoot>/knowledge，
+	// ATW_KNOWLEDGE_ROOT 覆盖；根/corpus 目录缺失不报错（语料层可空部署，
+	// FileRetriever 对不存在的 corpus 返回空结果）。
+	knowledgeRoot := env("ATW_KNOWLEDGE_ROOT", filepath.Join(workbenchRoot, "knowledge"))
+	if retriever, err := knowledge.NewFileRetriever(knowledgeRoot); err != nil {
+		log.Printf("knowledge: 检索器不可用（root %s）: %v", knowledgeRoot, err)
+	} else {
+		svc.Knowledge = retriever
+		log.Printf("knowledge: 检索器已启用（root %s）", knowledgeRoot)
+	}
 
 	// 启动对账：清理上一进程遗留的「无 lease 且非终态」孤儿 run（进程内模块执行），
 	// 防止该 (agent, task) 的后续 wakeup 被永久 coalesce 进死 run；runner 路径有

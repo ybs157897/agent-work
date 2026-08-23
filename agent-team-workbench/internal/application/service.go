@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -26,6 +27,10 @@ type Service struct {
 	InputForwarder func(ctx context.Context, runID, instruction string) error
 	// ModelResolver 按 ref 查 models/ 注册表（装配层注入；nil 时跳过注册表层）。
 	ModelResolver orchestrator.ModelResolver
+	// Knowledge 知识语料检索器（M2 consult_knowledge 动词依赖，装配层注入，
+	// 与 ModelResolver 同风格）；nil 时该步骤响亮失败（error=no_retriever），
+	// 绝不静默降级。
+	Knowledge knowledge.Retriever
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {

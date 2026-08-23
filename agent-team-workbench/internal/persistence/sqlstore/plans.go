@@ -132,7 +132,8 @@ func (r *PlanRepo) Update(ctx context.Context, p *domain.Plan, expectedVersion i
 	return nil
 }
 
-// UpdateStep 写回单个 step 的执行结果（status/result_*/error/executed_at）。
+// UpdateStep 写回单个 step 的执行结果（status/result_*/error/executed_at/payload；
+// consult_knowledge 执行后 payload 增补 results 键，其余动词 payload 原样重写）。
 // (plan_id, seq) 为主键，重入写同 seq 覆盖同一行（幂等）。
 func (r *PlanRepo) UpdateStep(ctx context.Context, st *domain.PlanStep) error {
 	d := r.store.dialect
@@ -141,10 +142,10 @@ func (r *PlanRepo) UpdateStep(ctx context.Context, st *domain.PlanStep) error {
 		executedAt = d.NullTimeParam(st.ExecutedAt)
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`UPDATE plan_steps SET status=?, result_work_item_id=?, result_run_id=?, error=?, executed_at=?
+		`UPDATE plan_steps SET status=?, result_work_item_id=?, result_run_id=?, error=?, executed_at=?, payload=?
 		 WHERE plan_id=? AND seq=?`,
 		st.Status, nullString(st.ResultWorkItemID), nullString(st.ResultRunID),
-		nullString(st.Error), executedAt, st.PlanID, st.Seq)
+		nullString(st.Error), executedAt, jsonText(st.Payload), st.PlanID, st.Seq)
 	return r.store.mapErr(err)
 }
 
