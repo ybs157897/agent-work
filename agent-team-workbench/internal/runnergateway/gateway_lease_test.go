@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
 // fakeRunnerRepo 只实现 heartbeat 路径触及的方法，嵌入接口其余方法留空
@@ -26,6 +27,10 @@ func (f *fakeRunnerRepo) SetStatus(ctx context.Context, runnerID, status string,
 
 func (f *fakeRunnerRepo) Upsert(ctx context.Context, r *application.Runner) error {
 	return nil
+}
+
+func (f *fakeRunnerRepo) ActiveLease(ctx context.Context, runID string) (*application.RunLease, error) {
+	return nil, domain.ErrNotFound
 }
 
 func (f *fakeRunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string, error) {

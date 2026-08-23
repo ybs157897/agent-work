@@ -53,7 +53,9 @@ type runner struct {
 	seq  int64
 	// pending 未 ACK 事件：重连后重发（服务端按 runner_seq 去重）。
 	pending map[int64][]byte
-	// approvals 每个 run 的审批决定 channel（mock 路径）。
+	// approvals 每个 run 的审批决定 channel（mock 路径）。mock 流程串行、
+	// 同时至多一个待决审批，单 channel 即可；模块路径按 approval_id 多槽
+	//（r.modules.ResolveApproval）。
 	approvals map[string]chan bool
 	// controls 每个 run 的中断/取消信号（mock 路径）。
 	controls map[string]chan string

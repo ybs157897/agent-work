@@ -85,10 +85,12 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, adapte
 }
 
 // ForwardApproval 把审批决定作为 run.command 下发（协议文档 §7.1）。
-// 服务端审批 ID 与 runner 模块的审批 ID 不同源：下发前翻译成 runner 的 ID。
+// 服务端审批 ID 与 runner 模块的审批 ID 不同源：按 (run, server approval)
+// 双键翻译成 runner 的 ID——同 run 多个并发审批互不串扰；查不到映射时
+// （mock 路径不带 runner 审批 ID）原样透传服务端 ID。
 func (g *Gateway) ForwardApproval(ctx context.Context, runID, approvalID string, approved bool) {
 	g.mu.Lock()
-	runnerApprovalID := g.runnerApprovals[runID]
+	runnerApprovalID := g.runnerApprovals[runID][approvalID]
 	g.mu.Unlock()
 	target := approvalID
 	if runnerApprovalID != "" {
@@ -255,16 +257,16 @@ func (g *Gateway) applyEvent(ctx context.Context, runID, kind string, data map[s
 		if err != nil {
 			log.Printf("runnergateway: run %s 审批请求失败: %v", runID, err)
 		} else {
-			// 记住两侧 ID：serverApprovals 供 API 侧查询，runnerApprovals
-			// 供 ForwardApproval 翻译回 runner 模块的记账 ID。
+			// 记住 (server approval → runner 审批 ID) 翻译映射，供
+			// ForwardApproval 下发裁决时还原成 runner 模块认识的 ID。
 			if rid := str(data, "approval_id"); rid != "" {
 				g.mu.Lock()
-				g.runnerApprovals[runID] = rid
+				if g.runnerApprovals[runID] == nil {
+					g.runnerApprovals[runID] = make(map[string]string)
+				}
+				g.runnerApprovals[runID][a.ID] = rid
 				g.mu.Unlock()
 			}
-			g.mu.Lock()
-			g.serverApprovals[runID] = a.ID
-			g.mu.Unlock()
 		}
 	case "artifact.manifest":
 		art := &domain.Artifact{
@@ -297,7 +299,6 @@ func (g *Gateway) finalizeIfTerminal(runID string) {
 	for _, rc := range g.conns {
 		delete(rc.activeRuns, runID)
 	}
-	delete(g.serverApprovals, runID)
 	delete(g.runnerApprovals, runID)
 	g.mu.Unlock()
 }

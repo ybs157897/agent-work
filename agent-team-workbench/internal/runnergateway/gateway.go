@@ -81,11 +81,11 @@ type Gateway struct {
 
 	mu    sync.Mutex
 	conns map[string]*runnerConn
-	// serverApprovals 记录控制平面为 runner 请求创建的审批 ID（供后续映射）。
-	serverApprovals map[string]string
 	// runnerApprovals 记录 runner 模块自己的审批 ID（approval.requested 事件携带），
-	// 下发 approval.resolve 时翻译回 runner 的 ID。
-	runnerApprovals map[string]string
+	// 下发 approval.resolve 时按 (run, server approval) 翻译回 runner 的 ID。
+	// 同一 run 可能有多个并发审批：单槽会让后到的映射覆盖先到的，
+	// 裁决 A 时误翻成 B。runID → serverApprovalID → runnerApprovalID。
+	runnerApprovals map[string]map[string]string
 	upgrader        websocket.Upgrader
 }
 
@@ -115,8 +115,7 @@ func New(store application.Store, engine Engine, notifier application.Notifier) 
 	g := &Gateway{
 		store: store, engine: engine, notifier: notifier,
 		conns:           make(map[string]*runnerConn),
-		serverApprovals: make(map[string]string),
-		runnerApprovals: make(map[string]string),
+		runnerApprovals: make(map[string]map[string]string),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize: 4096, WriteBufferSize: 4096,
 			// Runner 为服务端到服务端出站连接：无 Origin 头才放行；
