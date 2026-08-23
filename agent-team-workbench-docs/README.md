@@ -2,6 +2,10 @@
 
 该目录集中保存 Agent 开发团队工作台的架构、Web 协议和原型参考资料。
 
+## 最终目标
+
+- end-goal.md：**最终目标文档**（end goal）——产品收口愿景：正交 agent 配置、agent 自管理会话（前缀缓存契约）、lead/worker 编排角色层、知识层；含现状对账与 M1–M4 分期路线。
+
 ## 目录结构
 
 - architecture/
