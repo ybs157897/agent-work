@@ -2,7 +2,10 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -19,6 +22,11 @@ type CreateRunParams struct {
 	Instruction         string
 	AcceptanceCriteria  []string
 	ExpectedWorkItemVer int
+	// AutoHealOf 非空表示本 run 是 session_unknown 失败的一次性自愈重试（源 run ID）。
+	// 固化进 input.auto_heal_of，防止自愈链无限递归。
+	AutoHealOf string
+	// WakeContext 非空表示本 run 由 wakeup 消费产生；固化进 input.wakeup 供审计。
+	WakeContext map[string]any
 }
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
@@ -44,6 +52,12 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 			if err != nil {
 				return err
 			}
+			if a.WorkspaceID != wi.WorkspaceID {
+				return fmt.Errorf("%w: agent 不属于当前 workspace", domain.ErrValidation)
+			}
+			if a.Availability != domain.AgentEnabled {
+				return fmt.Errorf("%w: agent 已停用", domain.ErrValidation)
+			}
 			agent = a
 		}
 		// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
@@ -62,6 +76,9 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 				break
 			}
 		}
+		if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		runID := domain.NewID(domain.PrefixRun)
 		// 能力快照：Run 启动时固化 required/advertised，运行中配置变化不影响当前 Run（架构文档 §7）。
@@ -77,8 +94,13 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 		if caps != nil {
 			capsID = caps.ID
 		}
-		policy := orchestrator.PolicyFor(agent)
-		provider, model := orchestrator.EffectiveModel(agent, binding)
+		spec := orchestrator.EffectiveModel(agent, binding, s.ModelResolver)
+		if agent != nil && agent.ModelOverride.Ref != "" && spec.Ref == "" {
+			return fmt.Errorf("%w: 模型注册表条目 %q 不存在", domain.ErrValidation, agent.ModelOverride.Ref)
+		}
+		if err := validateAdapterModel(binding, spec); err != nil {
+			return err
+		}
 		r := &domain.ExecutionRun{
 			ID: runID, WorkspaceID: wi.WorkspaceID,
 			WorkItemID: wi.ID, AgentProfileID: p.AgentProfileID, Status: domain.RunQueued,
@@ -87,10 +109,84 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 				p.RuntimePreference, agent, label, reason),
 			Version: 1, CreatedAt: now, UpdatedAt: now,
 		}
-		// 编排产物补充进快照：有效模型与裁剪后权限策略（adapter 从 run.Input 读取）。
-		r.Input["model"] = map[string]string{"provider": provider, "model": model}
-		r.Input["policy"] = map[string]any{
-			"tools": policy.Tools, "approval_policy": policy.ApprovalPolicy, "sandbox": policy.Sandbox,
+		if binding != nil {
+			r.AdapterID = binding.AdapterID
+			r.Provider = binding.Provider
+		}
+		// 编排产物补充进快照：有效模型（含注册表解析的协议/端点/凭据引用）与裁剪后权限策略（adapter 从 run.Input 读取）。
+		modelSnapshot := map[string]any{}
+		if spec.Ref != "" {
+			modelSnapshot["ref"] = spec.Ref
+		}
+		if spec.ProviderID != "" {
+			modelSnapshot["provider_id"] = spec.ProviderID
+		}
+		if spec.ProviderLabel != "" {
+			modelSnapshot["provider_label"] = spec.ProviderLabel
+		}
+		if spec.Provider != "" {
+			modelSnapshot["provider"] = spec.Provider
+		}
+		if spec.API != "" {
+			modelSnapshot["api"] = spec.API
+		}
+		if spec.Model != "" {
+			modelSnapshot["model"] = spec.Model
+		}
+		if spec.BaseURL != "" {
+			modelSnapshot["base_url"] = spec.BaseURL
+		}
+		if spec.APIKeyEnv != "" {
+			modelSnapshot["api_key_env"] = spec.APIKeyEnv
+		}
+		if spec.ContextWindow > 0 {
+			modelSnapshot["context_window"] = spec.ContextWindow
+		}
+		if spec.MaxTokens > 0 {
+			modelSnapshot["max_tokens"] = spec.MaxTokens
+		}
+		r.Input["model"] = modelSnapshot
+		r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
+		r.Input["policy"] = orchestrator.PolicySnapshot(agent)
+		configDigest := orchestrator.ConfigDigest(r.Input)
+		previousRuns, err := s.store.Runs().ListByWorkItem(ctx, wi.ID)
+		if err != nil {
+			return err
+		}
+		history, err := s.conversationHistory(ctx, previousRuns)
+		if err != nil {
+			return err
+		}
+		conversation := map[string]any{
+			"id":            wi.ID,
+			"turn_index":    len(previousRuns) + 1,
+			"config_digest": configDigest,
+			"history":       history,
+		}
+		resumeRef, fromRunID, rotated := s.resolveResume(ctx, wi, p.AgentProfileID, r.AdapterID, label, configDigest, previousRuns)
+		// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
+		// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
+		resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
+		if resumeRef != "" && resumeSupported {
+			conversation["resume_session_ref"] = resumeRef
+			if fromRunID != "" {
+				conversation["resume_from_run_id"] = fromRunID
+			}
+			r.SessionBefore = resumeRef
+		} else if rotated {
+			// 会话轮换：放弃 resume 开新会话，用 handoff 摘要代替全量历史
+			//（EffectiveInstruction 轮换档）；新会话首次上报时锚点计数清零重起。
+			conversation["session_rotation"] = true
+			conversation["handoff_summary"] = buildHandoffSummary(wi, history)
+		}
+		r.Input["conversation"] = conversation
+		if p.AutoHealOf != "" {
+			r.Input["auto_heal_of"] = p.AutoHealOf
+			// 自愈重试也是一次 retry：填 RetryOf 让重试链在领域层可追溯。
+			r.RetryOf = p.AutoHealOf
+		}
+		if p.WakeContext != nil {
+			r.Input["wakeup"] = p.WakeContext
 		}
 		if err := s.store.Runs().Create(ctx, r); err != nil {
 			return err
@@ -113,6 +209,17 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 				map[string]any{"from": "todo", "to": "in_progress"}); err != nil {
 				return err
 			}
+		} else if wi.Status == domain.WorkItemInProgress && wi.Phase != domain.PhaseExecution {
+			expected := wi.Version
+			wi.BeginExecution(now)
+			if err := s.store.WorkItems().Update(ctx, wi, expected); err != nil {
+				return err
+			}
+			if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
+				domain.AggregateWorkItem, wi.ID, wi.Version, nil,
+				map[string]any{"phase": string(wi.Phase)}); err != nil {
+				return err
+			}
 		}
 		if err := s.emit(ctx, wi.WorkspaceID, domain.EventRunCreated,
 			domain.AggregateExecutionRun, r.ID, r.Version,
@@ -133,10 +240,39 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 	// 权威写入成功后才允许启动 Runtime 副作用。
 	if s.dispatcher != nil {
 		if err := s.dispatcher.Dispatch(context.WithoutCancel(ctx), run); err != nil {
+			_ = s.RecordRunStatus(context.WithoutCancel(ctx), run.ID, domain.RunFailed,
+				map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
 			return nil, err
 		}
 	}
 	return run, nil
+}
+
+func validateRequiredCapabilities(requirements map[string]string, binding *domain.RuntimeBinding) error {
+	for capability, level := range requirements {
+		if level != "required" {
+			continue
+		}
+		if binding == nil {
+			return fmt.Errorf("%w: runtime capability %s", domain.ErrCapabilityMissing, capability)
+		}
+		actual := binding.Capabilities[capability]
+		if actual == "" || actual == string(runtime.CapUnavailable) {
+			return fmt.Errorf("%w: runtime capability %s", domain.ErrCapabilityMissing, capability)
+		}
+	}
+	return nil
+}
+
+func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.ModelSpec) error {
+	if binding == nil || binding.AdapterID != "codex-appserver" {
+		return nil
+	}
+	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
+	if provider != "" && provider != "codex" && provider != "openai" {
+		return fmt.Errorf("%w: Codex Runtime 不能使用 provider %q 的模型；请选择 Codex CLI 默认模型或 OpenAI/Codex 模型", domain.ErrValidation, spec.Provider)
+	}
+	return nil
 }
 
 // RetryRun 总是创建新 Run（retry_of），终态 Run 不可覆盖。
@@ -151,11 +287,21 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 	var retry *domain.ExecutionRun
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		now := time.Now().UTC()
+		input := cloneInput(parent.Input)
+		if conversation, ok := input["conversation"].(map[string]any); ok {
+			delete(conversation, "resume_session_ref")
+			delete(conversation, "resume_from_run_id")
+		}
+		// 重试语义 = 重新执行：锚点写墓碑（阻断播种复活），重试 run 自己的会话上报会重建锚点。
+		if parent.AdapterID != "" {
+			_ = s.writeAnchorTombstone(ctx, parent.WorkspaceID, parent.AgentProfileID, parent.AdapterID, parent.WorkItemID, "retry")
+		}
 		r := &domain.ExecutionRun{
 			ID: domain.NewID(domain.PrefixRun), WorkspaceID: parent.WorkspaceID,
 			WorkItemID: parent.WorkItemID, AgentProfileID: parent.AgentProfileID,
 			Status: domain.RunQueued, RuntimeLabel: parent.RuntimeLabel,
-			RetryOf: parent.ID, Input: parent.Input,
+			AdapterID: parent.AdapterID, Provider: parent.Provider,
+			RetryOf: parent.ID, Input: input,
 			Version: 1, CreatedAt: now, UpdatedAt: now,
 		}
 		if err := s.store.Runs().Create(ctx, r); err != nil {
@@ -178,10 +324,22 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 	s.notifier.Notify(retry.WorkspaceID)
 	if s.dispatcher != nil {
 		if err := s.dispatcher.Dispatch(context.WithoutCancel(ctx), retry); err != nil {
+			_ = s.RecordRunStatus(context.WithoutCancel(ctx), retry.ID, domain.RunFailed,
+				map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
 			return nil, err
 		}
 	}
 	return retry, nil
+}
+
+func cloneInput(input map[string]any) map[string]any {
+	b, _ := json.Marshal(input)
+	var cloned map[string]any
+	_ = json.Unmarshal(b, &cloned)
+	if cloned == nil {
+		cloned = map[string]any{}
+	}
+	return cloned
 }
 
 // ControlRun 处理 interrupt / cancel：先进入中间态，终态由 Adapter 确认。
@@ -201,8 +359,10 @@ func (s *Service) ControlRun(ctx context.Context, runID string, action string) (
 		if err != nil {
 			return err
 		}
-		// queued 状态可直接终态，无需 Adapter 确认。
-		if r.Status == domain.RunQueued {
+		// 未产生外部副作用（queued/starting）或连接已失（reconnecting）、
+		// 终局已定（succeeding）的状态直达终态；其余经中间态由 Adapter 确认。
+		switch r.Status {
+		case domain.RunQueued, domain.RunStarting, domain.RunReconnecting, domain.RunSucceeding:
 			if action == "cancel" {
 				target = domain.RunCancelled
 			} else {
@@ -220,7 +380,8 @@ func (s *Service) ControlRun(ctx context.Context, runID string, action string) (
 	}
 	s.audit(ctx, run.WorkspaceID, "run."+action, runID, map[string]any{"status": string(run.Status)})
 	s.notifier.Notify(run.WorkspaceID)
-	// 非 queued 的运行需要 Runner/Adapter 确认终态（协议文档 §8.3 取消语义）。
+	// 迁移成功后通知 Runner/Adapter 停止执行（协议文档 §8.3 取消语义）；
+	// 直达终态的迁移同样要通知（如 starting 态模块可能已在执行）。
 	if s.ControlForwarder != nil && run.Status == target {
 		s.ControlForwarder(ctx, runID, action)
 	}
@@ -245,6 +406,9 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		}
 		if retry, ok := data["retryable"].(bool); ok {
 			f.Retryable = retry
+		}
+		if fam, ok := data["family"].(string); ok {
+			r.ErrorFamily = fam
 		}
 		if f.Code != "" || f.Message != "" {
 			r.Failure = f
@@ -277,13 +441,18 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 			return err
 		}
 	}
-	// presence 投影：运行中 busy，终态回 idle。
+	// presence 投影：运行中 busy，终态回 idle；变化时同事务发 agent_presence.updated
+	//（前端对 agent_* 前缀事件刷新 agents 列表）。
 	if r.AgentProfileID != "" {
 		switch {
 		case to == domain.RunRunning:
-			_ = s.store.Agents().SetPresence(ctx, r.AgentProfileID, domain.PresenceBusy)
+			if err := s.projectAgentPresence(ctx, r, domain.PresenceBusy); err != nil {
+				return err
+			}
 		case to.IsTerminal():
-			_ = s.store.Agents().SetPresence(ctx, r.AgentProfileID, domain.PresenceIdle)
+			if err := s.projectAgentPresence(ctx, r, domain.PresenceIdle); err != nil {
+				return err
+			}
 		}
 	}
 	// Run 成功 → WorkItem 进入评审投影；completed 只能由验收门决定。
@@ -308,6 +477,28 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 	return nil
 }
 
+// projectAgentPresence 更新 agent presence 并在实际变化时同事务发
+// agent_presence.updated（载荷带 agent_id/presence/run_id）。
+// 事件必须与 Run 状态写入同一事务，避免前端看到状态与 presence 撕裂。
+// presence 读写本身尽力而为：agent 缺失或写失败不阻塞 Run 状态迁移，只记日志。
+func (s *Service) projectAgentPresence(ctx context.Context, r *domain.ExecutionRun, presence domain.AgentPresence) error {
+	agent, err := s.store.Agents().Get(ctx, r.AgentProfileID)
+	if err != nil {
+		log.Printf("presence: run %s 读取 agent %s 失败: %v", r.ID, r.AgentProfileID, err)
+		return nil
+	}
+	if agent.Presence == presence {
+		return nil
+	}
+	if err := s.store.Agents().SetPresence(ctx, r.AgentProfileID, presence); err != nil {
+		log.Printf("presence: run %s 更新 agent %s 失败: %v", r.ID, r.AgentProfileID, err)
+		return nil
+	}
+	return s.emit(ctx, r.WorkspaceID, domain.EventAgentPresenceUpdated,
+		domain.AggregateAgentProfile, r.AgentProfileID, agent.Version, nil,
+		map[string]any{"agent_id": r.AgentProfileID, "presence": string(presence), "run_id": r.ID})
+}
+
 // ── Adapter 生命周期记录（Mock / 真实 Adapter 共用）─────────────────
 
 // RecordRunStatus 供 Dispatcher / Adapter 上报状态变化。
@@ -326,7 +517,16 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	if r != nil {
 		s.notifier.Notify(r.WorkspaceID)
 	}
+	// session_unknown 失败自愈：终态落库后清锚点并一次性 fresh 重试（maybeSelfHeal 自带防循环）。
+	s.maybeSelfHeal(ctx, r)
 	return nil
+}
+
+// RecordRunSessionRef 在 provider 创建/恢复真实会话后持久化私有句柄。
+// 句柄只用于 Adapter 续接，不进入 Web DTO 或普通事件 payload。
+// 过渡期统一入口：与 RecordRunSessionUpdate 同一写点（双写 task_sessions 锚点）。
+func (s *Service) RecordRunSessionRef(ctx context.Context, runID, sessionRef string) error {
+	return s.RecordRunSessionUpdate(ctx, runID, runtime.SessionUpdate{Ref: sessionRef})
 }
 
 func (s *Service) RecordRunProgress(ctx context.Context, runID string, progress float64) error {
@@ -345,8 +545,9 @@ func (s *Service) RecordRunProgress(ctx context.Context, runID string, progress 
 			return err
 		}
 		workspaceID = r.WorkspaceID
+		// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
 		return s.emit(ctx, r.WorkspaceID, domain.EventRunProgressUpdated,
-			domain.AggregateExecutionRun, r.ID, r.Version,
+			domain.AggregateExecutionRun, r.ID, r.Version+1,
 			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunProgressUpdated},
 			map[string]any{"progress": progress})
 	})
@@ -357,7 +558,8 @@ func (s *Service) RecordRunProgress(ctx context.Context, runID string, progress 
 	return nil
 }
 
-// RecordRunEvent 追加 Run 域事件（message/tool 流），只写 run_events + stream。
+// RecordRunEvent 追加 Run 域事件（message/tool 流），只写 run_events + stream；
+// artifact.created 事件（mock 风格，载荷自带 sha256/logical_path）同时投影 artifacts 表。
 func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
 	var workspaceID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -366,6 +568,9 @@ func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data
 			return err
 		}
 		workspaceID = r.WorkspaceID
+		if evType == domain.EventArtifactCreated {
+			s.projectArtifactEvent(ctx, r, data)
+		}
 		return s.emit(ctx, r.WorkspaceID, evType,
 			domain.AggregateExecutionRun, r.ID, r.Version,
 			&RunEventRecord{RunID: r.ID, EventType: evType, Payload: data}, data)
@@ -375,6 +580,37 @@ func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data
 	}
 	s.notifier.Notify(workspaceID)
 	return nil
+}
+
+// projectArtifactEvent 把 artifact.created 事件载荷投影为 artifacts 行
+// （draft）；载荷缺 sha256/logical_path 或落库失败时只保留事件，不建 artifact。
+func (s *Service) projectArtifactEvent(ctx context.Context, r *domain.ExecutionRun, data map[string]any) {
+	if data == nil {
+		return
+	}
+	path, _ := data["logical_path"].(string)
+	sha, _ := data["sha256"].(string)
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(sha) == "" {
+		return
+	}
+	var size int64
+	switch v := data["size"].(type) {
+	case float64:
+		size = int64(v)
+	case int64:
+		size = v
+	case int:
+		size = int64(v)
+	}
+	mime, _ := data["mime"].(string)
+	art := &domain.Artifact{
+		ID: domain.NewID(domain.PrefixArtifact), RunID: r.ID,
+		LogicalPath: path, Mime: mime, Size: size, Sha256: sha,
+		Status: domain.ArtifactDraft, CreatedAt: time.Now().UTC(),
+	}
+	if err := s.store.Runs().CreateArtifact(ctx, art); err != nil {
+		log.Printf("artifact: run %s artifact.created 投影失败: %v", r.ID, err)
+	}
 }
 
 // RequestApproval：Run 进入 waiting_approval，等待幂等决定。
@@ -425,6 +661,8 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		decision = domain.ApprovalApproved
 	}
 	var result *domain.ApprovalRequest
+	// changed 标记本次调用是否真实变更决定；幂等重放不重复转发 ApprovalForwarder。
+	changed := false
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		a, err := s.store.Runs().GetApproval(ctx, approvalID)
 		if err != nil {
@@ -440,6 +678,7 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		if err := s.store.Runs().UpdateApproval(ctx, a); err != nil {
 			return err
 		}
+		changed = true
 		r, err := s.store.Runs().Get(ctx, a.RunID)
 		if err != nil {
 			return err
@@ -477,8 +716,9 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		if err == nil {
 			s.notifier.Notify(r.WorkspaceID)
 		}
-		// 转发到 Runner/Adapter，使其继续或终止执行。
-		if s.ApprovalForwarder != nil && result.Status == decision {
+		// 转发到 Runner/Adapter，使其继续或终止执行；仅本次真实变更时转发，
+		// 幂等重放不再重复投递（避免 adapter 收到重复审批决定）。
+		if s.ApprovalForwarder != nil && changed {
 			s.ApprovalForwarder(ctx, result.RunID, result.ID, approved)
 		}
 	}
@@ -546,6 +786,13 @@ func (s *Service) SendRunInput(ctx context.Context, runID, instruction string) e
 	if run.Status.IsTerminal() {
 		return fmt.Errorf("%w: run is terminal", domain.ErrValidation)
 	}
+	if s.InputForwarder == nil {
+		return domain.ErrCapabilityMissing
+	}
+	// 先由执行端确认接收，再写 canonical 用户消息，避免 UI 显示实际未送达的 steering。
+	if err := s.InputForwarder(ctx, runID, instruction); err != nil {
+		return err
+	}
 	if err := s.RecordRunEvent(ctx, runID, domain.EventMessageDelta,
 		map[string]any{"role": "user", "text": instruction}); err != nil {
 		return err
@@ -556,9 +803,6 @@ func (s *Service) SendRunInput(ctx context.Context, runID, instruction string) e
 	})
 	if err != nil {
 		return err
-	}
-	if s.InputForwarder != nil {
-		s.InputForwarder(ctx, runID, instruction)
 	}
 	return nil
 }
@@ -581,6 +825,27 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 		}
 	} else {
 		return nil, domain.ErrCapabilityMissing
+	}
+	// lost 是终态（终态不可逆，§4.3）：resume 不复活旧 run，而是基于同一会话锚点
+	// 重新执行——task_sessions 锚点未清除，CreateRun 将按指纹续接 provider 会话。
+	if run.Status == domain.RunLost {
+		instruction, _ := run.Input["instruction"].(string)
+		if strings.TrimSpace(instruction) == "" {
+			return nil, fmt.Errorf("%w: lost run 缺少可恢复 instruction", domain.ErrValidation)
+		}
+		p := CreateRunParams{
+			AgentProfileID:    run.AgentProfileID,
+			Instruction:       instruction,
+			RuntimePreference: runtimePreferenceOf(run.Input["runtime_preference"]),
+		}
+		if raw, ok := run.Input["acceptance_criteria"].([]any); ok {
+			for _, item := range raw {
+				if text, ok := item.(string); ok {
+					p.AcceptanceCriteria = append(p.AcceptanceCriteria, text)
+				}
+			}
+		}
+		return s.CreateRun(ctx, run.WorkItemID, p)
 	}
 	if err := s.RecordRunStatus(ctx, runID, domain.RunRunning,
 		map[string]any{"recovery": "resumed"}); err != nil {

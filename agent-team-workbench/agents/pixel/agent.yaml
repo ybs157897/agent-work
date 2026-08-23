@@ -1,15 +1,12 @@
 name: Pixel
 role: ui
 skills:
-  - 交互设计
-  - 视觉规范
+  - 交互设计、视觉规范
 runtime:
-  preferred: mock
-  fallbacks: []
+  preferred: dsh_local
+  mode: default
+  agent_preset: standard
 model:
-  provider: deepseek
-  model: deepseek-v4-flash
+  ref: deepseek-v4-flash
 permissions:
-  tools: [fs, editor]
-  approval_policy: approve_high_risk
-  sandbox: workspace_only
+  preset: workspace-write

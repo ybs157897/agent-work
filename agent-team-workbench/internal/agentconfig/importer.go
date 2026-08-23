@@ -62,6 +62,8 @@ func (im *Importer) Import(ctx context.Context, workspaceID string) (ImportResul
 				Version: 1, CreatedAt: now, UpdatedAt: now,
 			}
 			cfg.ToProfile(a)
+			// M4 唤醒缺省与迁移列缺省一致（yaml 暂不覆盖这些字段，更新路径保留 DB 值）。
+			a.WakeOnAssignment, a.WakeOnDemand = true, true
 			if err := im.store.Agents().Create(ctx, a); err != nil {
 				return res, err
 			}

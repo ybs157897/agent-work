@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -188,23 +189,31 @@ func (r *EventRepo) ListRunEvents(ctx context.Context, runID string) ([]applicat
 
 type IdempotencyRepo struct{ store *Store }
 
-func (r *IdempotencyRepo) Check(ctx context.Context, workspaceID, key string) (*application.IdempotencyRecord, error) {
+// fetch 读回一条幂等记录；不存在返回 (nil, nil)。
+// status_code 为 NULL（claim 占位中，见 Claim）时 StatusCode 读出为 0。
+func (r *IdempotencyRepo) fetch(ctx context.Context, workspaceID, key string) (*application.IdempotencyRecord, error) {
 	rec := &application.IdempotencyRecord{}
 	var resultRef *string
+	var statusCode sql.NullInt64
 	err := r.store.queryRow(ctx, r.store.exec(ctx),
 		`SELECT request_hash, status_code, result_ref FROM idempotency_keys
 		 WHERE workspace_id=? AND key=?`, workspaceID, key).
-		Scan(&rec.RequestHash, &rec.StatusCode, &resultRef)
+		Scan(&rec.RequestHash, &statusCode, &resultRef)
 	if err != nil {
 		if err = r.store.mapErr(err); err == domain.ErrNotFound {
 			return nil, nil
 		}
 		return nil, err
 	}
+	rec.StatusCode = int(statusCode.Int64)
 	if resultRef != nil {
 		rec.ResultBody = *resultRef
 	}
 	return rec, nil
+}
+
+func (r *IdempotencyRepo) Check(ctx context.Context, workspaceID, key string) (*application.IdempotencyRecord, error) {
+	return r.fetch(ctx, workspaceID, key)
 }
 
 func (r *IdempotencyRepo) Record(ctx context.Context, workspaceID, key string, rec application.IdempotencyRecord) error {
@@ -213,5 +222,53 @@ func (r *IdempotencyRepo) Record(ctx context.Context, workspaceID, key string, r
 		`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
 		 VALUES (?,?,?,?,?,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
 		workspaceID, key, rec.RequestHash, rec.ResultBody, rec.StatusCode, d.TimeParam(timeNow()))
+	return r.store.mapErr(err)
+}
+
+// Claim 是 claim-first 幂等协议的占位原语（零迁移）：
+// 利用现有列表达状态——行存在即占位，status_code IS NULL 表示执行中，非 NULL 表示已完成。
+//
+//	(true, nil, nil)  → 占位成功，调用方独占执行权（此后 Complete 或 Release）；
+//	(false, rec, nil) → 同 key 行已存在：rec.StatusCode > 0 为已完成响应（可重放），
+//	                     rec.StatusCode == 0 表示同 hash 请求仍在执行中。
+//
+// 若并发对手刚好在占位冲突与读回之间 Release 了行（窗口极小），重试一次 INSERT。
+func (r *IdempotencyRepo) Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, error) {
+	d := r.store.dialect
+	for attempt := 0; attempt < 2; attempt++ {
+		res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+			`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
+			 VALUES (?,?,?,NULL,NULL,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
+			workspaceID, key, requestHash, d.TimeParam(timeNow()))
+		if err != nil {
+			return false, nil, r.store.mapErr(err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n > 0 {
+			return true, nil, nil
+		}
+		rec, err := r.fetch(ctx, workspaceID, key)
+		if err != nil {
+			return false, nil, err
+		}
+		if rec != nil {
+			return false, rec, nil
+		}
+	}
+	return false, nil, domain.ErrIdempotencyConflict
+}
+
+// Complete 把执行结果写回占位行（仅当仍处于未完成状态，防止覆盖他人结果）。
+func (r *IdempotencyRepo) Complete(ctx context.Context, workspaceID, key string, statusCode int, resultBody string) error {
+	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE idempotency_keys SET result_ref=?, status_code=? WHERE workspace_id=? AND key=? AND status_code IS NULL`,
+		resultBody, statusCode, workspaceID, key)
+	return r.store.mapErr(err)
+}
+
+// Release 删除未完成的占位行：exec 返回 5xx 时调用，允许客户端以同 key 重试。
+func (r *IdempotencyRepo) Release(ctx context.Context, workspaceID, key string) error {
+	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`DELETE FROM idempotency_keys WHERE workspace_id=? AND key=? AND status_code IS NULL`,
+		workspaceID, key)
 	return r.store.mapErr(err)
 }

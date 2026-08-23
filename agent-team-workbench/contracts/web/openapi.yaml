@@ -22,6 +22,7 @@ tags:
   - name: artifacts
   - name: runtime-bindings
   - name: events
+  - name: models
 
 paths:
   /me:
@@ -256,6 +257,12 @@ paths:
 
   /work-items/{work_item_id}/runs:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [runs]
+      operationId: listWorkItemRuns
+      summary: 一个任务的全部 Run（对话轮次历史；不可覆盖的执行尝试）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionRunList" } } } }
     post:
       tags: [runs]
       operationId: createRun
@@ -272,6 +279,15 @@ paths:
       operationId: getRun
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionRun" } } } }
+
+  /runs/{run_id}/events:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: listRunEvents
+      summary: 回放 Run 事件历史（对话页消息重建；只读投影，按 run_seq 排序）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunEventList" } } } }
 
   /runs/{run_id}/commands/input:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
@@ -312,10 +328,10 @@ paths:
     post:
       tags: [runs]
       operationId: retryRun
-      description: 总是创建新 Run（retry_of=当前 run），不覆盖终态。
+      description: 总是创建新 Run（retry_of=当前 run），不覆盖终态；返回完整 ExecutionRun。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       responses:
-        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
+        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionRun" } } } }
 
   /runs/{run_id}/commands/resume:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
@@ -399,13 +415,6 @@ paths:
                 credential_ref: { type: string }
       responses:
         "201": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBinding" } } } }
-    patch:
-      tags: [runtime-bindings]
-      operationId: updateRuntimeBindings
-      description: 兼容旧契约的批量入口；推荐使用 PATCH /runtime-bindings/{id}。
-      parameters: [{ $ref: "#/components/parameters/IfMatch" }]
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RuntimeBindingList" } } } }
 
   /runtime-bindings/{runtime_binding_id}:
     parameters: [{ $ref: "#/components/parameters/RuntimeBindingId" }]
@@ -440,6 +449,224 @@ paths:
       responses:
         "202": { content: { application/json: { schema: { $ref: "#/components/schemas/ProbeResult" } } } }
 
+  /workspaces/{workspace_id}/agent-config/reload:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [agent-profiles]
+      operationId: reloadAgentConfig
+      summary: 重扫 agents/ 配置目录并导入 DB 投影（文件为真相源）
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentConfigReloadResult" } } } }
+
+  /models:
+    get:
+      tags: [models]
+      operationId: listModels
+      summary: 模型注册表列表（models/ 目录为真相源，全局共享不按 Workspace 隔离）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ModelEntryList" } } } }
+    post:
+      tags: [models]
+      operationId: createModel
+      description: 新建模型条目；id 可空（由 display_name 生成 slug）。凭据只传环境变量名，绝不传密钥明文。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ModelUpsert" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/ModelEntry" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /models/{model_id}:
+    parameters: [{ $ref: "#/components/parameters/ModelId" }]
+    put:
+      tags: [models]
+      operationId: updateModel
+      description: 全量替换模型条目（PUT 幂等语义；path id 为权威）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ModelUpsert" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ModelEntry" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [models]
+      operationId: deleteModel
+      description: 删除模型条目（幂等；引用它的 Agent 在下次创建 Run 时将收到 422）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      responses:
+        "204": { description: 已删除 }
+
+  /health:
+    get:
+      tags: [workspace]
+      operationId: getHealth
+      summary: 分层健康投影（System Online 不是固定文案；含 runners 概览）
+      security: []
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/HealthStatus" } } } }
+
+  /agent-profiles/{agent_profile_id}/commands/wake:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    post:
+      tags: [agent-profiles]
+      operationId: wakeAgent
+      summary: 手动唤醒（on_demand 源）；入队后由调度循环消费（≤一个 tick）并创建 run
+      description: |
+        agent 未开启 wake_on_demand 时返回 422。coalescing（活跃 run 期间合并）由
+        调度循环统一判定；唤醒审计见 agent_wakeup_requests（consumed/coalesced）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_key]
+              properties:
+                task_key: { type: string, description: 唤醒锚定的 work item id }
+                instruction: { type: string, description: 显式指令；渲染时优先于 prompt_template }
+                context:
+                  type: object
+                  additionalProperties: true
+                  description: 附加唤醒上下文（合并进 wake context）
+      responses:
+        "202":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wakeup_id, status, wake_at]
+                properties:
+                  wakeup_id: { type: string }
+                  status: { type: string, enum: [queued] }
+                  wake_at: { type: string, format: date-time }
+        "404": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /agent-profiles/{agent_profile_id}/task-sessions:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    get:
+      tags: [agent-profiles]
+      operationId: listTaskSessions
+      summary: Agent 名下跨 Run 会话锚点（墓碑行不返回；session_params 保留 __ref/__fingerprint 供诊断）
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/TaskSession" }
+
+  /agent-profiles/{agent_profile_id}/task-sessions/reset:
+    parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
+    post:
+      tags: [agent-profiles]
+      operationId: resetTaskSession
+      summary: 重置会话锚点（写墓碑；下一轮 Run 开新会话且不会被播种兜底复活）
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task_key, adapter_id]
+              properties:
+                task_key: { type: string, description: 通常是 work item ID }
+                adapter_id: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [reset] }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/commands/accept:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: acceptWorkItem
+      description: 验收工作项（acceptance 决议；漂移检测后接受当前状态）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version]
+              properties:
+                expected_version: { type: integer }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /models/provider-credentials:
+    get:
+      tags: [models]
+      operationId: getProviderCredential
+      summary: 读取本地保存的 provider API Key（仅本机工作台；需 runtime.manage 权限；模型注册表未启用时 404）
+      parameters:
+        - name: provider_id
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_key: { type: string, description: 未配置时为空串 }
+        "404": { $ref: "#/components/responses/Conflict" }
+    put:
+      tags: [models]
+      operationId: putProviderCredential
+      summary: 保存 provider API Key 到本地凭据存储
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider_id, api_key]
+              properties:
+                provider_id: { type: string }
+                api_key: { type: string }
+      responses:
+        "204": { description: 已保存 }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /runtimes/dsh/catalog:
+    get:
+      tags: [runtime-bindings]
+      operationId: getDshCatalog
+      summary: DSH harness 预设目录（agent_presets / permission_presets；本地仓库扫描）
+      security: []
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_presets, permission_presets]
+                properties:
+                  agent_presets:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  permission_presets:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -454,7 +681,22 @@ components:
     RunId: { name: run_id, in: path, required: true, schema: { type: string } }
     ApprovalId: { name: approval_id, in: path, required: true, schema: { type: string } }
     RuntimeBindingId: { name: runtime_binding_id, in: path, required: true, schema: { type: string } }
-    IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+    ModelId: { name: model_id, in: path, required: true, schema: { type: string } }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string }
+      description: |
+        写命令幂等键。同 key 同请求体：已完成则重放原响应（Idempotent-Replayed: true），
+        执行中返回 409 idempotency_in_progress（retryable，稍后重试）；
+        同 key 不同请求体返回 409 idempotency_conflict；5xx 后占位释放，可同 key 重试。
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: 可选（该操作天然幂等，不依赖此头）。
     IfMatch: { name: If-Match, in: header, required: false, schema: { type: string } }
     Cursor: { name: cursor, in: query, required: false, schema: { type: string } }
 
@@ -567,6 +809,8 @@ components:
         skills: { type: array, items: { type: string } }
         instructions: { type: string }
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        model_override: { $ref: "#/components/schemas/ModelRef" }
+        policy: { $ref: "#/components/schemas/AgentPolicy" }
         expected_version: { type: integer }
 
     DisableOptions:
@@ -581,6 +825,7 @@ components:
         name: { type: string }
         role: { type: string }
         skills: { type: array, items: { type: string } }
+        instructions: { type: string }
         availability: { type: string, enum: [enabled, disabled] }
         presence: { type: string, enum: [idle, busy, degraded, offline] }
         current_run_summary:
@@ -592,6 +837,8 @@ components:
             title: { type: string }
             progress: { type: number }
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
+        model_override: { $ref: "#/components/schemas/ModelRef" }
+        policy: { $ref: "#/components/schemas/AgentPolicy" }
         version: { type: integer }
 
     RuntimePreference:
@@ -599,6 +846,23 @@ components:
       properties:
         preferred: { type: string }
         fallbacks: { type: array, items: { type: string } }
+        mode: { type: string, enum: [default, plan] }
+        agent_preset: { type: string }
+
+    ModelRef:
+      type: object
+      properties:
+        ref: { type: string }
+        provider: { type: string }
+        model: { type: string }
+
+    AgentPolicy:
+      type: object
+      properties:
+        tools: { type: array, items: { type: string } }
+        approval_policy: { type: string, enum: [auto, approve_high_risk, manual] }
+        sandbox: { type: string, enum: [read-only, workspace-write, danger-full-access] }
+        permission_preset: { type: string }
 
     WorkItemList:
       type: object
@@ -724,6 +988,7 @@ components:
 
     Approval:
       type: object
+      description: 以实现为准（httpapi approvalDTO）；不输出 requested_by/expires_at。
       properties:
         id: { type: string }
         run_id: { type: string }
@@ -732,8 +997,6 @@ components:
         risk: { type: string, enum: [low, medium, high] }
         status: { type: string, enum: [pending, approved, rejected, expired] }
         summary: { type: string }
-        requested_by: { type: object }
-        expires_at: { type: string, format: date-time, nullable: true }
         resolved_at: { type: string, format: date-time, nullable: true }
         resolved_by: { type: string, nullable: true }
 
@@ -796,3 +1059,100 @@ components:
         provider_version: { type: string, nullable: true }
         capabilities: { type: object, additionalProperties: { type: string } }
         error: { type: string, nullable: true }
+
+    ExecutionRunList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ExecutionRun" } }
+
+    RunEventList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RunEvent" } }
+
+    RunEvent:
+      type: object
+      description: 与实现一致（ListRunEvents 投影；前端 TS 同形）。
+      properties:
+        run_seq: { type: integer }
+        event_type: { type: string, description: "run.created/message.delta/message.completed/tool.*/approval.*/run.status_changed 等" }
+        payload: { type: object, additionalProperties: true, nullable: true }
+        occurred_at: { type: string, format: date-time }
+
+    AgentConfigReloadResult:
+      type: object
+      properties:
+        created: { type: integer }
+        updated: { type: integer }
+        skipped: { type: integer }
+
+    ModelEntryList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ModelEntry" } }
+
+    ModelEntry:
+      type: object
+      description: 模型注册表条目（models/<id>.yaml）；词汇对齐 pi-ai provider profile。
+      properties:
+        id: { type: string, description: 小写 slug，文件名 }
+        display_name: { type: string }
+        category: { type: string, description: "UI 展示分类，如 OpenCode Go / Kimi；不参与 runtime 路由" }
+        provider: { type: string, description: "provider 路由名，如 deepseek-official / anthropic / 自定义网关" }
+        api: { type: string, enum: ["", openai-completions, openai-responses, anthropic-messages], description: 线协议；空 = runtime 默认 }
+        model: { type: string }
+        api_key_env: { type: string, description: 凭据环境变量名（引用，绝不明文） }
+        base_url: { type: string, description: OpenAI 兼容端点 }
+        context_window: { type: integer }
+        max_tokens: { type: integer }
+        notes: { type: string }
+
+    ModelUpsert:
+      type: object
+      required: [display_name, provider, model]
+      properties:
+        id: { type: string, description: "POST 可空（由 display_name 生成）；PUT 忽略（path 为权威）" }
+        display_name: { type: string }
+        category: { type: string, description: "UI 展示分类，如 OpenCode Go / Kimi；不参与 runtime 路由" }
+        provider: { type: string }
+        api: { type: string, enum: ["", openai-completions, openai-responses, anthropic-messages] }
+        model: { type: string }
+        api_key_env: { type: string }
+        base_url: { type: string }
+        context_window: { type: integer }
+        max_tokens: { type: integer }
+        notes: { type: string }
+
+    TaskSession:
+      type: object
+      description: 跨 Run 会话锚点（Paperclip agent_task_sessions 对应物）；唯一键 (workspace, agent, adapter, task_key)。
+      required: [id, agent_profile_id, adapter_id, task_key, runs_count, input_tokens_cum, created_at, updated_at]
+      properties:
+        id: { type: string }
+        agent_profile_id: { type: string }
+        adapter_id: { type: string }
+        task_key: { type: string, description: 通常是 work item ID }
+        session_ref: { type: string, description: provider 会话句柄（如 codex://thread_x、dsh://session-y） }
+        session_params:
+          type: object
+          additionalProperties: true
+          description: adapter 私有参数 + 保留键 __ref/__fingerprint/__from_run_id/__cleared_reason
+        display_id: { type: string, description: provider 侧人类可读会话 id }
+        runs_count: { type: integer, description: 本代会话已被多少 Run 使用（轮换阈值输入；轮换后清零重起） }
+        input_tokens_cum: { type: integer, format: int64, description: 本代累计输入 token（轮换阈值输入） }
+        created_at: { type: string, format: date-time, description: 本代会话代际起点（72h 轮换阈值基准） }
+        updated_at: { type: string, format: date-time }
+
+    HealthStatus:
+      type: object
+      required: [health]
+      properties:
+        health:
+          type: object
+          properties:
+            control_plane: { type: string, enum: [healthy] }
+            runners:
+              type: array
+              items:
+                type: object
+                additionalProperties: true

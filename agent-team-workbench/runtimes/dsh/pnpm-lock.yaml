@@ -23,6 +23,12 @@ importers:
       '@deepseek-ai/dsh-llm-deepseek':
         specifier: link:../../../../deepseek-harness/packages/llm/llm-deepseek
         version: link:../../../../deepseek-harness/packages/llm/llm-deepseek
+      '@deepseek-ai/dsh-llm-pi-ai':
+        specifier: link:../../../../deepseek-harness/packages/llm/llm-pi-ai
+        version: link:../../../../deepseek-harness/packages/llm/llm-pi-ai
+      '@deepseek-ai/dsh-persona':
+        specifier: link:../../../../deepseek-harness/packages/preset/persona
+        version: link:../../../../deepseek-harness/packages/preset/persona
       '@deepseek-ai/dsh-sandbox-local':
         specifier: link:../../../../deepseek-harness/packages/sandbox/sandbox-local
         version: link:../../../../deepseek-harness/packages/sandbox/sandbox-local

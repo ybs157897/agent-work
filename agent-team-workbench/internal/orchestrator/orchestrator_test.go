@@ -33,7 +33,7 @@ func TestResolveRuntimeCandidates(t *testing.T) {
 func TestBuildInput(t *testing.T) {
 	agent := &domain.AgentProfile{
 		Instructions:  "你是开发 Agent",
-		Policy:        domain.AgentPolicy{Tools: []string{"bash", "fs"}, ApprovalPolicy: "approve_high_risk", Sandbox: "workspace_only"},
+		Policy:        domain.AgentPolicy{Tools: []string{"bash", "fs"}, ApprovalPolicy: "approve_high_risk", Sandbox: "workspace-write"},
 		ModelOverride: domain.ModelRef{Provider: "deepseek", Model: "deepseek-v4-flash"},
 	}
 	in := BuildInput("实现 X", []string{"测试通过"}, map[string]string{"streaming": "required"},
@@ -77,6 +77,9 @@ func TestPolicyForManualStripsShell(t *testing.T) {
 	if len(p.Tools) != 2 {
 		t.Fatalf("tools = %v", p.Tools)
 	}
+	if len(agent.Policy.Tools) != 3 {
+		t.Fatalf("PolicyFor 不得修改 Agent 原始工具列表: %v", agent.Policy.Tools)
+	}
 
 	auto := &domain.AgentProfile{Policy: domain.AgentPolicy{Tools: []string{"bash"}, ApprovalPolicy: "auto"}}
 	if p := PolicyFor(auto); len(p.Tools) != 1 {
@@ -84,15 +87,68 @@ func TestPolicyForManualStripsShell(t *testing.T) {
 	}
 }
 
+func TestModePolicySnapshotAndConfigDigest(t *testing.T) {
+	agent := &domain.AgentProfile{
+		RuntimePreference: domain.RuntimePreference{Mode: "plan", AgentPreset: "standard"},
+		Policy:            domain.AgentPolicy{PermissionPreset: "read-only"},
+	}
+	if got := EffectiveMode(nil, agent); got != "plan" {
+		t.Fatalf("mode = %s", got)
+	}
+	policy := PolicySnapshot(agent)
+	if policy["sandbox"] != "read-only" || policy["approval_policy"] != "approve_high_risk" {
+		t.Fatalf("policy = %#v", policy)
+	}
+	input := map[string]any{"system_prompt": "a", "policy": policy, "mode": "plan"}
+	d1 := ConfigDigest(input)
+	input["system_prompt"] = "b"
+	if d2 := ConfigDigest(input); d1 == d2 {
+		t.Fatal("提示词变化必须切断 provider session 复用")
+	}
+}
+
 func TestEffectiveModel(t *testing.T) {
 	b := &domain.RuntimeBinding{Provider: "deepseek", Model: "deepseek-v4-flash"}
 	agent := &domain.AgentProfile{ModelOverride: domain.ModelRef{Model: "deepseek-v4-pro"}}
-	p, m := EffectiveModel(agent, b)
-	if p != "deepseek" || m != "deepseek-v4-pro" {
-		t.Fatalf("override: %s/%s", p, m)
+	spec := EffectiveModel(agent, b, nil)
+	if spec.Provider != "deepseek" || spec.Model != "deepseek-v4-pro" {
+		t.Fatalf("override: %+v", spec)
 	}
-	p, m = EffectiveModel(nil, b)
-	if p != "deepseek" || m != "deepseek-v4-flash" {
-		t.Fatalf("binding 默认: %s/%s", p, m)
+	spec = EffectiveModel(nil, b, nil)
+	if spec.Provider != "deepseek" || spec.Model != "deepseek-v4-flash" {
+		t.Fatalf("binding 默认: %+v", spec)
+	}
+}
+
+func TestEffectiveModelRegistryRef(t *testing.T) {
+	b := &domain.RuntimeBinding{Provider: "mock-provider", Model: "mock-model-v1"}
+	resolve := func(ref string) (ModelSpec, bool) {
+		if ref == "deepseek-v4-flash" {
+			return ModelSpec{Provider: "deepseek-official", Model: "deepseek-v4-flash",
+				BaseURL: "https://api.deepseek.com", APIKeyEnv: "DEEPSEEK_API_KEY"}, true
+		}
+		return ModelSpec{}, false
+	}
+
+	// ref 命中：注册表覆盖 binding 默认
+	agent := &domain.AgentProfile{ModelOverride: domain.ModelRef{Ref: "deepseek-v4-flash"}}
+	spec := EffectiveModel(agent, b, resolve)
+	if spec.Ref != "deepseek-v4-flash" || spec.Provider != "deepseek-official" ||
+		spec.Model != "deepseek-v4-flash" || spec.APIKeyEnv != "DEEPSEEK_API_KEY" {
+		t.Fatalf("ref 命中: %+v", spec)
+	}
+
+	// ref 命中 + 显式字段覆盖注册表
+	agent.ModelOverride.Model = "deepseek-v4-pro"
+	spec = EffectiveModel(agent, b, resolve)
+	if spec.Model != "deepseek-v4-pro" || spec.Provider != "deepseek-official" {
+		t.Fatalf("显式覆盖注册表: %+v", spec)
+	}
+
+	// ref 未命中：回退 binding 默认，不泄漏注册表字段
+	agent.ModelOverride = domain.ModelRef{Ref: "ghost"}
+	spec = EffectiveModel(agent, b, resolve)
+	if spec.Ref != "" || spec.Provider != "mock-provider" || spec.Model != "mock-model-v1" {
+		t.Fatalf("ref 未命中应回退 binding: %+v", spec)
 	}
 }

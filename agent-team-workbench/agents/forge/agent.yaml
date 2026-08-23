@@ -1,16 +1,13 @@
+# Agent 配置文件（agents/<slug>/ 为真相源；Web 编辑会回写此文件）
 name: Forge
 role: developer
 skills:
-  - Go
-  - React
-  - 测试
+    - Go、React、测试
 runtime:
-  preferred: mock
-  fallbacks: []
+    preferred: dsh_local
+    mode: default
+    agent_preset: standard
 model:
-  provider: deepseek
-  model: deepseek-v4-flash
+    ref: deepseek-v4-flash
 permissions:
-  tools: [bash, editor, fs, todo]
-  approval_policy: approve_high_risk
-  sandbox: workspace_only
+    preset: workspace-write

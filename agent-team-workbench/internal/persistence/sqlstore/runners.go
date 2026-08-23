@@ -130,6 +130,39 @@ func (r *RunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string,
 
 type AuditRepo struct{ store *Store }
 
+// RenewLeasesByRunner 兑现 welcome 广告的 lease_policy.renew_interval_seconds：
+// heartbeat 是 runner 存活证明，推进该 runner 名下「run 仍非终态」的活跃 lease 的
+// renewed_until（TTL 从续租时刻重新计时）；run 已终态的残留 lease 顺手置
+// released_at（幂等，与 finalizeIfTerminal 的释放互不冲突）。返回续租行数。
+// 不加 renewed_until>now 前置条件：心跳迟于 TTL 到达时只要 lease 未被 sweeper
+// 释放即可续——续租由 runner 存活证据驱动，而非 lease 新鲜度；runner 真正失联后
+// 无心跳 → sweeper 释放路径保持不变。
+func (r *RunnerRepo) RenewLeasesByRunner(ctx context.Context, runnerID string, renewUntil time.Time) (int, error) {
+	d := r.store.dialect
+	db := r.store.exec(ctx)
+	// 终态 run 的残留 lease：回收（finalizeIfTerminal 之外的路径置为终态时兜底）。
+	if _, err := r.store.execStmt(ctx, db,
+		`UPDATE run_leases SET released_at=?
+		  WHERE runner_id=? AND released_at IS NULL
+		    AND run_id IN (SELECT id FROM execution_runs
+		                    WHERE status IN ('succeeded','interrupted','cancelled','lost','failed'))`,
+		d.TimeParam(timeNow()), runnerID); err != nil {
+		return 0, r.store.mapErr(err)
+	}
+	// 非终态 run 的活跃 lease：推进 renewed_until。
+	res, err := r.store.execStmt(ctx, db,
+		`UPDATE run_leases SET renewed_until=?
+		  WHERE runner_id=? AND released_at IS NULL
+		    AND run_id IN (SELECT id FROM execution_runs
+		                    WHERE status NOT IN ('succeeded','interrupted','cancelled','lost','failed'))`,
+		d.TimeParam(renewUntil), runnerID)
+	if err != nil {
+		return 0, r.store.mapErr(err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // Append 写不可变审计记录（协议文档 §10.1）。
 func (r *AuditRepo) Append(ctx context.Context, workspaceID string, actor map[string]any, action, target string, detail map[string]any) error {
 	d := r.store.dialect

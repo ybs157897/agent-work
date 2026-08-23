@@ -169,10 +169,11 @@ func toActivityDTO(a application.Activity) activityDTO {
 // ── 请求体 ───────────────────────────────────────────────────────────
 
 type createAgentRequest struct {
-	Name   string   `json:"name"`
-	Role   string   `json:"role"`
-	Skills []string `json:"skills"`
-	Avatar string   `json:"avatar"`
+	Name              string          `json:"name"`
+	Role              string          `json:"role"`
+	Skills            []string        `json:"skills"`
+	Avatar            string          `json:"avatar"`
+	RuntimePreference *runtimePrefDTO `json:"runtime_preference"`
 }
 
 type createWorkItemRequest struct {
@@ -216,11 +217,44 @@ type createRunRequest struct {
 }
 
 type runtimePrefDTO struct {
-	Preferred string   `json:"preferred"`
-	Fallbacks []string `json:"fallbacks"`
+	Preferred   string   `json:"preferred"`
+	Fallbacks   []string `json:"fallbacks"`
+	Mode        string   `json:"mode"`
+	AgentPreset string   `json:"agent_preset"`
 }
 
 type resolveApprovalRequest struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason"`
+}
+
+// ── TaskSession ──────────────────────────────────────────────────────
+
+type taskSessionDTO struct {
+	ID             string         `json:"id"`
+	AgentProfileID string         `json:"agent_profile_id"`
+	AdapterID      string         `json:"adapter_id"`
+	TaskKey        string         `json:"task_key"`
+	SessionRef     string         `json:"session_ref,omitempty"`
+	SessionParams  map[string]any `json:"session_params,omitempty"`
+	DisplayID      string         `json:"display_id,omitempty"`
+	RunsCount      int            `json:"runs_count"`
+	InputTokensCum int64          `json:"input_tokens_cum"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
+// toTaskSessionDTO 输出锚点投影；SessionParams 保留 __ref/__fingerprint 供诊断。
+func toTaskSessionDTO(t *domain.TaskSession) taskSessionDTO {
+	return taskSessionDTO{
+		ID: t.ID, AgentProfileID: t.AgentProfileID, AdapterID: t.AdapterID, TaskKey: t.TaskKey,
+		SessionRef: t.SessionRef(), SessionParams: t.SessionParams, DisplayID: t.DisplayID,
+		RunsCount: t.RunsCount, InputTokensCum: t.InputTokensCum,
+		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
+	}
+}
+
+type resetTaskSessionRequest struct {
+	TaskKey   string `json:"task_key"`
+	AdapterID string `json:"adapter_id"`
 }

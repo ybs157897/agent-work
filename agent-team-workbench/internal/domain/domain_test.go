@@ -97,6 +97,23 @@ func TestRunStateMachine(t *testing.T) {
 		{RunRunning, RunSucceeding, true},
 		{RunSucceeding, RunSucceeded, true},
 		{RunRunning, RunTodoBack(t), false},
+		// starting 与 queued 一样尚未产生外部副作用：控制命令直达终态 + 直入 succeeding。
+		{RunStarting, RunInterrupting, true},
+		{RunStarting, RunCancelling, true},
+		{RunStarting, RunInterrupted, true},
+		{RunStarting, RunCancelled, true},
+		{RunStarting, RunSucceeding, true},
+		{RunStarting, RunLost, false},
+		// reconnecting/succeeding：控制命令经中间态或直达终态（模块补迁移配合）。
+		{RunReconnecting, RunInterrupting, true},
+		{RunReconnecting, RunCancelling, true},
+		{RunReconnecting, RunInterrupted, true},
+		{RunReconnecting, RunCancelled, true},
+		{RunReconnecting, RunFailed, true},
+		{RunSucceeding, RunInterrupting, true},
+		{RunSucceeding, RunCancelling, true},
+		{RunSucceeding, RunInterrupted, true},
+		{RunSucceeding, RunCancelled, true},
 	}
 	for _, c := range cases {
 		r := &ExecutionRun{Status: c.from, Version: 1}

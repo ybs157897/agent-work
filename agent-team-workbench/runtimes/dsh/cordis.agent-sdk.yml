@@ -1,0 +1,15 @@
+# SDK runtime 的 agent 平面：只包含 agent-spine；工具由每次 Run 的白名单追加。
+# 标准/PTC/创造等 preset 的完整 agent.cordis.yml 依赖 DSH Web Host 平面，
+# jsonrpc-agent 子进程暂用此组合代替，persona 仍由 DSH_SYSTEM_PROMPT 注入。
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    includeHarnessIdentity: false
+    includeRuntimeContext: false
+    persona: !!js process.env.DSH_SYSTEM_PROMPT ?? 'You are a helpful software engineer assistant.'
+    workspaceContext: false
+    skills:
+      enabled: false
+    toolBash: false
+    toolJobs: false

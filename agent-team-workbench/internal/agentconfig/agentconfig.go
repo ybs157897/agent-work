@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/dshcatalog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,22 +23,27 @@ type FileConfig struct {
 	Skills  []string `yaml:"skills,omitempty"`
 	Avatar  string   `yaml:"avatar,omitempty"`
 	Runtime struct {
-		Preferred string   `yaml:"preferred,omitempty"`
-		Fallbacks []string `yaml:"fallbacks,omitempty"`
+		Preferred   string   `yaml:"preferred,omitempty"`
+		Fallbacks   []string `yaml:"fallbacks,omitempty"`
+		Mode        string   `yaml:"mode,omitempty"`
+		AgentPreset string   `yaml:"agent_preset,omitempty"`
 	} `yaml:"runtime,omitempty"`
 	Model struct {
+		Ref      string `yaml:"ref,omitempty"` // 引用 models/ 注册表条目
 		Provider string `yaml:"provider,omitempty"`
 		Model    string `yaml:"model,omitempty"`
 	} `yaml:"model,omitempty"`
 	Permissions struct {
 		Tools          []string `yaml:"tools,omitempty"`
-		ApprovalPolicy string   `yaml:"approval_policy,omitempty"` // auto | approve_high_risk | manual
+		ApprovalPolicy string   `yaml:"approval_policy,omitempty"`
 		Sandbox        string   `yaml:"sandbox,omitempty"`
+		Preset         string   `yaml:"preset,omitempty"` // DSH permission preset
 	} `yaml:"permissions,omitempty"`
 	Prompt string `yaml:"-"` // prompt.md 内容
 }
 
 var validApprovalPolicy = map[string]bool{"": true, "auto": true, "approve_high_risk": true, "manual": true}
+var validSandbox = map[string]bool{"": true, "read-only": true, "workspace-write": true, "danger-full-access": true}
 
 // ToProfile 把文件配置映射到领域对象的可配置字段（不含 availability/presence 等运行态）。
 func (c *FileConfig) ToProfile(a *domain.AgentProfile) {
@@ -47,12 +53,14 @@ func (c *FileConfig) ToProfile(a *domain.AgentProfile) {
 	a.Skills = c.Skills
 	a.Avatar = c.Avatar
 	a.Instructions = c.Prompt
-	a.RuntimePreference = domain.RuntimePreference{Preferred: c.Runtime.Preferred, Fallbacks: c.Runtime.Fallbacks}
-	a.ModelOverride = domain.ModelRef{Provider: c.Model.Provider, Model: c.Model.Model}
+	a.RuntimePreference = domain.RuntimePreference{
+		Preferred: c.Runtime.Preferred, Fallbacks: c.Runtime.Fallbacks,
+		Mode: c.Runtime.Mode, AgentPreset: c.Runtime.AgentPreset,
+	}
+	a.ModelOverride = domain.ModelRef{Ref: c.Model.Ref, Provider: c.Model.Provider, Model: c.Model.Model}
 	a.Policy = domain.AgentPolicy{
-		Tools:          c.Permissions.Tools,
-		ApprovalPolicy: c.Permissions.ApprovalPolicy,
-		Sandbox:        c.Permissions.Sandbox,
+		Tools: c.Permissions.Tools, ApprovalPolicy: c.Permissions.ApprovalPolicy,
+		Sandbox: c.Permissions.Sandbox, PermissionPreset: c.Permissions.Preset,
 	}
 }
 
@@ -68,8 +76,12 @@ func FromProfile(a *domain.AgentProfile) *FileConfig {
 	}
 	c.Runtime.Preferred = a.RuntimePreference.Preferred
 	c.Runtime.Fallbacks = a.RuntimePreference.Fallbacks
+	c.Runtime.Mode = a.RuntimePreference.Mode
+	c.Runtime.AgentPreset = a.RuntimePreference.AgentPreset
+	c.Model.Ref = a.ModelOverride.Ref
 	c.Model.Provider = a.ModelOverride.Provider
 	c.Model.Model = a.ModelOverride.Model
+	c.Permissions.Preset = a.Policy.PermissionPreset
 	c.Permissions.Tools = a.Policy.Tools
 	c.Permissions.ApprovalPolicy = a.Policy.ApprovalPolicy
 	c.Permissions.Sandbox = a.Policy.Sandbox
@@ -119,6 +131,15 @@ func loadOne(dir, slug string) (*FileConfig, error) {
 	}
 	if !validApprovalPolicy[cfg.Permissions.ApprovalPolicy] {
 		return nil, fmt.Errorf("%w: %s: approval_policy 必须是 auto|approve_high_risk|manual", domain.ErrValidation, yamlPath)
+	}
+	if !validSandbox[cfg.Permissions.Sandbox] {
+		return nil, fmt.Errorf("%w: %s: sandbox 必须是 read-only|workspace-write|danger-full-access", domain.ErrValidation, yamlPath)
+	}
+	if mode := strings.TrimSpace(cfg.Runtime.Mode); mode != "" && mode != "default" && mode != "plan" {
+		return nil, fmt.Errorf("%w: %s: runtime.mode 必须是 default|plan", domain.ErrValidation, yamlPath)
+	}
+	if p := strings.TrimSpace(cfg.Permissions.Preset); p != "" && !dshcatalog.ValidPermissionPreset(p) {
+		return nil, fmt.Errorf("%w: %s: permissions.preset 必须是 read-only|workspace-write|danger-full-access", domain.ErrValidation, yamlPath)
 	}
 	if prompt, err := os.ReadFile(filepath.Join(dir, "prompt.md")); err == nil {
 		cfg.Prompt = string(prompt)

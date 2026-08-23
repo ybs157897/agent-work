@@ -2,16 +2,12 @@
 name: Nova
 role: pm
 skills:
-    - 需求分析
-    - 优先级管理
+    - 需求分析、优先级管理
 runtime:
-    preferred: mock
+    preferred: dsh_local
+    mode: default
+    agent_preset: test-mode
 model:
-    provider: deepseek
-    model: deepseek-v4-flash
+    ref: deepseek-v4-flash
 permissions:
-    tools:
-        - todo
-        - fs
-    approval_policy: manual
-    sandbox: workspace_only
+    preset: workspace-write

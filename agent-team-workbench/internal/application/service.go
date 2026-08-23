@@ -3,9 +3,11 @@ package application
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -21,7 +23,9 @@ type Service struct {
 	ApprovalForwarder func(ctx context.Context, runID, approvalID string, approved bool)
 	ControlForwarder  func(ctx context.Context, runID, action string)
 	// InputForwarder 把用户 steering 输入转发到活动 Run 的执行端（adapter 同 session 追加 prompt）。
-	InputForwarder func(ctx context.Context, runID, instruction string)
+	InputForwarder func(ctx context.Context, runID, instruction string) error
+	// ModelResolver 按 ref 查 models/ 注册表（装配层注入；nil 时跳过注册表层）。
+	ModelResolver orchestrator.ModelResolver
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {
@@ -43,21 +47,29 @@ func (s *Service) emit(ctx context.Context, workspaceID, evType, aggType, aggID 
 	return nil
 }
 
+// activity 写 activity 流并发布 activity.appended 事件。
+// 自包 InTx：外层无事务时独立成事务；外层已在事务内时 store.InTx 幂等复用。
+// activities 行与 stream_events/outbox 必须同事务提交——两条独立 autocommit
+// 在中途崩溃时会留下「有事件无活动」或反向的分裂状态。
 func (s *Service) activity(ctx context.Context, workspaceID, kind, message string) error {
-	if err := s.store.Events().AppendActivity(ctx, workspaceID, kind, message); err != nil {
-		return err
-	}
-	return s.emit(ctx, workspaceID, domain.EventActivityCreated,
-		domain.AggregateWorkspace, workspaceID, 0, nil, map[string]any{
-			"kind": kind, "message": message,
-		})
+	return s.store.InTx(ctx, func(ctx context.Context) error {
+		if err := s.store.Events().AppendActivity(ctx, workspaceID, kind, message); err != nil {
+			return err
+		}
+		return s.emit(ctx, workspaceID, domain.EventActivityCreated,
+			domain.AggregateWorkspace, workspaceID, 0, nil, map[string]any{
+				"kind": kind, "message": message,
+			})
+	})
 }
 
 // audit 写不可变审计记录（协议文档 §10.1：审批、运行控制、凭据变更、验收）。
 // M1 演示用户固定；RBAC 会话接入后替换 actor。
 func (s *Service) audit(ctx context.Context, workspaceID, action, target string, detail map[string]any) {
 	actor := map[string]any{"kind": "user", "id": "user_demo"}
-	_ = s.store.Audit().Append(ctx, workspaceID, actor, action, target, detail)
+	if err := s.store.Audit().Append(ctx, workspaceID, actor, action, target, detail); err != nil {
+		log.Printf("audit: workspace %s action %s target %s 写入失败: %v", workspaceID, action, target, err)
+	}
 }
 
 // ── AgentProfile ─────────────────────────────────────────────────────
@@ -74,6 +86,14 @@ func (s *Service) CreateAgent(ctx context.Context, workspaceID string, p CreateA
 	if p.Name == "" || p.Role == "" {
 		return nil, fmt.Errorf("%w: name and role required", domain.ErrValidation)
 	}
+	if p.RuntimePreference.Mode != "" && p.RuntimePreference.Mode != "default" && p.RuntimePreference.Mode != "plan" {
+		return nil, fmt.Errorf("%w: mode 必须是 default|plan", domain.ErrValidation)
+	}
+	if p.RuntimePreference.Preferred != "" {
+		if _, err := s.store.Bindings().GetByLabel(ctx, workspaceID, p.RuntimePreference.Preferred); err != nil {
+			return nil, fmt.Errorf("%w: runtime %q 不存在", domain.ErrValidation, p.RuntimePreference.Preferred)
+		}
+	}
 	now := time.Now().UTC()
 	a := &domain.AgentProfile{
 		ID: domain.NewID(domain.PrefixAgent), WorkspaceID: workspaceID,
@@ -81,6 +101,8 @@ func (s *Service) CreateAgent(ctx context.Context, workspaceID string, p CreateA
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
 		RuntimePreference: p.RuntimePreference, Version: 1, CreatedAt: now, UpdatedAt: now,
 	}
+	// M4 唤醒缺省与迁移列缺省一致：指派/手动唤醒默认开，心跳自主唤醒 opt-in。
+	a.WakeOnAssignment, a.WakeOnDemand = true, true
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		if err := s.store.Agents().Create(ctx, a); err != nil {
 			return err
@@ -135,7 +157,12 @@ func (s *Service) SetAgentAvailability(ctx context.Context, agentID string, enab
 				return err
 			}
 			for _, r := range runs {
-				if err := s.transitionRunLocked(ctx, r, domain.RunInterrupting, nil); err != nil {
+				// queued 未起跑：直接终态 interrupted；已起跑的进 interrupting 等引擎确认。
+				target := domain.RunInterrupting
+				if r.Status == domain.RunQueued {
+					target = domain.RunInterrupted
+				}
+				if err := s.transitionRunLocked(ctx, r, target, nil); err != nil {
 					return err
 				}
 			}
@@ -212,6 +239,22 @@ type AgentPatch struct {
 }
 
 func (s *Service) UpdateAgent(ctx context.Context, agentID string, patch AgentPatch) (*domain.AgentProfile, error) {
+	if patch.RuntimePreference != nil && patch.RuntimePreference.Mode != "" &&
+		patch.RuntimePreference.Mode != "default" && patch.RuntimePreference.Mode != "plan" {
+		return nil, fmt.Errorf("%w: mode 必须是 default|plan", domain.ErrValidation)
+	}
+	if patch.Policy != nil {
+		switch patch.Policy.ApprovalPolicy {
+		case "", "auto", "approve_high_risk", "manual":
+		default:
+			return nil, fmt.Errorf("%w: approval_policy 无效", domain.ErrValidation)
+		}
+		switch patch.Policy.Sandbox {
+		case "", "read-only", "workspace-write", "danger-full-access":
+		default:
+			return nil, fmt.Errorf("%w: sandbox 无效", domain.ErrValidation)
+		}
+	}
 	var updated *domain.AgentProfile
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		a, err := s.store.Agents().Get(ctx, agentID)
@@ -328,6 +371,10 @@ func (s *Service) MoveWorkItem(ctx context.Context, workItemID string, to domain
 		if to == domain.WorkItemBlocked {
 			return fmt.Errorf("%w: block 必须走 commands/block", domain.ErrValidation)
 		}
+		// completed 仅经 commands/accept 验收门（含 phase 校验）；move 直达绕过验收。
+		if to == domain.WorkItemCompleted {
+			return fmt.Errorf("%w: completed 必须走 commands/accept 验收门", domain.ErrValidation)
+		}
 		// CheckVersion 通过后，以当前版本做事务内守卫。
 		if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
 			return err
@@ -336,12 +383,6 @@ func (s *Service) MoveWorkItem(ctx context.Context, workItemID string, to domain
 			domain.AggregateWorkItem, w.ID, w.Version, nil,
 			map[string]any{"from": string(from), "to": string(to), "status": string(to)}); err != nil {
 			return err
-		}
-		if to == domain.WorkItemCompleted {
-			if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemCompleted,
-				domain.AggregateWorkItem, w.ID, w.Version, nil, nil); err != nil {
-				return err
-			}
 		}
 		wi = w
 		return s.activity(ctx, w.WorkspaceID, "work_item.moved",
@@ -370,7 +411,11 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 			}
 		}
 		w.AgentProfileID = agentID
-		if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
+		// 与 Transition 路径同一约定：内存版本与 DB（version=version+1）保持同步。
+		expected := w.Version
+		w.Version++
+		w.UpdatedAt = time.Now().UTC()
+		if err := s.store.WorkItems().Update(ctx, w, expected); err != nil {
 			return err
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
@@ -385,6 +430,10 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
+	// M4：指派成功后按 agent 策略入队 assignment 唤醒（尽力而为，不影响指派结果）。
+	if agentID != "" {
+		s.enqueueAssignmentWake(context.WithoutCancel(ctx), wi, agentID)
+	}
 	return wi, nil
 }
 
@@ -480,7 +529,10 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 		if err := w.Accept(time.Now().UTC()); err != nil {
 			return err
 		}
-		if err := s.store.WorkItems().Update(ctx, w, expectedVersion); err != nil {
+		// Accept 内部 Transition 已 bump 内存版本；CheckVersion(0) 放行时用 0 做
+		// Update 守卫恒 0 行（version 从 1 起），故与 MoveWorkItem 同约定：
+		// 以 DB 当前版本（bump 前）做事务内守卫。
+		if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
 			return err
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemCompleted,

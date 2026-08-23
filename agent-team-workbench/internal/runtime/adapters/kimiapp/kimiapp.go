@@ -1,0 +1,714 @@
+// kimiapp.go — Kimi Code app-server Adapter（Adapter SPI v2 网关形态，镜像 dsh）。
+//
+// 形态：与长驻 kap-server（`kimi web`）交互——首 turn POST /sessions，后续
+// turn 直接向同会话 POST /prompts（ISessionManager.resume 原生续会）；事件从
+// /api/v1/ws 订阅流下行（帧 type=事件名）并映射 canonical；审批经
+// /sessions/{sid}/approvals/{aid} 决议；steering 先 POST prompts 再
+// prompts::steer 升级；取消走 REST abort（WS 侧不处理 abort 帧）。
+// resume ref 携带但服务端会话缺失时返回 Failure{Family: session_unknown}
+// （不静默降级 fresh：resume 轮 EffectiveInstruction 只含当轮输入，fresh 会话
+// 收不到历史=失忆），由应用层自愈链路清锚点并以全量历史 fresh 重建。
+package kimiapp
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
+)
+
+// refScheme 会话 ref 方案：kimiapp://<session_id>。
+const refScheme = "kimiapp"
+
+// Config 网关形态配置。BaseURL 非空时直连外部 kap-server（supervisor 只探活，
+// Token 必填）；否则受管拉起 `kimi web`（Home=KIMI_CODE_HOME 必填，Port=0
+// 时内核分配空闲口）。
+type Config struct {
+	BaseURL       string        // 直连已运行 kap-server，如 http://127.0.0.1:58627
+	Token         string        // 直连模式 Bearer token
+	Host          string        // 受管模式绑定 host（默认 127.0.0.1）
+	Port          int           // 受管模式端口（0=动态空闲口；显式值用于复用探测）
+	KimiBin       string        // kimi 可执行文件（默认 kimi）
+	BinArgs       []string      // 覆盖启动参数（测试回放桩，对齐 dsh BinArgs）
+	Home          string        // KIMI_CODE_HOME（受管模式必填；token 于 <home>/server.token）
+	WorkspaceRoot string        // 会话 metadata.cwd（执行根目录）
+	Model         string        // 缺省模型（prompt 级前向）
+	IdleTimeout   time.Duration // 事件流空闲保护（默认 10m）
+}
+
+// Module 实现 runtime.AdapterModule。
+type Module struct {
+	cfg Config
+	sup *Supervisor
+}
+
+var _ runtime.AdapterModule = (*Module)(nil)
+
+// New 创建 kimiapp 模块；进程拉起延迟到首次 Probe/Execute。
+func New(cfg Config) *Module {
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = 10 * time.Minute
+	}
+	return &Module{cfg: cfg, sup: newSupervisor(cfg)}
+}
+
+func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) {
+	return runtime.AdapterManifest{
+		AdapterID: "kimi-appserver", AdapterVersion: "1.0.0",
+		Protocol: runtime.Protocol{Name: "kimi-kap-server", Version: "2"},
+		Capabilities: map[string]runtime.CapabilityLevel{
+			"streaming":  runtime.CapSupported, // assistant.delta / thinking.delta
+			"multi_turn": runtime.CapSupported,
+			"resume":     runtime.CapSupported, // 会话原生续会 + 40401 探测
+			"steering":   runtime.CapSupported, // prompts + prompts::steer
+			"approval":   runtime.CapSupported, // event.approval.requested + approvals REST
+			// REST abort（WS 无 abort 帧）：turn 级精确取消，非进程级。
+			"interrupt":       runtime.CapSupported,
+			"workspace_files": runtime.CapSupported,
+			// agent_config.system_prompt 前向透传，但服务端
+			// applySessionAgentConfig 当前不应用（核对 sessionAgentConfig.ts）：
+			// 语义靠适配器侧 persona 注入翻译，非原生。
+			"system_prompt":     runtime.CapAdapterTranslated,
+			"modes":             runtime.CapSupported,         // prompt.plan_mode 原生
+			"permissions":       runtime.CapAdapterTranslated, // prompt.permission_mode 三档映射
+			"multi_vendor":      runtime.CapAdapterTranslated, // 服务端 provider 配置决定
+			"structured_output": runtime.CapAdapterTranslated,
+			"terminal":          runtime.CapUnavailable,
+		},
+		SchemaDigest: "sha256:kimi-kap-server-v2",
+	}, nil
+}
+
+// Probe 确保 kap-server 可用（含拉起）后返回 OK。
+func (m *Module) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
+	mf, _ := m.Manifest(ctx)
+	if _, err := m.sup.Ensure(ctx); err != nil {
+		return runtime.ProbeResult{OK: false, Manifest: &mf, Error: err.Error()}, nil
+	}
+	return runtime.ProbeResult{OK: true, Manifest: &mf}, nil
+}
+
+// Close 透传 supervisor 关停（宿主退出时回收 kap-server 进程组）。
+func (m *Module) Close() { m.sup.Close() }
+
+// turnState 一次 Execute 的可变状态（事件循环协程写，收尾读）。
+type turnState struct {
+	promptID      string // 本轮提交的 prompt_id（abort 目标）
+	activeTurn    int64  // 本 prompt 触发的 turn 编号；0=尚未开始
+	activeSeen    bool
+	answer        strings.Builder // assistant.delta 累计（合成 message.completed）
+	usageIn       int64           // turn.step.completed.usage 逐 step 累计（per_run）
+	usageOut      int64
+	usageCached   int64
+	usageSeen     bool
+	endReason     string           // turn.ended.reason
+	failure       *runtime.Failure // turn.ended.error 权威失败
+	sessionUpdate *runtime.SessionUpdate
+}
+
+// Execute 阻塞执行一轮：确保 kap-server → 解析/创建会话 → WS 订阅 → prompt →
+// 事件泵推进到本 turn 的 turn.ended → 结构化返回。
+func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
+	if strings.TrimSpace(ex.Instruction) == "" {
+		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+			Failure: modFailure(runtime.FamilyConfig, "instruction_required", "instruction required", false)}
+	}
+	state := &turnState{}
+	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
+	// 不得误报成 gateway_unavailable/io 失败（否则终态会变成 failed）。
+	ep, err := m.sup.Ensure(ex.Ctx)
+	if err != nil {
+		if ex.Ctx.Err() != nil {
+			return intentResult(ex, state)
+		}
+		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+			Failure: modFailure(runtime.FamilyConfig, "gateway_unavailable", err.Error(), false)}
+	}
+	client := newRestClient(ep.BaseURL, ep.Token)
+
+	sessionID, res := m.resolveSession(ex, client, state)
+	if res != nil {
+		if ex.Ctx.Err() != nil {
+			return intentResult(ex, state)
+		}
+		return *res
+	}
+
+	// 订阅先于 prompt：会话事件按序送达，提交后的帧不会丢。冷启动/重启窗口
+	// 内升级握手可能被断连：短暂重试（镜像 dsh 的 5×500ms）。
+	stream, res := m.openStream(ex, ep, sessionID)
+	if res != nil {
+		if ex.Ctx.Err() != nil {
+			return intentResult(ex, state)
+		}
+		return *res
+	}
+	if stream == nil { // 订阅失败源于 Ctx 取消
+		return intentResult(ex, state)
+	}
+	defer stream.close()
+
+	prompt, res := m.submitPrompt(ex, client, sessionID)
+	if res != nil {
+		if ex.Ctx.Err() != nil {
+			// 取消可能落在 prompt 提交在途窗口：请求或已被服务端受理（无
+			// prompt_id 可精确 abort），兜底会话级 abort 防 turn 悬挂后按意图返回。
+			if kerr := client.abortSession(context.WithoutCancel(ex.Ctx), sessionID); kerr != nil {
+				log.Printf("kimiapp: run %s 提交在途取消的会话兜底 abort: %v", ex.Run.ID, kerr)
+			}
+			return intentResult(ex, state)
+		}
+		return *res
+	}
+	state.promptID = prompt.PromptID // 先于泵启动写入，requestCancel 只读
+	return m.pump(ex, client, ep, stream, sessionID, state)
+}
+
+// resolveSession 返回可用的 kap 会话 id。resume 铁律：ResumeID 非空时先
+// GET /sessions/{id} 探测；40401 → Failure{Family: session_unknown,
+// Retryable: false}，绝不静默降级 fresh；探测的传输层失败（网络错/5xx）保持
+// transient/io 分类，不误报会话丢失。
+func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, state *turnState) (string, *runtime.ExecResult) {
+	if resumeID := runtime.SessionIDFromRef(ex.Session.Ref, refScheme); resumeID != "" {
+		if _, kerr := client.getSession(ex.Ctx, resumeID); kerr != nil {
+			f := kapFailure(kerr)
+			if f.Family == runtime.FamilySessionUnknown {
+				f.Code = "resume_" + f.Code
+			}
+			return "", &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: f}
+		}
+		// resume 命中：沿用原 ref 重报 SessionUpdate（runs_count 幂等语义：
+		// 每个新 run 重报同 ref，是会话轮换计数增长的必要输入）。会话创建即报
+		// （若后续 turn 崩溃，resume 锚点已固化，下轮仍可续）。
+		state.sessionUpdate = &runtime.SessionUpdate{
+			Ref: refScheme + "://" + resumeID, DisplayID: resumeID,
+			Params: map[string]any{"kap_session": resumeID},
+		}
+		ex.Callbacks.OnSession(*state.sessionUpdate)
+		return resumeID, nil
+	}
+	// fresh：创建会话。metadata.cwd 必填；agent_config 前向透传 model 与
+	// system_prompt（后者服务端当前不应用，见 Manifest 注释）。
+	req := &createSessionRequest{Metadata: map[string]string{"cwd": m.cwd()}}
+	agentCfg := map[string]any{}
+	if model := m.modelOf(ex); model != "" {
+		agentCfg["model"] = model
+	}
+	if persona := personaOf(ex); persona != "" {
+		agentCfg["system_prompt"] = truncate(persona, 8000)
+	}
+	if len(agentCfg) > 0 {
+		req.AgentConfig = agentCfg
+	}
+	created, kerr := client.createSession(ex.Ctx, req)
+	if kerr != nil {
+		return "", &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: kapFailure(kerr)}
+	}
+	sessionID := created.ID
+	state.sessionUpdate = &runtime.SessionUpdate{
+		Ref: refScheme + "://" + sessionID, DisplayID: sessionID,
+		Params: map[string]any{"kap_session": sessionID},
+	}
+	ex.Callbacks.OnSession(*state.sessionUpdate)
+	return sessionID, nil
+}
+
+// openStream 建立事件流并完成订阅；订阅 not_found（会话在探测后被删）按
+// session_unknown 处理。
+func (m *Module) openStream(ex *runtime.ExecContext, ep *endpoint, sessionID string) (*wsStream, *runtime.ExecResult) {
+	var stream *wsStream
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		s, err := dialEvents(ex.Ctx, ep.BaseURL, ep.Token)
+		if err == nil {
+			ack, serr := s.subscribe(ex.Ctx, sessionID, nil)
+			if serr == nil {
+				if containsStr(ack.NotFound, sessionID) {
+					s.close()
+					return nil, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: modFailure(
+						runtime.FamilySessionUnknown, "session_not_found", "subscribe not_found", false)}
+				}
+				stream = s
+				break
+			}
+			s.close()
+			lastErr = serr
+		} else {
+			lastErr = err
+		}
+		if ex.Ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ex.Ctx.Done():
+		}
+	}
+	if stream == nil {
+		if ex.Ctx.Err() != nil {
+			return nil, nil // 调用方按终态意图处理
+		}
+		return nil, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: modFailure(
+			runtime.FamilyIO, "ws_subscribe_failed", lastErr.Error(), true)}
+	}
+	return stream, nil
+}
+
+// submitPrompt 提交本轮 prompt；model/plan_mode/permission_mode 为 prompt 级
+// 前向字段（resume 轮同样生效）。
+func (m *Module) submitPrompt(ex *runtime.ExecContext, client *restClient, sessionID string) (*promptSubmitResult, *runtime.ExecResult) {
+	req := &promptSubmitRequest{
+		Content: []promptContentPart{{Type: "text", Text: ex.Instruction}},
+	}
+	if model := m.modelOf(ex); model != "" {
+		req.Model = model
+	}
+	policy := runtime.PolicySnapshotOf(ex.Run)
+	if policy.Mode == "plan" {
+		t := true
+		req.PlanMode = &t
+	}
+	req.PermissionMode = permissionMode(policy)
+	pr, kerr := client.submitPrompt(ex.Ctx, sessionID, req)
+	if kerr != nil {
+		return nil, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: kapFailure(kerr)}
+	}
+	if pr.Status == "blocked" {
+		return nil, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: modFailure(
+			runtime.FamilyConfig, "prompt_blocked", "prompt submission blocked", false)}
+	}
+	return pr, nil
+}
+
+// pump 消费事件流直到本轮 turn.ended；同时服务审批与 steering 控制流。
+// 流中断时带 cursor（最近 durable seq）重连重订阅（≤3 次），volatile 帧
+// 允许丢失（增量语义）。
+func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint, stream *wsStream, sessionID string, state *turnState) runtime.ExecResult {
+	approvals := map[string]string{} // engine 审批 id → kap approval_id
+	var approvalsMu sync.Mutex
+	var cancelSent atomic.Bool
+
+	// 取消只走 REST（WS 侧 switch 不处理 abort）：优先本 prompt 精确 abort，
+	// 无 prompt_id 时兜底会话级 abort；40903/40402 幂等。
+	requestCancel := func() {
+		if !cancelSent.CompareAndSwap(false, true) {
+			return
+		}
+		ctx := context.WithoutCancel(ex.Ctx)
+		if state.promptID != "" {
+			if kerr := client.abortPrompt(ctx, sessionID, state.promptID); kerr != nil {
+				log.Printf("kimiapp: run %s prompts/%s:abort: %v", ex.Run.ID, state.promptID, kerr)
+			}
+			return
+		}
+		if kerr := client.abortSession(ctx, sessionID); kerr != nil {
+			log.Printf("kimiapp: run %s session abort: %v", ex.Run.ID, kerr)
+		}
+	}
+
+	// 控制流协程：steering（先提交新 prompt 再 ::steer 升级）/ 审批决定 /
+	// 终态意图（cancel → REST abort）。
+	controlDone := make(chan struct{})
+	defer func() { close(controlDone) }()
+	go func() {
+		for {
+			select {
+			case <-ex.Ctx.Done():
+				requestCancel()
+				return
+			case <-controlDone:
+				return
+			case c, ok := <-ex.Controls:
+				if !ok {
+					return
+				}
+				switch c.Kind {
+				case runtime.ControlInput:
+					// steering：turn 进行中方有效；失败仅记日志（尽力而为）。
+					wctx := context.WithoutCancel(ex.Ctx)
+					pr, kerr := client.submitPrompt(wctx, sessionID, &promptSubmitRequest{
+						Content: []promptContentPart{{Type: "text", Text: c.Instruction}},
+					})
+					if kerr != nil {
+						log.Printf("kimiapp: run %s steer submit: %v", ex.Run.ID, kerr)
+						continue
+					}
+					if kerr := client.steer(wctx, sessionID, []string{pr.PromptID}); kerr != nil {
+						log.Printf("kimiapp: run %s prompts::steer: %v", ex.Run.ID, kerr)
+					}
+				case runtime.ControlApproval:
+					approvalsMu.Lock()
+					wireID := approvals[c.ApprovalID]
+					delete(approvals, c.ApprovalID)
+					approvalsMu.Unlock()
+					if wireID == "" {
+						continue
+					}
+					decision := "rejected"
+					if c.Approved {
+						decision = "approved"
+					}
+					if kerr := client.resolveApproval(context.WithoutCancel(ex.Ctx), sessionID, wireID, decision, ""); kerr != nil {
+						log.Printf("kimiapp: run %s approval resolve: %v", ex.Run.ID, kerr)
+					}
+				}
+			}
+		}
+	}()
+
+	p := &eventPump{m: m, ex: ex, client: client, sessionID: sessionID, state: state,
+		approvals: approvals, approvalsMu: &approvalsMu}
+	// 订阅握手期间缓存的先到帧（正常为空）先消费。
+	if done := p.drain(stream); done {
+		return turnEndResult(ex, state)
+	}
+
+	idle := m.cfg.IdleTimeout
+	if idle <= 0 {
+		idle = 10 * time.Minute
+	}
+	idleTimer := time.NewTimer(idle)
+	defer idleTimer.Stop()
+	var lastSeq int64
+	var epoch string
+	reattempts := 0
+	for {
+		select {
+		case frame, ok := <-stream.frames:
+			if !ok {
+				// 下行流终止：kap-server 重启/网络断。终态意图优先；否则带
+				// cursor 重连（≤3 次），仍失败按 io 可重试失败返回。
+				if ex.Ctx.Err() != nil {
+					return intentResult(ex, state)
+				}
+				if reattempts >= 3 {
+					return runtime.ExecResult{Outcome: runtime.OutcomeFailed, Session: state.sessionUpdate,
+						Failure: modFailure(runtime.FamilyIO, "ws_stream_lost", "事件流中断", true)}
+				}
+				reattempts++
+				stream.close()
+				select {
+				case <-time.After(500 * time.Millisecond):
+				case <-ex.Ctx.Done():
+					return intentResult(ex, state)
+				}
+				s2, err := dialEvents(ex.Ctx, ep.BaseURL, ep.Token)
+				if err != nil {
+					continue
+				}
+				cursor := &sessionCursor{Seq: lastSeq, Epoch: epoch}
+				ack, serr := s2.subscribe(ex.Ctx, sessionID, cursor)
+				if serr != nil || containsStr(ack.NotFound, sessionID) {
+					s2.close()
+					continue
+				}
+				stream = s2
+				if done := p.drain(stream); done {
+					return turnEndResult(ex, state)
+				}
+				continue
+			}
+			resetTimer(idleTimer, idle)
+			if !frame.Volatile && frame.Seq > 0 {
+				lastSeq, epoch = frame.Seq, frame.Epoch
+			}
+			// 只消费本会话帧（跨会话/全局广播帧跳过）。
+			if frame.SessionID != "" && frame.SessionID != sessionID {
+				continue
+			}
+			if done := p.handle(frame); done {
+				return turnEndResult(ex, state)
+			}
+		case <-idleTimer.C:
+			// 长时间无帧：LLM 长思考之外的最可能原因是网关僵死。
+			return runtime.ExecResult{Outcome: runtime.OutcomeTimedOut, Session: state.sessionUpdate,
+				Failure: modFailure(runtime.FamilyTimeout, "idle_timeout", "事件流空闲超时", true)}
+		case <-ex.Ctx.Done():
+			requestCancel()
+			// 等 turn.ended(cancelled) 或流终止；再等最多 5s 强制收尾。
+			forceTimer := time.NewTimer(5 * time.Second)
+			defer forceTimer.Stop()
+			for {
+				select {
+				case frame, ok := <-stream.frames:
+					if !ok {
+						return intentResult(ex, state)
+					}
+					if done := p.handle(frame); done {
+						return turnEndResult(ex, state)
+					}
+				case <-forceTimer.C:
+					return intentResult(ex, state)
+				}
+			}
+		}
+	}
+}
+
+// eventPump 收敛事件帧处理所需的执行上下文。
+type eventPump struct {
+	m           *Module
+	ex          *runtime.ExecContext
+	client      *restClient
+	sessionID   string
+	state       *turnState
+	approvals   map[string]string
+	approvalsMu *sync.Mutex
+}
+
+// drain 消费 subscribe 期间缓存的先到帧。
+func (p *eventPump) drain(stream *wsStream) bool {
+	for _, frame := range stream.drainPending() {
+		if done := p.handle(frame); done {
+			return true
+		}
+	}
+	return false
+}
+
+// handle 投影一帧到 canonical 事件/审批/状态；返回 true 表示本轮 turn.ended。
+// 未映射帧（prompt.*/event.session.*/queue 类）显式 OnLog，不静默吞帧。
+func (p *eventPump) handle(frame wsFrame) bool {
+	if frame.Type == "" {
+		return false
+	}
+	switch frame.Type {
+	case "turn.started":
+		var ev evTurnStarted
+		_ = json.Unmarshal(frame.Payload, &ev)
+		switch {
+		case ev.PromptID != "" && ev.PromptID == p.state.promptID:
+			p.state.activeTurn, p.state.activeSeen = ev.TurnID, true
+		case ev.PromptID == "" && !p.state.activeSeen:
+			// 回退：老服务端不回显 promptId 时，prompt 提交后的首个 turn 视为本轮。
+			p.state.activeTurn, p.state.activeSeen = ev.TurnID, true
+		}
+	case "turn.ended":
+		// 只对本轮收尾：resume 时在途旧 turn 的 turn.ended 可能先到，
+		// activeSeen=false 或 turnId 不匹配一律忽略。
+		var ev evTurnEnded
+		_ = json.Unmarshal(frame.Payload, &ev)
+		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+			return false
+		}
+		p.state.endReason = ev.Reason
+		switch ev.Reason {
+		case "failed", "blocked":
+			p.state.failure = turnEndFailure(ev.Error)
+			if p.state.failure == nil {
+				if ev.Reason == "blocked" {
+					p.state.failure = modFailure(runtime.FamilyConfig, "turn_blocked", "turn blocked", false)
+				} else {
+					p.state.failure = modFailure(runtime.FamilyTransientUpstream, "turn_failed", "turn failed", true)
+				}
+			}
+		}
+		// 合成 message.completed：kap 协议无 durable「助手消息完成」帧，
+		// 由 assistant.delta 累计文本收口（与前端气泡契约一致）。
+		if ev.Reason == "completed" && p.state.failure == nil && p.state.answer.Len() > 0 {
+			p.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
+				"role": "assistant", "text": p.state.answer.String(),
+			})
+		}
+		return true
+	case "assistant.delta":
+		var ev evDelta
+		_ = json.Unmarshal(frame.Payload, &ev)
+		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+			return false
+		}
+		// raw.chunk 结构与前端 extractDeltaChunk 契约一致。
+		p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
+			"raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": ev.Delta}},
+		})
+		p.state.answer.WriteString(ev.Delta)
+	case "thinking.delta":
+		var ev evDelta
+		_ = json.Unmarshal(frame.Payload, &ev)
+		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+			return false
+		}
+		p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
+			"raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": ev.Delta}},
+		})
+	case "turn.step.completed":
+		// usage 权威来源：逐 step 累计（per_run）；input 计入 cacheRead/Creation。
+		var ev evStepCompleted
+		_ = json.Unmarshal(frame.Payload, &ev)
+		if p.state.activeSeen && ev.TurnID == p.state.activeTurn && ev.Usage != nil {
+			p.state.usageIn += ev.Usage.InputOther + ev.Usage.InputCacheRead + ev.Usage.InputCacheCreation
+			p.state.usageOut += ev.Usage.Output
+			p.state.usageCached += ev.Usage.InputCacheRead
+			p.state.usageSeen = true
+		}
+	case "tool.call.started":
+		var ev evToolCallStarted
+		_ = json.Unmarshal(frame.Payload, &ev)
+		p.ex.Callbacks.OnEvent(domain.EventToolStarted, map[string]any{
+			"tool": ev.Name, "call_id": ev.ToolCallID,
+		})
+	case "tool.result":
+		var ev evToolResult
+		var data map[string]any
+		_ = json.Unmarshal(frame.Payload, &ev)
+		_ = json.Unmarshal(frame.Payload, &data)
+		if ev.IsError != nil && *ev.IsError {
+			p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"raw": data})
+		} else {
+			p.ex.Callbacks.OnEvent(domain.EventToolCompleted, map[string]any{"raw": data})
+		}
+	case "tool.progress":
+		var ev evToolProgress
+		_ = json.Unmarshal(frame.Payload, &ev)
+		payload := map[string]any{"tool_call_id": ev.ToolCallID, "text": ev.Update.Text}
+		if ev.Update.Percent != nil {
+			payload["percent"] = *ev.Update.Percent
+		}
+		p.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
+	case "event.approval.requested":
+		p.handleApproval(frame)
+	case "event.approval.resolved":
+		// 服务端终局投影：canonical 事件留给 engine 审批状态机，这里只观测。
+		log.Printf("kimiapp: run %s 审批终局 %s", p.ex.Run.ID, truncate(string(frame.Payload), 120))
+	case "error":
+		// 全局/会话错误帧：观测记录；turn 终局以 turn.ended 为权威。
+		p.ex.Callbacks.OnLog("kimiapp", "error "+truncate(string(frame.Payload), 400))
+	default:
+		// prompt.submitted/steered/aborted/completed、event.session.*、
+		// turn.step.* 等暂无 canonical 映射的帧：显式 OnLog 保持可观测。
+		p.ex.Callbacks.OnLog("kimiapp", frame.Type+" "+truncate(string(frame.Payload), 400))
+	}
+	return false
+}
+
+// handleApproval 把服务端审批请求映射为 engine 审批；发起失败立即拒绝，
+// 防 harness 工具悬挂。
+func (p *eventPump) handleApproval(frame wsFrame) {
+	var ev evApprovalRequested
+	_ = json.Unmarshal(frame.Payload, &ev)
+	if ev.ApprovalID == "" {
+		return
+	}
+	summary := ev.ToolName
+	if ev.Action != "" {
+		summary += ": " + ev.Action
+	}
+	engineID := p.ex.Callbacks.RequestApproval("tool", ev.ToolName, truncate(summary, 160))
+	if engineID == "" {
+		if kerr := p.client.resolveApproval(context.WithoutCancel(p.ex.Ctx), p.sessionID, ev.ApprovalID, "rejected", ""); kerr != nil {
+			log.Printf("kimiapp: run %s 兜底拒绝审批失败: %v", p.ex.Run.ID, kerr)
+		}
+		return
+	}
+	p.approvalsMu.Lock()
+	p.approvals[engineID] = ev.ApprovalID
+	p.approvalsMu.Unlock()
+}
+
+// turnEndResult turn.ended 后的统一收尾：usage（per_run 增量）+ 会话句柄 +
+// 终态（意图 > 失败 > 服务端 cancelled > 成功）。
+func turnEndResult(ex *runtime.ExecContext, state *turnState) runtime.ExecResult {
+	result := runtime.ExecResult{Session: state.sessionUpdate}
+	if state.usageSeen && (state.usageIn > 0 || state.usageOut > 0) {
+		result.Usage = &runtime.Usage{
+			InputTokens: state.usageIn, OutputTokens: state.usageOut,
+			CachedTokens: state.usageCached, Basis: runtime.UsagePerRun,
+		}
+	}
+	switch {
+	case ex.Ctx.Err() != nil:
+		return intentResult(ex, state)
+	case state.failure != nil:
+		result.Outcome = runtime.OutcomeFailed
+		result.Failure = state.failure
+	case state.endReason == "cancelled":
+		// 非 Ctx 取消的服务端侧中止（如其他客户端 abort）：按中断收尾。
+		result.Outcome = runtime.OutcomeInterrupted
+	default:
+		result.Outcome = runtime.OutcomeSucceeded
+	}
+	return result
+}
+
+// intentResult Ctx 已取消且未见 turn.ended：按终态意图（cancel/interrupt）返回。
+func intentResult(ex *runtime.ExecContext, state *turnState) runtime.ExecResult {
+	outcome := runtime.OutcomeInterrupted
+	if kind, ok := ex.TerminalIntent(); ok && kind == runtime.ControlCancel {
+		outcome = runtime.OutcomeCancelled
+	}
+	return runtime.ExecResult{Outcome: outcome, Session: state.sessionUpdate}
+}
+
+// ── 配置投影 ──────────────────────────────────────────────────────────
+
+func (m *Module) cwd() string {
+	if m.cfg.WorkspaceRoot != "" {
+		return m.cfg.WorkspaceRoot
+	}
+	return "."
+}
+
+// modelOf 编排快照模型优先，回落配置缺省模型。
+func (m *Module) modelOf(ex *runtime.ExecContext) string {
+	if model := runtime.ModelSnapshotOf(ex.Run).Model; model != "" {
+		return model
+	}
+	return m.cfg.Model
+}
+
+// personaOf 编排快照 → system_prompt 前向透传（plan 模式语义一并注入）。
+func personaOf(ex *runtime.ExecContext) string {
+	persona := strings.TrimSpace(runtime.SystemPromptOf(ex.Run))
+	policy := runtime.PolicySnapshotOf(ex.Run)
+	if policy.Mode == "plan" {
+		persona = strings.TrimSpace(persona + "\n\nPlan mode: analyze and produce a plan only; do not modify workspace files.")
+	}
+	return persona
+}
+
+// permissionMode 统一审批策略 → kap permission_mode 三档：
+// auto→yolo（免审批）、manual→manual（全审批）、默认（approve_high_risk）→auto。
+func permissionMode(policy runtime.PolicySnapshot) string {
+	switch policy.ApprovalPolicy {
+	case "auto":
+		return "yolo"
+	case "manual":
+		return "manual"
+	default:
+		return "auto"
+	}
+}
+
+// ── 杂项 ──────────────────────────────────────────────────────────────
+
+func modFailure(family runtime.ErrorFamily, code, message string, retryable bool) *runtime.Failure {
+	return &runtime.Failure{Family: family, Code: code, Message: truncate(message, 200), Retryable: retryable}
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		s = s[:n]
+	}
+	return s
+}
+
+func containsStr(list []string, v string) bool {
+	for _, item := range list {
+		if item == v {
+			return true
+		}
+	}
+	return false
+}
+
+func resetTimer(t *time.Timer, d time.Duration) {
+	t.Stop()
+	t.Reset(d)
+}

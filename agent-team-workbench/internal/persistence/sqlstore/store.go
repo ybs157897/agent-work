@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/scheduling"
 )
 
 type txKey struct{}
@@ -88,6 +89,8 @@ type Store struct {
 	runners    *RunnerRepo
 	audit      *AuditRepo
 	caps       *CapsRepo
+	tasks      *TaskSessionRepo
+	wakeups    *WakeupRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -105,19 +108,25 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	s.runners = &RunnerRepo{store: s}
 	s.audit = &AuditRepo{store: s}
 	s.caps = &CapsRepo{store: s}
+	s.tasks = &TaskSessionRepo{store: s}
+	s.wakeups = &WakeupRepo{store: s}
 	return s
 }
 
-func (s *Store) Workspaces() application.WorkspaceRepo    { return s.workspaces }
-func (s *Store) Agents() application.AgentRepo            { return s.agents }
-func (s *Store) WorkItems() application.WorkItemRepo      { return s.workItems }
-func (s *Store) Runs() application.RunRepo                { return s.runs }
-func (s *Store) Events() application.EventRepo            { return s.events }
-func (s *Store) Idempotency() application.IdempotencyRepo { return s.idem }
-func (s *Store) Bindings() application.RuntimeBindingRepo { return s.bindings }
-func (s *Store) Runners() application.RunnerRepo          { return s.runners }
-func (s *Store) Audit() application.AuditRepo             { return s.audit }
-func (s *Store) Caps() application.CapabilitySnapshotRepo { return s.caps }
+func (s *Store) Workspaces() application.WorkspaceRepo     { return s.workspaces }
+func (s *Store) Agents() application.AgentRepo             { return s.agents }
+func (s *Store) WorkItems() application.WorkItemRepo       { return s.workItems }
+func (s *Store) Runs() application.RunRepo                 { return s.runs }
+func (s *Store) Events() application.EventRepo             { return s.events }
+func (s *Store) Idempotency() application.IdempotencyRepo  { return s.idem }
+func (s *Store) Bindings() application.RuntimeBindingRepo  { return s.bindings }
+func (s *Store) Runners() application.RunnerRepo           { return s.runners }
+func (s *Store) Audit() application.AuditRepo              { return s.audit }
+func (s *Store) Caps() application.CapabilitySnapshotRepo  { return s.caps }
+func (s *Store) TaskSessions() application.TaskSessionRepo { return s.tasks }
+
+// Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
+func (s *Store) Wakeups() scheduling.Store { return s.wakeups }
 
 // InTx 在单个事务内执行 fn；fn 内所有仓储调用共享该事务。
 func (s *Store) InTx(ctx context.Context, fn func(ctx context.Context) error) error {

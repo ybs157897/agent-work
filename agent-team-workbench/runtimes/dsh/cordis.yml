@@ -1,6 +1,7 @@
 # DSH SDK runtime 基础组合（每次 Run 由 control-plane 渲染：base + 工具白名单片段）。
 # 环境通道：DSH_SYSTEM_PROMPT=Agent persona；DSH_CWD=工作区根；DSH_SESSION_ROOT=会话持久化根；
-# DEEPSEEK_API_KEY=模型凭据（白名单传入，不进 argv/日志）。
+# DSH_MODEL=模型名；DSH_API_KEY_ENV / DSH_BASE_URL=模型注册表条目的凭据引用与端点（可选）；
+# 模型凭据本身（如 DEEPSEEK_API_KEY）经环境白名单传入，不进 argv/日志/配置文件。
 # stdout 只承载 JSON-RPC 帧；诊断全部走 stderr。
 
 - id: sdk-jsonrpc-server
@@ -11,7 +12,8 @@
 - id: llm-deepseek
   name: '@deepseek-ai/dsh-llm-deepseek'
   config:
-    apiKeyEnv: DEEPSEEK_API_KEY
+    apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'DEEPSEEK_API_KEY'
+    baseURL: !!js process.env.DSH_BASE_URL ?? 'https://api.deepseek.com'
     streamIdleTimeoutMs: 172800000
     models:
       - id: !!js process.env.DSH_MODEL ?? 'deepseek-v4-flash'

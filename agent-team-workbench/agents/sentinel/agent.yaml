@@ -1,15 +1,12 @@
 name: Sentinel
 role: reviewer
 skills:
-  - 代码评审
-  - 验收
+  - 代码评审、验收
 runtime:
-  preferred: mock
-  fallbacks: []
+  preferred: dsh_local
+  mode: default
+  agent_preset: standard
 model:
-  provider: deepseek
-  model: deepseek-v4-flash
+  ref: deepseek-v4-flash
 permissions:
-  tools: [fs]
-  approval_policy: manual
-  sandbox: workspace_only
+  preset: read-only

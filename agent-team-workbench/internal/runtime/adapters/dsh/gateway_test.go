@@ -1,0 +1,740 @@
+// gateway_test.go — 用回放桩网关（health + 一元 RPC + mux 下行流）固化
+// dsh 网关 adapter 的协议行为：fresh/resume、降级重建、在途旧 turn 防护、
+// 取消、审批/提问回应、turn 错误分类。帧格式与 2026-08-23 wire spike 一致。
+package dsh
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
+)
+
+// ── 回放桩网关 ────────────────────────────────────────────────────────
+
+type fakeCall struct {
+	Method  string
+	Payload map[string]any
+}
+
+type fakeRespond struct {
+	RpcID string
+	Value map[string]any
+}
+
+type fakeGateway struct {
+	t         *testing.T
+	srv       *httptest.Server
+	mu        sync.Mutex
+	calls     []fakeCall
+	responds  []fakeRespond
+	handlers  map[string]func(payload map[string]any) (any, *rpcWireError)
+	wsConn    *websocket.Conn
+	wsReady   chan struct{}
+	respondCh chan fakeRespond
+}
+
+func newFakeGateway(t *testing.T) *fakeGateway {
+	t.Helper()
+	f := &fakeGateway{
+		t:         t,
+		handlers:  map[string]func(map[string]any) (any, *rpcWireError){},
+		wsReady:   make(chan struct{}),
+		respondCh: make(chan fakeRespond, 8),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // health 探活
+	})
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		method := strings.TrimPrefix(r.URL.Path, "/api/")
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			RpcID   string          `json:"rpcId"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		_ = json.Unmarshal(body, &req)
+		var payload map[string]any
+		_ = json.Unmarshal(req.Payload, &payload)
+		f.mu.Lock()
+		f.calls = append(f.calls, fakeCall{Method: method, Payload: payload})
+		h := f.handlers[method]
+		f.mu.Unlock()
+		resp := map[string]any{"type": "server-response", "rpcId": req.RpcID}
+		if h != nil {
+			if value, werr := h(payload); werr != nil {
+				resp["result"] = map[string]any{"ok": false, "error": werr}
+			} else {
+				resp["result"] = map[string]any{"ok": true, "value": value}
+			}
+		} else {
+			resp["result"] = map[string]any{"ok": true, "value": map[string]any{}}
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	mux.HandleFunc("/api/respond", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			RpcID  string `json:"rpcId"`
+			Result struct {
+				Value json.RawMessage `json:"value"`
+			} `json:"result"`
+		}
+		_ = json.Unmarshal(body, &req)
+		var value map[string]any
+		_ = json.Unmarshal(req.Result.Value, &value)
+		fr := fakeRespond{RpcID: req.RpcID, Value: value}
+		f.mu.Lock()
+		f.responds = append(f.responds, fr)
+		f.mu.Unlock()
+		select {
+		case f.respondCh <- fr:
+		default:
+		}
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+	})
+	mux.HandleFunc("/api/events.mux", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") == "" {
+			// 与真实网关一致：非升级 GET 返回 426（supervisor 就绪探针依赖）。
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		f.mu.Lock()
+		f.wsConn = conn
+		f.mu.Unlock()
+		close(f.wsReady)
+		go func() {
+			for { // 客户端不应上行；仅为感知断开
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeGateway) handle(method string, h func(payload map[string]any) (any, *rpcWireError)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.handlers[method] = h
+}
+
+func (f *fakeGateway) waitCall(method string) map[string]any {
+	f.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		for _, c := range f.calls {
+			if c.Method == method {
+				f.mu.Unlock()
+				return c.Payload
+			}
+		}
+		f.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.t.Fatalf("未见 RPC 调用 %s（calls=%+v）", method, f.calls)
+	return nil
+}
+
+func (f *fakeGateway) called(method string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c.Method == method {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeGateway) push(rpcID string, frame map[string]any) {
+	f.t.Helper()
+	select {
+	case <-f.wsReady:
+	case <-time.After(3 * time.Second):
+		f.t.Fatal("mux 订阅未建立")
+	}
+	payload, _ := json.Marshal(frame)
+	msg, _ := json.Marshal(map[string]any{
+		"type": "server-request", "rpcId": rpcID, "method": frame["type"],
+		"payload": json.RawMessage(payload),
+	})
+	f.mu.Lock()
+	conn := f.wsConn
+	f.mu.Unlock()
+	if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		f.t.Logf("push %s: %v", frame["type"], err)
+	}
+}
+
+func sessEvent(sessionID, evType string, data map[string]any, seq int64) map[string]any {
+	return map[string]any{
+		"type": "session/event", "sessionId": sessionID,
+		"event": map[string]any{"type": evType, "seq": seq, "data": data},
+	}
+}
+
+// pushHappyTurn 推一段标准 turn：start → chunk → message → end(completed)。
+func pushHappyTurn(f *fakeGateway, sessionID string, turn int, seqBase int64) {
+	f.push("", sessEvent(sessionID, "turn/start", map[string]any{"turn": float64(turn)}, seqBase))
+	f.push("", sessEvent(sessionID, "assistant/chunk", map[string]any{
+		"turn": float64(turn), "step": 1,
+		"chunk": map[string]any{"type": "text-delta", "index": 0, "text": "ALPHA"},
+	}, seqBase+1))
+	f.push("", sessEvent(sessionID, "assistant/message", map[string]any{
+		"turn": float64(turn), "step": 1,
+		"message": map[string]any{"content": []map[string]any{{"type": "text", "text": "记住 ALPHA"}}},
+		"usage":   map[string]any{"inputTokens": 100, "outputTokens": 20, "cacheReadTokens": 8},
+	}, seqBase+2))
+	f.push("", sessEvent(sessionID, "turn/end", map[string]any{
+		"turn": float64(turn), "reason": map[string]any{"kind": "completed"},
+	}, seqBase+3))
+}
+
+// ── 回调记录桩 ────────────────────────────────────────────────────────
+
+type recordedEvent struct {
+	kind string
+	data map[string]any
+}
+
+type approvalReq struct {
+	id, kind, risk, summary string
+}
+
+type recordCallbacks struct {
+	mu        sync.Mutex
+	events    []recordedEvent
+	sessions  []runtime.SessionUpdate
+	logs      []string
+	approvals chan approvalReq
+}
+
+func newRecordCallbacks() *recordCallbacks {
+	return &recordCallbacks{approvals: make(chan approvalReq, 8)}
+}
+
+func (c *recordCallbacks) OnEvent(kind string, data map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, recordedEvent{kind, data})
+}
+func (c *recordCallbacks) OnProgress(float64) {}
+func (c *recordCallbacks) OnLog(stream, line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logs = append(c.logs, stream+" "+line)
+}
+func (c *recordCallbacks) OnSpawn(pid, pgid int)   {}
+func (c *recordCallbacks) OnUsage(u runtime.Usage) {}
+func (c *recordCallbacks) OnSession(u runtime.SessionUpdate) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions = append(c.sessions, u)
+}
+func (c *recordCallbacks) RequestApproval(kind, risk, summary string) string {
+	req := approvalReq{id: "eng_" + kind, kind: kind, risk: risk, summary: summary}
+	c.approvals <- req
+	return req.id
+}
+
+func (c *recordCallbacks) find(kind string) (recordedEvent, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.events {
+		if e.kind == kind {
+			return e, true
+		}
+	}
+	return recordedEvent{}, false
+}
+
+// ── 用例 ──────────────────────────────────────────────────────────────
+
+func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls chan runtime.Control) *runtime.ExecContext {
+	return &runtime.ExecContext{
+		Ctx:         ctx,
+		Run:         &domain.ExecutionRun{ID: "run_test", AdapterID: "dsh"},
+		Instruction: "本轮指令：记住 ALPHA",
+		Session:     runtime.SessionState{Ref: ref},
+		Callbacks:   cb,
+		Controls:    controls,
+	}
+}
+
+// runExecuteScript 起 Execute，prompt 到达后执行 script（推帧），再收结果。
+func runExecuteScript(t *testing.T, g *Gateway, ex *runtime.ExecContext, f *fakeGateway, script func()) runtime.ExecResult {
+	t.Helper()
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	script()
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+		return runtime.ExecResult{}
+	}
+}
+
+func newTestGateway(f *fakeGateway) *Gateway {
+	return NewGateway(GatewayConfig{
+		BaseURL: f.srv.URL, WorkspaceRoot: "/tmp/atw-dsh-test", Model: "test-model",
+	})
+}
+
+func TestGatewayFreshTurn(t *testing.T) {
+	f := newFakeGateway(t)
+	f.handle("session.create", func(payload map[string]any) (any, *rpcWireError) {
+		return map[string]any{"sessionId": "s_fresh"}, nil
+	})
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func() { pushHappyTurn(f, "s_fresh", 1, 1) })
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if p := f.waitCall("session.create"); p["cwd"] != "/tmp/atw-dsh-test" {
+		t.Fatalf("session.create cwd 不符: %v", p)
+	}
+	if p := f.waitCall("session.prompt"); p["sessionId"] != "s_fresh" || p["mode"] != "queue" {
+		t.Fatalf("session.prompt 载荷不符: %v", p)
+	}
+	if !f.called("session.selectModel") {
+		t.Fatal("fresh 会话应尝试 selectModel")
+	}
+	if res.Session == nil || res.Session.Ref != "dsh://s_fresh" ||
+		res.Session.Params["gateway_session"] != "s_fresh" {
+		t.Fatalf("SessionUpdate 不符: %+v", res.Session)
+	}
+	if res.Usage == nil || res.Usage.InputTokens != 108 || res.Usage.OutputTokens != 20 ||
+		res.Usage.CachedTokens != 8 || res.Usage.Basis != runtime.UsagePerRun {
+		t.Fatalf("Usage 不符（input 应含 cacheRead）: %+v", res.Usage)
+	}
+	if delta, ok := cb.find(domain.EventMessageDelta); !ok ||
+		delta.data["raw"].(map[string]any)["chunk"] == nil {
+		t.Fatalf("message.delta 应携带 raw.chunk: %+v", delta)
+	}
+	if msg, ok := cb.find(domain.EventMessageCompleted); !ok || msg.data["text"] != "记住 ALPHA" {
+		t.Fatalf("message.completed 文本不符: %+v", msg)
+	}
+}
+
+func TestGatewayResumeHit(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() { pushHappyTurn(f, "s_known", 1, 1) })
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if f.called("session.create") {
+		t.Fatal("resume 命中时不应 session.create")
+	}
+	if p := f.waitCall("session.history"); p["sessionId"] != "s_known" {
+		t.Fatalf("session.history 载荷不符: %v", p)
+	}
+	if p := f.waitCall("session.prompt"); p["sessionId"] != "s_known" {
+		t.Fatalf("session.prompt 应打到原会话: %v", p)
+	}
+	// F2：resume 轮也必须发布 SessionUpdate（同 ref、Params/DisplayID 同前）——
+	// 应用层 runs_count 靠每个新 run 首报 +1，缺报会导致轮换阈值永不触发。
+	if res.Session == nil || res.Session.Ref != "dsh://s_known" ||
+		res.Session.DisplayID != "s_known" ||
+		res.Session.Params["gateway_session"] != "s_known" {
+		t.Fatalf("resume 轮 SessionUpdate 不符: %+v", res.Session)
+	}
+	if len(cb.sessions) == 0 || cb.sessions[0].Ref != "dsh://s_known" {
+		t.Fatalf("resume 轮应经 OnSession 早期上报同 ref: %+v", cb.sessions)
+	}
+}
+
+// F1：resume ref 携带但网关侧会话缺失 → session_unknown 不可重试失败，
+// 绝不静默降级 fresh（降级后的 fresh 会话收不到历史=失忆）。
+func TestGatewayResumeMissFailsSessionUnknown(t *testing.T) {
+	f := newFakeGateway(t)
+	f.handle("session.history", func(payload map[string]any) (any, *rpcWireError) {
+		return nil, &rpcWireError{Code: "session-not-found", Message: "no such session"}
+	})
+	f.handle("session.create", func(payload map[string]any) (any, *rpcWireError) {
+		t.Error("resume 未命中不得静默 session.create 降级")
+		return map[string]any{"sessionId": "s_reborn"}, nil
+	})
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	// resolveSession 失败在 prompt 之前返回：直接同步执行并限时收结果。
+	done := make(chan runtime.ExecResult, 1)
+	go func() {
+		done <- g.Execute(newTestExec(context.Background(), "dsh://s_gone", cb, make(chan runtime.Control, 8)))
+	}()
+	var res runtime.ExecResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+
+	if res.Outcome != runtime.OutcomeFailed {
+		t.Fatalf("期望 failed，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if res.Failure == nil || res.Failure.Family != runtime.FamilySessionUnknown ||
+		res.Failure.Retryable || res.Failure.Code != "resume_session-not-found" {
+		t.Fatalf("会话缺失应 session_unknown/不可重试/明确码: %+v", res.Failure)
+	}
+	if f.called("session.create") {
+		t.Fatal("不得降级 session.create")
+	}
+	if res.Session != nil || len(cb.sessions) != 0 {
+		t.Fatalf("失败路径不应发布 SessionUpdate: %+v / %+v", res.Session, cb.sessions)
+	}
+}
+
+// F1 区分：resume 探测的网关侧临时错误（agent-busy 等）不是会话缺失，
+// 保持 transient/io 分类，不得误报 session_unknown 触发清锚点自愈。
+func TestGatewayResumeProbeTransientStaysIO(t *testing.T) {
+	f := newFakeGateway(t)
+	f.handle("session.history", func(payload map[string]any) (any, *rpcWireError) {
+		return nil, &rpcWireError{Code: "agent-busy", Message: "agent busy"}
+	})
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	done := make(chan runtime.ExecResult, 1)
+	go func() {
+		done <- g.Execute(newTestExec(context.Background(), "dsh://s_busy", cb, make(chan runtime.Control, 8)))
+	}()
+	var res runtime.ExecResult
+	select {
+	case res = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+
+	if res.Outcome != runtime.OutcomeFailed {
+		t.Fatalf("期望 failed，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if res.Failure == nil || res.Failure.Family != runtime.FamilyIO || !res.Failure.Retryable {
+		t.Fatalf("agent-busy 应 io/可重试: %+v", res.Failure)
+	}
+	if f.called("session.create") {
+		t.Fatal("临时错误不得降级 session.create")
+	}
+}
+
+func TestGatewayStaleTurnEndIgnored(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+	ex := newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8))
+
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	// 在途旧 turn（编号 3）先于本轮 turn/start 到达且以 error 收尾：必须被忽略。
+	f.push("", sessEvent("s_known", "turn/end", map[string]any{
+		"turn": float64(3), "reason": map[string]any{"kind": "error", "error": map[string]any{"code": "stale", "message": "旧 turn 错误"}},
+	}, 1))
+	f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(4)}, 2))
+	f.push("", sessEvent("s_known", "turn/end", map[string]any{
+		"turn": float64(4), "reason": map[string]any{"kind": "completed"},
+	}, 3))
+
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeSucceeded {
+			t.Fatalf("旧 turn/end(error) 不应终结本轮，得到 %s（%+v）", res.Outcome, res.Failure)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+}
+
+func TestGatewayCancelPostsSessionCancel(t *testing.T) {
+	f := newFakeGateway(t)
+	f.handle("session.create", func(payload map[string]any) (any, *rpcWireError) {
+		return map[string]any{"sessionId": "s_fresh"}, nil
+	})
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+	ctx, cancel := context.WithCancel(context.Background())
+	ex := newTestExec(ctx, "", cb, make(chan runtime.Control, 8))
+
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	f.push("", sessEvent("s_fresh", "turn/start", map[string]any{"turn": float64(1)}, 1))
+	cancel()
+	if p := f.waitCall("session.cancel"); p["sessionId"] != "s_fresh" {
+		t.Fatalf("session.cancel 载荷不符: %v", p)
+	}
+	f.push("", sessEvent("s_fresh", "turn/end", map[string]any{
+		"turn": float64(1), "reason": map[string]any{"kind": "aborted"},
+	}, 2))
+
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeInterrupted {
+			t.Fatalf("取消后期望 interrupted，得到 %s", res.Outcome)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+}
+
+func TestGatewayApprovalResponds(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+	controls := make(chan runtime.Control, 8)
+	ex := newTestExec(context.Background(), "dsh://s_known", cb, controls)
+
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	f.push("rpc_appr_1", map[string]any{
+		"type": "approval/requested", "sessionId": "s_known",
+		"approvalId": "apr_1", "toolName": "bash", "reason": "rm -rf /tmp/x",
+	})
+	select {
+	case req := <-cb.approvals:
+		if req.kind != "tool" || req.risk != "bash" || !strings.Contains(req.summary, "rm -rf") {
+			t.Fatalf("审批映射不符: %+v", req)
+		}
+		controls <- runtime.Control{Kind: runtime.ControlApproval, ApprovalID: req.id, Approved: true}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见 RequestApproval")
+	}
+	select {
+	case r := <-f.respondCh:
+		if r.RpcID != "rpc_appr_1" || r.Value["outcome"] != "allowed-once" ||
+			r.Value["approvalId"] != "apr_1" || r.Value["sessionId"] != "s_known" {
+			t.Fatalf("respond 载荷不符: %+v", r)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见 /api/respond")
+	}
+	pushHappyTurn(f, "s_known", 1, 1)
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeSucceeded {
+			t.Fatalf("审批通过后应成功，得到 %s（%+v）", res.Outcome, res.Failure)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+}
+
+func TestGatewayQuestionResponds(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+	controls := make(chan runtime.Control, 8)
+	ex := newTestExec(context.Background(), "dsh://s_known", cb, controls)
+
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	f.push("rpc_q_1", map[string]any{
+		"type": "question/requested", "sessionId": "s_known",
+		"questions": []map[string]any{{
+			"id": "q1", "question": "选择部署环境",
+			"options": []map[string]any{{"label": "staging"}, {"label": "prod"}},
+		}},
+	})
+	select {
+	case req := <-cb.approvals:
+		if req.kind != "question" || req.risk != "ask_user" {
+			t.Fatalf("提问映射不符: %+v", req)
+		}
+		controls <- runtime.Control{Kind: runtime.ControlApproval, ApprovalID: req.id, Approved: true}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见提问审批")
+	}
+	select {
+	case r := <-f.respondCh:
+		answers, _ := r.Value["answer"].(map[string]any)
+		items, _ := answers["answers"].([]any)
+		if r.RpcID != "rpc_q_1" || len(items) != 1 {
+			t.Fatalf("提问 respond 载荷不符: %+v", r)
+		}
+		first, _ := items[0].(map[string]any)
+		selected, _ := first["selected"].([]any)
+		if first["id"] != "q1" || len(selected) != 1 || selected[0] != "staging" {
+			t.Fatalf("提问答案不符: %+v", first)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见 /api/respond")
+	}
+	pushHappyTurn(f, "s_known", 1, 1)
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeSucceeded {
+			t.Fatalf("提问回答后应成功，得到 %s（%+v）", res.Outcome, res.Failure)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+}
+
+func TestGatewayTurnErrorClassified(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	ex := newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8))
+	done := make(chan runtime.ExecResult, 1)
+	go func() { done <- g.Execute(ex) }()
+	f.waitCall("session.prompt")
+	f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(1)}, 1))
+	f.push("", sessEvent("s_known", "turn/end", map[string]any{
+		"turn":   float64(1),
+		"reason": map[string]any{"kind": "error", "error": map[string]any{"code": "insufficient_balance", "message": "余额不足"}},
+	}, 2))
+
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeFailed {
+			t.Fatalf("期望失败，得到 %s", res.Outcome)
+		}
+		if res.Failure == nil || res.Failure.Family != runtime.FamilyProviderQuota || res.Failure.Retryable {
+			t.Fatalf("错误分类不符: %+v", res.Failure)
+		}
+		// F7c：adapter 侧不再发 run.failed 事件（由权威层按 Failure 发出，防双发）。
+		if _, ok := cb.find(domain.EventRunFailed); ok {
+			t.Fatal("adapter 不得发 run.failed 事件（权威层职责，防双发）")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Execute 超时未返回")
+	}
+}
+
+// F7d：同一 turn 的 assistant/chunk 与 assistant/message 都携带 usage 时，
+// 以 message.usage 为权威计数一次，chunk.usage 仅在整轮无 message.usage 时兜底。
+func TestGatewayUsageDeduplication(t *testing.T) {
+	cases := []struct {
+		name      string
+		chunkUsg  map[string]any // chunk 帧 usage（nil=不携带）
+		msgUsages []map[string]any
+		wantIn    int64
+		wantOut   int64
+		wantCache int64
+	}{
+		{
+			name:     "双帧同值只计一次（message 权威）",
+			chunkUsg: map[string]any{"inputTokens": 50, "outputTokens": 10, "cacheReadTokens": 4},
+			msgUsages: []map[string]any{
+				{"inputTokens": 100, "outputTokens": 20, "cacheReadTokens": 8},
+			},
+			wantIn: 108, wantOut: 20, wantCache: 8,
+		},
+		{
+			name:     "仅 chunk 携带 usage 时兜底采纳",
+			chunkUsg: map[string]any{"inputTokens": 40, "outputTokens": 6, "cacheReadTokens": 2},
+			wantIn:   42, wantOut: 6, wantCache: 2,
+		},
+		{
+			name: "多条 message 各自带 usage 时累加",
+			msgUsages: []map[string]any{
+				{"inputTokens": 10, "outputTokens": 2, "cacheReadTokens": 1},
+				{"inputTokens": 20, "outputTokens": 3, "cacheReadTokens": 0},
+			},
+			wantIn: 31, wantOut: 5, wantCache: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeGateway(t)
+			g := newTestGateway(f)
+			cb := newRecordCallbacks()
+
+			res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+				func() {
+					f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(1)}, 1))
+					chunk := map[string]any{"turn": float64(1), "step": 1,
+						"chunk": map[string]any{"type": "text-delta", "index": 0, "text": "A"}}
+					if tc.chunkUsg != nil {
+						chunk["usage"] = tc.chunkUsg
+					}
+					f.push("", sessEvent("s_known", "assistant/chunk", chunk, 2))
+					for i, u := range tc.msgUsages {
+						f.push("", sessEvent("s_known", "assistant/message", map[string]any{
+							"turn": float64(1), "step": i + 1,
+							"message": map[string]any{"content": []map[string]any{{"type": "text", "text": "x"}}},
+							"usage":   u,
+						}, int64(3+i)))
+					}
+					f.push("", sessEvent("s_known", "turn/end", map[string]any{
+						"turn": float64(1), "reason": map[string]any{"kind": "completed"},
+					}, int64(3+len(tc.msgUsages))))
+				})
+
+			if res.Outcome != runtime.OutcomeSucceeded {
+				t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+			}
+			if res.Usage == nil || res.Usage.InputTokens != tc.wantIn || res.Usage.OutputTokens != tc.wantOut ||
+				res.Usage.CachedTokens != tc.wantCache || res.Usage.Basis != runtime.UsagePerRun {
+				t.Fatalf("Usage 去重口径不符（want in=%d out=%d cached=%d）: %+v",
+					tc.wantIn, tc.wantOut, tc.wantCache, res.Usage)
+			}
+		})
+	}
+}
+
+// F7f：session/queue、session/projection 帧不被静默吞掉——显式记 OnLog，
+// 且不影响本轮事件流继续消费。
+func TestGatewayQueueProjectionFramesLogged(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() {
+			f.push("", map[string]any{"type": "session/queue", "sessionId": "s_known", "position": float64(2)})
+			f.push("", map[string]any{"type": "session/projection", "sessionId": "s_known", "lastSeq": float64(7)})
+			pushHappyTurn(f, "s_known", 1, 1)
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("未知投影帧不应影响本轮，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	var queueSeen, projectionSeen bool
+	for _, l := range cb.logs {
+		if strings.Contains(l, "session/queue") {
+			queueSeen = true
+		}
+		if strings.Contains(l, "session/projection") {
+			projectionSeen = true
+		}
+	}
+	if !queueSeen || !projectionSeen {
+		t.Fatalf("session/queue 与 session/projection 应记 OnLog: %v", cb.logs)
+	}
+}

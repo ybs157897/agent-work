@@ -1,46 +1,52 @@
-// Package mock 提供 M1 的 Mock Adapter：无真实 Runtime 也能完整演示
-// queued → starting → running → waiting_approval → succeeding → succeeded
-// 以及 interrupt/cancel/retry 全状态流转（协议文档 §12 M1 退出门）。
+// Package mock 提供 Mock Adapter 模块（Adapter SPI v2）：无真实 Runtime 也能
+// 完整演示一轮执行的 canonical 事件流、审批等待与取消/中断语义（协议文档 §12 M1 退出门）。
+// 纯模块形态：不依赖应用层，执行只经 ExecContext.Callbacks / ExecResult 表达。
 package mock
 
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-// Engine 是 Mock Adapter 依赖的应用层能力（避免循环依赖）。
-type Engine interface {
-	RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error
-	RecordRunProgress(ctx context.Context, runID string, progress float64) error
-	RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error
-	RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error)
-	Approvals(ctx context.Context, runID string) ([]*domain.ApprovalRequest, error)
-	RecordArtifact(ctx context.Context, runID string, art *domain.Artifact) error
-	Run(ctx context.Context, id string) (*domain.ExecutionRun, error)
+const (
+	// scheme 是 mock 会话 ref 的 scheme 前缀（mock://<id>）。
+	scheme = "mock"
+	// sessionPrefix 新会话 id 前缀（mock_atw_<ulid>）。
+	sessionPrefix = "mock_atw_"
+	// defaultStep 每个模拟阶段之间的停留时长。
+	defaultStep = 1200 * time.Millisecond
+)
+
+// simSteps 对齐旧版 Mock 的消息与进度节奏；payload 逐字段一致，前端契约不变。
+var simSteps = []struct {
+	progress float64
+	message  string
+}{
+	{0, "runtime 正在初始化"},
+	{0.2, "开始分析任务要求"},
+	{0.55, "正在生成实现方案"},
 }
 
-var _ Engine = (*application.Service)(nil)
-
-// Adapter 同时实现 RuntimeAdapter SPI 与 application.Dispatcher。
+// Adapter 是 Mock Adapter 模块：Manifest/Probe 能力声明与旧版完全一致。
 type Adapter struct {
-	engine Engine
-	step   time.Duration
-
-	mu      sync.Mutex
-	cancels map[string]chan struct{}
+	step time.Duration
 }
 
-var _ runtime.RuntimeAdapter = (*Adapter)(nil)
-var _ application.Dispatcher = (*Adapter)(nil)
+var _ runtime.AdapterModule = (*Adapter)(nil)
 
-func New(engine Engine) *Adapter {
-	return &Adapter{engine: engine, step: 1200 * time.Millisecond, cancels: make(map[string]chan struct{})}
+// New 构造默认步长的 Mock Adapter 模块。
+func New() *Adapter { return &Adapter{step: defaultStep} }
+
+// NewWithStep 用自定义步长构造（测试用短步长加快流转）。
+func NewWithStep(step time.Duration) *Adapter {
+	if step <= 0 {
+		step = defaultStep
+	}
+	return &Adapter{step: step}
 }
 
 func (a *Adapter) Manifest(ctx context.Context) (runtime.AdapterManifest, error) {
@@ -48,7 +54,7 @@ func (a *Adapter) Manifest(ctx context.Context) (runtime.AdapterManifest, error)
 		AdapterID: "mock", AdapterVersion: "1.0.0", ProviderVersion: "simulated",
 		Protocol: runtime.Protocol{Name: "mock", Version: "1"},
 		Capabilities: map[string]runtime.CapabilityLevel{
-			"streaming": runtime.CapSupported, "resume": runtime.CapUnavailable,
+			"streaming": runtime.CapSupported, "resume": runtime.CapSupported,
 			"interrupt": runtime.CapSupported, "approval": runtime.CapSupported,
 			"workspace_files": runtime.CapSupported, "terminal": runtime.CapUnavailable,
 			"structured_output": runtime.CapAdapterTranslated,
@@ -62,172 +68,128 @@ func (a *Adapter) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.
 	return runtime.ProbeResult{OK: true, Manifest: &m}, nil
 }
 
-func (a *Adapter) Start(ctx context.Context, req runtime.StartRequest) (runtime.RuntimeHandle, error) {
-	a.Dispatch(ctx, req.Run)
-	return &handle{runID: req.Run.ID, cancel: a.cancelCh(req.Run.ID)}, nil
-}
+// Execute 模拟一轮对话执行：上报会话句柄 → 逐条发出 delta/progress →
+// （指令提及审批时）发起审批并等待决定 → message.completed + 产物事件 → 成功终态。
+func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
+	session := sessionOf(ex)
+	// 崩溃也不丢 resume 时机：进 Execute 立刻上报会话句柄。
+	ex.Callbacks.OnSession(session)
 
-// Dispatch 在权威写入成功后被调用；goroutine 模拟执行过程。
-func (a *Adapter) Dispatch(ctx context.Context, run *domain.ExecutionRun) error {
-	stop := make(chan struct{})
-	a.mu.Lock()
-	a.cancels[run.ID] = stop
-	a.mu.Unlock()
-	go a.simulate(run.ID, instructionOf(run))
-	return nil
-}
-
-func (a *Adapter) cancelCh(runID string) chan struct{} {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if ch, ok := a.cancels[runID]; ok {
-		return ch
-	}
-	ch := make(chan struct{})
-	a.cancels[runID] = ch
-	return ch
-}
-
-func instructionOf(run *domain.ExecutionRun) string {
-	if v, ok := run.Input["instruction"].(string); ok {
-		return v
-	}
-	return ""
-}
-
-// simulate 按步骤推进 Run；每步前检查外部控制命令（cancelling/interrupting）。
-func (a *Adapter) simulate(runID, instruction string) {
-	ctx := context.Background()
-	defer func() {
-		a.mu.Lock()
-		delete(a.cancels, runID)
-		a.mu.Unlock()
-	}()
-
-	steps := []struct {
-		status   domain.RunStatus // 空值表示不迁移状态，仅上报消息与进度
-		progress float64
-		message  string
-	}{
-		{domain.RunStarting, 0, "runtime 正在初始化"},
-		{domain.RunRunning, 0.2, "开始分析任务要求"},
-		{"", 0.55, "正在生成实现方案"},
-	}
-	for _, s := range steps {
-		if !a.wait(runID) {
-			return
+	for _, s := range simSteps {
+		if !a.pause(ex) {
+			return aborted(ex, session)
 		}
-		if s.status != "" {
-			if err := a.engine.RecordRunStatus(ctx, runID, s.status, nil); err != nil {
-				return
-			}
-		}
-		if err := a.engine.RecordRunEvent(ctx, runID, domain.EventMessageDelta,
-			map[string]any{"role": "assistant", "text": s.message}); err != nil {
-			return
-		}
-		if err := a.engine.RecordRunProgress(ctx, runID, s.progress); err != nil {
-			return
-		}
+		ex.Callbacks.OnEvent(domain.EventMessageDelta,
+			map[string]any{"role": "assistant", "text": s.message})
+		ex.Callbacks.OnProgress(s.progress)
 	}
 
 	// 指令中提到 approval / 审批 时模拟一次高风险审批。
-	if strings.Contains(instruction, "approval") || strings.Contains(instruction, "审批") {
-		approval, err := a.engine.RequestApproval(ctx, runID, "shell", "high",
-			"准备执行模拟发布命令（Mock）")
-		if err != nil {
-			return
+	if strings.Contains(ex.Instruction, "approval") || strings.Contains(ex.Instruction, "审批") {
+		approvalID := ex.Callbacks.RequestApproval("shell", "high", "准备执行模拟发布命令（Mock）")
+		if approvalID == "" {
+			return runtime.ExecResult{
+				Outcome: runtime.OutcomeFailed,
+				Failure: &runtime.Failure{
+					Family: runtime.FamilyInternal, Code: "approval_unavailable",
+					Message: "审批发起失败（Mock）",
+				},
+				Session: &session,
+			}
 		}
-		if !a.waitForApproval(ctx, runID, approval.ID) {
-			return
+		approved, ok := a.awaitApproval(ex, approvalID)
+		if !ok {
+			return aborted(ex, session)
+		}
+		if !approved {
+			// 审批被拒：对齐编排层语义（拒绝 → cancelling），由模块确认取消终态。
+			return runtime.ExecResult{Outcome: runtime.OutcomeCancelled, Session: &session}
 		}
 	}
 
-	if !a.wait(runID) {
-		return
+	if !a.pause(ex) {
+		return aborted(ex, session)
 	}
-	if err := a.engine.RecordRunEvent(ctx, runID, domain.EventMessageCompleted,
-		map[string]any{"role": "assistant", "text": "任务执行完成，产物已生成"}); err != nil {
-		return
+	ex.Callbacks.OnEvent(domain.EventMessageCompleted,
+		map[string]any{"role": "assistant", "text": "任务执行完成，产物已生成"})
+	ex.Callbacks.OnEvent(domain.EventArtifactCreated, map[string]any{
+		"logical_path": "output/result.md", "mime": "text/markdown",
+		"size": 2048, "sha256": strings.Repeat("a", 64),
+		"classification": "internal", "status": string(domain.ArtifactDraft),
+	})
+	ex.Callbacks.OnProgress(1.0)
+
+	if !a.pause(ex) {
+		return aborted(ex, session)
 	}
-	if err := a.engine.RecordArtifact(ctx, runID, &domain.Artifact{
-		LogicalPath: "output/result.md", Mime: "text/markdown",
-		Size: 2048, Sha256: strings.Repeat("a", 64), Classification: "internal",
-	}); err != nil {
-		return
+
+	usage := runtime.Usage{
+		InputTokens:  int64(128 + len(ex.Instruction)),
+		OutputTokens: 256,
+		Basis:        runtime.UsagePerRun,
 	}
-	if err := a.engine.RecordRunProgress(ctx, runID, 1.0); err != nil {
-		return
-	}
-	if !a.wait(runID) {
-		return
-	}
-	if err := a.engine.RecordRunStatus(ctx, runID, domain.RunSucceeding, nil); err != nil {
-		return
-	}
-	a.wait(runID)
-	_ = a.engine.RecordRunStatus(ctx, runID, domain.RunSucceeded, nil)
+	return runtime.ExecResult{Outcome: runtime.OutcomeSucceeded, Usage: &usage, Session: &session}
 }
 
-// wait 休眠一步；期间检测到 cancelling/interrupting 则确认终态并终止。
-func (a *Adapter) wait(runID string) bool {
-	ctx := context.Background()
-	deadline := time.Now().Add(a.step)
-	for time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
-		run, err := a.engine.Run(ctx, runID)
-		if err != nil {
-			return false
-		}
-		switch run.Status {
-		case domain.RunCancelling:
-			_ = a.engine.RecordRunStatus(ctx, runID, domain.RunCancelled, nil)
-			return false
-		case domain.RunInterrupting:
-			_ = a.engine.RecordRunStatus(ctx, runID, domain.RunInterrupted, nil)
-			return false
-		case domain.RunCancelled, domain.RunInterrupted, domain.RunFailed, domain.RunLost:
-			return false
-		}
+// sessionOf 决定本轮会话句柄：ex.Session.Ref 可解析为 mock://<id> 时续用同一 id，
+// 否则生成新会话 id（mock_atw_<ulid>）。
+func sessionOf(ex *runtime.ExecContext) runtime.SessionUpdate {
+	id := runtime.SessionIDFromRef(ex.Session.Ref, scheme)
+	resumed := id != ""
+	if !resumed {
+		id = domain.NewID(sessionPrefix)
 	}
-	return true
+	return runtime.SessionUpdate{
+		Ref:    scheme + "://" + id,
+		Params: map[string]any{"resumed": resumed},
+	}
 }
 
-// waitForApproval 轮询审批决定；拒绝时按策略进入 cancelling → cancelled。
-func (a *Adapter) waitForApproval(ctx context.Context, runID, approvalID string) bool {
+// pause 停留一个步长；期间 Ctx 取消（interrupt/cancel/关停）立即返回 false。
+// mock 未声明 steering，收到控制命令时忽略并继续等待。
+func (a *Adapter) pause(ex *runtime.ExecContext) bool {
+	timer := time.NewTimer(a.step)
+	defer timer.Stop()
 	for {
-		time.Sleep(200 * time.Millisecond)
-		run, err := a.engine.Run(ctx, runID)
-		if err != nil {
+		select {
+		case <-ex.Ctx.Done():
 			return false
-		}
-		switch run.Status {
-		case domain.RunWaitingApproval:
-			// 继续等待
-		case domain.RunCancelling:
-			_ = a.engine.RecordRunStatus(ctx, runID, domain.RunCancelled, nil)
-			return false
-		case domain.RunInterrupting:
-			_ = a.engine.RecordRunStatus(ctx, runID, domain.RunInterrupted, nil)
-			return false
-		case domain.RunRunning:
+		case <-timer.C:
 			return true
-		default:
-			return false
+		case _, ok := <-ex.Controls:
+			if !ok {
+				// 控制流已关闭：等满剩余时长后继续推进。
+				<-timer.C
+				return true
+			}
 		}
 	}
 }
 
-type handle struct {
-	runID  string
-	cancel chan struct{}
+// awaitApproval 阻塞等待与 approvalID 匹配的审批决定；
+// Ctx 取消时返回 ok=false（interrupt/cancel 由终态意图区分）。
+func (a *Adapter) awaitApproval(ex *runtime.ExecContext, approvalID string) (approved, ok bool) {
+	for {
+		select {
+		case <-ex.Ctx.Done():
+			return false, false
+		case c, ok := <-ex.Controls:
+			if !ok {
+				return false, false
+			}
+			// 决定必须精确寻址：忽略其他审批或其他控制命令。
+			if c.Kind == runtime.ControlApproval && c.ApprovalID == approvalID {
+				return c.Approved, true
+			}
+		}
+	}
 }
 
-func (h *handle) SessionRef() string                                 { return "mock://" + h.runID }
-func (h *handle) Send(ctx context.Context, instruction string) error { return nil }
-func (h *handle) Interrupt(ctx context.Context) error                { return nil }
-func (h *handle) Cancel(ctx context.Context) error                   { return nil }
-func (h *handle) ResolveApproval(ctx context.Context, approvalID string, approved bool) error {
-	return nil
+// aborted 按 TerminalIntent 映射中断终态；无意图的取消（如服务关停）保守按 interrupted。
+func aborted(ex *runtime.ExecContext, session runtime.SessionUpdate) runtime.ExecResult {
+	outcome := runtime.OutcomeInterrupted
+	if kind, ok := ex.TerminalIntent(); ok && kind == runtime.ControlCancel {
+		outcome = runtime.OutcomeCancelled
+	}
+	return runtime.ExecResult{Outcome: outcome, Session: &session}
 }
-func (h *handle) Close(ctx context.Context) error { return nil }

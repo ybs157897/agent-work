@@ -22,14 +22,21 @@ const (
 )
 
 var runTransitions = map[RunStatus][]RunStatus{
-	RunQueued:          {RunStarting, RunCancelled, RunFailed},
-	RunStarting:        {RunRunning, RunFailed, RunCancelled},
+	// queued 未起跑：interrupt/cancel 落地直接终态（无 Adapter 需确认）。
+	RunQueued: {RunStarting, RunCancelled, RunFailed, RunInterrupted},
+	// starting 尚未产生外部副作用（与 queued 同理）：interrupt/cancel 可直达终态
+	// 或经中间态；零事件空 turn（无任何回调）可从 starting 直入 succeeding。
+	RunStarting:        {RunRunning, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunSucceeding, RunFailed},
 	RunRunning:         {RunWaitingApproval, RunInterrupting, RunCancelling, RunReconnecting, RunSucceeding, RunFailed},
 	RunWaitingApproval: {RunRunning, RunInterrupting, RunCancelling, RunFailed},
 	RunInterrupting:    {RunInterrupted, RunFailed},
 	RunCancelling:      {RunCancelled, RunFailed},
-	RunReconnecting:    {RunRunning, RunLost},
-	RunSucceeding:      {RunSucceeded, RunFailed},
+	// reconnecting：连接已失，无人能确认中间态——控制命令直达终态；
+	// 重连失败本身也可能表现为 failed（不只有 lost）。
+	RunReconnecting: {RunRunning, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunLost, RunFailed},
+	// succeeding：终局已定但尚未落终态，控制命令可经中间态或直达终态
+	//（与 ModuleRunner.recordTerminal 的补迁移配合，绝不卡死）。
+	RunSucceeding: {RunSucceeded, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunFailed},
 }
 
 type RunFailure struct {
@@ -50,14 +57,24 @@ type ExecutionRun struct {
 	Provider             string
 	CapabilitySnapshotID string
 	SessionRef           string // Adapter 私有句柄，受限存储
-	Progress             *float64
-	RetryOf              string
-	Failure              *RunFailure
-	Input                map[string]any
-	Version              int
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	FinishedAt           *time.Time
+	// SessionBefore/After 审计：run 进入/离开时的会话句柄（task_sessions 决策依据）。
+	SessionBefore string
+	SessionAfter  string
+	// Usage 本轮 token 用量（Adapter 上报）；UsageBasis 标注口径（per_run/session_cumulative）。
+	UsageIn     int64
+	UsageOut    int64
+	UsageCached int64
+	UsageBasis  string
+	// ErrorFamily 跨 adapter 统一错误族，驱动重试与自愈策略。
+	ErrorFamily string
+	Progress    *float64
+	RetryOf     string
+	Failure     *RunFailure
+	Input       map[string]any
+	Version     int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	FinishedAt  *time.Time
 }
 
 func (s RunStatus) IsTerminal() bool {

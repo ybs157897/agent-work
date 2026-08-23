@@ -24,7 +24,7 @@ role: developer
 skills: [Go, React]
 runtime: {preferred: dsh_local, fallbacks: [mock]}
 model: {provider: deepseek, model: deepseek-v4-flash}
-permissions: {tools: [bash, fs], approval_policy: approve_high_risk, sandbox: workspace_only}
+permissions: {tools: [bash, fs], approval_policy: approve_high_risk, sandbox: workspace-write}
 `), 0o644)
 	os.WriteFile(filepath.Join(one, "prompt.md"), []byte("# 角色：开发\n"), 0o644)
 
@@ -68,8 +68,9 @@ func TestWriteBackRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	a := &domain.AgentProfile{
 		Name: "Forge", Role: "developer", Skills: []string{"Go"},
-		Instructions: "提示词内容",
-		Policy:       domain.AgentPolicy{Tools: []string{"bash"}, ApprovalPolicy: "manual", Sandbox: "workspace_only"},
+		Instructions:      "提示词内容",
+		Policy:            domain.AgentPolicy{Tools: []string{"bash"}, ApprovalPolicy: "manual", Sandbox: "workspace-write", PermissionPreset: "workspace-write"},
+		RuntimePreference: domain.RuntimePreference{Mode: "plan"},
 	}
 	slug, err := WriteBack(dir, a, map[string]bool{})
 	if err != nil {
@@ -83,7 +84,8 @@ func TestWriteBackRoundTrip(t *testing.T) {
 	if err != nil || len(cfgs) != 1 {
 		t.Fatalf("LoadDir after write: %v, %v", cfgs, err)
 	}
-	if cfgs[0].Prompt != "提示词内容" || cfgs[0].Permissions.ApprovalPolicy != "manual" {
+	if cfgs[0].Prompt != "提示词内容" || cfgs[0].Permissions.ApprovalPolicy != "manual" ||
+		cfgs[0].Permissions.Preset != "workspace-write" || cfgs[0].Runtime.Mode != "plan" {
 		t.Fatalf("round trip mismatch: %+v", cfgs[0])
 	}
 

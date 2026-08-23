@@ -177,8 +177,10 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RuntimePreference != nil {
 			patch.RuntimePreference = &domain.RuntimePreference{
-				Preferred: req.RuntimePreference.Preferred,
-				Fallbacks: req.RuntimePreference.Fallbacks,
+				Preferred:   req.RuntimePreference.Preferred,
+				Fallbacks:   req.RuntimePreference.Fallbacks,
+				Mode:        req.RuntimePreference.Mode,
+				AgentPreset: req.RuntimePreference.AgentPreset,
 			}
 		}
 		patch.ModelOverride = req.ModelOverride

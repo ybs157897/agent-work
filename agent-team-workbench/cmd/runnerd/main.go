@@ -11,14 +11,19 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	rt "github.com/ybs/agent-team-workbench/internal/runtime"
 	"github.com/ybs/agent-team-workbench/internal/runtime/adapters/dsh"
+	"github.com/ybs/agent-team-workbench/internal/runtime/adapters/kimiapp"
 )
 
 type envelope struct {
@@ -46,14 +51,18 @@ type runner struct {
 	seq  int64
 	// pending 未 ACK 事件：重连后重发（服务端按 runner_seq 去重）。
 	pending map[int64][]byte
-	// approvals 每个 run 的审批决定 channel。
+	// approvals 每个 run 的审批决定 channel（mock 路径）。
 	approvals map[string]chan bool
-	// controls 每个 run 的中断/取消信号。
+	// controls 每个 run 的中断/取消信号（mock 路径）。
 	controls map[string]chan string
-	// dshAdapter 真实 DSH 执行面（二进制不可用时为 nil → 回退 mock）。
-	dshAdapter *dsh.Adapter
-	// dshRuns 标记使用 DSH 执行面的 run（控制命令走进程组终止）。
-	dshRuns map[string]bool
+	// modules SPI v2 执行面（dsh 网关模块等）；状态机由 ModuleRunner 驱动。
+	modules *rt.ModuleRunner
+	// dshGateway 长驻网关守护（control-plane 侧语义一致）。
+	dshGateway *dsh.Gateway
+	// kimiModule 长驻 kap-server 守护（`kimi web`；control-plane 侧语义一致）。
+	kimiModule *kimiapp.Module
+	// moduleRuns 使用模块执行面的 run（EngineSink.Run 回查用）。
+	moduleRuns map[string]*domain.ExecutionRun
 }
 
 func main() {
@@ -74,12 +83,22 @@ func main() {
 	}
 	r := &runner{
 		id: runnerID, conn: conn,
-		pending:   make(map[int64][]byte),
-		approvals: make(map[string]chan bool),
-		controls:  make(map[string]chan string),
-		dshRuns:   make(map[string]bool),
+		pending:    make(map[int64][]byte),
+		approvals:  make(map[string]chan bool),
+		controls:   make(map[string]chan string),
+		moduleRuns: make(map[string]*domain.ExecutionRun),
 	}
-	r.dshAdapter = newDshAdapter(r)
+	r.modules = rt.NewModuleRunner(&moduleEngine{r: r})
+	newDshGateway(r)
+	newKimiModule(r)
+	defer func() {
+		if r.kimiModule != nil {
+			r.kimiModule.Close()
+		}
+		if r.dshGateway != nil {
+			r.dshGateway.Close()
+		}
+	}()
 	defer conn.Close()
 
 	r.hello()
@@ -109,8 +128,11 @@ func envOr(key, fallback string) string {
 
 func (r *runner) hello() {
 	adapters := []map[string]any{{"adapter_id": "mock", "adapter_version": "1.0.0", "schema_digest": "sha256:mock"}}
-	if r.dshAdapter != nil {
-		adapters = append(adapters, map[string]any{"adapter_id": "dsh", "adapter_version": "1.0.0", "schema_digest": "sha256:dsh-sdk-jsonrpc-v1"})
+	if r.dshGateway != nil {
+		adapters = append(adapters, map[string]any{"adapter_id": "dsh", "adapter_version": "2.0.0", "schema_digest": "sha256:dsh-web-gateway-v1"})
+	}
+	if r.kimiModule != nil {
+		adapters = append(adapters, map[string]any{"adapter_id": "kimi-appserver", "adapter_version": "1.0.0", "schema_digest": "sha256:kimi-kap-server-v2"})
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"protocol_versions": []int{1},
@@ -205,26 +227,28 @@ func (r *runner) handleOffer(env envelope) {
 	r.mu.Lock()
 	r.approvals[p.RunSpec.RunID] = make(chan bool, 1)
 	r.controls[p.RunSpec.RunID] = make(chan string, 2)
-	useDsh := p.RunSpec.AdapterID == "dsh" && r.dshAdapter != nil
-	if useDsh {
-		r.dshRuns[p.RunSpec.RunID] = true
-	}
+	useModule := (p.RunSpec.AdapterID == "dsh" && r.dshGateway != nil) ||
+		(p.RunSpec.AdapterID == "kimi-appserver" && r.kimiModule != nil)
 	r.mu.Unlock()
 
-	if useDsh {
-		r.runDsh(p.RunSpec)
+	if useModule {
+		r.runModule(p.RunSpec)
 		return
 	}
 	go r.simulate(p.RunSpec)
 }
 
-// runDsh 用真实 DSH Adapter 执行：子进程 JSON-RPC，事件经 emitEvent 上报。
-func (r *runner) runDsh(spec runSpec) {
+// runModule 用 SPI v2 模块执行（dsh 网关）：状态机由 ModuleRunner 驱动，
+// 事件经 moduleEngine 桥接为 run.event 上报。
+func (r *runner) runModule(spec runSpec) {
 	run := &domain.ExecutionRun{
-		ID: spec.RunID, Status: domain.RunQueued, Version: 1,
+		ID: spec.RunID, AdapterID: spec.AdapterID, Status: domain.RunQueued, Version: 1,
 		Input: spec.Input, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
-	if err := r.dshAdapter.Dispatch(context.Background(), run); err != nil {
+	r.mu.Lock()
+	r.moduleRuns[spec.RunID] = run
+	r.mu.Unlock()
+	if err := r.modules.Dispatch(context.Background(), run); err != nil {
 		r.emitEvent(spec.RunID, "run.status_changed", map[string]any{
 			"status": "failed", "code": "dispatch_failed", "message": err.Error(),
 		})
@@ -240,8 +264,35 @@ func (r *runner) handleCommand(env envelope) {
 		return
 	}
 	r.mu.Lock()
-	isDsh := r.dshRuns[env.RunID]
+	isModule := r.moduleRuns[env.RunID] != nil
 	r.mu.Unlock()
+
+	// 模块执行面：控制命令直达 ModuleRunner（含 steering input 分支）。
+	if isModule {
+		switch p.Command {
+		case "approval.resolve":
+			approvalID, _ := p.Body["approval_id"].(string)
+			approved, _ := p.Body["approved"].(bool)
+			if err := r.modules.ResolveApproval(env.RunID, approvalID, approved); err != nil {
+				log.Printf("runnerd: 审批决定投递失败（%s/%s）: %v", env.RunID, approvalID, err)
+			}
+		case "interrupt", "cancel":
+			terminal := domain.RunInterrupted
+			if p.Command == "cancel" {
+				terminal = domain.RunCancelled
+			}
+			r.modules.Control(env.RunID, terminal)
+		case "input":
+			instruction, _ := p.Body["instruction"].(string)
+			if instruction == "" {
+				return
+			}
+			if err := r.modules.ForwardInput(context.Background(), env.RunID, instruction); err != nil {
+				log.Printf("runnerd: steering 投递失败（%s）: %v", env.RunID, err)
+			}
+		}
+		return
+	}
 
 	switch p.Command {
 	case "approval.resolve":
@@ -256,15 +307,6 @@ func (r *runner) handleCommand(env envelope) {
 			}
 		}
 	case "interrupt", "cancel":
-		if isDsh && r.dshAdapter != nil {
-			// DSH 无 prompt cancel：进程组级终止（process_scoped）。
-			terminal := domain.RunInterrupted
-			if p.Command == "cancel" {
-				terminal = domain.RunCancelled
-			}
-			r.dshAdapter.Control(env.RunID, terminal)
-			return
-		}
 		r.mu.Lock()
 		ch := r.controls[env.RunID]
 		r.mu.Unlock()
@@ -274,13 +316,23 @@ func (r *runner) handleCommand(env envelope) {
 			default:
 			}
 		}
+	case "input":
+		// legacy/mock 执行面没有 steering 消费者（simulate 不消费中途指令）：
+		// 显式记 Warn 日志，不静默丢弃——控制平面 ForwardInput 命中活动租约
+		// 却被吞掉时，调用方可从 runner 日志定位。
+		instruction, _ := p.Body["instruction"].(string)
+		log.Printf("runnerd: WARN run %s 收到 steering input 但 legacy/mock 执行面无消费者，已丢弃（instruction=%q）",
+			env.RunID, instruction)
 	}
 }
 
 // emitEvent 上报一条 canonical 事件（runner_seq 递增，等待 ACK）。
+// seq 必须直接使用 nextSeq 的返回值：若自增后回读 r.seq，两个并发 emit 交叉时
+// 会拿到同一个值，导致 pending[seq] 覆盖丢帧（断线重连后永不重发、runner_seq 缺口）。
 func (r *runner) emitEvent(runID, kind string, data map[string]any) bool {
+	seq := r.nextSeq()
 	payload, _ := json.Marshal(map[string]any{
-		"runner_seq": r.nextSeq(),
+		"runner_seq": seq,
 		"event":      map[string]any{"kind": kind, "data": data},
 	})
 	env := envelope{
@@ -288,17 +340,23 @@ func (r *runner) emitEvent(runID, kind string, data map[string]any) bool {
 		RunnerID: r.id, RunID: runID, SentAt: time.Now().UTC(), Payload: payload,
 	}
 	b, _ := json.Marshal(env)
-	seq := r.seq
 	r.mu.Lock()
 	r.pending[seq] = b
 	r.mu.Unlock()
 	return r.writeLocked(b) == nil
 }
 
-// dshEngine 把 DSH Adapter 的引擎调用桥接为 WSS 事件上报。
-type dshEngine struct{ r *runner }
+// moduleEngine 把 ModuleRunner 的引擎调用桥接为 WSS canonical 事件上报；
+// 控制平面 ingress 再映射回服务端引擎（含 approval_id / usage 透传）。
+type moduleEngine struct {
+	r *runner
 
-func (e *dshEngine) RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error {
+	apprSeq atomic.Int64
+}
+
+var _ rt.EngineSink = (*moduleEngine)(nil)
+
+func (e *moduleEngine) RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error {
 	merged := map[string]any{"status": string(to)}
 	for k, v := range data {
 		merged[k] = v
@@ -307,38 +365,119 @@ func (e *dshEngine) RecordRunStatus(ctx context.Context, runID string, to domain
 	return nil
 }
 
-func (e *dshEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
+func (e *moduleEngine) RecordRunProgress(ctx context.Context, runID string, progress float64) error {
+	e.r.emitEvent(runID, "run.progress", map[string]any{"progress": progress})
+	return nil
+}
+
+func (e *moduleEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
 	e.r.emitEvent(runID, evType, data)
 	return nil
 }
 
-// newDshAdapter 从环境构造 DSH 执行面；二进制/配置不可用时返回 nil。
-func newDshAdapter(r *runner) *dsh.Adapter {
-	bin := envOr("DSH_BIN", "runtimes/dsh/node_modules/.bin/dsh-jsonrpc-agent")
-	config := envOr("DSH_CONFIG", "runtimes/dsh/.generated/smoke.cordis.yml")
-	// 支持 PATH 上的可执行文件（如 python3）与相对/绝对路径。
-	resolved := bin
-	if strings.Contains(bin, string(os.PathSeparator)) {
-		if _, err := os.Stat(bin); err != nil {
-			log.Printf("runnerd: DSH 二进制不可用（%s），仅提供 mock 执行面", bin)
-			return nil
-		}
-	} else if p, err := exec.LookPath(bin); err != nil {
-		log.Printf("runnerd: DSH 二进制不可用（%s），仅提供 mock 执行面", bin)
-		return nil
-	} else {
-		resolved = p
+func (e *moduleEngine) RecordRunSessionUpdate(ctx context.Context, runID string, update rt.SessionUpdate) error {
+	data := map[string]any{"session_ref": update.Ref}
+	if update.DisplayID != "" {
+		data["display_id"] = update.DisplayID
 	}
-	workspaceRoot := envOr("WORKSPACE_ROOT", ".")
-	adapter := dsh.New(dsh.Config{
-		BinPath: resolved, ConfigPath: config,
-		WorkspaceRoot: workspaceRoot,
-		SessionRoot:   envOr("DSH_SESSION_ROOT", workspaceRoot+"/.sessions"),
+	e.r.emitEvent(runID, "run.session", data)
+	return nil
+}
+
+func (e *moduleEngine) RecordRunUsage(ctx context.Context, runID string, usage rt.Usage) error {
+	e.r.emitEvent(runID, "usage.updated", map[string]any{
+		"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
+		"cached_tokens": usage.CachedTokens, "basis": string(usage.Basis),
+	})
+	return nil
+}
+
+func (e *moduleEngine) RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error) {
+	id := fmt.Sprintf("apr_local_%s_%d", runID, e.apprSeq.Add(1))
+	e.r.emitEvent(runID, "approval.requested", map[string]any{
+		"kind": kind, "risk": risk, "summary": summary, "approval_id": id,
+	})
+	return &domain.ApprovalRequest{
+		ID: id, RunID: runID, Kind: kind, Risk: risk, Summary: summary,
+		Status: domain.ApprovalPending,
+	}, nil
+}
+
+func (e *moduleEngine) Run(ctx context.Context, id string) (*domain.ExecutionRun, error) {
+	e.r.mu.Lock()
+	run := e.r.moduleRuns[id]
+	e.r.mu.Unlock()
+	if run == nil {
+		return nil, fmt.Errorf("run %s 不在本 runner", id)
+	}
+	return run, nil
+}
+
+// newDshGateway 构造 dsh 网关执行面；默认与控制平面同端口，健康检查会
+// 直接复用已运行的网关实例（不重复拉起）。
+func newDshGateway(r *runner) {
+	workbenchRoot, _ := os.Getwd()
+	repo := resolveDshRepo(workbenchRoot)
+	gw := dsh.NewGateway(dsh.GatewayConfig{
+		BaseURL:       envOr("DSH_GATEWAY_URL", ""),
+		Port:          atoiEnv("DSH_GATEWAY_PORT", 3090),
+		RepoDir:       repo,
+		WorkspaceRoot: envOr("WORKSPACE_ROOT", "."),
 		Model:         envOr("DSH_MODEL", "deepseek-v4-flash"),
-		SystemPrompt:  os.Getenv("RUNNER_SYSTEM_PROMPT"),
-	}, &dshEngine{r: r})
-	log.Printf("runnerd: DSH 执行面就绪（bin=%s config=%s）", resolved, config)
-	return adapter
+	})
+	r.dshGateway = gw
+	r.modules.Register("dsh", gw)
+	log.Printf("runnerd: dsh 网关模块已注册（repo=%q）", repo)
+}
+
+// newKimiModule 构造 kimiapp 网关执行面（本机 kimi CLI 存在或显式直连 URL
+// 时启用）；env 语义与 control-plane 的 ATW_KIMIAPP_* 一致。
+func newKimiModule(r *runner) {
+	bin := envOr("ATW_KIMIAPP_BIN", envOr("ATW_KIMI_BIN", "kimi"))
+	if envOr("ATW_KIMIAPP_URL", "") == "" {
+		if _, err := exec.LookPath(bin); err != nil {
+			return
+		}
+	}
+	m := kimiapp.New(kimiapp.Config{
+		BaseURL:       envOr("ATW_KIMIAPP_URL", ""),
+		Token:         envOr("ATW_KIMIAPP_TOKEN", ""),
+		Port:          atoiEnv("ATW_KIMIAPP_PORT", 0),
+		KimiBin:       bin,
+		Home:          envOr("ATW_KIMIAPP_HOME", filepath.Join(".atw-data", "kimi-home")),
+		WorkspaceRoot: envOr("WORKSPACE_ROOT", "."),
+		Model:         envOr("ATW_KIMIAPP_MODEL", ""),
+	})
+	r.kimiModule = m
+	r.modules.Register("kimi-appserver", m)
+	log.Printf("runnerd: kimiapp 网关模块已注册（bin=%q）", bin)
+}
+
+func atoiEnv(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// resolveDshRepo 定位 deepseek-harness 仓库根：DSH_REPO 显式指定优先，
+// 其次探测常见相邻目录（与控制平面 resolveDshRepo 同规则）。
+func resolveDshRepo(workbenchRoot string) string {
+	if v := os.Getenv("DSH_REPO"); v != "" {
+		return v
+	}
+	for _, cand := range []string{
+		filepath.Join(workbenchRoot, "..", "deepseek-harness"),
+		filepath.Join(workbenchRoot, "..", "..", "deepseek-harness"),
+		filepath.Join(workbenchRoot, "runtimes", "dsh-harness"),
+	} {
+		if _, err := os.Stat(filepath.Join(cand, "apps", "cli", "src", "bin.ts")); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
 
 // simulate 执行 mock 流程：事件按 runner_seq 递增上报，等待服务端 ACK。

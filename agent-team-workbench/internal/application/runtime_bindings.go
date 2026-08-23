@@ -127,7 +127,7 @@ func (s *Service) ProbeRuntimeBinding(ctx context.Context, bindingID string) (*d
 		}
 	}
 
-	status := domain.BindingDegraded
+	status := domain.BindingUnavailable
 	if result.OK {
 		status = domain.BindingReady
 	}

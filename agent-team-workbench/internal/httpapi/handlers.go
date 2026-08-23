@@ -31,9 +31,18 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
 		}
-		a, err := s.svc.CreateAgent(r.Context(), wsID, application.CreateAgentParams{
+		params := application.CreateAgentParams{
 			Name: req.Name, Role: req.Role, Skills: req.Skills, Avatar: req.Avatar,
-		})
+		}
+		if req.RuntimePreference != nil {
+			params.RuntimePreference = domain.RuntimePreference{
+				Preferred:   req.RuntimePreference.Preferred,
+				Fallbacks:   req.RuntimePreference.Fallbacks,
+				Mode:        req.RuntimePreference.Mode,
+				AgentPreset: req.RuntimePreference.AgentPreset,
+			}
+		}
+		a, err := s.svc.CreateAgent(r.Context(), wsID, params)
 		if err != nil {
 			return problemBytes(err)
 		}
@@ -47,6 +56,51 @@ func (s *Server) handleEnableAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDisableAgent(w http.ResponseWriter, r *http.Request) {
 	s.setAvailability(w, r, false)
+}
+
+// ── TaskSession（会话锚点）───────────────────────────────────────────
+
+func (s *Server) handleListTaskSessions(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_profile_id")
+	agent, err := s.svc.Agent(r.Context(), agentID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	sessions, err := s.svc.TaskSessionsByAgent(r.Context(), agent.WorkspaceID, agentID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	items := make([]taskSessionDTO, 0, len(sessions))
+	for _, t := range sessions {
+		if t.SessionRef() == "" {
+			continue // 墓碑行（reset/清除后）不展示
+		}
+		items = append(items, toTaskSessionDTO(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleResetTaskSession(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agent_profile_id")
+	s.idempotent(w, r, agentID, func() (int, []byte) {
+		var req resetTaskSessionRequest
+		if err := decodeBody(r, &req); err != nil {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
+		}
+		if req.TaskKey == "" || req.AdapterID == "" {
+			return renderProblem(http.StatusBadRequest, "bad_request", "task_key and adapter_id are required", "")
+		}
+		agent, err := s.svc.Agent(r.Context(), agentID)
+		if err != nil {
+			return problemBytes(err)
+		}
+		if err := s.svc.ResetTaskSession(r.Context(), agent.WorkspaceID, agentID, req.AdapterID, req.TaskKey); err != nil {
+			return problemBytes(err)
+		}
+		return renderJSON(w, r, http.StatusOK, map[string]any{"status": "reset"})
+	})
 }
 
 func (s *Server) setAvailability(w http.ResponseWriter, r *http.Request, enabled bool) {
@@ -225,8 +279,10 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.RuntimePreference != nil {
 			p.RuntimePreference = &domain.RuntimePreference{
-				Preferred: req.RuntimePreference.Preferred,
-				Fallbacks: req.RuntimePreference.Fallbacks,
+				Preferred:   req.RuntimePreference.Preferred,
+				Fallbacks:   req.RuntimePreference.Fallbacks,
+				Mode:        req.RuntimePreference.Mode,
+				AgentPreset: req.RuntimePreference.AgentPreset,
 			}
 		}
 		run, err := s.svc.CreateRun(r.Context(), wiID, p)

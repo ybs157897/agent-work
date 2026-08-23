@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -9,16 +10,21 @@ import (
 type RunRepo struct{ store *Store }
 
 const runCols = `id, workspace_id, work_item_id, agent_profile_id, status, runtime_label,
-	adapter_id, provider, capability_snapshot_id, session_ref, progress, retry_of,
+	adapter_id, provider, capability_snapshot_id, session_ref, session_before, session_after,
+	usage_in, usage_out, usage_cached, usage_basis, error_family, progress, retry_of,
 	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at`
 
 func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.ExecutionRun) error {
 	var agentID, runtimeLabel, adapterID, provider, capsID, sessionRef, retryOf, fCode, fMsg *string
+	var sessionBefore, sessionAfter, usageBasis, errorFamily *string
+	var usageIn, usageOut, usageCached sql.NullInt64
 	var fRetry *bool
 	var input string
 	var created, updated, finished scanTime
 	if err := row.Scan(&run.ID, &run.WorkspaceID, &run.WorkItemID, &agentID, &run.Status,
 		&runtimeLabel, &adapterID, &provider, &capsID, &sessionRef,
+		&sessionBefore, &sessionAfter,
+		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily,
 		&run.Progress, &retryOf, &fCode, &fMsg, &fRetry, &input,
 		&run.Version, &created, &updated, &finished); err != nil {
 		return err
@@ -34,6 +40,11 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	setStr(&run.Provider, provider)
 	setStr(&run.CapabilitySnapshotID, capsID)
 	setStr(&run.SessionRef, sessionRef)
+	setStr(&run.SessionBefore, sessionBefore)
+	setStr(&run.SessionAfter, sessionAfter)
+	setStr(&run.UsageBasis, usageBasis)
+	setStr(&run.ErrorFamily, errorFamily)
+	run.UsageIn, run.UsageOut, run.UsageCached = usageIn.Int64, usageOut.Int64, usageCached.Int64
 	if retryOf != nil {
 		run.RetryOf = *retryOf
 	}
@@ -63,10 +74,13 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		failureRetry = &run.Failure.Retryable
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkspaceID, run.WorkItemID, nullString(run.AgentProfileID), run.Status,
 		nullString(run.RuntimeLabel), nullString(run.AdapterID), nullString(run.Provider),
-		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef), run.Progress, nullString(run.RetryOf),
+		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef),
+		nullString(run.SessionBefore), nullString(run.SessionAfter),
+		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
+		run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
 		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt))
 	return r.store.mapErr(err)
@@ -94,10 +108,14 @@ func (r *RunRepo) Update(ctx context.Context, run *domain.ExecutionRun, expected
 	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE execution_runs SET status=?, progress=?, session_ref=?,
+			session_before=?, session_after=?,
+			usage_in=?, usage_out=?, usage_cached=?, usage_basis=?, error_family=?,
 			failure_code=?, failure_message=?, failure_retryable=?,
 			version=version+1, updated_at=?, finished_at=?
 		 WHERE id=? AND version=?`,
 		run.Status, run.Progress, nullString(run.SessionRef),
+		nullString(run.SessionBefore), nullString(run.SessionAfter),
+		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
 		failureCode, failureMsg, failureRetry,
 		d.TimeParam(timeNow()), d.NullTimeParam(run.FinishedAt), run.ID, expectedVersion)
 	if err != nil {
@@ -136,6 +154,15 @@ func (r *RunRepo) ActiveByAgent(ctx context.Context, agentProfileID string) ([]*
 	return r.list(ctx,
 		`agent_profile_id=? AND status NOT IN ('succeeded','interrupted','cancelled','lost','failed')`,
 		agentProfileID)
+}
+
+// LeaselessActive 返回「无任何 run_leases 行且非终态」的 run——进程内模块执行的
+// 孤儿（control-plane 崩溃/重启后遗留）。启动对账（ReconcileOrphanRuns）据此判定；
+// runner 路径的 run 必有 lease，由 runnergateway sweeper 负责，不会被此查询命中。
+func (r *RunRepo) LeaselessActive(ctx context.Context) ([]*domain.ExecutionRun, error) {
+	return r.list(ctx,
+		`status NOT IN ('succeeded','interrupted','cancelled','lost','failed')
+		 AND NOT EXISTS(SELECT 1 FROM run_leases l WHERE l.run_id=execution_runs.id)`)
 }
 
 func (r *RunRepo) ActiveCount(ctx context.Context, workspaceID string) (int, error) {

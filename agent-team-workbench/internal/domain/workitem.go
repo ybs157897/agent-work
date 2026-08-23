@@ -108,6 +108,16 @@ func (w *WorkItem) EnterReview(now time.Time) error {
 	return nil
 }
 
+// BeginExecution 在同一 WorkItem/会话创建下一轮 Run 时，把评审投影切回执行态。
+// WorkItem 仍保持 in_progress；每一轮 Run 仍是不可覆盖的独立审计记录。
+func (w *WorkItem) BeginExecution(now time.Time) {
+	if w.Status != WorkItemInProgress || w.Phase == PhaseExecution {
+		return
+	}
+	w.Phase = PhaseExecution
+	w.bump(now)
+}
+
 // Accept：Reviewer / 人工验收通过，唯一进入 completed 的路径。
 func (w *WorkItem) Accept(now time.Time) error {
 	if w.Status != WorkItemInProgress || w.Phase == "" || w.Phase == PhaseExecution {

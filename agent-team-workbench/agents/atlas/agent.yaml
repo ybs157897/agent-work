@@ -1,15 +1,13 @@
+# Agent 配置文件（agents/<slug>/ 为真相源；Web 编辑会回写此文件）
 name: Atlas
 role: architect
 skills:
-  - 系统设计
-  - 契约评审
+    - 系统设计、契约评审
 runtime:
-  preferred: mock
-  fallbacks: []
+    preferred: dsh_local
+    mode: default
+    agent_preset: standard
 model:
-  provider: deepseek
-  model: deepseek-v4-flash
+    ref: kimi-2-7
 permissions:
-  tools: [fs, todo]
-  approval_policy: approve_high_risk
-  sandbox: workspace_only
+    preset: workspace-write

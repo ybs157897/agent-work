@@ -23,6 +23,8 @@ def main():
         return 0
     send({"role": "assistant", "text": "fake kimi 输出"})
     send({"role": "result", "type": "result", "text": "done", "is_error": False})
+    send({"role": "meta", "type": "session.resume_hint",
+          "session_id": "sess_kimi_fake_1", "command": "kimi -S sess_kimi_fake_1"})
     return 0
 
 
