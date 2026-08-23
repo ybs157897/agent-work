@@ -2,11 +2,12 @@ package domain
 
 import "time"
 
-// PlanStatus 状态机（M1 编排设计 note §生命周期）：
+// PlanStatus 状态机（M1 编排设计 note §生命周期 + M4 审批护栏）：
 //
 //	active ──所有 step 执行完──▶ finished
-//	active ──遇到 defer────────▶ waiting ──同主任务新 plan 提交──▶ finished（superseded_by 记新 plan）
-//	active/waiting ──用户取消──▶ cancelled        任一 step 失败 ──▶ failed
+//	active ──遇到 defer/join───▶ waiting ──同主任务新 plan 提交──▶ finished（superseded_by 记新 plan）
+//	active ──manual dispatch───▶ waiting ──审批放行（M4）──▶ active（唯一回拨；静默唤醒不回拨）
+//	active/waiting ──用户取消──▶ cancelled        任一 step 失败 / 预算超限 ──▶ failed
 //
 // finished/cancelled/failed 为终态，不可逆。
 type PlanStatus string
@@ -21,7 +22,7 @@ const (
 
 var planTransitions = map[PlanStatus][]PlanStatus{
 	PlanActive:  {PlanWaiting, PlanFinished, PlanCancelled, PlanFailed},
-	PlanWaiting: {PlanFinished, PlanCancelled, PlanFailed},
+	PlanWaiting: {PlanActive, PlanFinished, PlanCancelled, PlanFailed},
 }
 
 func (s PlanStatus) IsTerminal() bool {
@@ -134,9 +135,17 @@ func (p *Plan) Transition(to PlanStatus, now time.Time) error {
 	return nil
 }
 
-// MarkWaiting defer 挂起：本批次到此为止，等待唤醒（唤醒 ≠ 继续，而是 owner 提交新 plan）。
+// MarkWaiting defer/join 挂起或 manual dispatch 审批挂起（M4）：本批次到此为止，
+// 等待唤醒（唤醒 ≠ 继续，而是 owner 提交新 plan；审批挂起则等审批回调续跑）。
 func (p *Plan) MarkWaiting(now time.Time) error {
 	return p.Transition(PlanWaiting, now)
+}
+
+// MarkActive 审批放行恢复（M4 审批护栏）：waiting → active 的唯一合法来源是
+// plan_dispatch 审批 approved 后批次从挂起步骤续跑；defer/join 的静默唤醒
+// 不回拨 active（owner 提交新 plan，旧 plan 走 supersede）。
+func (p *Plan) MarkActive(now time.Time) error {
+	return p.Transition(PlanActive, now)
 }
 
 // Finish 落终态；supersededBy 非空表示同主任务新 plan 提交触发的取代（仅 waiting 出发合法）。

@@ -32,9 +32,10 @@ const (
 )
 
 // workItemTransitions 定义合法状态迁移；completed/cancelled 为终态。
-// 纠正通过新的命令历史表达，不回写终态。
+// 纠正通过新的命令历史表达，不回写终态。todo→blocked 为 M4 预算护栏预留：
+// 静默唤醒点核算超限时主任务可能尚未认领（todo），blocker 仍需人可见。
 var workItemTransitions = map[WorkItemStatus][]WorkItemStatus{
-	WorkItemTodo:       {WorkItemInProgress, WorkItemCancelled},
+	WorkItemTodo:       {WorkItemInProgress, WorkItemBlocked, WorkItemCancelled},
 	WorkItemInProgress: {WorkItemBlocked, WorkItemCompleted, WorkItemCancelled},
 	WorkItemBlocked:    {WorkItemInProgress, WorkItemCancelled},
 }

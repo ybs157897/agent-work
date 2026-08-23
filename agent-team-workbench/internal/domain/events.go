@@ -38,6 +38,7 @@ const (
 	EventPlanStepExecuted = "plan.step_executed"
 	EventPlanWaiting      = "plan.waiting"
 	EventPlanFinished     = "plan.finished"
+	EventPlanFailed       = "plan.failed"
 
 	EventMessageDelta     = "message.delta"
 	EventMessageCompleted = "message.completed"
@@ -75,6 +76,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventRunProgressUpdated: {}, EventRunCompleted: {}, EventRunFailed: {},
 	EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventPlanSubmitted: {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
+	EventPlanFailed:   {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},
 	EventApprovalRequested: {}, EventApprovalResolved: {}, EventApprovalExpired: {},

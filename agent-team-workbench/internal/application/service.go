@@ -464,32 +464,42 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
-		if err := w.Transition(domain.WorkItemBlocked, time.Now().UTC()); err != nil {
-			return err
-		}
-		if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
-			return err
-		}
-		b := &domain.Blocker{
-			ID: domain.NewID("blk_"), WorkItemID: w.ID, Code: p.Code,
-			Message: p.Message, Source: p.Source, CreatedAt: time.Now().UTC(),
-		}
-		if err := s.store.WorkItems().CreateBlocker(ctx, b); err != nil {
-			return err
-		}
-		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemBlocked,
-			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"code": p.Code, "message": p.Message}); err != nil {
+		if err := s.blockLocked(ctx, w, p); err != nil {
 			return err
 		}
 		wi = w
-		return s.activity(ctx, w.WorkspaceID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
 	return wi, nil
+}
+
+// blockLocked 事务内落 blocker：状态迁移 + blocker 行 + 事件 + activity。
+// BlockWorkItem（API 边界，带版本校验）与预算护栏收口（控制平面内部，无版本
+// 期望——todo 主任务也可能落 blocker）共用。
+func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockParams) error {
+	if err := w.Transition(domain.WorkItemBlocked, time.Now().UTC()); err != nil {
+		return err
+	}
+	if err := s.store.WorkItems().Update(ctx, w, w.Version-1); err != nil {
+		return err
+	}
+	b := &domain.Blocker{
+		ID: domain.NewID("blk_"), WorkItemID: w.ID, Code: p.Code,
+		Message: p.Message, Source: p.Source, CreatedAt: time.Now().UTC(),
+	}
+	if err := s.store.WorkItems().CreateBlocker(ctx, b); err != nil {
+		return err
+	}
+	if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemBlocked,
+		domain.AggregateWorkItem, w.ID, w.Version, nil,
+		map[string]any{"code": p.Code, "message": p.Message}); err != nil {
+		return err
+	}
+	return s.activity(ctx, w.WorkspaceID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
 }
 
 // UnblockWorkItem 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。

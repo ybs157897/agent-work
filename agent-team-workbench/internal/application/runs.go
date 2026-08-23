@@ -725,6 +725,9 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 }
 
 // ResolveApproval 幂等决定；通过后 Run 回到 running（Adapter 继续执行）。
+// plan_dispatch 审批（M4 审批护栏，RunID 空）不走 run 迁移与 forwarder，由
+// resolvePlanDispatchApproval 续跑或收口 plan；副作用（分派、timer 唤醒）同
+// SubmitPlan 惯例推迟到事务提交后。
 func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approved bool, by, reason string) (*domain.ApprovalRequest, error) {
 	decision := domain.ApprovalRejected
 	if approved {
@@ -733,6 +736,13 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 	var result *domain.ApprovalRequest
 	// changed 标记本次调用是否真实变更决定；幂等重放不重复转发 ApprovalForwarder。
 	changed := false
+	// plan_dispatch 放行续跑的产物（run 分派与 timer 唤醒在提交后执行）。
+	var (
+		resumedRuns  []*domain.ExecutionRun
+		resumeWakeAt *time.Time
+		resolvePlan  *domain.Plan
+	)
+	resolveWS := ""
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		a, err := s.store.Runs().GetApproval(ctx, approvalID)
 		if err != nil {
@@ -749,6 +759,23 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 			return err
 		}
 		changed = true
+		if a.Kind == domain.ApprovalKindPlanDispatch {
+			resolvePlan, err = s.resolvePlanDispatchApproval(ctx, a, approved, reason, &resumedRuns, &resumeWakeAt)
+			if err != nil {
+				return err
+			}
+			resolveWS = resolvePlan.WorkspaceID
+			if err := s.emit(ctx, resolveWS, domain.EventApprovalResolved,
+				domain.AggregateApproval, a.ID, 1, nil,
+				map[string]any{"decision": string(decision), "resolved_by": by}); err != nil {
+				return err
+			}
+			s.audit(ctx, resolveWS, "approval.resolved", a.ID,
+				map[string]any{"decision": string(decision), "approver": by, "reason": reason, "risk": a.Risk})
+			result = a
+			return s.activity(ctx, resolveWS, "approval.resolved",
+				fmt.Sprintf("审批 %s：%s", a.ID, decision))
+		}
 		r, err := s.store.Runs().Get(ctx, a.RunID)
 		if err != nil {
 			return err
@@ -782,14 +809,26 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		return nil, err
 	}
 	if result != nil {
-		r, err := s.store.Runs().Get(ctx, result.RunID)
-		if err == nil {
-			s.notifier.Notify(r.WorkspaceID)
-		}
-		// 转发到 Runner/Adapter，使其继续或终止执行；仅本次真实变更时转发，
-		// 幂等重放不再重复投递（避免 adapter 收到重复审批决定）。
-		if s.ApprovalForwarder != nil && changed {
-			s.ApprovalForwarder(ctx, result.RunID, result.ID, approved)
+		if result.RunID != "" {
+			r, err := s.store.Runs().Get(ctx, result.RunID)
+			if err == nil {
+				s.notifier.Notify(r.WorkspaceID)
+			}
+			// 转发到 Runner/Adapter，使其继续或终止执行；仅本次真实变更时转发，
+			// 幂等重放不再重复投递（避免 adapter 收到重复审批决定）。
+			if s.ApprovalForwarder != nil && changed {
+				s.ApprovalForwarder(ctx, result.RunID, result.ID, approved)
+			}
+		} else if resolveWS != "" {
+			// plan_dispatch 审批无 run 可转发：通知 workspace 即可；放行续跑的
+			// 副作用与 SubmitPlan 同惯例（权威提交后才分派/入 timer 唤醒）。
+			s.notifier.Notify(resolveWS)
+			if err := s.dispatchCreatedRuns(ctx, resumedRuns); err != nil {
+				return result, err
+			}
+			if resumeWakeAt != nil {
+				s.enqueuePlanTimerWake(ctx, resolveWS, resolvePlan.AgentProfileID, resolvePlan.ID, *resumeWakeAt)
+			}
 		}
 	}
 	return result, nil

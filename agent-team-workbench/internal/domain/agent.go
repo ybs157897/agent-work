@@ -37,6 +37,10 @@ type AgentPolicy struct {
 	PermissionPreset string   `json:"permission_preset,omitempty"` // DSH permission preset id
 }
 
+// ApprovalPolicyManual 全量人工审批策略：plan dispatch 到此类 agent 的步骤
+// 挂 ApprovalRequest（kind=plan_dispatch）等人放行（M4 审批护栏）。
+const ApprovalPolicyManual = "manual"
+
 // ModelRef 模型选择；Ref 引用 models/ 注册表条目，非空字段再覆盖条目的 provider/model。
 type ModelRef struct {
 	Ref      string `json:"ref,omitempty"`

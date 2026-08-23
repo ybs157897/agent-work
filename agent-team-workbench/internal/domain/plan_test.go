@@ -19,7 +19,7 @@ func TestPlanStateMachine(t *testing.T) {
 		{PlanWaiting, PlanFinished, true}, // supersede 路径
 		{PlanWaiting, PlanCancelled, true},
 		{PlanWaiting, PlanFailed, true},
-		{PlanWaiting, PlanActive, false}, // defer 即批次终止，无游标回拨
+		{PlanWaiting, PlanActive, true}, // M4 审批放行续跑（唯一回拨；静默唤醒不回拨）
 		{PlanFinished, PlanActive, false},
 		{PlanFinished, PlanWaiting, false},
 		{PlanCancelled, PlanActive, false},
