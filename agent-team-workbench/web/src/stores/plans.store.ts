@@ -1,13 +1,13 @@
 import { create } from 'zustand';
-import { getPlan } from '../api/endpoints';
+import { getPlan, getWorkItemPlan } from '../api/endpoints';
 import type { CanonicalEvent, Plan } from '../api/types';
 
 /**
  * Plan 投影（M1 编排）：
  * - 权威来源是控制平面的 plan 聚合事件流 + GET /plans/{id}，本 store 只缓存
  *   「每个主任务的最新 plan」（同主任务新 plan 提交 = 整体覆盖，对应 supersede）。
- * - M1 没有「按主任务查最新 plan」的列表端点：冷启动缓存为空，须等 SSE
- *   plan.* 事件建立 plan_id → work_item_id 索引后才能按主任务刷新。
+ * - 冷启动（无 SSE 索引）经 GET /work-items/{id}/plan 按主任务直取最新一份；
+ *   无 plan（404）保持空缓存，等 plan.* 事件。
  */
 interface PlansStore {
   /** work_item_id → 最新 plan。 */
@@ -16,7 +16,7 @@ interface PlansStore {
   workItemOf: Record<string, string>;
   /** plan 域 SSE 事件（plan.*）；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
-  /** 详情页打开时按主任务拉最新快照；plan id 未知（冷启动）时为空操作。 */
+  /** 详情页打开时按主任务拉最新快照；缓存已建走 plan id 重拉，冷启动走按主任务端点。 */
   refreshFor: (workItemId: string) => Promise<void>;
 }
 
@@ -27,6 +27,13 @@ const dirty: Record<string, boolean> = {};
 const strField = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 
 export const usePlansStore = create<PlansStore>()((set, get) => {
+  /** 落缓存并学习 plan_id → work_item_id 反查索引。 */
+  const cachePlan = (plan: Plan) =>
+    set((s) => ({
+      byWorkItem: { ...s.byWorkItem, [plan.work_item_id]: plan },
+      workItemOf: { ...s.workItemOf, [plan.id]: plan.work_item_id },
+    }));
+
   const fetchPlan = async (planId: string): Promise<void> => {
     if (inflight[planId]) {
       dirty[planId] = true;
@@ -34,11 +41,7 @@ export const usePlansStore = create<PlansStore>()((set, get) => {
     }
     inflight[planId] = true;
     try {
-      const plan = await getPlan(planId);
-      set((s) => ({
-        byWorkItem: { ...s.byWorkItem, [plan.work_item_id]: plan },
-        workItemOf: { ...s.workItemOf, [plan.id]: plan.work_item_id },
-      }));
+      cachePlan(await getPlan(planId));
     } catch {
       // 只吞本次 GET 失败（网络/5xx）：SSE 仍在流上，下一个 plan.* 事件或
       // 详情页重开会重试；除此之外没有别的消费者需要这个错误。
@@ -71,8 +74,16 @@ export const usePlansStore = create<PlansStore>()((set, get) => {
 
     refreshFor: async (workItemId) => {
       const cached = get().byWorkItem[workItemId];
-      if (!cached) return; // 冷启动无索引：等 plan.* 事件建立缓存
-      await fetchPlan(cached.id);
+      if (cached) {
+        await fetchPlan(cached.id);
+        return;
+      }
+      // 冷启动（刷新页面直开详情，SSE 索引未建）：按主任务直取最新 plan。
+      try {
+        cachePlan(await getWorkItemPlan(workItemId));
+      } catch {
+        // 同 fetchPlan 口径：只吞本次 GET 失败（404 = 该任务无 plan）。
+      }
     },
   };
 });

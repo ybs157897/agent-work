@@ -152,6 +152,13 @@ export const acceptWorkItem = (workItemId: string, expectedVersion: number) =>
     body: { expected_version: expectedVersion },
   });
 
+/** 打回重做：review/acceptance 退回 execution（M4 契约：reason 可选，落审计）。 */
+export const returnWorkItem = (workItemId: string, reason: string | undefined, expectedVersion: number) =>
+  apiFetch<WorkItem>(`/work-items/${workItemId}/commands/return`, {
+    method: 'POST',
+    body: { ...(reason ? { reason } : {}), expected_version: expectedVersion },
+  });
+
 // ── Plan（M1 编排：提交即同步执行；契约见 notes orchestration m1-plan-executor）──
 
 export interface DispatchStepInput {
@@ -189,6 +196,9 @@ export const createPlan = (workspaceId: string, input: CreatePlanInput) =>
   apiFetch<Plan>(`/workspaces/${workspaceId}/plans`, { method: 'POST', body: input });
 
 export const getPlan = (planId: string) => apiFetch<Plan>(`/plans/${planId}`);
+
+/** 主任务的最新一份 plan（按 created_at 最新，不限状态；无 plan → 404）。 */
+export const getWorkItemPlan = (workItemId: string) => apiFetch<Plan>(`/work-items/${workItemId}/plan`);
 
 // ── Run / Approval / Artifact ───────────────────────────────────────
 

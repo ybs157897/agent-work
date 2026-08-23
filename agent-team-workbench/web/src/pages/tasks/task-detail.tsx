@@ -13,7 +13,9 @@ import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
+import { evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
 import { sortTasksTree } from '../../utils/task-tree';
+import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 
 const STATUS_TEXT: Record<string, string> = {
@@ -81,6 +83,7 @@ export function TaskDetail({
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const [assigning, setAssigning] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [returning, setReturning] = useState(false);
   // 子任务树快照：null = 未加载/加载失败（回退列表本地推导）。
   const [treeChildren, setTreeChildren] = useState<WorkItem[] | null>(null);
   // 树接口带回的任务缓存：点子任务即时渲染，权威快照仍由 getWorkItem 补齐。
@@ -294,7 +297,7 @@ export function TaskDetail({
             <section className="space-y-snug">
               <h3 className="text-caption font-medium text-text-tertiary">编排计划</h3>
               {plan ? (
-                <PlanPanel plan={plan} agents={agents} onOpenWorkItem={selectTask} />
+                <PlanPanel plan={plan} task={task} agents={agents} onOpenWorkItem={selectTask} />
               ) : (
                 <p className="text-body text-text-tertiary">暂无编排计划</p>
               )}
@@ -325,12 +328,20 @@ export function TaskDetail({
                       标记阻塞
                     </button>
                     {(task.phase === 'review' || task.phase === 'acceptance') && (
-                      <button
-                        onClick={() => void onTransition(task, 'completed')}
-                        className="bg-status-success text-white rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
-                      >
-                        验收通过
-                      </button>
+                      <>
+                        <button
+                          onClick={() => void onTransition(task, 'completed')}
+                          className="bg-status-success text-white rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
+                        >
+                          验收通过
+                        </button>
+                        <button
+                          onClick={() => setReturning(true)}
+                          className="bg-transparent border border-status-warning text-status-warning rounded-button px-base py-tight text-body font-medium transition-colors hover:bg-status-warning/5 active:scale-[0.98]"
+                        >
+                          打回重做
+                        </button>
+                      </>
                     )}
                   </>
                 )}
@@ -359,19 +370,25 @@ export function TaskDetail({
               }}
             />
           )}
+          <ReturnTaskModal
+            task={returning && isAwaitingAcceptance(task) ? task : null}
+            onClose={() => setReturning(false)}
+          />
         </div>
       )}
     </Drawer>
   );
 }
 
-/** plan 摘要面板：状态徽标 + steps 执行明细。 */
+/** plan 摘要面板：状态徽标 + 评估提示 + steps 执行明细。 */
 function PlanPanel({
   plan,
+  task,
   agents,
   onOpenWorkItem,
 }: {
   plan: Plan;
+  task: WorkItem;
   agents: { id: string; name: string }[];
   onOpenWorkItem: (workItemId: string) => void;
 }) {
@@ -390,6 +407,11 @@ function PlanPanel({
           {ownerName} · {formatDateTime(plan.updated_at)}
         </span>
       </div>
+      {evaluationPassed(task, plan) && (
+        <div className="rounded-lg border border-status-success/20 bg-status-success/10 px-snug py-tight text-body text-status-success">
+          评估通过，等待人工验收
+        </div>
+      )}
       {plan.superseded_by && (
         <p className="text-caption text-text-tertiary">已被后续计划 {plan.superseded_by} 取代</p>
       )}
@@ -442,6 +464,14 @@ function PlanStepRow({
           >
             {STEP_STATUS_TEXT[step.status] ?? step.status}
           </span>
+          {stepTriggeredEvaluation(step) && (
+            <span
+              title="plan 落 finished 后自动创建评估 run，verdict 通过后进入待验收"
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-caption font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+            >
+              已触发评估
+            </span>
+          )}
           {targetName && <span className="text-caption text-text-tertiary">→ {targetName}</span>}
         </div>
         {summary && (

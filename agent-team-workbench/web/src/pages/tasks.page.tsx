@@ -10,6 +10,7 @@ import { useAgentsStore } from '../stores/agents.store';
 import { useTasksStore, type ViewMode } from '../stores/tasks.store';
 import { toast } from '../stores/toast.store';
 import { childCountByParent, sortTasksTree } from '../utils/task-tree';
+import { isAwaitingAcceptance } from '../utils/task-phase';
 import { formatDueDate } from '../utils/format';
 import { BlockTaskModal } from './tasks/block-modal';
 import { CreateTaskModal } from './tasks/create-task-modal';
@@ -397,8 +398,15 @@ function TaskCard({
         <div className="text-xs font-medium text-status-error mb-3">{task.blocker.message}</div>
       )}
 
-      {task.status === 'in_progress' && task.phase === 'review' && (
-        <div className="text-xs font-medium text-brand-accent mb-3">待验收</div>
+      {isAwaitingAcceptance(task) && (
+        <div className="mb-3">
+          <span
+            title="run 成功待评审或评估通过，等待人工验收"
+            className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+          >
+            待验收
+          </span>
+        </div>
       )}
 
       <div className="flex items-center justify-between mt-auto">

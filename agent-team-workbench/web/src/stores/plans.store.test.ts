@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent, Plan } from '../api/types';
+import { planTriggeredEvaluation } from '../utils/task-phase';
 import { usePlansStore } from './plans.store';
 
 const planDTO = (id: string, workItemId: string, status: Plan['status']): Plan => ({
@@ -177,14 +178,59 @@ describe('plans.store refreshFor', () => {
 
     await usePlansStore.getState().refreshFor('wi_1');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/plans/plan_1');
     expect(usePlansStore.getState().byWorkItem['wi_1']?.status).toBe('finished');
   });
 
-  it('冷启动无索引：空操作，不发请求', async () => {
-    const fetchMock = vi.fn();
+  it('冷启动无索引：走 GET /work-items/{id}/plan 直取最新 plan 并学习索引', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(planDTO('plan_9', 'wi_cold', 'finished')));
     vi.stubGlobal('fetch', fetchMock);
 
-    await usePlansStore.getState().refreshFor('wi_unknown');
-    expect(fetchMock).not.toHaveBeenCalled();
+    await usePlansStore.getState().refreshFor('wi_cold');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_cold/plan');
+    expect(init.method).toBe('GET');
+    expect(usePlansStore.getState().byWorkItem['wi_cold']?.id).toBe('plan_9');
+    expect(usePlansStore.getState().workItemOf['plan_9']).toBe('wi_cold');
+  });
+
+  it('冷启动主任务无 plan（404）：不落缓存也不抛出', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ title: 'not found', status: 404 }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/problem+json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(usePlansStore.getState().refreshFor('wi_none')).resolves.toBeUndefined();
+    expect(usePlansStore.getState().byWorkItem).toEqual({});
+  });
+});
+
+describe('plans.store evaluation 标记投影', () => {
+  beforeEach(resetStore);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('finish{evaluation:true} 经事件拉取后原样落在缓存投影，planTriggeredEvaluation 可判', async () => {
+    const evaluated = {
+      ...planDTO('plan_1', 'wi_1', 'finished'),
+      steps: [
+        { seq: 1, verb: 'finish' as const, status: 'executed' as const, payload: { summary: '完成', evaluation: true } },
+      ],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json(evaluated));
+    vi.stubGlobal('fetch', fetchMock);
+
+    usePlansStore.getState().applyEvent(planEvent('plan.finished', 'plan_1', { work_item_id: 'wi_1' }));
+    await vi.waitFor(() => {
+      expect(usePlansStore.getState().byWorkItem['wi_1']?.id).toBe('plan_1');
+    });
+
+    expect(planTriggeredEvaluation(usePlansStore.getState().byWorkItem['wi_1'])).toBe(true);
   });
 });
