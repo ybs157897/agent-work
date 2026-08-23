@@ -716,6 +716,8 @@ func codexFailure(code, message string) *runtime.Failure {
 		family, retryable = runtime.FamilyConfig, false
 	case containsAny(low,
 		"thread not found", "unknown thread", "no such thread",
+		// codex 0.149.0 thread/resume 死锚点的真实文案（code -32600）。
+		"no rollout found",
 		"session not found", "unknown session", "no such session",
 		"conversation not found", "no conversation found"):
 		// 已丢失的 codex thread 盲目重试只会原地失败：显式 session_unknown

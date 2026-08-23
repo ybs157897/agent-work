@@ -451,6 +451,9 @@ func TestCodexFailureFamilies(t *testing.T) {
 		{"thread/resume: no such thread", atwruntime.FamilySessionUnknown, false},
 		{"session not found: sess_x", atwruntime.FamilySessionUnknown, false},
 		{"conversation not found", atwruntime.FamilySessionUnknown, false},
+		// 防回归：codex 0.149.0 thread/resume 死锚点的真实文案（实测 code -32600），
+		// 误归 transient 会让死会话被盲目重试、永远走不到自愈。
+		{"no rollout found for thread id th_missing", atwruntime.FamilySessionUnknown, false},
 		// 不得用裸 "not found" 误吞无关错误。
 		{"method not found: -32601", atwruntime.FamilyTransientUpstream, true},
 		{"model not found: gpt-x", atwruntime.FamilyTransientUpstream, true},
