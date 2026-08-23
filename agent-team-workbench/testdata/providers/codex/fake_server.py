@@ -113,7 +113,8 @@ def main():
                              "itemId": "it_1", "delta": "hi\n"}})
             send({"method": "item/completed", "params": {"item": {
                 "id": "it_1", "type": "commandExecution", "command": "echo hi",
-                "cwd": "/tmp", "status": "completed"}}})
+                "cwd": "/tmp", "status": "completed",
+                "aggregatedOutput": "hi\n", "exitCode": 0}}})
             send({"method": "item/agentMessage/delta",
                   "params": {"threadId": thread_id, "turnId": "turn_fake_1",
                              "itemId": "msg_1", "delta": "fake codex 输出"}})

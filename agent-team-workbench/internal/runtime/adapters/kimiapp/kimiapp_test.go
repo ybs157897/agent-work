@@ -484,14 +484,27 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if !ok || completed.data["text"] != "ALPHA" {
 		t.Fatalf("message.completed 不符: %+v", completed)
 	}
-	if _, ok := cb.find(domain.EventToolStarted); !ok {
+	started, ok := cb.find(domain.EventToolStarted)
+	if !ok {
 		t.Fatal("未见 tool.started")
 	}
-	if _, ok := cb.find(domain.EventToolCompleted); !ok {
+	// 工具契约：tool/call_id + args_summary（args.command 提取）。
+	if started.data["tool"] != "shell" || started.data["call_id"] != "tc_1" || started.data["args_summary"] != "ls" {
+		t.Fatalf("tool.started 契约不符: %+v", started.data)
+	}
+	completedTool, ok := cb.find(domain.EventToolCompleted)
+	if !ok {
 		t.Fatal("未见 tool.completed")
 	}
-	if _, ok := cb.find(domain.EventToolFailed); !ok { // isError=true → tool.failed
+	if completedTool.data["call_id"] != "tc_1" || completedTool.data["output"] != "done" {
+		t.Fatalf("tool.completed 契约不符: %+v", completedTool.data)
+	}
+	failedTool, ok := cb.find(domain.EventToolFailed) // isError=true → tool.failed
+	if !ok {
 		t.Fatal("未见 tool.failed")
+	}
+	if failedTool.data["call_id"] != "tc_2" || failedTool.data["output"] != "boom" {
+		t.Fatalf("tool.failed 契约不符: %+v", failedTool.data)
 	}
 	// usage：两 step 累计（input=inputOther+cacheRead+cacheCreation；cached=cacheRead）。
 	if res.Usage == nil {
@@ -528,7 +541,7 @@ func TestForeignTurnEventsDropped(t *testing.T) {
 				"turnId": 98, "toolCallId": "tc_old", "output": mustJSON("stale"),
 			}, 4, false))
 			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
-				"turnId": 1, "toolCallId": "tc_new", "name": "shell",
+				"turnId": 1, "toolCallId": "tc_new", "name": "shell", "args": map[string]any{"command": "ls"},
 			}, 5, false))
 			f.push(kapEvent("s_1", "tool.result", map[string]any{
 				"turnId": 1, "toolCallId": "tc_new", "output": mustJSON("fresh"),
@@ -551,8 +564,8 @@ func TestForeignTurnEventsDropped(t *testing.T) {
 	default:
 	}
 	started, _ := cb.find(domain.EventToolStarted)
-	if started.data["call_id"] != "tc_new" {
-		t.Fatalf("本 turn tool.started 不符: %+v", started.data)
+	if started.data["call_id"] != "tc_new" || started.data["args_summary"] != "ls" {
+		t.Fatalf("本 turn tool.started 契约不符: %+v", started.data)
 	}
 }
 

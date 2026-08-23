@@ -553,21 +553,25 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if !p.myTurn(ev.TurnID) {
 			return false
 		}
-		p.ex.Callbacks.OnEvent(domain.EventToolStarted, map[string]any{
-			"tool": ev.Name, "call_id": ev.ToolCallID,
-		})
+		payload := map[string]any{"tool": ev.Name, "call_id": ev.ToolCallID}
+		if s := toolArgsSummary(ev.Description, ev.Args); s != "" {
+			payload["args_summary"] = s
+		}
+		p.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool.result":
 		var ev evToolResult
-		var data map[string]any
 		_ = json.Unmarshal(frame.Payload, &ev)
-		_ = json.Unmarshal(frame.Payload, &data)
 		if !p.myTurn(ev.TurnID) {
 			return false
 		}
+		payload := map[string]any{"call_id": ev.ToolCallID}
+		if out := toolOutputText(ev.Output); out != "" {
+			payload["output"] = out
+		}
 		if ev.IsError != nil && *ev.IsError {
-			p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"raw": data})
+			p.ex.Callbacks.OnEvent(domain.EventToolFailed, payload)
 		} else {
-			p.ex.Callbacks.OnEvent(domain.EventToolCompleted, map[string]any{"raw": data})
+			p.ex.Callbacks.OnEvent(domain.EventToolCompleted, payload)
 		}
 	case "tool.progress":
 		var ev evToolProgress
@@ -575,7 +579,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if !p.myTurn(ev.TurnID) {
 			return false
 		}
-		payload := map[string]any{"tool_call_id": ev.ToolCallID, "text": ev.Update.Text}
+		payload := map[string]any{"call_id": ev.ToolCallID, "text": ev.Update.Text}
 		if ev.Update.Percent != nil {
 			payload["percent"] = *ev.Update.Percent
 		}
@@ -692,6 +696,65 @@ func personaOf(ex *runtime.ExecContext) string {
 		persona = strings.TrimSpace(persona + "\n\nPlan mode: analyze and produce a plan only; do not modify workspace files.")
 	}
 	return persona
+}
+
+// ── 工具事件载荷整形（与 codexapp 对齐的 canonical 契约）────────────────
+//
+// tool.started: {tool, call_id, args_summary?}；tool.completed/failed:
+// {call_id, output?}；tool.progress: {call_id, text, percent?}。输出统一截断，
+// 防 run_events 膨胀（完整输出本就可达数 MB 级）。
+
+const (
+	maxToolArgsSummary = 200
+	maxToolOutput      = 2000
+)
+
+// toolArgsSummary 给 UI 的一行输入摘要：优先服务端 description，其次
+// 命令/路径类参数，最后紧凑 JSON 截断。
+func toolArgsSummary(description string, args json.RawMessage) string {
+	if s := strings.TrimSpace(description); s != "" {
+		return truncate(s, maxToolArgsSummary)
+	}
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(args, &m) == nil {
+		for _, key := range []string{"command", "cmd", "path", "file_path", "query", "url"} {
+			if v, _ := m[key].(string); strings.TrimSpace(v) != "" {
+				return truncate(v, maxToolArgsSummary)
+			}
+		}
+	}
+	return truncate(string(args), maxToolArgsSummary)
+}
+
+// toolOutputText 提取 tool.result 输出文本：string 直出；ContentPart[]
+// （{type:"text",text}）拼 text 段；其余紧凑 JSON 原样截断。
+func toolOutputText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return truncate(s, maxToolOutput)
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) == nil && len(parts) > 0 {
+		var b strings.Builder
+		for _, part := range parts {
+			if part.Type == "text" {
+				b.WriteString(part.Text)
+			}
+		}
+		if b.Len() > 0 {
+			return truncate(b.String(), maxToolOutput)
+		}
+	}
+	return truncate(string(raw), maxToolOutput)
 }
 
 // permissionMode 统一审批策略 → kap permission_mode 三档：

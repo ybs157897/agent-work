@@ -55,6 +55,25 @@ describe('buildMessages', () => {
     expect(msgs[0].text).toContain('MISSING_CREDENTIAL');
   });
 
+  it('tool 事件按 call_id 折叠：args_summary 上标题，completed 输出挂 detail，failed 转 error', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls -la' }),
+        entry('run_1', 2, 'tool.completed', { call_id: 'c1', output: 'file.go' }),
+        entry('run_1', 3, 'tool.started', { tool: 'shell', call_id: 'c2', args_summary: 'rm x' }),
+        entry('run_1', 4, 'tool.failed', { call_id: 'c2', output: 'permission denied' }),
+        entry('run_1', 5, 'tool.completed', { call_id: 'c3', output: 'orphan' }),
+        entry('run_1', 6, 'tool.completed', { call_id: 'c4' }), // 无输出不刷屏
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text, m.detail ?? ''])).toEqual([
+      ['tool', '调用工具 shell：ls -la', 'file.go'],
+      ['error', '工具失败 shell：rm x', 'permission denied'],
+      ['tool', '工具输出', 'orphan'],
+    ]);
+  });
+
   it('跨多个 run 按顺序拼接（串行轮次）', () => {
     const timelines = {
       run_1: [entry('run_1', 1, 'run.created', { instruction: '第一轮' })],

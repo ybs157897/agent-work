@@ -345,6 +345,20 @@ func TestExecuteHappyPath(t *testing.T) {
 	if ev.data["text"] != "fake codex 输出" || ev.data["role"] != "assistant" || ev.data["item_type"] != "agentMessage" {
 		t.Fatalf("message.completed payload 漂移: %+v", ev.data)
 	}
+	// 工具契约（与 kimiapp 对齐）：started 带 call_id/args_summary（command），
+	// completed 带聚合 output 与 exit_code——此前输出被整体丢弃，UI 不可见。
+	started, ok := r.cb.findEvent(domain.EventToolStarted)
+	if !ok || started.data["tool"] != "shell" || started.data["call_id"] != "it_1" ||
+		started.data["args_summary"] != "echo hi" {
+		t.Fatalf("tool.started 契约漂移: %+v", started.data)
+	}
+	toolDone, ok := r.cb.findEvent(domain.EventToolCompleted)
+	if !ok || toolDone.data["call_id"] != "it_1" || toolDone.data["output"] != "hi" {
+		t.Fatalf("tool.completed 契约漂移: %+v", toolDone.data)
+	}
+	if ec, ok := toolDone.data["exit_code"].(float64); !ok || ec != 0 {
+		t.Fatalf("tool.completed 缺 exit_code: %+v", toolDone.data)
+	}
 	// 会话句柄：thread/start 响应 → OnSession + ExecResult.Session。
 	if ref := r.cb.sessionRef(); ref != "codex://th_fake_1" {
 		t.Fatalf("OnSession 未上报 codex://th_fake_1: %q", ref)

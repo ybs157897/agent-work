@@ -74,8 +74,11 @@ func (e itemEvent) isTool() bool {
 	return e.Tool != ""
 }
 
+// canonicalPayload 工具事件的 canonical 契约（与 kimiapp 对齐）：call_id/
+// tool/status + item_type（codex 特有）。started 可附 args_summary（输入
+// 摘要），completed/failed 可附 output（结果文本，截断防 run_events 膨胀）。
 func (e itemEvent) canonicalPayload() map[string]any {
-	out := map[string]any{"id": e.ID, "item_type": e.Type}
+	out := map[string]any{"call_id": e.ID, "item_type": e.Type}
 	if e.Tool != "" {
 		out["tool"] = e.Tool
 	}
@@ -83,6 +86,55 @@ func (e itemEvent) canonicalPayload() map[string]any {
 		out["status"] = e.Status
 	}
 	return out
+}
+
+// argsSummary 工具输入的一行摘要：commandExecution.command 必填且 started
+// 即带；mcp/dynamic 工具回退到截断的 arguments JSON。
+func (e itemEvent) argsSummary() string {
+	switch e.Type {
+	case "commandExecution":
+		if cmd, _ := e.Raw["command"].(string); strings.TrimSpace(cmd) != "" {
+			return truncateSummary(cmd)
+		}
+	case "mcpToolCall", "dynamicToolCall":
+		if args, ok := e.Raw["arguments"]; ok && args != nil {
+			if b, err := json.Marshal(args); err == nil {
+				return truncateSummary(string(b))
+			}
+		}
+	}
+	return ""
+}
+
+// resultOutput 工具结果文本：commandExecution.aggregatedOutput；mcp/dynamic
+// 工具的 result（失败时 error）紧凑 JSON。
+func (e itemEvent) resultOutput() string {
+	switch e.Type {
+	case "commandExecution":
+		out, _ := e.Raw["aggregatedOutput"].(string)
+		return truncateOutput(out)
+	case "mcpToolCall", "dynamicToolCall":
+		if errVal, ok := e.Raw["error"]; ok && errVal != nil {
+			if b, err := json.Marshal(errVal); err == nil {
+				return truncateOutput(string(b))
+			}
+		}
+		if res, ok := e.Raw["result"]; ok && res != nil {
+			if b, err := json.Marshal(res); err == nil {
+				return truncateOutput(string(b))
+			}
+		}
+	}
+	return ""
+}
+
+// truncateOutput 工具输出上限 2000 字符（完整输出可达 MB 级，不进事件流）。
+func truncateOutput(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 2000 {
+		return s[:2000] + "…"
+	}
+	return s
 }
 
 func toolCompletionEvent(e itemEvent) string {

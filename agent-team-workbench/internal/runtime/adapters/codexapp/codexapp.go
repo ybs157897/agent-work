@@ -546,7 +546,11 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "item/started":
 			item := parseItemEvent(frame.Params)
 			if item.isTool() {
-				s.ex.Callbacks.OnEvent(domain.EventToolStarted, item.canonicalPayload())
+				payload := item.canonicalPayload()
+				if s := item.argsSummary(); s != "" {
+					payload["args_summary"] = s
+				}
+				s.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 			}
 		case "item/completed":
 			item := parseItemEvent(frame.Params)
@@ -558,7 +562,14 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					})
 				}
 			case item.isTool():
-				s.ex.Callbacks.OnEvent(toolCompletionEvent(item), item.canonicalPayload())
+				payload := item.canonicalPayload()
+				if out := item.resultOutput(); out != "" {
+					payload["output"] = out
+				}
+				if ec, ok := item.Raw["exitCode"]; ok {
+					payload["exit_code"] = ec
+				}
+				s.ex.Callbacks.OnEvent(toolCompletionEvent(item), payload)
 			}
 		case "item/agentMessage/delta", "item/plan/delta":
 			text := codexDeltaText(frame.Params)
@@ -576,9 +587,15 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 			}
 		case "item/commandExecution/outputDelta":
 			if text := codexDeltaText(frame.Params); text != "" {
-				s.ex.Callbacks.OnEvent(domain.EventToolProgress, map[string]any{
-					"tool": "shell", "text": truncateSummary(text),
-				})
+				payload := map[string]any{"tool": "shell", "text": truncateSummary(text)}
+				var ref struct {
+					ItemID string `json:"itemId"`
+				}
+				_ = json.Unmarshal(frame.Params, &ref)
+				if ref.ItemID != "" {
+					payload["call_id"] = ref.ItemID
+				}
+				s.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
 			}
 		case "turn/completed":
 			var n struct {

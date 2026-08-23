@@ -342,9 +342,16 @@ function UserBubble({ msg }: { msg: ChatMessage }) {
 
 function MetaLine({ msg }: { msg: ChatMessage }) {
   return (
-    <div className={`text-center text-caption ${msg.kind === 'error' ? 'text-status-error' : 'text-text-tertiary'}`}>
-      {msg.kind === 'error' ? '✕ ' : ''}{msg.text}
-      <span className="ml-1 tabular-nums">{formatTime(msg.at)}</span>
+    <div className="py-0.5">
+      <div className={`text-center text-caption ${msg.kind === 'error' ? 'text-status-error' : 'text-text-tertiary'}`}>
+        {msg.kind === 'error' ? '✕ ' : ''}{msg.text}
+        <span className="ml-1 tabular-nums">{formatTime(msg.at)}</span>
+      </div>
+      {msg.detail && (
+        <pre className="mx-auto mt-1 max-h-48 w-full max-w-2xl overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
+          {msg.detail}
+        </pre>
+      )}
     </div>
   );
 }
