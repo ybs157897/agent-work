@@ -197,6 +197,17 @@ type assignWorkItemRequest struct {
 	ExpectedVersion int    `json:"expected_version"`
 }
 
+// claimWorkItemRequest M4 认领：body 用 agent_id（设计 note §1 契约）。
+type claimWorkItemRequest struct {
+	AgentProfileID  string `json:"agent_id"`
+	ExpectedVersion int    `json:"expected_version"`
+}
+
+type returnWorkItemRequest struct {
+	Reason          string `json:"reason"`
+	ExpectedVersion int    `json:"expected_version"`
+}
+
 type blockWorkItemRequest struct {
 	Code            string `json:"code"`
 	Message         string `json:"message"`
@@ -264,17 +275,20 @@ type resetTaskSessionRequest struct {
 // ── Plan ─────────────────────────────────────────────────────────────
 
 type planDTO struct {
-	ID             string        `json:"id"`
-	WorkspaceID    string        `json:"workspace_id"`
-	WorkItemID     string        `json:"work_item_id"`
-	AgentProfileID string        `json:"agent_profile_id"`
-	SourceRunID    string        `json:"source_run_id,omitempty"`
-	Status         string        `json:"status"`
-	SupersededBy   string        `json:"superseded_by,omitempty"`
-	Steps          []planStepDTO `json:"steps"`
-	Version        int           `json:"version"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
+	ID             string `json:"id"`
+	WorkspaceID    string `json:"workspace_id"`
+	WorkItemID     string `json:"work_item_id"`
+	AgentProfileID string `json:"agent_profile_id"`
+	SourceRunID    string `json:"source_run_id,omitempty"`
+	Status         string `json:"status"`
+	SupersededBy   string `json:"superseded_by,omitempty"`
+	// Guardrails M4 预算护栏（提交时固化）；Error plan 级失败码（budget_exceeded）。
+	Guardrails domain.PlanGuardrails `json:"guardrails"`
+	Error      string                `json:"error,omitempty"`
+	Steps      []planStepDTO         `json:"steps"`
+	Version    int                   `json:"version"`
+	CreatedAt  time.Time             `json:"created_at"`
+	UpdatedAt  time.Time             `json:"updated_at"`
 }
 
 type planStepDTO struct {
@@ -301,14 +315,16 @@ func toPlanDTO(p *domain.Plan) planDTO {
 		ID: p.ID, WorkspaceID: p.WorkspaceID, WorkItemID: p.WorkItemID,
 		AgentProfileID: p.AgentProfileID, SourceRunID: p.SourceRunID,
 		Status: string(p.Status), SupersededBy: p.SupersededBy,
+		Guardrails: p.Guardrails, Error: p.Error,
 		Steps: steps, Version: p.Version, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}
 }
 
 // createPlanRequest steps 为动词原文（verb 键 + 动词专属字段），弹 verb 后余量为 payload。
 type createPlanRequest struct {
-	WorkItemID     string           `json:"work_item_id"`
-	AgentProfileID string           `json:"agent_profile_id"`
-	SourceRunID    string           `json:"source_run_id"`
-	Steps          []map[string]any `json:"steps"`
+	WorkItemID     string                 `json:"work_item_id"`
+	AgentProfileID string                 `json:"agent_profile_id"`
+	SourceRunID    string                 `json:"source_run_id"`
+	Guardrails     *domain.PlanGuardrails `json:"guardrails"`
+	Steps          []map[string]any       `json:"steps"`
 }

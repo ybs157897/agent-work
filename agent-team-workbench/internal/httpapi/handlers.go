@@ -217,6 +217,40 @@ func (s *Server) handleAssignWorkItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleClaimWorkItem M4 认领命令：todo 且未指派才可认领（已指派 409、
+// 同 agent 重复认领幂等）；认领 = 指派 + 按 WakeOnAssignment 入队唤醒。
+func (s *Server) handleClaimWorkItem(w http.ResponseWriter, r *http.Request) {
+	wiID := r.PathValue("work_item_id")
+	s.idempotent(w, r, wiID, func() (int, []byte) {
+		var req claimWorkItemRequest
+		if err := decodeBody(r, &req); err != nil {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
+		}
+		wi, err := s.svc.ClaimWorkItem(r.Context(), wiID, req.AgentProfileID, req.ExpectedVersion)
+		if err != nil {
+			return problemBytes(err)
+		}
+		return renderJSON(w, r, http.StatusOK, s.enrichWorkItem(r, wi))
+	})
+}
+
+// handleReturnWorkItem M4 手动打回：acceptance/review → execution（activity
+// 记录 reason）；其余 phase 409。
+func (s *Server) handleReturnWorkItem(w http.ResponseWriter, r *http.Request) {
+	wiID := r.PathValue("work_item_id")
+	s.idempotent(w, r, wiID, func() (int, []byte) {
+		var req returnWorkItemRequest
+		if err := decodeBody(r, &req); err != nil {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
+		}
+		wi, err := s.svc.ReturnWorkItem(r.Context(), wiID, req.Reason, req.ExpectedVersion)
+		if err != nil {
+			return problemBytes(err)
+		}
+		return renderJSON(w, r, http.StatusOK, s.enrichWorkItem(r, wi))
+	})
+}
+
 func (s *Server) handleBlockWorkItem(w http.ResponseWriter, r *http.Request) {
 	wiID := r.PathValue("work_item_id")
 	s.idempotent(w, r, wiID, func() (int, []byte) {
@@ -416,6 +450,8 @@ func problemBytes(err error) (int, []byte) {
 		return renderProblem(http.StatusNotFound, "not_found", "Resource not found", "资源在当前 Workspace 视角不可见")
 	case errors.Is(err, domain.ErrVersionConflict):
 		return renderProblem(http.StatusConflict, "version_conflict", "Resource version conflict", "资源版本已变化")
+	case errors.Is(err, domain.ErrStateConflict):
+		return renderProblem(http.StatusConflict, "state_conflict", "Command conflicts with current state", err.Error())
 	case errors.Is(err, domain.ErrIdempotencyConflict):
 		return renderProblem(http.StatusConflict, "idempotency_conflict", "Idempotency conflict", "相同 Idempotency-Key 提交了不同请求体")
 	case errors.Is(err, domain.ErrIllegalTransition):

@@ -49,6 +49,13 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			Code: "version_conflict", Retryable: true,
 			Detail: "资源版本已变化，请刷新快照后重试",
 		})
+	case errors.Is(err, domain.ErrStateConflict):
+		writeProblem(w, r, Problem{
+			Type:  "https://workbench.example/problems/state-conflict",
+			Title: "Command conflicts with current state", Status: http.StatusConflict,
+			Code:   "state_conflict",
+			Detail: err.Error(),
+		})
 	case errors.Is(err, domain.ErrIdempotencyConflict):
 		writeProblem(w, r, Problem{
 			Type:  "https://workbench.example/problems/idempotency-conflict",
