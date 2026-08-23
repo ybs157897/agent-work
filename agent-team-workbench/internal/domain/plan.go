@@ -97,7 +97,8 @@ type Plan struct {
 	UpdatedAt      time.Time
 }
 
-// Transition 状态机校验迁移；终态不可逆。version/updated_at 由调用方在迁移成功后推进。
+// Transition 状态机校验迁移；终态不可逆。成功后 bump version/updated_at
+// （与 WorkItem.Transition 同约定：调用方以迁移前版本做存储层乐观锁守卫）。
 func (p *Plan) Transition(to PlanStatus, now time.Time) error {
 	if p.Status.IsTerminal() {
 		return &TransitionError{Entity: "plan", From: string(p.Status), To: string(to)}
@@ -106,6 +107,7 @@ func (p *Plan) Transition(to PlanStatus, now time.Time) error {
 		return &TransitionError{Entity: "plan", From: string(p.Status), To: string(to)}
 	}
 	p.Status = to
+	p.Version++
 	p.UpdatedAt = now
 	return nil
 }
