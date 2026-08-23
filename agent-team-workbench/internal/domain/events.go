@@ -30,6 +30,10 @@ const (
 	EventRunCancelled       = "run.cancelled"
 	EventRunLost            = "run.lost"
 
+	// EventSessionDecision CreateRun 会话决议（resume/rotation/inline）的观测事件；
+	// 纯审计面，不驱动任何状态。
+	EventSessionDecision = "session.decision"
+
 	EventPlanSubmitted    = "plan.submitted"
 	EventPlanStepExecuted = "plan.step_executed"
 	EventPlanWaiting      = "plan.waiting"
@@ -69,7 +73,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemCompleted: {},
 	EventRunCreated:        {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunCompleted: {}, EventRunFailed: {},
-	EventRunCancelled: {}, EventRunLost: {},
+	EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventPlanSubmitted: {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},

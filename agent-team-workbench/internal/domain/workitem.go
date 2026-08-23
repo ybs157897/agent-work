@@ -110,6 +110,18 @@ func (w *WorkItem) EnterReview(now time.Time) error {
 	return nil
 }
 
+// EnterAcceptance：评估 verdict pass 后进入待验收投影（M2 评估链路）。
+// 仅 review 可入（评估 run succeeded 先经 EnterReview 既有联动）；WorkItem 仍处
+// in_progress，唯一完工路径仍是 Accept()。
+func (w *WorkItem) EnterAcceptance(now time.Time) error {
+	if w.Status != WorkItemInProgress || w.Phase != PhaseReview {
+		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "acceptance"}
+	}
+	w.Phase = PhaseAcceptance
+	w.bump(now)
+	return nil
+}
+
 // BeginExecution 在同一 WorkItem/会话创建下一轮 Run 时，把评审投影切回执行态。
 // WorkItem 仍保持 in_progress；每一轮 Run 仍是不可覆盖的独立审计记录。
 func (w *WorkItem) BeginExecution(now time.Time) {
