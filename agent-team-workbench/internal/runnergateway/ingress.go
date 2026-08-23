@@ -220,9 +220,21 @@ func (g *Gateway) applyEvent(ctx context.Context, runID, kind string, data map[s
 			_ = g.engine.RecordRunProgress(ctx, runID, v)
 		}
 	case "run.session":
-		if ref := str(data, "session_ref"); ref != "" {
-			if err := g.engine.RecordRunSessionRef(ctx, runID, ref); err != nil {
-				log.Printf("runnergateway: run %s 会话句柄记录失败: %v", runID, err)
+		// 全量 SessionUpdate 语义：Clear 墓碑走锚点清理路径，Params 是 adapter
+		// 私有 resume 参数。旧 runner 只发 session_ref/display_id 时 clear 缺省
+		// false、params 缺省空，行为与历史一致。
+		update := runtime.SessionUpdate{
+			Ref:         str(data, "session_ref"),
+			DisplayID:   str(data, "display_id"),
+			Clear:       data["clear"] == true,
+			ClearReason: str(data, "clear_reason"),
+		}
+		if params, ok := data["params"].(map[string]any); ok {
+			update.Params = params
+		}
+		if update.Clear || update.Ref != "" {
+			if err := g.engine.RecordRunSessionUpdate(ctx, runID, update); err != nil {
+				log.Printf("runnergateway: run %s 会话更新记录失败: %v", runID, err)
 			}
 		}
 	case "usage.updated":

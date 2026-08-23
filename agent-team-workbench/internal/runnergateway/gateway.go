@@ -24,7 +24,9 @@ type Engine interface {
 	RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error
 	RecordRunProgress(ctx context.Context, runID string, progress float64) error
 	RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error
-	RecordRunSessionRef(ctx context.Context, runID, sessionRef string) error
+	// RecordRunSessionUpdate 持久化会话句柄/参数；Clear 时写锚点墓碑
+	//（run.session 事件必须映射到全量语义，不能只取 ref）。
+	RecordRunSessionUpdate(ctx context.Context, runID string, update runtime.SessionUpdate) error
 	// RecordRunUsage 落 execution_runs.usage_* 并累计 task_sessions 输入 token。
 	RecordRunUsage(ctx context.Context, runID string, usage runtime.Usage) error
 	RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error)

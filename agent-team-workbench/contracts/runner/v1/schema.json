@@ -105,8 +105,19 @@
       "properties": {
         "runner_seq": { "type": "integer", "minimum": 1 },
         "provider_cursor": { "type": ["string", "null"] },
-        "event": { "type": "object", "description": "canonical candidate event，见 contracts/runtime/v1" },
+        "event": { "type": "object", "description": "canonical candidate event，见 contracts/runtime/v1；run.session 事件的 data 形态见 $defs/SessionEventData", "$comment": "run.session 必须携带全量 SessionUpdate 语义（clear 墓碑 / params 私有参数），旧 runner 缺省 clear=false、params 为空" },
         "raw_ref": { "type": ["string", "null"], "description": "Provider 原始载荷引用 raw://..." }
+      }
+    },
+    "SessionEventData": {
+      "type": "object",
+      "description": "run.session 事件的 data 形态（与 runtime SessionUpdate 对齐）。clear=true 表示会话锚点墓碑（task_sessions 清理）；params 为 adapter 私有 resume 参数，跨进程持久化。",
+      "properties": {
+        "session_ref": { "type": "string", "description": "会话句柄；clear=true 时可为空" },
+        "display_id": { "type": "string" },
+        "clear": { "type": "boolean", "default": false },
+        "clear_reason": { "type": "string" },
+        "params": { "type": "object", "additionalProperties": true }
       }
     },
     "ArtifactManifestPayload": {

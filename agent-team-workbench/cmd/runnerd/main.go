@@ -375,10 +375,21 @@ func (e *moduleEngine) RecordRunEvent(ctx context.Context, runID, evType string,
 	return nil
 }
 
+// RecordRunSessionUpdate 序列化完整 SessionUpdate（含 Clear 墓碑与 adapter 私有
+// Params）：只发 ref/display_id 会让控制面的锚点永不清理、resume 参数跨进程丢失。
 func (e *moduleEngine) RecordRunSessionUpdate(ctx context.Context, runID string, update rt.SessionUpdate) error {
 	data := map[string]any{"session_ref": update.Ref}
 	if update.DisplayID != "" {
 		data["display_id"] = update.DisplayID
+	}
+	if update.Clear {
+		data["clear"] = true
+		if update.ClearReason != "" {
+			data["clear_reason"] = update.ClearReason
+		}
+	}
+	if len(update.Params) > 0 {
+		data["params"] = update.Params
 	}
 	e.r.emitEvent(runID, "run.session", data)
 	return nil
