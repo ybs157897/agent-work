@@ -1,0 +1,59 @@
+# C4 容器图（Container Diagram）— Agent Team Workbench
+
+> C4 Level 2。对应代码版本：`0c0f5a3`（2026-08-22）。
+> 更下层的模块划分（control-plane 内部的 httpapi / application / domain / sse / outbox / runnergateway 等）属于 Component 图（Level 3）范畴，见文末备注。
+
+```mermaid
+C4Container
+    title 容器图 — Agent Team Workbench
+
+    Person(dev, "团队成员", "浏览任务看板、管理智能体、发起与监督 Run")
+
+    System_Boundary(atw, "Agent Team Workbench") {
+        Container(web, "Web 工作台", "React 18 + TypeScript + Zustand, Vite 构建", "任务看板 / 智能体管理 / 运行面板；REST 命令查询 + SSE 订阅")
+        Container(cp, "Control Plane", "Go 1.26 / net/http（cmd/control-plane）", "REST API（problem+json、Idempotency-Key）、SSE Hub、运行调度与审批、outbox 投递、静态托管前端；内含 domain/application/runnergateway 组件")
+        ContainerDb(db, "数据库", "PostgreSQL（生产）/ SQLite（本地验证）", "工作区、智能体、任务、Run、事件溯源 run_events、outbox、审计日志；乐观锁 version 列")
+        Container(rd, "Runner Daemon", "Go 1.26 / gorilla-websocket（cmd/runnerd）", "出站 WS 接入网关；接受 run.offer 在本地执行 Runtime Adapter；canonical 事件按 runner_seq 上报等待 ACK，断线重连重发")
+        Container(mg, "Migrate CLI", "Go 1.26（cmd/migrate）", "应用 schema 迁移（Postgres 与 SQLite 两套 DDL）")
+    }
+
+    System_Ext(dsh, "DeepSeek Harness (DSH)", "外部开源 agent 运行时；由 runnerd 以子进程方式驱动（adapter_id=dsh），二进制不可用时回退 mock")
+
+    Rel(dev, web, "使用", "HTTPS")
+    Rel(web, cp, "写命令 / 查询（Idempotency-Key、expected_version 乐观锁）", "JSON over HTTP · contracts/web/openapi.yaml")
+    Rel(cp, web, "领域事件推送（游标续传、backlog 补发、心跳）", "SSE · contracts/events/asyncapi.yaml")
+    Rel(cp, db, "同事务写入：状态 + run_events + outbox + 幂等记录", "database/sql · 方言抽象（pg / sqlite）")
+    Rel(mg, db, "应用迁移", "SQL DDL")
+    Rel(rd, cp, "注册/心跳/租约续期；接收 run.offer 与审批决定、中断指令；上报事件等 ACK", "WebSocket /runner/v1/connect（Bearer Token）· contracts/runtime/v1/schema.json")
+    Rel(rd, dsh, "启动子进程执行会话，转发输入/中断/取消", "进程组管理")
+    Rel(dsh, rd, "流式输出、审批请求、状态变更", "子进程输出")
+```
+
+## 容器职责一览
+
+| 容器 | 部署形态 | 核心职责 | 关键技术 |
+|---|---|---|---|
+| Web 工作台 | 静态产物（由 Control Plane 托管，也可独立部署） | 任务看板、智能体设置、运行面板与审批交互；消费 SSE 维持实时视图 | React 18、TypeScript（strict）、Zustand、Vite |
+| Control Plane | 单进程服务（`:8080`） | REST API 与 problem+json 错误语义；SSE 事件流；命令幂等；Run 编排（创建/中断/审批/重试）；runner 网关与租约清扫；outbox 投递 | Go 1.26、net/http、gorilla/websocket |
+| Runner Daemon | 本机/远程独立进程，可水平扩展 | 接受 run.offer 后在本地执行 Runtime Adapter（mock 或 DSH 子进程）；事件带 runner_seq 上报，未 ACK 的断线重发 | Go 1.26、gorilla/websocket |
+| 数据库 | PostgreSQL（生产）/ SQLite（本地） | 权威状态 + 事件溯源（run_events/stream_seq）+ outbox + 幂等键表 + 审计；所有写走 InTx 同事务提交 | database/sql、advisory lock 序号分配 |
+| Migrate CLI | 按需执行的一次性工具 | 建库/升级 schema（migrations/ 为 Postgres 版，migrations/sqlite/ 为本地版） | Go 1.26 |
+
+## 跨容器契约
+
+三份契约文件是容器间集成的权威定义：
+
+- `contracts/web/openapi.yaml` —— Web ↔ Control Plane 的 REST 契约；
+- `contracts/events/asyncapi.yaml` —— Control Plane → Web 的 SSE 领域事件白名单；
+- `contracts/runtime/v1/schema.json` —— Control Plane ↔ Runner 的 WebSocket 信封与 canonical 事件协议。
+
+## 图上未展开的设计要点
+
+- **事务模型**：Control Plane 的所有写命令在单个数据库事务内同时落「实体状态 + run_events + outbox + 幂等记录」，提交后才经 Notifier 唤醒 SSE / 经 Dispatcher 分派。
+- **执行面位置**：M1 时 adapter 在 Control Plane 进程内执行（mock）；M2 起 Run 经网关以 `run.offer` 交给 Runner Daemon 本地执行，DSH 以子进程接入（`internal/runtime/adapters/dsh`），不可用时回退 mock。
+- **可靠性约定**：Web 写命令强制 Idempotency-Key；实体更新走 expected_version 乐观锁（0 = 跳过检测的哨兵值）；SSE 支持游标续传与 410 重置；Runner 事件按 `(runner_id, runner_seq)` 去重。
+- **安全现状**：认证为演示用硬编码用户（security 包尚未实现）；Runner 接入用可选 Bearer Token。
+
+## 备注：Level 3（Component 图）待展开的内部组件
+
+Control Plane 内部：`httpapi`（路由/SSE/problem 映射）、`application`（用例与 Store/Dispatcher/Notifier 接口）、`domain`（纯领域模型与状态机）、`persistence/sqlstore`、`sse.Hub`、`outbox.Publisher`、`runnergateway.Gateway`。Runner Daemon 内部：`runtime.Adapter` SPI 及 mock / dsh 两个实现。这些可在后续 Component 图中展开。
