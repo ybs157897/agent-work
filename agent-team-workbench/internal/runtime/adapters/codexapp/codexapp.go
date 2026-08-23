@@ -287,7 +287,14 @@ func (s *execStream) appendAnswer(text string) {
 	s.mu.Unlock()
 }
 
-// finalAnswer 权威答案只发一次：item/completed 的文本优先，缺省回退累计 delta。
+func (s *execStream) resetAnswerState() {
+	s.mu.Lock()
+	s.answer.Reset()
+	s.finalMessageEmitted = false
+	s.mu.Unlock()
+}
+
+// finalAnswer 权威答案只发一次（同一 agent 消息段内 item/completed 与 turn/completed 去重）。
 func (s *execStream) finalAnswer(authoritative string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -559,6 +566,8 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					payload["args_summary"] = s
 				}
 				s.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
+			} else if item.Type == "agentMessage" || item.Type == "plan" {
+				s.resetAnswerState()
 			}
 		case "item/completed":
 			item := parseItemEvent(frame.Params)
@@ -568,6 +577,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
 						"role": "assistant", "text": text, "item_type": item.Type,
 					})
+					s.resetAnswerState()
 				}
 			case item.isTool():
 				payload := item.canonicalPayload()
@@ -625,6 +635,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
 						"role": "assistant", "text": answer,
 					})
+					s.resetAnswerState()
 				}
 			}
 			return res

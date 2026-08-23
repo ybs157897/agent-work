@@ -65,6 +65,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
   for (const runId of runIds) {
     const entries = timelines[runId] ?? [];
     let reasoningBuf = '';
+    let answerBuf = '';
     for (const e of entries) {
       const instruction = typeof e.data?.instruction === 'string' ? e.data.instruction : '';
       switch (e.type) {
@@ -78,6 +79,9 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           if (chunk?.type === 'reasoning-delta' && chunk.text) {
             reasoningBuf += chunk.text;
           }
+          if (chunk?.type === 'text-delta' && chunk.text) {
+            answerBuf += chunk.text;
+          }
           if (e.role === 'user' && e.text) {
             out.push({ key: e.event_id, runId, kind: 'user', text: e.text, at: e.occurred_at });
           }
@@ -86,7 +90,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         case 'message.completed':
           if (reasoningBuf) {
             out.push({
-              key: `${runId}-thinking`,
+              key: `${runId}-thinking-${e.event_id}`,
               runId,
               kind: 'thinking',
               text: reasoningBuf,
@@ -94,6 +98,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             });
             reasoningBuf = '';
           }
+          answerBuf = '';
           if (e.text) {
             out.push({ key: e.event_id, runId, kind: 'assistant', text: e.text, at: e.occurred_at });
           }
@@ -146,6 +151,24 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
       }
+    }
+    if (reasoningBuf) {
+      out.push({
+        key: `${runId}-thinking-tail`,
+        runId,
+        kind: 'thinking',
+        text: reasoningBuf,
+        at: entries[entries.length - 1]?.occurred_at ?? '',
+      });
+    }
+    if (answerBuf) {
+      out.push({
+        key: `${runId}-answer-tail`,
+        runId,
+        kind: 'assistant',
+        text: answerBuf,
+        at: entries[entries.length - 1]?.occurred_at ?? '',
+      });
     }
   }
   return out;

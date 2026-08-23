@@ -99,6 +99,25 @@ describe('buildMessages', () => {
       ['assistant', '收到'],
     ]);
   });
+
+  it('工具调用后缺失 message.completed 时回落累积的 text-delta', () => {
+    const timelines = {
+      run_4: [
+        entry('run_4', 1, 'run.created', { instruction: '列目录' }),
+        entry('run_4', 2, 'message.completed', { role: 'assistant', text: '先看下' }, 'assistant', '先看下'),
+        entry('run_4', 3, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_4', 4, 'tool.completed', { call_id: 'c1', output: 'web/' }),
+        entry('run_4', 5, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '目录如下' } } }),
+      ],
+    };
+    const msgs = buildMessages(['run_4'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['user', '列目录'],
+      ['assistant', '先看下'],
+      ['tool', '调用工具 shell：ls'],
+      ['assistant', '目录如下'],
+    ]);
+  });
 });
 
 describe('aggregateRunStream', () => {
