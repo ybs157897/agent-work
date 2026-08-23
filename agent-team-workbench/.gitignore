@@ -6,8 +6,17 @@ node_modules/
 web/dist/
 web/.next/
 
-# Runtime 产物（DSH 会话持久化 / 生成的 cordis 配置）
+# 本地模型凭据（勿提交）
+models/credentials.local.yaml
+
 .atw-data/
 .sessions/
 runtimes/dsh/.generated/
 runtimes/dsh/cordis.yml
+runtimes/dsh/run_*.cordis.yml
+
+# 本地构建产物与开发数据库（勿提交）
+/control-plane
+/runnerd
+workbench.db*
+agent-workbench-architecture.html
