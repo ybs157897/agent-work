@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Plan, WorkItem } from './types';
-import { acceptWorkItem, createPlan, getPlan, getWorkItemTree, listWorkItems, returnWorkItem } from './endpoints';
+import { acceptWorkItem, createPlan, getPlan, getWorkItemPlan, getWorkItemTree, listWorkItems, returnWorkItem } from './endpoints';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -101,6 +101,17 @@ describe('plan / tree endpoints', () => {
     await getWorkItemTree('wi_1');
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('/api/v1/work-items/wi_1/tree');
+  });
+
+  it('getWorkItemPlan: GET /work-items/{id}/plan（主任务最新一份）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json(plan));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const got = await getWorkItemPlan('wi_1');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_1/plan');
+    expect(init.method).toBe('GET');
+    expect(got.id).toBe('plan_1');
   });
 
   it('listWorkItems: parent_id=none 只查根任务，任务 id 精确匹配', async () => {

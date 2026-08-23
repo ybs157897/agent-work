@@ -13,7 +13,7 @@ import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
-import { isAwaitingAcceptance } from '../../utils/task-phase';
+import { evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
 import { sortTasksTree } from '../../utils/task-tree';
 import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
@@ -297,7 +297,7 @@ export function TaskDetail({
             <section className="space-y-snug">
               <h3 className="text-caption font-medium text-text-tertiary">编排计划</h3>
               {plan ? (
-                <PlanPanel plan={plan} agents={agents} onOpenWorkItem={selectTask} />
+                <PlanPanel plan={plan} task={task} agents={agents} onOpenWorkItem={selectTask} />
               ) : (
                 <p className="text-body text-text-tertiary">暂无编排计划</p>
               )}
@@ -380,13 +380,15 @@ export function TaskDetail({
   );
 }
 
-/** plan 摘要面板：状态徽标 + steps 执行明细。 */
+/** plan 摘要面板：状态徽标 + 评估提示 + steps 执行明细。 */
 function PlanPanel({
   plan,
+  task,
   agents,
   onOpenWorkItem,
 }: {
   plan: Plan;
+  task: WorkItem;
   agents: { id: string; name: string }[];
   onOpenWorkItem: (workItemId: string) => void;
 }) {
@@ -405,6 +407,11 @@ function PlanPanel({
           {ownerName} · {formatDateTime(plan.updated_at)}
         </span>
       </div>
+      {evaluationPassed(task, plan) && (
+        <div className="rounded-lg border border-status-success/20 bg-status-success/10 px-snug py-tight text-body text-status-success">
+          评估通过，等待人工验收
+        </div>
+      )}
       {plan.superseded_by && (
         <p className="text-caption text-text-tertiary">已被后续计划 {plan.superseded_by} 取代</p>
       )}
@@ -457,6 +464,14 @@ function PlanStepRow({
           >
             {STEP_STATUS_TEXT[step.status] ?? step.status}
           </span>
+          {stepTriggeredEvaluation(step) && (
+            <span
+              title="plan 落 finished 后自动创建评估 run，verdict 通过后进入待验收"
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-caption font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+            >
+              已触发评估
+            </span>
+          )}
           {targetName && <span className="text-caption text-text-tertiary">→ {targetName}</span>}
         </div>
         {summary && (

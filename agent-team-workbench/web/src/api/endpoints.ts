@@ -197,6 +197,9 @@ export const createPlan = (workspaceId: string, input: CreatePlanInput) =>
 
 export const getPlan = (planId: string) => apiFetch<Plan>(`/plans/${planId}`);
 
+/** 主任务的最新一份 plan（按 created_at 最新，不限状态；无 plan → 404）。 */
+export const getWorkItemPlan = (workItemId: string) => apiFetch<Plan>(`/work-items/${workItemId}/plan`);
+
 // ── Run / Approval / Artifact ───────────────────────────────────────
 
 export interface CreateRunInput {
