@@ -75,23 +75,43 @@ func truncateRunes(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
+// resumeOutcome resolveResume 的会话决策分类（session.decision 的 reason 输入）。
+type resumeOutcome int
+
+const (
+	// resumeOutcomeNone 无锚点且无可播种旧 run → 普通全新会话。
+	resumeOutcomeNone resumeOutcome = iota
+	// resumeOutcomeHit 锚点有效（指纹一致）或旧 run 播种成功 → resume 候选。
+	resumeOutcomeHit
+	// resumeOutcomeRotate 锚点有效但轮换阈值超限（runs/tokens/age）。
+	resumeOutcomeRotate
+	// resumeOutcomeDrift 锚点指纹漂移 → 丢弃开新会话。
+	resumeOutcomeDrift
+	// resumeOutcomeTombstone 锚点空句柄（墓碑/清锚点）→ 开新会话。
+	resumeOutcomeTombstone
+)
+
 // resolveResume 是 CreateRun 的会话决策点（Paperclip ResolveBeforeRun 对应物）。
 // 数据源优先级：task_sessions（带配置指纹）> 旧 execution_runs.session_ref 推断（播种兼容）。
-// 指纹漂移 → 丢弃开新会话；轮换阈值超限 → 返回 rotated=true（fresh + handoff 摘要）。
-// 返回 (resumeRef, resumeFromRunID, rotated)；空 ref 且 rotated=false 表示普通 fresh。
-func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentProfileID, adapterID, runtimeLabel, configDigest string, previousRuns []*domain.ExecutionRun) (string, string, bool) {
+// 指纹漂移 → 丢弃开新会话；轮换阈值超限 → Rotate；返回 (resumeRef, resumeFromRunID,
+// outcome)：ref 非空且 outcome=Hit 表示 resume 候选（是否注入还看 binding 能力）。
+func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentProfileID, adapterID, runtimeLabel, configDigest string, previousRuns []*domain.ExecutionRun) (string, string, resumeOutcome) {
 	if adapterID != "" {
 		ts, err := s.store.TaskSessions().Get(ctx, wi.WorkspaceID, agentProfileID, adapterID, wi.ID)
 		if err == nil && ts != nil {
 			if ref := ts.SessionRef(); ref != "" && ts.Fingerprint() == configDigest {
 				if shouldRotateSession(ts) {
-					return "", "", true
+					return "", "", resumeOutcomeRotate
 				}
 				fromRunID, _ := ts.SessionParams["__from_run_id"].(string)
-				return ref, fromRunID, false
+				return ref, fromRunID, resumeOutcomeHit
 			}
-			// 指纹漂移或空句柄：fresh；旧行由下一次会话上报整体覆盖。
-			return "", "", false
+			if ts.SessionRef() == "" {
+				// 墓碑：主路径判定 fresh，播种兜底被阻断。
+				return "", "", resumeOutcomeTombstone
+			}
+			// 指纹漂移：fresh；旧行由下一次会话上报整体覆盖。
+			return "", "", resumeOutcomeDrift
 		}
 	}
 	// 播种兼容：迁移前只有 execution_runs.session_ref；同事务把可续接的旧 run 播种进 task_sessions。
@@ -101,13 +121,32 @@ func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentP
 			_ = s.store.TaskSessions().Upsert(ctx, &domain.TaskSession{
 				ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: wi.WorkspaceID,
 				AgentProfileID: agentProfileID, AdapterID: adapterID, TaskKey: wi.ID,
-				SessionParams: map[string]any{"__ref": previous.SessionRef, "__fingerprint": configDigest},
-				CreatedAt:     now, UpdatedAt: now,
+				ParentAnchorID: s.anchorParent(ctx, wi.WorkspaceID, agentProfileID, adapterID, wi.ID),
+				SessionParams:  map[string]any{"__ref": previous.SessionRef, "__fingerprint": configDigest},
+				CreatedAt:      now, UpdatedAt: now,
 			})
-			return previous.SessionRef, previous.ID, false
+			return previous.SessionRef, previous.ID, resumeOutcomeHit
 		}
 	}
-	return "", "", false
+	return "", "", resumeOutcomeNone
+}
+
+// anchorParent 解析子任务锚点的父锚点 id：work item 有 parent 且父任务存在
+// 同 agent+adapter 锚点时返回其 id（会话树镜像任务树，轮换谱系沿链可查）；
+// 否则空串（父无锚点落 NULL）。须在锚点写入事务内调用。
+func (s *Service) anchorParent(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string) string {
+	if adapterID == "" {
+		return ""
+	}
+	wi, err := s.store.WorkItems().Get(ctx, taskKey)
+	if err != nil || wi.ParentID == "" {
+		return ""
+	}
+	parent, err := s.store.TaskSessions().Get(ctx, workspaceID, agentProfileID, adapterID, wi.ParentID)
+	if err != nil || parent == nil {
+		return ""
+	}
+	return parent.ID
 }
 
 // RecordRunSessionUpdate 是会话句柄的唯一写点：execution_runs.session_ref/session_after
@@ -149,7 +188,8 @@ func (s *Service) RecordRunSessionUpdate(ctx context.Context, runID string, upda
 			anchor := &domain.TaskSession{
 				ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: r.WorkspaceID,
 				AgentProfileID: r.AgentProfileID, AdapterID: r.AdapterID, TaskKey: r.WorkItemID,
-				SessionParams: params, DisplayID: update.DisplayID,
+				ParentAnchorID: s.anchorParent(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID),
+				SessionParams:  params, DisplayID: update.DisplayID,
 				CreatedAt: now, UpdatedAt: now,
 			}
 			if rotated && delta == 1 {
@@ -248,7 +288,8 @@ func (s *Service) writeAnchorTombstone(ctx context.Context, workspaceID, agentPr
 	return s.store.TaskSessions().Upsert(ctx, &domain.TaskSession{
 		ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: workspaceID,
 		AgentProfileID: agentProfileID, AdapterID: adapterID, TaskKey: taskKey,
-		SessionParams: params, CreatedAt: now, UpdatedAt: now,
+		ParentAnchorID: s.anchorParent(ctx, workspaceID, agentProfileID, adapterID, taskKey),
+		SessionParams:  params, CreatedAt: now, UpdatedAt: now,
 	})
 }
 

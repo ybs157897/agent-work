@@ -40,6 +40,8 @@ type planTask struct {
 	priority    domain.Priority
 	// defer 专属字段；nil 表示未指定 wake_at。
 	wakeAt *time.Time
+	// finish 专属字段：evaluation=true 时 plan 落 finished 后自动创建评估 run。
+	evaluation bool
 }
 
 // SubmitPlan 校验并同步执行一份 plan。同一 work item 同时最多一个 active/waiting plan：
@@ -256,7 +258,27 @@ func (s *Service) executePlanSteps(ctx context.Context, wi *domain.WorkItem, pla
 			if err := s.emitStep(ctx, plan, st); err != nil {
 				return err
 			}
-			return s.finishPlan(ctx, plan, i+1, "")
+			if err := s.finishPlan(ctx, plan, i+1, ""); err != nil {
+				return err
+			}
+			if !t.evaluation {
+				return nil
+			}
+			// finish{evaluation:true}：plan 落 finished 后自动为 plan owner 在
+			// 主任务上创建评估 run（确定性模板 + input.evaluation=true 固化，
+			// verdict 提取以此门控）；分派同 createdRuns 推迟到外层提交后。
+			instruction, err := s.buildEvaluationInstruction(ctx, plan)
+			if err != nil {
+				return fmt.Errorf("构建评估指令: %w", err)
+			}
+			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
+				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
+			})
+			if err != nil {
+				return fmt.Errorf("创建评估 run: %w", err)
+			}
+			*createdRuns = append(*createdRuns, evalRun)
+			return nil
 		}
 	}
 	// 所有 step 执行完（无 defer/finish）：顺序执行完即 finished。
@@ -459,7 +481,11 @@ func parsePlanSteps(inputs []PlanStepInput) ([]planTask, error) {
 				t.wakeAt = &wakeAt
 			}
 		case domain.PlanVerbFinish:
-			// finish 无必填字段（summary 留在 payload 原文里）。
+			// finish 无必填字段（summary 留在 payload 原文里）；
+			// evaluation=true 触发评估 run（M2）。
+			if v, ok := t.payload["evaluation"].(bool); ok {
+				t.evaluation = v
+			}
 		}
 		tasks = append(tasks, t)
 	}
