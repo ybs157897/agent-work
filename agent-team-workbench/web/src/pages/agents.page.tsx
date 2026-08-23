@@ -326,37 +326,17 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
     setPermissionPreset((v) => normalizePermissionPreset(v, permissionPresets));
   }, [permissionPresets]);
 
-  // Codex app-server 使用自身登录态与模型目录，不能沿用 DSH/OpenRouter 等 provider ref。
-  useEffect(() => {
-    if (!codexRuntime) return;
-    if (modelRef) {
-      setModelRef('');
-      setProvider('codex');
-      setModel(activeBinding?.model ?? '');
-      return;
-    }
-    if (provider && provider !== 'codex' && provider !== 'openai') {
-      setProvider('codex');
-      setModel(activeBinding?.model ?? '');
-    }
-  }, [activeBinding?.model, codexRuntime, modelRef, provider]);
-
   const changeRuntime = (runtimeLabel: string) => {
     const binding = realBindings.find((item) => item.runtime_label === runtimeLabel) ?? null;
     setPreferred(runtimeLabel);
-    if (isCodexRuntime(runtimeLabel, binding)) {
-      setModelRef('');
-      setProvider('codex');
-      setModel(binding?.model ?? '');
-      return;
-    }
-    if (isDshRuntime(runtimeLabel, binding)) {
+    if (isCodexRuntime(runtimeLabel, binding) || isDshRuntime(runtimeLabel, binding)) {
       const nextRef = models.some((item) => item.id === modelRef)
         ? modelRef
         : models.find((item) => item.id === DEFAULT_DSH_MODEL_REF)?.id ?? models[0]?.id ?? '';
       setModelRef(nextRef);
       setProvider('');
       setModel('');
+      return;
     }
   };
 
@@ -395,9 +375,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           mode,
           ...(dshRuntime ? { agent_preset: agentPreset } : {}),
         },
-        model_override: codexRuntime
-          ? { provider: 'codex', model: model.trim() }
-          : modelRef ? { ref: modelRef } : { provider, model },
+        model_override: modelRef ? { ref: modelRef } : { provider, model },
         policy,
         expected_version: agent.version,
       });
@@ -478,9 +456,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
             </label>
             <label className="xl:col-span-4">
               <span className={configLabelCls}>模型</span>
-              <select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls} disabled={codexRuntime}>
-                <option value="">{codexRuntime ? 'Codex CLI 默认/自定义模型' : '自定义（手动填写）'}</option>
-                {!codexRuntime && models.map((m) => (
+              <select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls}>
+                <option value="">自定义（手动填写）</option>
+                {models.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.display_name || m.id}
                   </option>
@@ -503,22 +481,12 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 ) : null}
               </select>
               {codexRuntime ? (
-                <p className="mt-1 text-caption text-text-tertiary">通过本机 Codex app-server 执行，复用 Codex 登录态、线程历史和审批协议。</p>
+                <p className="mt-1 text-caption text-text-tertiary">保存时把模型页配置写入 .agent-work/codex/config.toml，由 Codex harness 执行。</p>
               ) : null}
             </label>
           </div>
 
-          {!modelRef && codexRuntime ? (
-            <label className="block pt-1">
-              <span className={configLabelCls}>Codex 模型（可选）</span>
-              <input
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="留空使用 Codex CLI 当前默认模型"
-                className={`${configInputCls} font-mono`}
-              />
-            </label>
-          ) : !modelRef ? (
+          {!modelRef ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
               <label>
                 <span className={configLabelCls}>Provider 路由</span>
