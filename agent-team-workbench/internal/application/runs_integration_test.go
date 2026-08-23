@@ -859,3 +859,174 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	return db
 }
+
+// TestSystemPromptInjection 回归：agent.Instructions（章程原文，多行 markdown）经
+// CreateRun 固化进 run.Input["system_prompt"] 供 adapter 消费；空 Instructions 不落键。
+func TestSystemPromptInjection(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_sp", Name: "sp", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	charter := "# 开发章程\n\n## 交付纪律\n- 分刀提交\n- 证据匹配表面\n"
+	agent := &domain.AgentProfile{
+		ID: "agent_sp", WorkspaceID: ws.ID, Name: "SP", Role: "developer",
+		Instructions: charter, Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "codex_local"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	bare := &domain.AgentProfile{
+		ID: "agent_bare", WorkspaceID: ws.ID, Name: "Bare", Role: "developer",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "codex_local"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, bare); err != nil {
+		t.Fatal(err)
+	}
+	binding := &domain.RuntimeBinding{
+		ID: "rb_sp", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
+		Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Bindings().Create(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "章程注入", AgentProfileID: agent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第一轮"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := run.Input["system_prompt"].(string); got != charter {
+		t.Fatalf("system_prompt 应为章程原文（不改写、不截断）: %q", got)
+	}
+	runBare, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: bare.ID, Instruction: "无章程"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := runBare.Input["system_prompt"]; has {
+		t.Fatalf("空 Instructions 不应落 system_prompt: %#v", runBare.Input["system_prompt"])
+	}
+}
+
+// TestSystemPromptChangeTriggersSessionDrift 回归：提示词即配置——Instructions 变更使
+// config digest 漂移，旧 provider 会话指纹失配被丢弃（不携带 resume_session_ref，旧提示词
+// 不残留进续接会话）。漂移走普通 fresh（tier-3 全量历史内联保持连续性），非 handoff 轮换档。
+func TestSystemPromptChangeTriggersSessionDrift(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	dispatcher := &captureDispatcher{}
+	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_spd", Name: "spd", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	agent := &domain.AgentProfile{
+		ID: "agent_spd", WorkspaceID: ws.ID, Name: "SPD", Role: "developer",
+		Instructions: "# 章程 v1\n保守交付", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "codex_local"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	binding := &domain.RuntimeBinding{
+		ID: "rb_spd", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
+		Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Bindings().Create(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "漂移", AgentProfileID: agent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// run1 建会话 thread_A，锚点指纹 = run1 的 config digest（含章程 v1）。
+	first, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第一轮"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := first.Input["system_prompt"].(string); got != "# 章程 v1\n保守交付" {
+		t.Fatalf("run1 system_prompt 异常: %q", got)
+	}
+	if err := svc.RecordRunStatus(ctx, first.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunSessionRef(ctx, first.ID, "codex://thread_A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, first.ID, "第一轮完成"); err != nil {
+		t.Fatal(err)
+	}
+	conv1, _ := first.Input["conversation"].(map[string]any)
+	digest1, _ := conv1["config_digest"].(string)
+	ts, err := store.TaskSessions().Get(ctx, ws.ID, agent.ID, "codex-appserver", wi.ID)
+	if err != nil || ts == nil || ts.SessionRef() != "codex://thread_A" || ts.Fingerprint() != digest1 {
+		t.Fatalf("锚点未按 run1 digest 落库: %v %#v", err, ts)
+	}
+
+	// 对照组：提示词未变 → 指纹匹配，正常续接 thread_A（排除「本就续不上」的空转通过）。
+	mid, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第二轮"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	convMid, _ := mid.Input["conversation"].(map[string]any)
+	if convMid["resume_session_ref"] != "codex://thread_A" {
+		t.Fatalf("对照组：未改提示词应续接 thread_A: %#v", convMid)
+	}
+	if err := svc.RecordRunStatus(ctx, mid.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunSessionRef(ctx, mid.ID, "codex://thread_A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, mid.ID, "第二轮完成"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 改章程：UpdateAgent 后新 run 固化新提示词，digest 漂移 → 旧会话丢弃。
+	newInstr := "# 章程 v2\n激进交付"
+	if _, err := svc.UpdateAgent(ctx, agent.ID, application.AgentPatch{Instructions: &newInstr}); err != nil {
+		t.Fatal(err)
+	}
+	third, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第三轮：继续"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := third.Input["system_prompt"].(string); got != newInstr {
+		t.Fatalf("run3 system_prompt 应为新章程: %q", got)
+	}
+	conv3, _ := third.Input["conversation"].(map[string]any)
+	if _, has := conv3["resume_session_ref"]; has {
+		t.Fatalf("提示词变更后不应续接旧会话: %#v", conv3)
+	}
+	if digest3, _ := conv3["config_digest"].(string); digest3 == "" || digest3 == digest1 {
+		t.Fatalf("提示词变更应改变 config digest: %q vs %q", digest1, digest3)
+	}
+	// 漂移是普通 fresh：不带 handoff 轮换档标记，经 tier-3 全量历史内联保持任务连续性。
+	if _, has := conv3["session_rotation"]; has {
+		t.Fatalf("指纹漂移不应标记 session_rotation（仅阈值轮换使用）: %#v", conv3)
+	}
+	effective := atwruntime.EffectiveInstruction(third)
+	if !strings.Contains(effective, "第一轮完成") || !strings.Contains(effective, "第三轮：继续") {
+		t.Fatalf("漂移后应内联全量历史（tier-3）保持连续性: %q", effective)
+	}
+}
