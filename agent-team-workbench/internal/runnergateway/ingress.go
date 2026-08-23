@@ -192,9 +192,12 @@ func (g *Gateway) handleRunEvent(ctx context.Context, rc *runnerConn, env Envelo
 	}
 
 	// Fencing：活跃 lease 必须属于该 Runner，旧连接恢复不能继续写入。
+	// 被拒帧（lease 已释放/已易主）永远不可能再被应用，仍回 ACK 终止重发：
+	// Runner 带重连重发后，不 ACK 会让 pending 无限增长、每次重连空转重发。
 	if lease, err := g.store.Runners().ActiveLease(ctx, runID); err == nil {
 		if lease.Released || lease.RunnerID != rc.runnerID {
 			log.Printf("runnergateway: run %s 拒绝过期 runner %s 的事件（fencing）", runID, rc.runnerID)
+			g.ack(rc, runID, p.RunnerSeq)
 			return
 		}
 	}

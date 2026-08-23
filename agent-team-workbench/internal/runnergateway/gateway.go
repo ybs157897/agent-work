@@ -246,28 +246,46 @@ func (g *Gateway) emitRunnerEvent(ctx context.Context, workspaceID, evType, runn
 
 // ── 连接读写循环 ─────────────────────────────────────────────────────
 
+// sendEnvelope 入队待写帧。缓冲满时不静默丢弃：丢弃 ack 会让 Runner 的
+// pending（含终态帧）无法收敛、run 悬置到 lease 过期；丢弃 run.command 会
+// 丢用户意图。改为重置连接（连接级背压）：Runner 重连后按 runner_seq 有序
+// 重发未 ACK 帧，服务端去重，等效于不丢帧。
 func (rc *runnerConn) sendEnvelope(env Envelope) {
 	b, err := json.Marshal(env)
 	if err != nil {
 		return
 	}
+	rc.mu.Lock()
+	if rc.closed {
+		rc.mu.Unlock()
+		return
+	}
 	select {
 	case rc.send <- b:
+		rc.mu.Unlock()
 	default:
-		log.Printf("runnergateway: %s 发送缓冲已满，丢弃 %s", rc.runnerID, env.Method)
+		rc.mu.Unlock()
+		log.Printf("runnergateway: WARN %s 发送缓冲已满，重置连接（%s 由 Runner 重连重发）", rc.runnerID, env.Method)
+		rc.closeConn()
 	}
 }
 
 func (rc *runnerConn) writeLoop() {
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
+	write := func(b []byte) error {
+		// 半死连接（Runner 不再读）必须快速失败并触发断连处理，
+		// 否则一次阻塞写会冻结该连接的全部下行帧。
+		_ = rc.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return rc.conn.WriteMessage(websocket.TextMessage, b)
+	}
 	for {
 		select {
 		case b, ok := <-rc.send:
 			if !ok {
 				return
 			}
-			if err := rc.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+			if err := write(b); err != nil {
 				rc.gw.handleDisconnect(rc)
 				return
 			}
@@ -276,7 +294,7 @@ func (rc *runnerConn) writeLoop() {
 				V: 1, MessageID: domain.NewID("msg_"), Kind: "event", Method: "heartbeat",
 				RunnerID: rc.runnerID, SentAt: time.Now().UTC(),
 			})
-			if err := rc.conn.WriteMessage(websocket.TextMessage, hb); err != nil {
+			if err := write(hb); err != nil {
 				rc.gw.handleDisconnect(rc)
 				return
 			}
@@ -308,7 +326,9 @@ func (rc *runnerConn) closeConn() {
 	rc.closed = true
 	close(rc.send)
 	rc.mu.Unlock()
-	_ = rc.conn.Close()
+	if rc.conn != nil {
+		_ = rc.conn.Close()
+	}
 }
 
 // handleDisconnect：Runner 失联不猜测 Provider 状态；活动 Run 进入 reconnecting，

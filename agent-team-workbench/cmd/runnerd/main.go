@@ -1,5 +1,6 @@
 // cmd/runnerd 是本地 Go Runner（M2）：出站 WSS 连接控制平面，
 // 接受 run.offer 并在本地执行 Adapter，按 runner_seq 上报 canonical 事件等待 ACK。
+// 断线后指数退避重连并按 seq 有序重发未 ACK 事件（至少一次投递，服务端去重）。
 // 执行面：adapter_id=dsh → 真实 DeepSeek Harness SDK 子进程；其他 → mock 模拟。
 package main
 
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,6 +67,16 @@ type runner struct {
 	moduleRuns map[string]*domain.ExecutionRun
 }
 
+// writeDeadline 单帧写超时：控制平面读端停顿时必须快速失败（帧留在 pending
+// 等重连重发），否则一次阻塞写会卡死互斥锁、连心跳都无法发出。
+const writeDeadline = 10 * time.Second
+
+// 重连退避；包级变量供测试覆写。
+var (
+	reconnectBaseBackoff = time.Second
+	reconnectMaxBackoff  = 15 * time.Second
+)
+
 func main() {
 	gateway := envOr("RUNNER_GATEWAY", "ws://localhost:8080/runner/v1/connect")
 	runnerID := envOr("RUNNER_ID", "runner_local_01")
@@ -77,12 +89,8 @@ func main() {
 	if token != "" {
 		header["Authorization"] = []string{"Bearer " + token}
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, gateway, header)
-	if err != nil {
-		log.Fatalf("连接控制平面失败: %v", err)
-	}
 	r := &runner{
-		id: runnerID, conn: conn,
+		id: runnerID,
 		pending:    make(map[int64][]byte),
 		approvals:  make(map[string]chan bool),
 		controls:   make(map[string]chan string),
@@ -99,24 +107,66 @@ func main() {
 			r.dshGateway.Close()
 		}
 	}()
+
+	runLoop(ctx, r, gateway, header)
+}
+
+// runLoop 常驻连接循环：断线（含网关缓冲满主动重置）后指数退避重连，
+// 未 ACK 事件（含终态帧）在每次重连后有序重发——终态必达靠这条路径兜底，
+// 否则 run 会悬置到 lease 过期被误判 lost。
+func runLoop(ctx context.Context, r *runner, gateway string, header map[string][]string) {
+	backoff := reconnectBaseBackoff
+	for ctx.Err() == nil {
+		dialed, err := connectOnce(ctx, r, gateway, header)
+		if dialed {
+			backoff = reconnectBaseBackoff
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		r.mu.Lock()
+		pendingCount := len(r.pending)
+		r.mu.Unlock()
+		log.Printf("runnerd: 连接断开（%v），%s 后重连（未 ACK 帧 %d）", err, backoff, pendingCount)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, reconnectMaxBackoff)
+	}
+}
+
+// connectOnce 建立一次连接：hello → 有序重发未 ACK 帧 → 心跳 + 读循环，
+// 直到连接断开或进程退出。dialed 表示 TCP/WSS 是否建立成功（供退避重置）。
+func connectOnce(ctx context.Context, r *runner, gateway string, header map[string][]string) (dialed bool, err error) {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, gateway, header)
+	if err != nil {
+		return false, err
+	}
+	dialed = true
 	defer conn.Close()
+	r.setConn(conn)
 
 	r.hello()
-	log.Printf("runnerd %s 已连接 %s", runnerID, gateway)
+	log.Printf("runnerd %s 已连接 %s", r.id, gateway)
+	if err := r.resendPending(); err != nil {
+		return dialed, err
+	}
+	go r.heartbeatLoop(ctx, conn)
+	return dialed, r.readLoop(ctx, conn)
+}
 
-	// 重连后重发未 ACK 事件。
+func (r *runner) setConn(conn *websocket.Conn) {
 	r.mu.Lock()
-	pending := make([][]byte, 0, len(r.pending))
-	for _, b := range r.pending {
-		pending = append(pending, b)
-	}
+	r.conn = conn
 	r.mu.Unlock()
-	for _, b := range pending {
-		_ = r.writeLocked(b)
-	}
+}
 
-	go r.heartbeatLoop(ctx)
-	r.readLoop(ctx)
+func (r *runner) currentConn() *websocket.Conn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.conn
 }
 
 func envOr(key, fallback string) string {
@@ -148,7 +198,7 @@ func (r *runner) hello() {
 	})
 }
 
-func (r *runner) heartbeatLoop(ctx context.Context) {
+func (r *runner) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -156,6 +206,10 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// 连接已换代：心跳随旧连接终止，避免重连后 goroutine 累积。
+			if r.currentConn() != conn {
+				return
+			}
 			r.send(envelope{
 				V: 1, MessageID: newMsgID(), Kind: "event", Method: "heartbeat",
 				RunnerID: r.id, SentAt: time.Now().UTC(),
@@ -164,17 +218,16 @@ func (r *runner) heartbeatLoop(ctx context.Context) {
 	}
 }
 
-func (r *runner) readLoop(ctx context.Context) {
+func (r *runner) readLoop(ctx context.Context, conn *websocket.Conn) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		default:
 		}
-		_, raw, err := r.conn.ReadMessage()
+		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("连接断开: %v", err)
-			return
+			return err
 		}
 		var env envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
@@ -327,9 +380,11 @@ func (r *runner) handleCommand(env envelope) {
 }
 
 // emitEvent 上报一条 canonical 事件（runner_seq 递增，等待 ACK）。
+// 帧先入 pending 再尝试写入：写失败只代表本次连接不可用，帧保留在 pending
+// 由重连重发（至少一次投递）。返回写错误供桥接层上报/记日志。
 // seq 必须直接使用 nextSeq 的返回值：若自增后回读 r.seq，两个并发 emit 交叉时
 // 会拿到同一个值，导致 pending[seq] 覆盖丢帧（断线重连后永不重发、runner_seq 缺口）。
-func (r *runner) emitEvent(runID, kind string, data map[string]any) bool {
+func (r *runner) emitEvent(runID, kind string, data map[string]any) error {
 	seq := r.nextSeq()
 	payload, _ := json.Marshal(map[string]any{
 		"runner_seq": seq,
@@ -343,7 +398,30 @@ func (r *runner) emitEvent(runID, kind string, data map[string]any) bool {
 	r.mu.Lock()
 	r.pending[seq] = b
 	r.mu.Unlock()
-	return r.writeLocked(b) == nil
+	return r.writeLocked(b)
+}
+
+// resendPending 重连后按 seq 有序重发未 ACK 帧。乱序重发会被状态机拒收
+//（如 succeeded 先于 running 到达），有序 + 服务端按 (run_id, runner_seq)
+// 去重 = 至少一次且语义等价的投递。
+func (r *runner) resendPending() error {
+	r.mu.Lock()
+	seqs := make([]int64, 0, len(r.pending))
+	for seq := range r.pending {
+		seqs = append(seqs, seq)
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	frames := make([][]byte, 0, len(seqs))
+	for _, seq := range seqs {
+		frames = append(frames, r.pending[seq])
+	}
+	r.mu.Unlock()
+	for _, b := range frames {
+		if err := r.writeLocked(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // moduleEngine 把 ModuleRunner 的引擎调用桥接为 WSS canonical 事件上报；
@@ -356,23 +434,26 @@ type moduleEngine struct {
 
 var _ rt.EngineSink = (*moduleEngine)(nil)
 
+// 桥接层的 Record* 在发送失败时返回 error（帧仍保留在 pending 等重发）：
+// 恒返 nil 会让 module 层（ModuleRunner.status）无从记日志或兜底，
+// 与「任何 Outcome 必落终态」的进程内承诺不等价。
 func (e *moduleEngine) RecordRunStatus(ctx context.Context, runID string, to domain.RunStatus, data map[string]any) error {
 	merged := map[string]any{"status": string(to)}
 	for k, v := range data {
 		merged[k] = v
 	}
-	e.r.emitEvent(runID, "run.status_changed", merged)
+	if err := e.r.emitEvent(runID, "run.status_changed", merged); err != nil {
+		return fmt.Errorf("上报状态帧失败（pending 待重发）: %w", err)
+	}
 	return nil
 }
 
 func (e *moduleEngine) RecordRunProgress(ctx context.Context, runID string, progress float64) error {
-	e.r.emitEvent(runID, "run.progress", map[string]any{"progress": progress})
-	return nil
+	return e.r.emitEvent(runID, "run.progress", map[string]any{"progress": progress})
 }
 
 func (e *moduleEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
-	e.r.emitEvent(runID, evType, data)
-	return nil
+	return e.r.emitEvent(runID, evType, data)
 }
 
 // RecordRunSessionUpdate 序列化完整 SessionUpdate（含 Clear 墓碑与 adapter 私有
@@ -391,23 +472,25 @@ func (e *moduleEngine) RecordRunSessionUpdate(ctx context.Context, runID string,
 	if len(update.Params) > 0 {
 		data["params"] = update.Params
 	}
-	e.r.emitEvent(runID, "run.session", data)
-	return nil
+	return e.r.emitEvent(runID, "run.session", data)
 }
 
 func (e *moduleEngine) RecordRunUsage(ctx context.Context, runID string, usage rt.Usage) error {
-	e.r.emitEvent(runID, "usage.updated", map[string]any{
+	return e.r.emitEvent(runID, "usage.updated", map[string]any{
 		"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 		"cached_tokens": usage.CachedTokens, "basis": string(usage.Basis),
 	})
-	return nil
 }
 
 func (e *moduleEngine) RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error) {
 	id := fmt.Sprintf("apr_local_%s_%d", runID, e.apprSeq.Add(1))
-	e.r.emitEvent(runID, "approval.requested", map[string]any{
+	if err := e.r.emitEvent(runID, "approval.requested", map[string]any{
 		"kind": kind, "risk": risk, "summary": summary, "approval_id": id,
-	})
+	}); err != nil {
+		// 帧已入 pending，重连重发后审批仍会到达控制面；这里只记日志，
+		// 照常返回审批对象，避免 adapter 因瞬时断线拿不到审批 ID 而中断。
+		log.Printf("runnerd: run %s 审批帧发送失败（pending 待重发）: %v", runID, err)
+	}
 	return &domain.ApprovalRequest{
 		ID: id, RunID: runID, Kind: kind, Risk: risk, Summary: summary,
 		Status: domain.ApprovalPending,
@@ -498,7 +581,7 @@ func (r *runner) simulate(spec runSpec) {
 	step := 350 * time.Millisecond
 
 	emit := func(kind string, data map[string]any) bool {
-		return r.emitEvent(runID, kind, data)
+		return r.emitEvent(runID, kind, data) == nil
 	}
 	status := func(s string) bool {
 		return emit("run.status_changed", map[string]any{"status": s})
@@ -581,10 +664,15 @@ func (r *runner) send(env envelope) {
 	_ = r.writeLocked(b)
 }
 
-// writeLocked 串行化 WebSocket 写入（gorilla 不支持并发写）。
+// writeLocked 串行化 WebSocket 写入（gorilla 不支持并发写）；带写超时，
+// 半死连接（对端不再读）必须快速失败让帧留在 pending 等重连重发。
 func (r *runner) writeLocked(b []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.conn == nil {
+		return fmt.Errorf("runner 尚未连接控制平面")
+	}
+	_ = r.conn.SetWriteDeadline(time.Now().Add(writeDeadline))
 	return r.conn.WriteMessage(websocket.TextMessage, b)
 }
 
