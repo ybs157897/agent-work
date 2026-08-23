@@ -176,6 +176,9 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       if (ev.type === 'run.status_changed' && status === 'waiting_approval' && get().watching[runId]) {
         void get().fetchApprovals(runId);
       }
+      if ((ev.type === 'run.completed' || ev.type === 'run.failed') && (get().watching[runId] || get().runs[runId])) {
+        void get().fetchRun(runId);
+      }
       return true;
     }
 

@@ -38,7 +38,7 @@ export function newRequestId(): string {
 }
 
 interface FetchOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** 写命令必须携带；缺省时自动生成（协议 §5.1）。 */
   idempotencyKey?: string;

@@ -1,4 +1,4 @@
-import { Ban, CirclePause, RotateCcw, ShieldAlert } from 'lucide-react';
+import { Ban, CirclePause, Play, RotateCcw, ShieldAlert } from 'lucide-react';
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import {
@@ -6,6 +6,7 @@ import {
   createRun,
   interruptRun,
   resolveApproval,
+  resumeRun,
   retryRun,
 } from '../../api/endpoints';
 import type { WorkItem } from '../../api/types';
@@ -14,6 +15,7 @@ import { useAgentsStore } from '../../stores/agents.store';
 import { useRunsStore, type TimelineEntry } from '../../stores/runs.store';
 import { toast } from '../../stores/toast.store';
 import { formatTime } from '../../utils/format';
+import { promptRejectionReason } from '../../utils/prompt';
 
 const TERMINAL: ReadonlySet<string> = new Set(['succeeded', 'interrupted', 'cancelled', 'lost', 'failed']);
 const ACTIVE: ReadonlySet<string> = new Set(['running', 'waiting_approval', 'starting', 'succeeding', 'reconnecting']);
@@ -64,10 +66,29 @@ export function RunPanel({ task }: { task: WorkItem }) {
       toast.success('已创建重试运行');
     });
 
+  const onResume = (runId: string) =>
+    guard('resume', async () => {
+      try {
+        await resumeRun(runId);
+        toast.success('已恢复会话');
+      } catch (err) {
+        // 能力协商失败（adapter 未声明 resume=supported）：显式提示，不静默降级。
+        if (err instanceof ApiError && err.code === 'capability_missing') {
+          toast.error('该 Runtime 不支持会话恢复，请改用重试（新 Run）');
+        } else {
+          throw err;
+        }
+      }
+    });
+
   const onResolve = (approvalId: string, runId: string, decision: 'approved' | 'rejected') =>
     guard(`resolve-${approvalId}`, async () => {
-      const reason =
-        decision === 'rejected' ? window.prompt('拒绝原因（可选）') ?? '' : '';
+      let reason = '';
+      if (decision === 'rejected') {
+        const input = promptRejectionReason();
+        if (input === null) return; // 用户取消弹窗：中止提交，不视为空理由拒绝
+        reason = input;
+      }
       await resolveApproval(approvalId, runId, decision, reason);
       await fetchApprovals(runId);
       toast.success(decision === 'approved' ? '已批准' : '已拒绝');
@@ -100,6 +121,16 @@ export function RunPanel({ task }: { task: WorkItem }) {
             </p>
           )}
           <div className="flex flex-wrap gap-2">
+            {(run.status === 'reconnecting' || run.status === 'lost') && (
+              <button
+                disabled={busy !== null}
+                onClick={() => void onResume(run.id)}
+                title="恢复失联会话（需 Runtime 声明 resume 能力）"
+                className="flex items-center gap-1 text-caption border border-status-warning text-status-warning rounded-button px-2 py-1 hover:bg-status-warning/5 transition-colors disabled:opacity-50"
+              >
+                <Play className="w-3.5 h-3.5" /> 恢复会话
+              </button>
+            )}
             {runActive && (
               <>
                 <button

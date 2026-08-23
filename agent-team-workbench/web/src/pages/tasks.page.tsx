@@ -109,7 +109,7 @@ export default function TasksPage() {
   }));
 
   return (
-    <div className="layout-safe h-full flex flex-col py-comfortable">
+    <div className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
       {/* Header */}
       <div className="flex items-center justify-between mb-stack-md shrink-0">
         <div className="flex items-center gap-comfortable">
@@ -165,11 +165,10 @@ export default function TasksPage() {
       {/* 看板 / 列表 */}
       <div className="flex-1 min-h-0 overflow-x-auto pb-6">
         {viewMode === 'kanban' ? (
-          <div className="flex gap-4 h-full min-w-max">
+          <div className="flex gap-4 h-full">
             {columns.map((col) => (
               <KanbanColumn
                 key={col.id}
-                id={col.id}
                 title={col.title}
                 tasks={col.tasks}
                 agents={agents}
@@ -281,7 +280,6 @@ function FilterSelect({
 }
 
 function KanbanColumn({
-  id,
   title,
   tasks,
   agents,
@@ -289,7 +287,6 @@ function KanbanColumn({
   onCreate,
   onOpen,
 }: {
-  id: WorkItemStatus;
   title: string;
   tasks: WorkItem[];
   agents: ReturnType<typeof useAgentsStore.getState>['agents'];
@@ -297,7 +294,6 @@ function KanbanColumn({
   onCreate: () => void;
   onOpen: (taskId: string) => void;
 }) {
-  const isInProgress = id === 'in_progress';
   const [dragOver, setDragOver] = useState(false);
 
   return (
@@ -313,9 +309,9 @@ function KanbanColumn({
         const taskId = e.dataTransfer.getData('text/plain');
         if (taskId) onDropTask(taskId);
       }}
-      className={`w-[320px] shrink-0 flex flex-col rounded-xl transition-colors ${
-        isInProgress ? 'bg-brand-primary/5 ring-1 ring-brand-primary/20' : 'bg-surface-warm'
-      } ${dragOver ? 'ring-2 ring-brand-primary/40' : ''}`}
+      className={`flex-1 min-w-[240px] flex flex-col rounded-xl transition-colors ${
+        dragOver ? 'bg-brand-primary/5 ring-2 ring-brand-primary/40' : 'bg-surface-sunken'
+      }`}
     >
       <div className="p-4 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">

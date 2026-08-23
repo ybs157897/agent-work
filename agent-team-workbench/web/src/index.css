@@ -10,20 +10,27 @@
     /* 主题色通道（theme.json → tailwind.config.js 的 hsl(var()) 引用） */
     --color-brand-primary: 199 89% 48%;
     --color-brand-accent: 199 95% 42%;
-    --color-surface-base: 210 20% 98%;
-    --color-surface-warm: 60 14% 98%;
+    --color-brand-muted: 199 76% 94%;
+    --color-surface-base: 214 32% 97%;
+    --color-surface-warm: 40 20% 98%;
+    --color-surface-sunken: 214 22% 93%;
     --color-surface-raised: 0 0% 100%;
     --color-surface-glass: 0 0% 100%;
-    --color-text-primary: 215 16% 15%;
-    --color-text-secondary: 215 14% 34%;
-    --color-text-tertiary: 215 10% 55%;
-    --color-text-muted: 215 10% 55%;
+    --color-sidebar: 222 28% 11%;
+    --color-sidebar-hover: 222 22% 16%;
+    --color-sidebar-border: 222 18% 18%;
+    --color-text-primary: 222 24% 12%;
+    --color-text-secondary: 215 14% 38%;
+    --color-text-tertiary: 215 10% 52%;
+    --color-text-muted: 215 10% 52%;
     --color-text-inverse: 0 0% 100%;
-    --color-border-subtle: 0 0% 94%;
-    --color-border-strong: 214 20% 82%;
-    --color-status-success: 142 71% 45%;
+    --color-text-on-sidebar: 215 16% 72%;
+    --color-text-on-sidebar-active: 0 0% 100%;
+    --color-border-subtle: 214 20% 90%;
+    --color-border-strong: 214 18% 82%;
+    --color-status-success: 152 60% 40%;
     --color-status-warning: 38 92% 50%;
-    --color-status-error: 0 84% 60%;
+    --color-status-error: 0 72% 55%;
     --color-status-info: 199 89% 48%;
     --color-status-standby: 215 10% 65%;
 
@@ -37,6 +44,207 @@
 
   #root {
     @apply h-full;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-primary/40 ring-offset-2 ring-offset-surface-base;
+  }
+}
+
+@layer components {
+  .page-shell {
+    @apply layout-safe space-y-stack-md py-comfortable;
+  }
+
+  .page-header {
+    @apply flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between;
+  }
+
+  .page-title {
+    @apply text-h2 text-text-primary;
+  }
+
+  .page-subtitle {
+    @apply text-body text-text-secondary max-w-2xl;
+  }
+
+  .ui-card {
+    @apply bg-surface-raised rounded-card border border-border-subtle shadow-card;
+  }
+
+  .ui-card-padded {
+    @apply ui-card p-comfortable;
+  }
+
+  .ui-card-interactive {
+    @apply ui-card p-comfortable cursor-pointer transition-all duration-200 ease-out;
+    @apply hover:-translate-y-0.5 hover:shadow-level-2 hover:border-border-strong;
+  }
+
+  .ui-section-title {
+    @apply text-h3 text-text-primary mb-comfortable;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-button px-base py-tight text-body font-medium transition-all duration-150;
+    @apply focus-visible:ring-2 focus-visible:ring-brand-primary/40 focus-visible:ring-offset-2;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand-primary text-text-inverse shadow-sm;
+    @apply hover:bg-brand-accent active:scale-[0.98];
+  }
+
+  .btn-secondary {
+    @apply btn border border-border-strong bg-surface-raised text-text-secondary;
+    @apply hover:bg-surface-base hover:text-text-primary active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply btn border border-brand-primary/30 bg-transparent text-brand-primary;
+    @apply hover:bg-brand-primary/5 active:scale-[0.98];
+  }
+
+  .status-pill {
+    @apply inline-flex items-center gap-2 rounded-full border border-border-subtle bg-surface-raised px-3 py-1 text-caption text-text-secondary;
+  }
+
+  .input-field {
+    @apply mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none;
+    @apply transition-shadow focus:border-brand-primary/40 focus:ring-2 focus:ring-brand-primary/20;
+  }
+
+  .mesh-bg {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, hsl(var(--color-brand-primary) / 0.08), transparent),
+      radial-gradient(ellipse 60% 40% at 100% 0%, hsl(var(--color-brand-accent) / 0.05), transparent);
+  }
+
+  /* ---- 配置工作台（智能体 / 模型） ---- */
+  .config-page {
+    @apply h-full min-h-0 flex flex-col overflow-hidden;
+  }
+
+  .config-page-header {
+    @apply shrink-0 px-comfortable py-base border-b border-border-subtle bg-surface-raised/90 backdrop-blur-sm;
+  }
+
+  .config-split {
+    @apply flex-1 flex min-h-0;
+  }
+
+  .config-sidebar {
+    @apply w-64 shrink-0 border-r border-border-subtle bg-surface-raised/80 flex flex-col min-h-0;
+  }
+
+  .config-sidebar-heading {
+    @apply px-4 py-3 border-b border-border-subtle text-[11px] font-semibold text-text-tertiary uppercase tracking-wider;
+  }
+
+  .config-sidebar-scroll {
+    @apply flex-1 overflow-y-auto p-2 space-y-0.5;
+  }
+
+  .config-sidebar-item {
+    @apply relative w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all duration-150;
+    @apply text-text-primary hover:bg-surface-base focus-visible:ring-2 focus-visible:ring-brand-primary/30 focus-visible:ring-offset-1;
+  }
+
+  .config-sidebar-item-active {
+    @apply bg-brand-primary/[0.08] ring-1 ring-brand-primary/25 shadow-sm;
+  }
+
+  .config-sidebar-item-active::before {
+    content: '';
+    @apply absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-brand-primary;
+  }
+
+  .config-main {
+    @apply flex-1 min-w-0 overflow-y-auto bg-surface-base;
+  }
+
+  .config-panel-wrap {
+    @apply w-full max-w-6xl mx-auto px-6 sm:px-8 py-comfortable;
+  }
+
+  .config-form-card {
+    @apply bg-surface-raised rounded-card border border-border-subtle shadow-card overflow-hidden;
+  }
+
+  .config-section {
+    @apply p-comfortable space-y-base border-b border-border-subtle last:border-b-0;
+  }
+
+  .config-section-flat {
+    @apply px-comfortable py-base border-b border-border-subtle last:border-b-0;
+  }
+
+  .config-section-head {
+    @apply flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1;
+  }
+
+  .config-section-title {
+    @apply text-body font-semibold text-text-primary;
+  }
+
+  .config-section-hint {
+    @apply text-caption text-text-tertiary;
+  }
+
+  .config-toolbar {
+    @apply flex flex-wrap items-center justify-between gap-3 px-comfortable py-base bg-surface-sunken/40 border-b border-border-subtle;
+  }
+
+  .config-footer {
+    @apply sticky bottom-0 z-10 mt-comfortable -mx-6 sm:-mx-8 px-6 sm:px-8 py-4 border-t border-border-subtle bg-surface-base/90 backdrop-blur-md;
+  }
+
+  .config-footer-inner {
+    @apply max-w-6xl mx-auto flex items-center justify-end gap-2;
+  }
+
+  .config-tool-grid {
+    @apply grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2;
+  }
+
+  .config-tool-chip {
+    @apply flex items-center gap-2.5 rounded-lg border border-border-subtle bg-surface-base px-3 py-2.5 cursor-pointer select-none transition-all duration-150;
+    @apply hover:border-border-strong hover:bg-surface-raised;
+  }
+
+  .config-tool-chip-active {
+    @apply border-brand-primary/35 bg-brand-primary/[0.06] ring-1 ring-brand-primary/15;
+  }
+
+  .config-tool-check {
+    @apply w-4 h-4 rounded border-2 border-border-strong bg-surface-raised shrink-0 transition-colors;
+  }
+
+  .config-tool-check-active {
+    @apply border-brand-primary bg-brand-primary;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='white'%3E%3Cpath d='M12.2 4.2 6.5 9.9 3.8 7.2l-1.1 1.1 3.8 3.8 6.8-6.8z'/%3E%3C/svg%3E");
+    background-size: 10px;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  .config-avatar {
+    @apply w-8 h-8 rounded-lg flex items-center justify-center text-caption font-semibold shrink-0;
+  }
+
+  .config-avatar-brand {
+    @apply bg-brand-primary/15 text-brand-primary ring-1 ring-brand-primary/20;
+  }
+
+  .config-avatar-muted {
+    @apply bg-surface-sunken text-text-tertiary ring-1 ring-border-subtle;
   }
 }
 
@@ -74,4 +282,157 @@
 
 .status-pulse {
   animation: statusPulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse {
+    animation: none;
+  }
+}
+
+/* ---- Chat transcript（对齐 deepseek-harness ui-conversation / agent-chat） ---- */
+.chat-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 28px;
+  color: hsl(var(--color-text-primary));
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+.chat-markdown p {
+  margin: 16px 0;
+}
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3 {
+  @apply font-semibold;
+  margin: 32px 0 16px;
+  line-height: 1.35;
+}
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  @apply font-semibold;
+  margin: 16px 0;
+  line-height: 1.4;
+}
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 16px 0;
+  padding-left: 22px;
+}
+.chat-markdown li {
+  margin: 2px 0;
+}
+.chat-markdown li > p {
+  margin: 0;
+}
+.chat-markdown blockquote {
+  margin: 16px 0;
+  padding-left: 12px;
+  border-left: 3px solid hsl(var(--color-border-strong));
+  color: hsl(var(--color-text-secondary));
+}
+.chat-markdown table {
+  margin: 16px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.chat-markdown th,
+.chat-markdown td {
+  @apply border border-border-subtle px-2.5 py-1 text-left;
+}
+.chat-markdown th {
+  @apply bg-surface-sunken;
+}
+.chat-markdown a {
+  @apply text-brand-primary no-underline hover:underline;
+}
+
+.chat-reasoning-toggle {
+  position: relative;
+}
+
+.chat-reasoning-toggle .chat-reasoning-sweep {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 300px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, hsl(var(--color-surface-base)) 60%, transparent) 55%,
+    transparent 100%
+  );
+  animation: chat-reasoning-sweep 2.6s ease-out infinite;
+}
+
+.chat-streaming .chat-markdown > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: hsl(var(--color-brand-primary));
+  animation: chat-caret-blink 1s step-end infinite;
+}
+
+@keyframes chat-caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes chat-reasoning-sweep {
+  0% {
+    left: -300px;
+  }
+  90%,
+  100% {
+    left: 100%;
+  }
+}
+
+.chat-typing span {
+  @apply inline-block h-1.5 w-1.5 rounded-full bg-text-tertiary;
+  animation: chat-typing 1.2s ease-in-out infinite;
+}
+.chat-typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.chat-typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes chat-typing {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-streaming .chat-markdown > :last-child::after,
+  .chat-reasoning-toggle .chat-reasoning-sweep,
+  .chat-typing span {
+    animation: none;
+  }
 }

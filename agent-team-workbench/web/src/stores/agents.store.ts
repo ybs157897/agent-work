@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { disableAgent, enableAgent, listAgents } from '../api/endpoints';
 import type { AgentProfile } from '../api/types';
+import { createRequestGuard } from './request-guard';
 import { useWorkspaceStore } from './workspace.store';
 
 interface AgentsStore {
@@ -14,6 +15,8 @@ interface AgentsStore {
   setAvailability: (agent: AgentProfile, enabled: boolean) => Promise<void>;
 }
 
+const refreshGuard = createRequestGuard();
+
 export const useAgentsStore = create<AgentsStore>()((set, get) => ({
   agents: [],
   selectedAgentId: null,
@@ -23,7 +26,9 @@ export const useAgentsStore = create<AgentsStore>()((set, get) => ({
   refresh: async () => {
     const wsId = useWorkspaceStore.getState().workspace?.id;
     if (!wsId) return;
+    const isStale = refreshGuard.begin();
     const { items } = await listAgents(wsId);
+    if (isStale()) return; // 期间已发出更新的 refresh：丢弃旧响应
     set({ agents: items });
   },
 

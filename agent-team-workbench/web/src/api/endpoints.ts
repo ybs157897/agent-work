@@ -7,12 +7,16 @@ import type {
   Artifact,
   Bootstrap,
   Dashboard,
+  DSHCatalog,
   ExecutionRun,
   Me,
+  ModelEntry,
   Priority,
   ProbeResult,
   RunEvent,
   RuntimeBinding,
+  TaskSession,
+  WakeResult,
   WorkItem,
   WorkItemStatus,
   Workspace,
@@ -27,6 +31,10 @@ import type {
 export const getMe = () => apiFetch<Me>('/me');
 
 export const listWorkspaces = () => apiFetch<{ items: Workspace[] }>('/workspaces');
+
+/** 更新 Workspace 名称/时区（Owner/Admin；乐观锁）。 */
+export const patchWorkspace = (workspaceId: string, input: { name?: string; timezone?: string; expected_version: number }) =>
+  apiFetch<Workspace>(`/workspaces/${workspaceId}`, { method: 'PATCH', body: input });
 
 export const getBootstrap = (workspaceId: string) =>
   apiFetch<Bootstrap>(`/workspaces/${workspaceId}/bootstrap`);
@@ -47,6 +55,7 @@ export interface CreateAgentInput {
   role: string;
   skills: string[];
   avatar?: string;
+  runtime_preference?: { preferred: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
 }
 
 export const createAgent = (workspaceId: string, input: CreateAgentInput) =>
@@ -80,6 +89,12 @@ export const listWorkItems = (workspaceId: string, filter: WorkItemFilter = {}) 
 };
 
 export const getWorkItem = (workItemId: string) => apiFetch<WorkItem>(`/work-items/${workItemId}`);
+
+/** 更新任务普通字段（标题/描述/优先级/截止日；状态走 commands）。 */
+export const patchWorkItem = (
+  workItemId: string,
+  input: { title?: string; description?: string; priority?: Priority; due_date?: string | null; expected_version: number },
+) => apiFetch<WorkItem>(`/work-items/${workItemId}`, { method: 'PATCH', body: input });
 
 export interface CreateWorkItemInput {
   title: string;
@@ -157,6 +172,10 @@ export const cancelRun = (runId: string) =>
 export const retryRun = (runId: string) =>
   apiFetch<ExecutionRun>(`/runs/${runId}/commands/retry`, { method: 'POST', body: {} });
 
+/** 恢复 reconnecting/lost 的 Run（仅当 Runtime 能力声明 resume=supported，否则 422）。 */
+export const resumeRun = (runId: string) =>
+  apiFetch<ExecutionRun>(`/runs/${runId}/commands/resume`, { method: 'POST', body: {} });
+
 export const listApprovals = (runId: string) =>
   apiFetch<{ items: ApprovalRequest[] }>(`/runs/${runId}/approvals`);
 
@@ -191,8 +210,8 @@ export interface PatchAgentInput {
   role?: string;
   skills?: string[];
   instructions?: string;
-  runtime_preference?: { preferred?: string; fallbacks?: string[] };
-  model_override?: { provider?: string; model?: string };
+  runtime_preference?: { preferred?: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
+  model_override?: { ref?: string; provider?: string; model?: string };
   policy?: AgentPolicy;
   expected_version: number;
 }
@@ -213,6 +232,73 @@ export const reloadAgentConfigs = (workspaceId: string) =>
 export const listRuntimeBindings = (workspaceId: string) =>
   apiFetch<{ items: RuntimeBinding[] }>(`/workspaces/${workspaceId}/runtime-bindings`);
 
+/** DeepSeek Harness 模式与权限预设（来自本地 preset 目录扫描）。 */
+export const getDSHCatalog = () => apiFetch<DSHCatalog>('/runtimes/dsh/catalog');
+
 /** 探测版本/认证/能力；不启动业务 Run（协议 §5.3）。 */
 export const probeRuntimeBinding = (bindingId: string) =>
   apiFetch<ProbeResult>(`/runtime-bindings/${bindingId}/commands/probe`, { method: 'POST', body: {} });
+
+export interface UpsertBindingInput {
+  runtime_label?: string;
+  adapter_id?: string;
+  provider?: string;
+  model?: string;
+  credential_ref?: string;
+  expected_version?: number;
+}
+
+/** 新建 Runtime 绑定（凭据只存引用）。 */
+export const createRuntimeBinding = (workspaceId: string, input: UpsertBindingInput) =>
+  apiFetch<RuntimeBinding>(`/workspaces/${workspaceId}/runtime-bindings`, { method: 'POST', body: input });
+
+/** 修改绑定的 provider/model/credential_ref（乐观锁）。 */
+export const patchRuntimeBinding = (bindingId: string, input: UpsertBindingInput) =>
+  apiFetch<RuntimeBinding>(`/runtime-bindings/${bindingId}`, { method: 'PATCH', body: input });
+
+// ── 模型注册表（models/ 目录为真相源，全局共享）──────────────────────
+
+export const listModels = () => apiFetch<{ items: ModelEntry[] }>('/models');
+
+export interface UpsertModelInput {
+  id?: string;
+  display_name: string;
+  category?: string;
+  provider_id?: string;
+  provider: string;
+  api?: string;
+  model: string;
+  api_key_env?: string;
+  base_url?: string;
+  context_window?: number;
+  max_tokens?: number;
+  notes?: string;
+}
+
+export const createModel = (input: UpsertModelInput) =>
+  apiFetch<ModelEntry>('/models', { method: 'POST', body: input });
+
+export const updateModel = (id: string, input: UpsertModelInput) =>
+  apiFetch<ModelEntry>(`/models/${id}`, { method: 'PUT', body: input });
+
+export const deleteModel = (id: string) => apiFetch<void>(`/models/${id}`, { method: 'DELETE' });
+
+export const getProviderCredential = (providerId: string) =>
+  apiFetch<{ api_key: string }>(`/models/provider-credentials?provider_id=${encodeURIComponent(providerId)}`);
+
+export const putProviderCredential = (providerId: string, apiKey: string) =>
+  apiFetch<void>('/models/provider-credentials', { method: 'PUT', body: { provider_id: providerId, api_key: apiKey } });
+
+// ── 会话锚点 / 手动唤醒（M4/M5 wakeup 调度）──────────────────────────
+
+/** Agent 的活跃会话锚点列表（墓碑行服务端已过滤）。 */
+export const listTaskSessions = (agentId: string) =>
+  apiFetch<{ items: TaskSession[] }>(`/agent-profiles/${agentId}/task-sessions`);
+
+/** 重置指定 (adapter, task_key) 的会话锚点（写墓碑，下一轮开全新会话）。 */
+export const resetTaskSession = (agentId: string, input: { task_key: string; adapter_id: string }) =>
+  apiFetch<{ status: string }>(`/agent-profiles/${agentId}/task-sessions/reset`, { method: 'POST', body: input });
+
+/** on_demand 手动唤醒；task_key 锚定 work item。agent 未开 wake_on_demand 时 422。 */
+export const wakeAgent = (agentId: string, input: { task_key: string; instruction?: string }) =>
+  apiFetch<WakeResult>(`/agent-profiles/${agentId}/commands/wake`, { method: 'POST', body: input });

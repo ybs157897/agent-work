@@ -15,6 +15,7 @@ interface WorkspaceStore {
 
   setBooting: () => void;
   setReady: (me: Me | null, workspace: Workspace, health: Health, eventCursor: number) => void;
+  setWorkspace: (workspace: Workspace) => void;
   setError: (message: string) => void;
   setSseStatus: (status: SseStatus) => void;
 }
@@ -31,6 +32,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set) => ({
   setBooting: () => set({ phase: 'booting', error: null }),
   setReady: (me, workspace, health, eventCursor) =>
     set({ phase: 'ready', error: null, me, workspace, health, eventCursor, sseStatus: 'connecting' }),
+  setWorkspace: (workspace) => set({ workspace }),
   setError: (message) => set({ phase: 'error', error: message }),
   setSseStatus: (sseStatus) => set({ sseStatus }),
 }));

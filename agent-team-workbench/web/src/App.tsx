@@ -8,6 +8,7 @@ import AgentsPage from './pages/agents.page';
 import ChatPage from './pages/chat.page';
 import DashboardPage from './pages/dashboard.page';
 import LogsPage from './pages/logs.page';
+import ModelsPage from './pages/models.page';
 import SettingsPage from './pages/settings.page';
 import TasksPage from './pages/tasks.page';
 import { bootstrap } from './stores/bootstrap';
@@ -46,6 +47,7 @@ export default function App() {
 
 function AnimatedRoutes() {
   const location = useLocation();
+  const isFullBleed = location.pathname === '/chat' || location.pathname === '/models' || location.pathname === '/agents';
   return (
     <AnimatePresence mode="wait">
       <motion.div
@@ -54,13 +56,18 @@ function AnimatedRoutes() {
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -5 }}
         transition={{ duration: 0.15, ease: 'easeOut' }}
-        className="min-h-full"
+        className={
+          isFullBleed
+            ? 'h-full min-h-0 flex flex-col overflow-hidden'
+            : 'min-h-full flex flex-col'
+        }
       >
         <Routes location={location}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/chat" element={<ChatPage />} />
+          <Route path="/models" element={<ModelsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

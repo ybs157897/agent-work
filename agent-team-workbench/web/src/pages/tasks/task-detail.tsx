@@ -1,8 +1,10 @@
+import { Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ApiError } from '../../api/client';
-import { assignWorkItem, getWorkItem } from '../../api/endpoints';
-import type { WorkItem, WorkItemStatus } from '../../api/types';
+import { assignWorkItem, getWorkItem, patchWorkItem } from '../../api/endpoints';
+import type { Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Drawer } from '../../components/drawer';
+import { Modal } from '../../components/modal';
 import { PriorityBadge } from '../../components/priority-badge';
 import { useAgentsStore } from '../../stores/agents.store';
 import { useRunsStore } from '../../stores/runs.store';
@@ -41,6 +43,7 @@ export function TaskDetail({
   const watchRun = useRunsStore((s) => s.watchRun);
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const [assigning, setAssigning] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   // 打开时拉取权威快照（含 blocker/runs_count/version），防止列表数据陈旧。
   useEffect(() => {
@@ -99,6 +102,16 @@ export function TaskDetail({
                   </span>
                 )}
                 <PriorityBadge priority={task.priority} />
+                {task.status !== 'completed' && task.status !== 'cancelled' && (
+                  <button
+                    onClick={() => setEditOpen(true)}
+                    title="编辑任务字段"
+                    className="ml-auto flex items-center gap-1 text-caption border border-border-strong text-text-secondary rounded-button px-2 py-1 hover:bg-surface-base transition-colors"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    编辑
+                  </button>
+                )}
               </div>
               <h2 className="text-h3 text-text-primary leading-snug">{task.title}</h2>
               <p className="text-caption text-text-tertiary mt-1">
@@ -192,8 +205,109 @@ export function TaskDetail({
             {/* Run 面板 */}
             <RunPanel task={task} />
           </div>
+
+          {editOpen && (
+            <TaskEditModal
+              task={task}
+              onClose={() => setEditOpen(false)}
+              onSaved={(wi) => {
+                upsert(wi);
+                setEditOpen(false);
+              }}
+            />
+          )}
         </div>
       )}
     </Drawer>
+  );
+}
+
+/** 任务字段编辑：标题/描述/优先级/截止日（乐观锁；状态走 commands 不在此改）。 */
+function TaskEditModal({
+  task,
+  onClose,
+  onSaved,
+}: {
+  task: WorkItem;
+  onClose: () => void;
+  onSaved: (wi: WorkItem) => void;
+}) {
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description ?? '');
+  const [priority, setPriority] = useState<Priority>(task.priority);
+  const [dueDate, setDueDate] = useState(task.due_date ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const inputCls =
+    'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const updated = await patchWorkItem(task.id, {
+        title: title.trim(),
+        description,
+        priority,
+        // 后端 PATCH 不支持清空截止日（null 视为未设置字段）：仅在选择新日期时提交。
+        ...(dueDate ? { due_date: dueDate } : {}),
+        expected_version: task.version,
+      });
+      toast.success('任务已更新');
+      onSaved(updated);
+    } catch (err) {
+      if (err instanceof ApiError && err.isVersionConflict) {
+        toast.error('任务已被他人修改，已为你刷新最新数据');
+        onSaved(await getWorkItem(task.id));
+      } else {
+        toast.error(err instanceof ApiError ? err.message : '保存失败');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={onClose} title="编辑任务">
+      <div className="space-y-base">
+        <label className="block">
+          <span className="text-body text-text-secondary">标题</span>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} />
+        </label>
+        <label className="block">
+          <span className="text-body text-text-secondary">描述</span>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} className={`${inputCls} resize-y`} />
+        </label>
+        <div className="grid grid-cols-2 gap-snug">
+          <label className="block">
+            <span className="text-body text-text-secondary">优先级</span>
+            <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={inputCls}>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+              <option value="urgent">紧急</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-body text-text-secondary">截止日</span>
+            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
+          </label>
+        </div>
+        <div className="flex justify-end gap-snug pt-tight">
+          <button
+            onClick={onClose}
+            className="bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight font-medium hover:bg-surface-base transition-colors"
+          >
+            取消
+          </button>
+          <button
+            onClick={() => void save()}
+            disabled={!title.trim() || saving}
+            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

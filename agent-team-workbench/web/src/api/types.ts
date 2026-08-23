@@ -44,17 +44,61 @@ export interface AgentProfile {
   availability: AgentAvailability;
   presence: AgentPresence;
   avatar?: string;
-  runtime_preference?: { preferred?: string; fallbacks?: string[] };
-  model_override?: { provider?: string; model?: string };
+  runtime_preference?: { preferred?: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
+  model_override?: { ref?: string; provider?: string; model?: string };
   policy?: AgentPolicy;
   version: number;
 }
 
-/** Agent 权限配置：工具白名单 + 审批策略（协议 §8）。 */
+/** 跨 Run 会话锚点（GET /agent-profiles/{id}/task-sessions；墓碑行服务端已过滤）。 */
+export interface TaskSession {
+  id: string;
+  agent_profile_id: string;
+  adapter_id: string;
+  task_key: string;
+  session_ref?: string;
+  session_params?: Record<string, unknown>;
+  display_id?: string;
+  runs_count: number;
+  input_tokens_cum: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /agent-profiles/{id}/commands/wake 的 202 响应。 */
+export interface WakeResult {
+  wakeup_id: string;
+  status: string;
+  wake_at: string;
+}
+
+/** Agent 权限配置：控制平面统一语义，由各 Runtime adapter 映射为原生参数。 */
 export interface AgentPolicy {
   tools?: string[];
   approval_policy?: 'auto' | 'approve_high_risk' | 'manual' | '';
   sandbox?: string;
+  permission_preset?: string;
+}
+
+export interface PermissionPresetEntry {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface AgentPresetEntry {
+  id: string;
+  trust: string;
+  is_default?: boolean;
+  name?: string;
+  description?: string;
+  broken?: string;
+  order?: number;
+}
+
+export interface DSHCatalog {
+  agent_presets: AgentPresetEntry[];
+  permission_presets: PermissionPresetEntry[];
 }
 
 export interface Blocker {
@@ -270,3 +314,22 @@ export const EVENT_NAMES = [
   'run.recovery_completed',
   'run.recovery_failed',
 ] as const;
+
+/** 模型注册表条目（models/ 目录为真相源；词汇对齐 pi-ai provider profile）。 */
+export interface ModelEntry {
+  id: string;
+  display_name: string;
+  /** UI 展示分类；与实际 provider 路由相互独立。 */
+  category?: string;
+  /** 供应商稳定 id，凭据与分组按此匹配。 */
+  provider_id: string;
+  /** DSH / pi-ai 路由名，可与 label 不同。 */
+  provider: string;
+  api?: 'openai-completions' | 'openai-responses' | 'anthropic-messages' | '';
+  model: string;
+  api_key_env?: string;
+  base_url?: string;
+  context_window?: number;
+  max_tokens?: number;
+  notes?: string;
+}

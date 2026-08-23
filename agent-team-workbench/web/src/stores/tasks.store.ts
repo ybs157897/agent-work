@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { ApiError } from '../api/client';
 import { listWorkItems, moveWorkItem } from '../api/endpoints';
 import type { Priority, WorkItem, WorkItemStatus } from '../api/types';
+import { createRequestGuard } from './request-guard';
 import { useWorkspaceStore } from './workspace.store';
 
 export type ViewMode = 'kanban' | 'list';
@@ -29,6 +30,8 @@ interface TasksStore {
   moveOptimistic: (id: string, to: WorkItemStatus) => Promise<void>;
 }
 
+const refreshGuard = createRequestGuard();
+
 export const useTasksStore = create<TasksStore>()((set, get) => ({
   items: [],
   filter: {},
@@ -41,7 +44,9 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
     const wsId = useWorkspaceStore.getState().workspace?.id;
     if (!wsId) return;
     const { filter } = get();
+    const isStale = refreshGuard.begin();
     const { items } = await listWorkItems(wsId, { ...filter });
+    if (isStale()) return; // 期间已发出更新的 refresh（如筛选已变）：丢弃旧响应
     set({ items });
   },
 

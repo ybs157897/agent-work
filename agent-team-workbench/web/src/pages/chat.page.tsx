@@ -1,25 +1,29 @@
 import { MessageSquare, Plus, SendHorizonal, ShieldAlert } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { resolveApproval } from '../api/endpoints';
+import { AssistantTurn } from '../components/chat/assistant-turn';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
-import { buildMessages, useChatStore } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, useChatStore, ACTIVE, type ChatMessage } from '../stores/chat.store';
 import { useRunsStore } from '../stores/runs.store';
 import { toast } from '../stores/toast.store';
 import { formatTime } from '../utils/format';
+import { promptRejectionReason } from '../utils/prompt';
 
 /** 对话页：Agent 选择器 + 会话列表 + 气泡消息流 + 输入框（协议 §5.2/§5.3）。 */
 export default function ChatPage() {
   const agents = useAgentsStore((s) => s.agents);
   const agentId = useChatStore((s) => s.agentId);
+  const conversationId = useChatStore((s) => s.conversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
   const openConversation = useChatStore((s) => s.openConversation);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const urlBooted = useRef(false);
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
@@ -27,8 +31,23 @@ export default function ChatPage() {
     const qConv = searchParams.get('c');
     if (qAgent && qAgent !== agentId) selectAgent(qAgent);
     if (qConv) openConversation(qConv);
+    urlBooted.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 新会话创建时同步 ?c=，便于刷新后恢复。
+  useEffect(() => {
+    if (!urlBooted.current || !agentId) return;
+    const qAgent = searchParams.get('agent');
+    const qConv = searchParams.get('c');
+    if (conversationId) {
+      if (qAgent === agentId && qConv === conversationId) return;
+      setSearchParams({ agent: agentId, c: conversationId }, { replace: true });
+      return;
+    }
+    if (qAgent === agentId && !qConv) return;
+    setSearchParams({ agent: agentId }, { replace: true });
+  }, [agentId, conversationId, searchParams, setSearchParams]);
 
   const pick = (id: string) => {
     selectAgent(id);
@@ -36,13 +55,17 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="h-full flex min-h-0">
+    <div className="h-full min-h-0 w-full flex overflow-hidden">
       {/* 左栏：Agent 选择器 + 会话列表 */}
       <div className="w-64 shrink-0 border-r border-border-subtle bg-surface-raised flex flex-col min-h-0">
-        <div className="p-3 border-b border-border-subtle">
+        <div className="p-3 border-b border-border-subtle shrink-0">
           <h3 className="text-body font-semibold text-text-primary">选择 Agent</h3>
         </div>
-        <div className="overflow-y-auto p-2 space-y-1 max-h-64">
+        <div
+          className={`overflow-y-auto p-2 space-y-1 ${
+            agentId ? 'shrink-0 max-h-[45%]' : 'flex-1'
+          }`}
+        >
           {agents.map((a) => (
             <button
               key={a.id}
@@ -67,7 +90,7 @@ export default function ChatPage() {
       </div>
 
       {/* 右侧对话区 */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {agentId ? <ConversationPane /> : (
           <div className="flex-1 flex items-center justify-center text-text-tertiary">
             <div className="text-center space-y-2">
@@ -85,6 +108,7 @@ export default function ChatPage() {
 function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
   const conversations = useChatStore((s) => s.conversations);
   const conversationId = useChatStore((s) => s.conversationId);
+  const runSnapshots = useRunsStore((s) => s.runs);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 border-t border-border-subtle">
@@ -109,7 +133,7 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
           >
             <div className="text-body text-text-primary truncate">{c.title}</div>
             <div className="text-caption text-text-tertiary">
-              {c.runs_count} 轮 · {c.status}
+              {c.runs_count} 轮 · {conversationLabel(c, runSnapshots)}
             </div>
           </button>
         ))}
@@ -135,7 +159,7 @@ function ConversationPane() {
   const approvals = useRunsStore((s) => s.approvals);
 
   const [draft, setDraft] = useState('');
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const agent = agents.find((a) => a.id === agentId);
   const conversation = conversations.find((c) => c.id === conversationId);
@@ -143,18 +167,27 @@ function ConversationPane() {
   const latestRunId = runIds[runIds.length - 1];
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
 
-  // 订阅最新 run 的实时事件与历史回放。
+  // 订阅当前会话所有 run，确保历史轮次消息可回放。
   useEffect(() => {
-    if (!latestRunId) return;
-    watchRun(latestRunId);
-    return () => unwatchRun(latestRunId);
-  }, [latestRunId, watchRun, unwatchRun]);
+    for (const id of runIds) watchRun(id);
+    return () => {
+      for (const id of runIds) unwatchRun(id);
+    };
+  }, [runIds.join(','), watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
+  const liveStream = useMemo(
+    () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
+    [latestRunId, timelines],
+  );
+  const awaitingReply =
+    !!latestRun && ACTIVE.has(latestRun.status) && !messages.some((m) => m.kind === 'assistant' && m.runId === latestRunId);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+  }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length]);
 
   const pendingApprovals = latestRunId ? (approvals[latestRunId] ?? []).filter((a) => a.status === 'pending') : [];
 
@@ -166,7 +199,7 @@ function ConversationPane() {
   };
 
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {/* 头部 */}
       <div className="h-[52px] shrink-0 px-comfortable flex items-center justify-between border-b border-border-subtle">
         <div className="flex items-center gap-2 min-w-0">
@@ -186,14 +219,24 @@ function ConversationPane() {
       </div>
 
       {/* 消息流 */}
-      <div className="flex-1 overflow-y-auto px-comfortable py-base space-y-3 min-h-0">
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto overscroll-contain px-comfortable py-base space-y-3 min-h-0"
+      >
         {messages.length === 0 && (
           <div className="text-center text-caption text-text-tertiary py-12">
             输入第一条消息，为该 Agent 创建任务并开始运行
           </div>
         )}
-        {messages.map((m) => <Bubble key={m.key} msg={m} agentName={agent?.name ?? ''} />)}
-        <div ref={bottomRef} />
+        {renderTranscript(messages)}
+        {awaitingReply && (
+          <AssistantTurn
+            reasoning={liveStream.reasoning}
+            text={liveStream.answerDraft}
+            streaming
+            reasoningOnly={!liveStream.answerDraft && Boolean(liveStream.reasoning)}
+          />
+        )}
       </div>
 
       {/* 待审批卡片 */}
@@ -225,7 +268,7 @@ function ConversationPane() {
             }}
             rows={2}
             placeholder={latestRun && !['succeeded', 'interrupted', 'cancelled', 'lost', 'failed'].includes(latestRun.status)
-              ? '运行中：输入将追加为 steering 指令…'
+              ? '运行中：支持 steering 的 Runtime 可追加指令…'
               : '输入消息，Enter 发送，Shift+Enter 换行'}
             className="flex-1 rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 resize-none"
           />
@@ -239,35 +282,69 @@ function ConversationPane() {
           </button>
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
-function Bubble({ msg, agentName }: { msg: ReturnType<typeof buildMessages>[number]; agentName: string }) {
-  if (msg.kind === 'tool' || msg.kind === 'system' || msg.kind === 'error') {
-    return (
-      <div className={`text-center text-caption ${msg.kind === 'error' ? 'text-status-error' : 'text-text-tertiary'}`}>
-        {msg.kind === 'error' ? '✕ ' : ''}{msg.text}
-        <span className="ml-1 tabular-nums">{formatTime(msg.at)}</span>
-      </div>
-    );
+function renderTranscript(messages: ChatMessage[]) {
+  const nodes: ReactNode[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.kind === 'user') {
+      nodes.push(<UserBubble key={msg.key} msg={msg} />);
+      continue;
+    }
+    if (msg.kind === 'thinking') {
+      const next = messages[i + 1];
+      if (next?.kind === 'assistant' && next.runId === msg.runId) {
+        nodes.push(
+          <AssistantTurn
+            key={msg.runId}
+            reasoning={msg.text}
+            text={next.text}
+            at={next.at}
+            reasoningOnly={!next.text && Boolean(msg.text)}
+          />,
+        );
+        i += 1;
+        continue;
+      }
+      nodes.push(
+        <AssistantTurn
+          key={msg.key}
+          reasoning={msg.text}
+          reasoningOnly
+        />,
+      );
+      continue;
+    }
+    if (msg.kind === 'assistant') {
+      nodes.push(<AssistantTurn key={msg.key} text={msg.text} at={msg.at} />);
+      continue;
+    }
+    nodes.push(<MetaLine key={msg.key} msg={msg} />);
   }
-  const isUser = msg.kind === 'user';
+  return nodes;
+}
+
+function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[70%] rounded-xl px-snug py-tight text-body whitespace-pre-wrap break-words ${
-          isUser
-            ? 'bg-brand-primary text-white rounded-br-sm'
-            : 'bg-surface-raised border border-border-subtle text-text-primary rounded-bl-sm shadow-level-1'
-        }`}
-        title={isUser ? '我' : agentName}
-      >
+    <div className="flex justify-end py-1">
+      <div className="max-w-[min(525px,82%)] rounded-[22px] bg-[hsl(var(--color-brand-muted))] px-4 py-2.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
         {msg.text}
-        <span className={`block text-right text-[10px] mt-0.5 tabular-nums ${isUser ? 'text-white/70' : 'text-text-tertiary'}`}>
+        <span className="mt-1 block text-right text-[11px] tabular-nums text-text-tertiary">
           {formatTime(msg.at)}
         </span>
       </div>
+    </div>
+  );
+}
+
+function MetaLine({ msg }: { msg: ChatMessage }) {
+  return (
+    <div className={`text-center text-caption ${msg.kind === 'error' ? 'text-status-error' : 'text-text-tertiary'}`}>
+      {msg.kind === 'error' ? '✕ ' : ''}{msg.text}
+      <span className="ml-1 tabular-nums">{formatTime(msg.at)}</span>
     </div>
   );
 }
@@ -291,7 +368,12 @@ function ApprovalButton({
       onClick={async () => {
         setBusy(true);
         try {
-          const reason = decision === 'rejected' ? window.prompt('拒绝原因（可选）') ?? '' : '';
+          let reason = '';
+          if (decision === 'rejected') {
+            const input = promptRejectionReason();
+            if (input === null) return; // 用户取消弹窗：中止提交，不视为空理由拒绝
+            reason = input;
+          }
           await resolveApproval(approvalId, runId, decision, reason);
           await fetchApprovals(runId);
           toast.success(decision === 'approved' ? '已批准' : '已拒绝');
