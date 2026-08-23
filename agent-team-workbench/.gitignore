@@ -19,4 +19,3 @@ runtimes/dsh/run_*.cordis.yml
 /control-plane
 /runnerd
 workbench.db*
-agent-workbench-architecture.html
