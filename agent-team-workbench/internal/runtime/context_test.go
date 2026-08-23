@@ -78,3 +78,45 @@ func TestPolicySnapshotDefaultsAndFields(t *testing.T) {
 		t.Fatalf("policy snapshot: %+v", p)
 	}
 }
+
+// TestEffectiveInstructionHistoryRegionByteStable 缓存契约（防回归）：provider
+// 前缀缓存只认字节级一致的前缀——相邻两轮指令的「历史区」（固定头 + 全部
+// 已定局消息的渲染）必须逐字节一致；动态内容只允许出现在当轮消息尾部。
+func TestEffectiveInstructionHistoryRegionByteStable(t *testing.T) {
+	turn2 := &domain.ExecutionRun{Input: map[string]any{
+		"instruction": "第二轮",
+		"conversation": map[string]any{
+			"id": "wi_1", "turn_index": 2, "config_digest": "d",
+			"history": []map[string]any{
+				{"role": "user", "text": "第一轮"},
+				{"role": "assistant", "text": "第一轮回复"},
+			},
+		},
+	}}
+	turn3 := &domain.ExecutionRun{Input: map[string]any{
+		"instruction": "第三轮",
+		"conversation": map[string]any{
+			"id": "wi_1", "turn_index": 3, "config_digest": "d",
+			"history": []map[string]any{
+				{"role": "user", "text": "第一轮"},
+				{"role": "assistant", "text": "第一轮回复"},
+				{"role": "user", "text": "第二轮"},
+				{"role": "assistant", "text": "第二轮回复"},
+			},
+		},
+	}}
+	i2 := EffectiveInstruction(turn2)
+	i3 := EffectiveInstruction(turn3)
+	marker := "[用户当前消息]"
+	idx := strings.Index(i2, marker)
+	if idx < 0 {
+		t.Fatalf("当轮消息标记缺失: %q", i2)
+	}
+	if !strings.HasPrefix(i3, i2[:idx]) {
+		t.Fatalf("历史区必须跨轮字节稳定（前缀缓存契约）:\n--- turn2 稳定区 ---\n%s\n--- turn3 开头 ---\n%s", i2[:idx], i3[:min(len(i3), idx+50)])
+	}
+	// 渲染确定性：同输入两次构造必须逐字节一致。
+	if again := EffectiveInstruction(turn2); again != i2 {
+		t.Fatal("同输入的指令渲染不确定")
+	}
+}

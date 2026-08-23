@@ -4,22 +4,59 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 )
 
-const maxConversationHistoryBytes = 48 * 1024
+// 注册表缺 context_window 时的保守回退窗口；预算按窗口比例推导。
+const historyBudgetFallbackWindow = int64(32768)
+
+// historyBudgetTokens 内联历史回放的 token 预算：模型上下文窗口的 35%，
+// 其余留给系统提示、工具定义、当轮指令与回答。窗口来自 models/ 注册表。
+func historyBudgetTokens(spec orchestrator.ModelSpec) int64 {
+	window := int64(spec.ContextWindow)
+	if window <= 0 {
+		window = historyBudgetFallbackWindow
+	}
+	return window * 35 / 100
+}
+
+// estimateTokens 粗估文本 token 量：CJK 一字一 token，其余四字符一 token。
+// 只作轮换触发信号用；provider 实际计量以 usage 回报为准。
+func estimateTokens(text string) int64 {
+	var cjk, other int64
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			cjk++
+		} else {
+			other++
+		}
+	}
+	return cjk + other/4
+}
+
+// historyExceedsBudget 判定内联历史是否超出模型窗口预算（触发会话轮换
+// 而非截断：砍头会移动请求前缀，令 provider 前缀缓存持续清零）。
+func historyExceedsBudget(history []map[string]any, spec orchestrator.ModelSpec) bool {
+	budget := historyBudgetTokens(spec)
+	var used int64
+	for _, message := range history {
+		if text, ok := message["text"].(string); ok {
+			used += estimateTokens(text)
+		}
+	}
+	return used > budget
+}
 
 // conversationHistory 从 canonical run_events 构造 provider 无关的对话回放。
 // 只保留用户原始输入与最终 assistant 文本，工具参数、推理和敏感审批内容不进入上下文。
 func (s *Service) conversationHistory(ctx context.Context, runs []*domain.ExecutionRun) ([]map[string]any, error) {
 	var messages []map[string]any
-	used := 0
 	for _, run := range runs {
 		instruction, _ := run.Input["instruction"].(string)
 		if text := strings.TrimSpace(instruction); text != "" {
-			messages, used = appendHistoryMessage(messages, used, "user", text)
+			messages = appendHistoryMessage(messages, "user", text)
 		}
 		events, err := s.store.Events().ListRunEvents(ctx, run.ID)
 		if err != nil {
@@ -47,38 +84,14 @@ func (s *Service) conversationHistory(ctx context.Context, runs []*domain.Execut
 			assistant = strings.TrimSpace(deltas.String())
 		}
 		if assistant != "" {
-			messages, used = appendHistoryMessage(messages, used, "assistant", assistant)
+			messages = appendHistoryMessage(messages, "assistant", assistant)
 		}
 	}
-	return trimRecentHistory(messages), nil
+	return messages, nil
 }
 
-func appendHistoryMessage(messages []map[string]any, used int, role, text string) ([]map[string]any, int) {
-	return append(messages, map[string]any{"role": role, "text": text}), used + len(text)
-}
-
-func trimRecentHistory(messages []map[string]any) []map[string]any {
-	used := 0
-	start := len(messages)
-	for i := len(messages) - 1; i >= 0; i-- {
-		text, _ := messages[i]["text"].(string)
-		if used+len(text) > maxConversationHistoryBytes {
-			remaining := maxConversationHistoryBytes - used
-			if remaining > 0 {
-				cut := len(text) - remaining
-				for cut < len(text) && !utf8.RuneStart(text[cut]) {
-					cut++
-				}
-				copy := map[string]any{"role": messages[i]["role"], "text": text[cut:]}
-				messages[i] = copy
-				start = i
-			}
-			break
-		}
-		used += len(text)
-		start = i
-	}
-	return messages[start:]
+func appendHistoryMessage(messages []map[string]any, role, text string) []map[string]any {
+	return append(messages, map[string]any{"role": role, "text": text})
 }
 
 func eventText(payload map[string]any) string {

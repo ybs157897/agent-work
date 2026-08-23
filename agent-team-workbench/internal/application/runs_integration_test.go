@@ -344,6 +344,86 @@ func TestSessionRotationHandoff(t *testing.T) {
 	}
 }
 
+// TestHistoryBudgetTriggersRotation 防回归：resume 不可用的 runtime（tier-3 内联档）
+// 历史超出模型窗口预算时必须升级为轮换（handoff 摘要代替全量回放），而不是
+// 头部截断——截断会移动请求前缀、令 provider 前缀缓存持续清零。
+func TestHistoryBudgetTriggersRotation(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	dispatcher := &captureDispatcher{}
+	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_budget", Name: "budget", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	agent := &domain.AgentProfile{
+		ID: "agent_budget", WorkspaceID: ws.ID, Name: "Budget", Role: "developer",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "dsh_local"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	binding := &domain.RuntimeBinding{
+		ID: "rb_budget", WorkspaceID: ws.ID, RuntimeLabel: "dsh_local", AdapterID: "dsh",
+		Capabilities: map[string]string{"resume": "unavailable"}, Status: domain.BindingReady,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Bindings().Create(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "budget", AgentProfileID: agent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// run1：锚点阈值均未触达（runs_count=1），但回复体量超出回退窗口预算
+	//（32768×35%≈11468 token；12000 个 CJK 字符即超）。
+	first, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第一轮"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunStatus(ctx, first.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunSessionRef(ctx, first.ID, "dsh://session_A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, first.ID, strings.Repeat("长", 12000)); err != nil {
+		t.Fatal(err)
+	}
+
+	// run2：锚点阈值未触发，唯一触发源是历史预算 → 必须轮换。
+	second, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: agent.ID, Instruction: "第二轮：继续"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv, _ := second.Input["conversation"].(map[string]any)
+	if _, has := conv["resume_session_ref"]; has {
+		t.Fatalf("预算轮换不应携带 resume ref: %#v", conv)
+	}
+	if rot, _ := conv["session_rotation"].(bool); !rot {
+		t.Fatalf("历史超预算未升级为轮换: %#v", conv)
+	}
+	summary, _ := conv["handoff_summary"].(string)
+	if !strings.Contains(summary, "budget") {
+		t.Fatalf("handoff 摘要缺任务信息: %q", summary)
+	}
+	// 轮换档 EffectiveInstruction：摘要代替全量回放（12000 字历史不得整体注入）。
+	effective := atwruntime.EffectiveInstruction(second)
+	if !strings.Contains(effective, "会话已轮换") || !strings.Contains(effective, "第二轮：继续") {
+		t.Fatalf("轮换档 EffectiveInstruction 异常: %q", effective[:min(len(effective), 200)])
+	}
+	if strings.Contains(effective, strings.Repeat("长", 500)) {
+		t.Fatal("预算轮换后仍全量回放超限历史")
+	}
+}
+
 // TestSessionUnknownSelfHeal 覆盖 session_unknown 失败自愈：清锚点 + 一次性 fresh 重试，
 // 且自愈产物再次 session_unknown 失败时不再递归（防循环）。
 func TestSessionUnknownSelfHeal(t *testing.T) {
