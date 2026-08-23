@@ -312,7 +312,7 @@ func TestProbeRejectsMissingAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.OK || !strings.Contains(result.Error, "尚未登录") {
+	if result.OK || !strings.Contains(result.Error, "尚未配置模型凭据") {
 		t.Fatalf("probe should fail auth: %+v", result)
 	}
 }

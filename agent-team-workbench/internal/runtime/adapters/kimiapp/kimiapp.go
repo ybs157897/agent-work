@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -85,11 +87,21 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 	}, nil
 }
 
-// Probe 确保 kap-server 可用（含拉起）后返回 OK。
+// Probe 校验 kimi CLI 可用；不在此阶段拉起 kap-server（避免就绪横幅 URL 触发 IDE 跳转）。
 func (m *Module) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
 	mf, _ := m.Manifest(ctx)
-	if _, err := m.sup.Ensure(ctx); err != nil {
-		return runtime.ProbeResult{OK: false, Manifest: &mf, Error: err.Error()}, nil
+	if m.cfg.BaseURL != "" {
+		if _, err := m.sup.Ensure(ctx); err != nil {
+			return runtime.ProbeResult{OK: false, Manifest: &mf, Error: err.Error()}, nil
+		}
+		return runtime.ProbeResult{OK: true, Manifest: &mf}, nil
+	}
+	bin := m.cfg.KimiBin
+	if bin == "" {
+		bin = "kimi"
+	}
+	if !agentwork.ExecutableOK(bin) {
+		return runtime.ProbeResult{OK: false, Manifest: &mf, Error: "kimi CLI 不可用"}, nil
 	}
 	return runtime.ProbeResult{OK: true, Manifest: &mf}, nil
 }
@@ -118,6 +130,17 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	if strings.TrimSpace(ex.Instruction) == "" {
 		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
 			Failure: modFailure(runtime.FamilyConfig, "instruction_required", "instruction required", false)}
+	}
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if snap.Model != "" || snap.Provider != "" {
+		changed, err := kimiconfig.ApplySnapshotIfChanged(m.cfg.Home, snap)
+		if err != nil {
+			return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+				Failure: modFailure(runtime.FamilyConfig, "kimi_config", err.Error(), false)}
+		}
+		if changed {
+			m.sup.recycle()
+		}
 	}
 	state := &turnState{}
 	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
@@ -678,9 +701,10 @@ func (m *Module) cwd() string {
 	return "."
 }
 
-// modelOf 编排快照模型优先，回落配置缺省模型。
+// modelOf 编排快照模型别名优先，回落配置缺省模型。
 func (m *Module) modelOf(ex *runtime.ExecContext) string {
-	if model := runtime.ModelSnapshotOf(ex.Run).Model; model != "" {
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if model := kimiconfig.ModelAlias(snap); model != "" {
 		return model
 	}
 	return m.cfg.Model

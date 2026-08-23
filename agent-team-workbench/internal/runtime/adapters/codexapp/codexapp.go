@@ -25,12 +25,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -38,6 +38,7 @@ import (
 type Config struct {
 	BinPath       string   // codex 可执行文件
 	Args          []string // 启动参数；缺省 ["app-server","--stdio"]（测试可替换为回放桩）
+	Home          string   // CODEX_HOME 项目空间（默认 .agent-work/codex）
 	WorkspaceRoot string   // thread/start.cwd
 	Model         string   // 可选：thread/start.model
 	MaxFrameBytes int
@@ -114,9 +115,16 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		return failedResult(configFailure("tools_unsupported", "codex app-server 当前协议不支持内建工具白名单"))
 	}
 
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if snap.Model != "" || snap.Provider != "" {
+		if err := codexconfig.ApplySnapshot(m.cfg.Home, snap); err != nil {
+			return failedResult(configFailure("codex_config", err.Error()))
+		}
+	}
+
 	cmd := exec.Command(m.cfg.BinPath, m.commandArgs()...)
 	cmd.Dir = m.cfg.WorkspaceRoot
-	cmd.Env = os.Environ()
+	cmd.Env = m.processEnv()
 	setProcGroup(cmd)
 
 	stdin, err := cmd.StdinPipe()

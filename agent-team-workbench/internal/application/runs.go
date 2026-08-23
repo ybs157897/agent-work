@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
@@ -265,12 +267,31 @@ func validateRequiredCapabilities(requirements map[string]string, binding *domai
 }
 
 func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.ModelSpec) error {
-	if binding == nil || binding.AdapterID != "codex-appserver" {
+	if binding == nil {
 		return nil
 	}
-	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
-	if provider != "" && provider != "codex" && provider != "openai" {
-		return fmt.Errorf("%w: Codex Runtime 不能使用 provider %q 的模型；请选择 Codex CLI 默认模型或 OpenAI/Codex 模型", domain.ErrValidation, spec.Provider)
+	switch binding.AdapterID {
+	case "codex-appserver":
+		provider := strings.ToLower(strings.TrimSpace(spec.Provider))
+		if provider == "" || provider == "codex" || provider == "openai" {
+			return nil
+		}
+		if strings.TrimSpace(spec.APIKeyEnv) == "" {
+			return fmt.Errorf("%w: Codex 使用注册表模型需要 api_key_env（请在模型页保存凭据）", domain.ErrValidation)
+		}
+		if _, err := codexconfig.ResolveBaseURL(spec); err != nil {
+			return err
+		}
+	case "kimi-appserver", "kimi":
+		if strings.TrimSpace(spec.Model) == "" {
+			return nil
+		}
+		if strings.TrimSpace(spec.APIKeyEnv) == "" {
+			return fmt.Errorf("%w: Kimi 使用注册表模型需要 api_key_env（请在模型页保存凭据）", domain.ErrValidation)
+		}
+		if _, err := kimiconfig.ResolveBaseURL(spec); err != nil {
+			return err
+		}
 	}
 	return nil
 }

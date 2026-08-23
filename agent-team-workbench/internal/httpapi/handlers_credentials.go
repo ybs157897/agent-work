@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"net/http"
+
+	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 )
 
 // handleGetProviderCredential 返回本地保存的 API Key（仅本机工作台使用）。
@@ -60,6 +62,16 @@ func (s *Server) handlePutProviderCredential(w http.ResponseWriter, r *http.Requ
 	if err := s.credentials.Set(req.ProviderID, req.APIKey); err != nil {
 		fail(w, r, err)
 		return
+	}
+	if s.models != nil {
+		if providers, err := s.models.Providers(); err == nil {
+			for _, p := range providers {
+				if p.ID == req.ProviderID {
+					_ = s.credentials.HydrateEnv([]modelconfig.ProviderDef{p})
+					break
+				}
+			}
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

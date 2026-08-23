@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ type GatewayConfig struct {
 	NodeBin       string        // node 可执行文件（默认 node）
 	BinArgs       []string      // 覆盖启动参数（测试回放桩）
 	RepoDir       string        // deepseek-harness 仓库根（apps/cli/src/bin.ts）
+	Home          string        // DSH_HOME 项目空间（默认 .agent-work/dsh）
 	WorkspaceRoot string        // session.create.cwd（执行根目录）
 	Model         string        // 缺省模型（session.selectModel）
 	IdleTimeout   time.Duration // 事件流空闲保护（默认 10m）
@@ -292,10 +294,14 @@ func (g *Gateway) selectModel(ex *runtime.ExecContext, client *wireClient, sessi
 }
 
 func (g *Gateway) cwd() string {
-	if g.cfg.WorkspaceRoot != "" {
-		return g.cfg.WorkspaceRoot
+	root := g.cfg.WorkspaceRoot
+	if root == "" || root == "." {
+		return "."
 	}
-	return "."
+	if abs, err := filepath.Abs(root); err == nil {
+		return abs
+	}
+	return root
 }
 
 func (g *Gateway) promptTurn(ctx context.Context, client *wireClient, sessionID, instruction string) *rpcWireError {

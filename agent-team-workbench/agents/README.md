@@ -50,6 +50,16 @@ permissions:
   preset: workspace-write
 ```
 
-`codex_local` 复用本机 Codex 登录态，以 app-server `thread/start` / `thread/resume`
-维护多轮上下文。不要给 Codex Runtime 配置 DeepSeek、Kimi 或 OpenRouter 的模型 ref；
+`codex_local` 使用项目空间 `.agent-work/codex` 作为 `CODEX_HOME`（与全局 `~/.codex` 隔离）。
+在智能体页选择 Runtime=Codex 并指定模型注册表条目后，保存时会写入
+`.agent-work/codex/config.toml`（`model` / `model_provider` / `base_url` / `env_key`），
+凭据来自模型页 `credentials.local.yaml`（启动时注入 `api_key_env`）。无需 `codex login`。
+
+内置 CLI 位于 `runtimes/codex/` 与 `runtimes/kimi/`（按平台子目录），启动时自动选用，无需设置环境变量。详见 `runtimes/README.md`。
+
+```bash
+make run-control-plane
+```
+
+Web「模型」页保存的 API Key 写入 `.agent-work/credentials.local.yaml`，启动时注入 `api_key_env` 供 DSH/Kimi 使用。
 完整映射与协议边界见 `contracts/runtime/codex-app-server-v2.md`。

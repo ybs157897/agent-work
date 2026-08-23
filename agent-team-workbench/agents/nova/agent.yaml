@@ -4,10 +4,11 @@ role: pm
 skills:
     - 需求分析、优先级管理
 runtime:
-    preferred: dsh_local
+    preferred: codex_local
     mode: default
-    agent_preset: test-mode
 model:
-    ref: deepseek-v4-flash
+    ref: kimi-2-7
 permissions:
-    preset: workspace-write
+    approval_policy: auto
+    sandbox: danger-full-access
+    preset: danger-full-access

@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -20,6 +19,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
@@ -49,16 +49,6 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-// lookOK 判断可执行文件可用（PATH 或文件路径）。
-func lookOK(bin string) bool {
-	if strings.Contains(bin, string(os.PathSeparator)) {
-		_, err := os.Stat(bin)
-		return err == nil
-	}
-	_, err := exec.LookPath(bin)
-	return err == nil
-}
-
 // atoiEnv 读整型环境变量；缺失或非法时用 fallback。
 func atoiEnv(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
@@ -67,6 +57,21 @@ func atoiEnv(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// resolveExecutionRoot 解析 Agent 执行根目录为绝对路径（DSH session.create.cwd 要求）。
+func resolveExecutionRoot(workbenchRoot, configured string) string {
+	root := configured
+	if root == "" || root == "." {
+		root = workbenchRoot
+	} else if !filepath.IsAbs(root) {
+		root = filepath.Join(workbenchRoot, root)
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return workbenchRoot
+	}
+	return abs
 }
 
 // resolveDshRepo 定位 deepseek-harness 仓库根（apps/cli/src/bin.ts 所在工程）：
@@ -120,13 +125,18 @@ func run() error {
 	// M2 进程内 DSH 网关 Adapter（boujoy 形态）：长驻 dsh web 网关 + supervisor，
 	// 会话连续性由 harness 磁盘持久化原生保证（网关重启不丢上下文）。
 	modelDir := env("MODEL_CONFIG_DIR", "models")
-	credStore := modelconfig.NewCredentialsStore(modelDir)
 	workbenchRoot, _ := os.Getwd()
-	executionRoot := env("ATW_WORKSPACE_ROOT", env("ATW_DSH_WORKDIR", "."))
+	projectSpace := agentwork.Resolve(workbenchRoot)
+	if err := projectSpace.Ensure(); err != nil {
+		return fmt.Errorf("初始化项目空间 %s 失败: %w", projectSpace.Root, err)
+	}
+	credStore := modelconfig.NewCredentialsStore(workbenchRoot)
+	executionRoot := resolveExecutionRoot(workbenchRoot, env("ATW_WORKSPACE_ROOT", env("ATW_DSH_WORKDIR", "")))
 	dshGateway := dsh.NewGateway(dsh.GatewayConfig{
 		BaseURL:       env("ATW_DSH_GATEWAY_URL", ""),
 		Port:          atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
 		RepoDir:       resolveDshRepo(workbenchRoot),
+		Home:          projectSpace.DSHHome(),
 		WorkspaceRoot: executionRoot,
 		Model:         env("DSH_MODEL", "deepseek-v4-flash"),
 	})
@@ -134,15 +144,16 @@ func run() error {
 	defer dshGateway.Close()
 	modules.RegisterTo(registry, "dsh", dshGateway)
 	// M3 真实 Adapter：OpenAI Codex app-server（本机 CLI 存在时启用）。
-	if codexBin := env("ATW_CODEX_BIN", "codex"); lookOK(codexBin) {
+	codexBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_CODEX_BIN", "codex", "codex")
+	if agentwork.ExecutableOK(codexBin) {
 		modules.RegisterTo(registry, "codex-appserver", codexapp.New(codexapp.Config{
-			BinPath: codexBin, WorkspaceRoot: executionRoot,
+			BinPath: codexBin, Home: projectSpace.CodexHome(), WorkspaceRoot: executionRoot,
 			Model: env("ATW_CODEX_MODEL", ""),
 		}))
-		log.Printf("codexapp: 已注册（bin=%s）", codexBin)
+		log.Printf("codexapp: 已注册（bin=%s home=%s）", codexBin, projectSpace.CodexHome())
 	}
 	// M4 真实 Adapter：Claude Code CLI print mode（本机 CLI 存在时启用）。
-	if claudeBin := env("ATW_CLAUDE_BIN", "claude"); lookOK(claudeBin) {
+	if claudeBin := env("ATW_CLAUDE_BIN", "claude"); agentwork.ExecutableOK(claudeBin) {
 		modules.RegisterTo(registry, "claude-code", claudecode.New(claudecode.Config{
 			BinPath: claudeBin, WorkspaceRoot: executionRoot,
 			Model: env("ATW_CLAUDE_MODEL", ""),
@@ -150,30 +161,32 @@ func run() error {
 		log.Printf("claudecode: 已注册（bin=%s）", claudeBin)
 	}
 	// M3/M4 真实 Adapter：Kimi Code CLI print mode（本机 CLI 存在时启用）。
-	if kimiBin := env("ATW_KIMI_BIN", "kimi"); lookOK(kimiBin) {
+	kimiBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMI_BIN", "kimi", "kimi")
+	if agentwork.ExecutableOK(kimiBin) {
 		modules.RegisterTo(registry, "kimi", kimi.New(kimi.Config{
-			BinPath: kimiBin, WorkspaceRoot: executionRoot,
+			BinPath: kimiBin, Home: projectSpace.KimiHome(), WorkspaceRoot: executionRoot,
 			Model: env("ATW_KIMI_MODEL", ""),
 		}))
-		log.Printf("kimi: 已注册（bin=%s）", kimiBin)
+		log.Printf("kimi: 已注册（bin=%s home=%s）", kimiBin, projectSpace.KimiHome())
 	}
 	// 网关 Adapter：Kimi Code app-server（kap-server）。本机 kimi CLI 存在时
 	// 受管拉起 `kimi web`（KIMI_CODE_HOME 缺省 .atw-data/kimi-home，端口动态
 	// 空闲口）；ATW_KIMIAPP_URL 非空则直连外部实例（无需本地 CLI）。
-	if kimiBin := env("ATW_KIMIAPP_BIN", "kimi"); lookOK(kimiBin) || env("ATW_KIMIAPP_URL", "") != "" {
+	kimiAppBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMIAPP_BIN", "kimi", kimiBin)
+	if agentwork.ExecutableOK(kimiAppBin) || env("ATW_KIMIAPP_URL", "") != "" {
 		kimiModule := kimiapp.New(kimiapp.Config{
 			BaseURL:       env("ATW_KIMIAPP_URL", ""),
 			Token:         env("ATW_KIMIAPP_TOKEN", ""),
 			Port:          atoiEnv("ATW_KIMIAPP_PORT", 0),
-			KimiBin:       kimiBin,
-			Home:          env("ATW_KIMIAPP_HOME", filepath.Join(".atw-data", "kimi-home")),
+			KimiBin:       kimiAppBin,
+			Home:          env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()),
 			WorkspaceRoot: executionRoot,
 			Model:         env("ATW_KIMIAPP_MODEL", ""),
 		})
 		// 退出时回收 kap-server 进程组（supervisor Close 幂等，未拉起也可安全调用）。
 		defer kimiModule.Close()
 		modules.RegisterTo(registry, "kimi-appserver", kimiModule)
-		log.Printf("kimiapp: 已注册（bin=%s home=%s）", kimiBin, env("ATW_KIMIAPP_HOME", filepath.Join(".atw-data", "kimi-home")))
+		log.Printf("kimiapp: 已注册（bin=%s home=%s）", kimiAppBin, env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()))
 	}
 	// M5 spike：ZCode probe-only 模块（SPI v2，Execute 报 start_unsupported）。
 	modules.RegisterTo(registry, "zcode-probe", zcode.New())
@@ -237,6 +250,11 @@ func run() error {
 	} else {
 		log.Printf("模型注册表 %s：%d 个条目", modelReg.Dir(), len(entries))
 	}
+	if providers, err := modelReg.Providers(); err == nil {
+		if n := credStore.HydrateEnv(providers); n > 0 {
+			log.Printf("项目凭据已注入 %d 个 api_key_env（来源 %s）", n, credStore.Path())
+		}
+	}
 	svc.ModelResolver = func(ref string) (orchestrator.ModelSpec, bool) {
 		e, err := modelReg.Get(ref)
 		if err != nil || e == nil {
@@ -290,7 +308,7 @@ func run() error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("control-plane 监听 %s（Mock Adapter + Runner Gateway 已启用）", addr)
+	log.Printf("control-plane 监听 %s（Mock Adapter + Runner Gateway 已启用；项目空间 %s）", addr, projectSpace.Root)
 	// HTTP 服务异步监听；SIGINT/SIGTERM 或监听错误时进入优雅关闭
 	//（先 Shutdown 停止接新请求，再经 defer 链回收 dsh 网关与 DB）。
 	errCh := make(chan error, 1)

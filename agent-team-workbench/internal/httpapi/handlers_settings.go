@@ -3,10 +3,15 @@ package httpapi
 import (
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 )
 
 // ── RuntimeBinding / 模型配置（设置页）───────────────────────────────
@@ -189,6 +194,18 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return problemBytes(err)
 		}
+		if spec, ok := s.codexModelSpecForAgent(a); ok {
+			home := agentwork.Resolve(s.workbenchRoot).CodexHome()
+			if err := codexconfig.Apply(home, spec); err != nil {
+				return renderProblem(http.StatusBadRequest, "codex_config", "Codex 配置失败", err.Error())
+			}
+		}
+		if spec, ok := s.kimiModelSpecForAgent(a); ok {
+			home := agentwork.Resolve(s.workbenchRoot).KimiHome()
+			if err := kimiconfig.Apply(home, spec); err != nil {
+				return renderProblem(http.StatusBadRequest, "kimi_config", "Kimi 配置失败", err.Error())
+			}
+		}
 		// 文件为真相源：DB 更新成功后回写 agents/<slug>/；失败只记日志不阻断（reload 可修复）。
 		if s.agentCfg != nil {
 			if err := s.agentCfg.WriteBackOne(r.Context(), a); err != nil {
@@ -282,4 +299,54 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 		return renderJSON(w, r, http.StatusAccepted, toRunDTO(run))
 	})
+}
+
+func (s *Server) codexModelSpecForAgent(a *domain.AgentProfile) (orchestrator.ModelSpec, bool) {
+	if a == nil || strings.TrimSpace(a.RuntimePreference.Preferred) != "codex_local" {
+		return orchestrator.ModelSpec{}, false
+	}
+	resolve := func(ref string) (orchestrator.ModelSpec, bool) {
+		if s.models == nil {
+			return orchestrator.ModelSpec{}, false
+		}
+		e, err := s.models.Get(ref)
+		if err != nil || e == nil {
+			return orchestrator.ModelSpec{}, false
+		}
+		return orchestrator.ModelSpec{
+			Ref: e.ID, ProviderID: e.ProviderID, ProviderLabel: e.Category, Provider: e.Provider, API: e.API, Model: e.Model,
+			BaseURL: e.BaseURL, APIKeyEnv: e.APIKeyEnv,
+			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
+		}, true
+	}
+	spec := orchestrator.EffectiveModel(a, nil, resolve)
+	if strings.TrimSpace(spec.Model) == "" {
+		return orchestrator.ModelSpec{}, false
+	}
+	return spec, true
+}
+
+func (s *Server) kimiModelSpecForAgent(a *domain.AgentProfile) (orchestrator.ModelSpec, bool) {
+	if a == nil || strings.TrimSpace(a.RuntimePreference.Preferred) != "kimi_local" {
+		return orchestrator.ModelSpec{}, false
+	}
+	resolve := func(ref string) (orchestrator.ModelSpec, bool) {
+		if s.models == nil {
+			return orchestrator.ModelSpec{}, false
+		}
+		e, err := s.models.Get(ref)
+		if err != nil || e == nil {
+			return orchestrator.ModelSpec{}, false
+		}
+		return orchestrator.ModelSpec{
+			Ref: e.ID, ProviderID: e.ProviderID, ProviderLabel: e.Category, Provider: e.Provider, API: e.API, Model: e.Model,
+			BaseURL: e.BaseURL, APIKeyEnv: e.APIKeyEnv,
+			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
+		}, true
+	}
+	spec := orchestrator.EffectiveModel(a, nil, resolve)
+	if strings.TrimSpace(spec.Model) == "" {
+		return orchestrator.ModelSpec{}, false
+	}
+	return spec, true
 }

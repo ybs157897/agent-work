@@ -4,10 +4,11 @@ role: architect
 skills:
     - 系统设计、契约评审
 runtime:
-    preferred: dsh_local
+    preferred: kimi_local
     mode: default
-    agent_preset: standard
 model:
     ref: kimi-2-7
 permissions:
+    approval_policy: approve_high_risk
+    sandbox: workspace-write
     preset: workspace-write

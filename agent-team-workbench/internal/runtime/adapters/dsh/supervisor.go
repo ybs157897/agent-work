@@ -13,8 +13,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 )
 
 // Supervisor 管理一个网关进程（或只探活一个外部网关）。
@@ -98,7 +101,7 @@ func (s *Supervisor) spawnLocked() error {
 	}
 	cmd := exec.Command(s.cfg.nodeBin(), args...)
 	cmd.Dir = s.cfg.RepoDir
-	cmd.Env = os.Environ()
+	cmd.Env = s.processEnv()
 	cmd.Stdout = logWriter{prefix: "dsh-gateway"}
 	cmd.Stderr = logWriter{prefix: "dsh-gateway:err"}
 	setProcGroup(cmd)
@@ -183,4 +186,11 @@ func (w logWriter) Write(p []byte) (int, error) {
 	}
 	log.Printf("%s: %s", w.prefix, line)
 	return len(p), nil
+}
+
+func (s *Supervisor) processEnv() []string {
+	if strings.TrimSpace(s.cfg.Home) == "" {
+		return os.Environ()
+	}
+	return agentwork.WithEnv(os.Environ(), "DSH_HOME", s.cfg.Home)
 }
