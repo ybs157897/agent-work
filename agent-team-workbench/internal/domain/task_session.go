@@ -12,6 +12,9 @@ type TaskSession struct {
 	AgentProfileID string
 	AdapterID      string
 	TaskKey        string
+	// ParentAnchorID 父任务（同 agent+adapter）锚点 id：会话树镜像任务树，
+	// 轮换谱系沿此链可查；父任务不存在或无锚点时为空。
+	ParentAnchorID string
 	// SessionParams adapter 私有参数；保留键：__ref（session_ref，如 claude://x）、
 	// __fingerprint（创建该会话时的配置指纹，变更即视为配置漂移）。
 	SessionParams map[string]any

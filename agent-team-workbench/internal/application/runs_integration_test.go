@@ -848,7 +848,7 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	_, current, _, _ := runtime.Caller(0)
 	migrationDir := filepath.Join(filepath.Dir(current), "..", "..", "migrations", "sqlite")
-	for _, name := range []string{"0001_init.sql", "0002_runtime_binding_model_config.sql", "0003_agent_config.sql", "0004_task_sessions.sql", "0005_wakeup.sql", "0006_plans.sql"} {
+	for _, name := range []string{"0001_init.sql", "0002_runtime_binding_model_config.sql", "0003_agent_config.sql", "0004_task_sessions.sql", "0005_wakeup.sql", "0006_plans.sql", "0007_task_sessions_parent.sql"} {
 		body, err := os.ReadFile(filepath.Join(migrationDir, name))
 		if err != nil {
 			t.Fatal(err)
