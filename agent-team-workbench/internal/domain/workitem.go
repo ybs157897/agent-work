@@ -40,9 +40,11 @@ var workItemTransitions = map[WorkItemStatus][]WorkItemStatus{
 }
 
 // WorkItem 看板任务。version 为乐观锁，命令需带 expected_version。
+// ParentID 非空表示本任务是 plan dispatch 派生的子任务（树以主任务为根）。
 type WorkItem struct {
 	ID             string
 	WorkspaceID    string
+	ParentID       string
 	Title          string
 	Description    string
 	Status         WorkItemStatus

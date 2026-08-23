@@ -16,6 +16,7 @@ const (
 	PrefixWorkspace = "ws_"
 	PrefixAgent     = "agent_"
 	PrefixWorkItem  = "wi_"
+	PrefixPlan      = "plan_"
 	PrefixRun       = "run_"
 	PrefixApproval  = "approval_"
 	PrefixArtifact  = "artifact_"
