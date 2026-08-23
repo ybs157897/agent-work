@@ -167,6 +167,12 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 		// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
 		// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
 		resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
+		// 内联档（tier-3）历史超模型窗口预算 → 升级为轮换：砍头截断会移动请求
+		// 前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。tier-1（resume
+		// 命中）上下文由 harness 持有，不适用本预算（其增长归锚点阈值管）。
+		if !(resumeRef != "" && resumeSupported) && !rotated && historyExceedsBudget(history, spec) {
+			rotated = true
+		}
 		if resumeRef != "" && resumeSupported {
 			conversation["resume_session_ref"] = resumeRef
 			if fromRunID != "" {
