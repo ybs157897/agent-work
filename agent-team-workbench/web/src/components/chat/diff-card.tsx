@@ -1,16 +1,24 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, FileDiff } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, Copy, FileDiff } from 'lucide-react';
 
 /**
  * Unified diff 卡（对齐 codex-desktop 渲染对比 Q6 的 Web 子集）：
  * 文件头（路径 + +N/−M 徽章）+ 行底色（增删用 status tokens）+ unified⇄split 切换；
  * >25 文件或 >2000 增删行默认折叠只显摘要。
+ * DSH DiffBlock 能力吸收：卡头复制按钮（复制 unified 纯文本形态）、unified 展开态头尾
+ * 行帽（>16 行折叠中段，跨文件按展平行数计）、底部 `└ +N −M · N 个文件` 汇总页脚。
  * split 双栏窄视口自动回落 unified；不做行内评论 / merge conflict 采纳（桌面高级特性）。
  */
 
 /** 折叠阈值：文件数 ≤25 且增删行 ≤2000 时默认展开（对齐 codex editor-diff 常量）。 */
 export const DIFF_COLLAPSE_FILES = 25;
 export const DIFF_COLLAPSE_LINES = 2000;
+
+/** 头尾帽上限（DSH DiffBlock 默认 16）：unified 展开态展平行数超过它才折叠中段。 */
+export const DIFF_BODY_MAX_LINES = 16;
+
+/** 复制成功反馈窗口：窗口内 Check 图标 + 「已复制」aria，超时回落 Copy。 */
+const COPY_FEEDBACK_MS = 1000;
 
 export interface DiffLine {
   kind: 'context' | 'add' | 'del' | 'meta';
@@ -117,6 +125,25 @@ export function shouldCollapseBySize(files: DiffFile[]): boolean {
   return files.length > DIFF_COLLAPSE_FILES || additions + deletions > DIFF_COLLAPSE_LINES;
 }
 
+/**
+ * 复制到剪贴板的纯文本形态：每文件先路径行，再按行加前缀（add `+ `、del `- `、context
+ * 两个空格对齐 +/- 前缀宽），meta 行原样；文件间不额外空行。split 视图下复制的也是
+ * unified 形态——复制物与当前视图解耦。
+ */
+export function diffCopyText(files: DiffFile[]): string {
+  const rows: string[] = [];
+  for (const f of files) {
+    rows.push(f.path);
+    for (const line of f.lines) {
+      if (line.kind === 'add') rows.push(`+ ${line.text}`);
+      else if (line.kind === 'del') rows.push(`- ${line.text}`);
+      else if (line.kind === 'context') rows.push(`  ${line.text}`);
+      else rows.push(line.text);
+    }
+  }
+  return rows.join('\n');
+}
+
 export type DiffView = 'unified' | 'split';
 
 /** 窄视口下 split 不可用：一律回落 unified，不渲染双栏。 */
@@ -155,6 +182,54 @@ export function toSplitHunks(file: DiffFile): SplitRow[] {
   }
   flush();
   return rows;
+}
+
+/** unified 展平渲染行：文件头行与 diff 行各占一行；头尾帽按这个一维序列切（跨文件计）。 */
+export type FlatRow =
+  | { kind: 'file-head'; file: DiffFile }
+  | { kind: 'line'; file: DiffFile; line: DiffLine };
+
+/** 按渲染顺序把所有文件的行展平成一维序列（文件头行先于该文件的 diff 行）。 */
+export function flattenUnifiedRows(files: DiffFile[]): FlatRow[] {
+  const rows: FlatRow[] = [];
+  for (const file of files) {
+    rows.push({ kind: 'file-head', file });
+    for (const line of file.lines) rows.push({ kind: 'line', file, line });
+  }
+  return rows;
+}
+
+export interface UnifiedCap {
+  hidden: number;
+  capped: boolean;
+  head: number;
+  tail: number;
+}
+
+/**
+ * 头尾帽切片参数：超帽且未展开时 capped，渲染头 ceil(16/2)=8 行 + 尾 8 行，hidden 为中段
+ * 藏掉的行数；未超帽或已展开时整段直出（head=total、tail=0），hidden 仍非零——「收起」
+ * 按钮靠它保留。
+ */
+export function capUnifiedRows(total: number, expanded: boolean): UnifiedCap {
+  const hidden = Math.max(0, total - DIFF_BODY_MAX_LINES);
+  const capped = hidden > 0 && !expanded;
+  const head = Math.ceil(DIFF_BODY_MAX_LINES / 2);
+  return { hidden, capped, head: capped ? head : total, tail: capped ? DIFF_BODY_MAX_LINES - head : 0 };
+}
+
+/** 头尾帽作用后的可见行两段（折叠按钮渲染在两段之间）；未戴帽时 tail 段为空。 */
+export function visibleUnifiedRows(
+  files: DiffFile[],
+  expanded: boolean,
+): { cap: UnifiedCap; headRows: FlatRow[]; tailRows: FlatRow[] } {
+  const rows = flattenUnifiedRows(files);
+  const cap = capUnifiedRows(rows.length, expanded);
+  return {
+    cap,
+    headRows: rows.slice(0, cap.head),
+    tailRows: cap.tail > 0 ? rows.slice(rows.length - cap.tail) : [],
+  };
 }
 
 /**
@@ -198,23 +273,92 @@ function SplitCell({ line, right }: { line: DiffLine | null; right?: boolean }) 
   );
 }
 
+/** 文件头行：路径 + 该文件 +N/−M 徽章（unified 展平与 split 嵌套两条渲染路径共用）。 */
+function FileHead({ file }: { file: DiffFile }) {
+  return (
+    <div className="chat-diff-file-head">
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-primary" title={file.path}>
+        {file.path}
+      </span>
+      <span className="flex shrink-0 items-center gap-1 tabular-nums">
+        <span className="text-[11px] text-status-success">+{file.additions}</span>
+        <span className="text-[11px] text-status-error">−{file.deletions}</span>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * 展平行的按文件聚组渲染。切片把某文件全部行藏进中段时该组整组不产出（文件头随之
+ * 不渲染）；tail 起点落在文件中间时不补文件头——diff 行自带 +/− 前缀语义，裸行可读
+ * （与 DSH SearchBlock 的补头策略不同，此处有意接受）。
+ */
+function UnifiedGroups({ rows }: { rows: FlatRow[] }) {
+  const groups: { file: DiffFile; head: boolean; lines: DiffLine[] }[] = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (row.kind === 'file-head') groups.push({ file: row.file, head: true, lines: [] });
+    else if (last?.file === row.file) last.lines.push(row.line);
+    else groups.push({ file: row.file, head: false, lines: [row.line] });
+  }
+  return (
+    <>
+      {groups.map((g, i) => (
+        <div key={i} className="chat-diff-file">
+          {g.head && <FileHead file={g.file} />}
+          <div className="chat-diff-body">
+            {g.lines.map((l, j) => (
+              <div key={j} className={lineClass(l.kind)}>
+                <span className="chat-diff-prefix">{linePrefix(l.kind)}</span>
+                <span className="chat-diff-text">{l.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 /**
  * 工具输出里的 unified diff 渲染卡。text 应为原始输出（内部做控制字符过滤）；
  * 解析不出任何文件时返回 null（调用方回落等宽 pre）。
- * 视图模式（unified/split）是组件本地状态：不入 URL / store，随卡实例存续。
+ * 视图模式与头尾帽展开态均为组件本地状态：不入 URL / store，随卡实例存续。
  */
 export function DiffCard({ text }: { text: string }) {
   const files = useMemo(() => parseUnifiedDiff(stripControlChars(text)), [text]);
   const [open, setOpen] = useState(() => (files.length ? !shouldCollapseBySize(files) : false));
   const [view, setView] = useState<DiffView>('unified');
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyResetTimer = useRef<number | undefined>(undefined);
   const narrow = useNarrowViewport();
   const shown = effectiveView(view, narrow);
   const splitRows = useMemo(
     () => (shown === 'split' ? files.map((f) => toSplitHunks(f)) : null),
     [files, shown],
   );
+  // 头尾帽只作用于 unified：split 的配对行数与双栏网格没有自然的「一行」切法，不戴帽（复杂度取舍）。
+  const unified = useMemo(() => visibleUnifiedRows(files, expanded), [files, expanded]);
+
+  useEffect(() => () => window.clearTimeout(copyResetTimer.current), []);
+
+  /** clipboard 不可用或写入被拒时静默：不置 copied（复制失败即无反馈，不做 execCommand 兜底）。 */
+  async function onCopy() {
+    if (copied || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(diffCopyText(files));
+    } catch {
+      return;
+    }
+    setCopied(true);
+    window.clearTimeout(copyResetTimer.current);
+    copyResetTimer.current = window.setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
+  }
+
   if (!files.length) return null;
   const { additions, deletions } = diffTotalChanges(files);
+  const { cap, headRows, tailRows } = unified;
   return (
     <div className="chat-diff">
       <div className="chat-diff-head">
@@ -226,6 +370,16 @@ export function DiffCard({ text }: { text: string }) {
             <span className="rounded bg-status-success/15 px-1 text-[11px] text-status-success">+{additions}</span>
             <span className="rounded bg-status-error/15 px-1 text-[11px] text-status-error">−{deletions}</span>
           </span>
+        </button>
+        {/* 复制按钮须在 summary toggle 之外（button 套 button 是非法 HTML），故紧随其后落在徽章组右侧。 */}
+        <button
+          type="button"
+          aria-label={copied ? '已复制' : '复制 diff'}
+          title={copied ? '已复制' : '复制 diff'}
+          onClick={() => void onCopy()}
+          className="ml-0.5 mr-1 shrink-0 self-center rounded p-1 text-text-tertiary transition-colors hover:bg-black/[0.06] hover:text-text-primary"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-status-success" /> : <Copy className="h-3.5 w-3.5" />}
         </button>
         {open && !narrow && (
           <div className="chat-diff-toolbar" role="group" aria-label="Diff 视图">
@@ -249,47 +403,54 @@ export function DiffCard({ text }: { text: string }) {
         )}
       </div>
       {open && (
-        <div className="chat-diff-files">
-          {files.map((f, fi) => (
-            <div key={`${f.path}-${f.additions}-${f.deletions}`} className="chat-diff-file">
-              <div className="chat-diff-file-head">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-primary" title={f.path}>
-                  {f.path}
-                </span>
-                <span className="flex shrink-0 items-center gap-1 tabular-nums">
-                  <span className="text-[11px] text-status-success">+{f.additions}</span>
-                  <span className="text-[11px] text-status-error">−{f.deletions}</span>
-                </span>
-              </div>
-              <div className="chat-diff-body">
-                {splitRows ? (
-                  <div className="chat-diff-split">
-                    {splitRows[fi].map((row, i) =>
-                      row.kind === 'meta' ? (
-                        <div key={i} className="chat-diff-line chat-diff-meta chat-diff-span">
-                          <span className="chat-diff-prefix" />
-                          <span className="chat-diff-text">{row.text}</span>
-                        </div>
-                      ) : (
-                        <Fragment key={i}>
-                          <SplitCell line={row.left} />
-                          <SplitCell line={row.right} right />
-                        </Fragment>
-                      ),
-                    )}
-                  </div>
-                ) : (
-                  f.lines.map((l, i) => (
-                    <div key={i} className={lineClass(l.kind)}>
-                      <span className="chat-diff-prefix">{linePrefix(l.kind)}</span>
-                      <span className="chat-diff-text">{l.text}</span>
+        <>
+          <div className="chat-diff-files">
+            {splitRows ? (
+              files.map((f, fi) => (
+                <div key={`${f.path}-${f.additions}-${f.deletions}`} className="chat-diff-file">
+                  <FileHead file={f} />
+                  <div className="chat-diff-body">
+                    <div className="chat-diff-split">
+                      {splitRows[fi].map((row, i) =>
+                        row.kind === 'meta' ? (
+                          <div key={i} className="chat-diff-line chat-diff-meta chat-diff-span">
+                            <span className="chat-diff-prefix" />
+                            <span className="chat-diff-text">{row.text}</span>
+                          </div>
+                        ) : (
+                          <Fragment key={i}>
+                            <SplitCell line={row.left} />
+                            <SplitCell line={row.right} right />
+                          </Fragment>
+                        ),
+                      )}
                     </div>
-                  ))
+                  </div>
+                </div>
+              ))
+            ) : (
+              <>
+                <UnifiedGroups rows={headRows} />
+                {cap.hidden > 0 && (
+                  <button
+                    type="button"
+                    className="w-full px-2.5 py-1 text-left font-mono text-[11px] text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-secondary"
+                    aria-expanded={expanded}
+                    aria-label={expanded ? '收起差异' : `展开其余 ${cap.hidden} 行差异`}
+                    onClick={() => setExpanded((v) => !v)}
+                  >
+                    {expanded ? '收起' : `… 其余 ${cap.hidden} 行`}
+                  </button>
                 )}
-              </div>
-            </div>
-          ))}
-        </div>
+                <UnifiedGroups rows={tailRows} />
+              </>
+            )}
+          </div>
+          {/* 页脚汇总与卡头徽章信息重复是有意的（DSH 语义：页脚是 diff 的一部分）。 */}
+          <div className="px-2.5 py-1 font-mono text-[11px] tabular-nums text-text-tertiary">
+            └ +{additions} −{deletions} · {files.length} 个文件
+          </div>
+        </>
       )}
     </div>
   );

@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DIFF_BODY_MAX_LINES,
   DIFF_COLLAPSE_FILES,
   DIFF_COLLAPSE_LINES,
+  capUnifiedRows,
+  diffCopyText,
   diffTotalChanges,
   effectiveView,
+  flattenUnifiedRows,
   looksLikeUnifiedDiff,
   parseUnifiedDiff,
   shouldCollapseBySize,
   stripControlChars,
   toSplitHunks,
+  visibleUnifiedRows,
 } from './diff-card';
 
 const sample = [
@@ -163,5 +168,99 @@ describe('effectiveView', () => {
     expect(effectiveView('split', true)).toBe('unified');
     expect(effectiveView('split', false)).toBe('split');
     expect(effectiveView('unified', false)).toBe('unified');
+  });
+});
+
+describe('diffCopyText', () => {
+  it('单文件：路径行 + 前缀行（+/-/两空格 context）+ meta 原样', () => {
+    const [a] = parseUnifiedDiff(sample);
+    expect(diffCopyText([a])).toBe(
+      [
+        'web/src/a.ts',
+        '@@ -1,3 +1,4 @@',
+        '  context',
+        '- old line',
+        '+ new line',
+        '+ added line',
+        '\\ No newline at end of file',
+      ].join('\n'),
+    );
+  });
+
+  it('多文件：按序拼接、文件间不额外空行；空文件集为空串', () => {
+    const text = diffCopyText(parseUnifiedDiff(sample));
+    expect(text.startsWith('web/src/a.ts\n')).toBe(true);
+    expect(text).toContain('\\ No newline at end of file\nnew.go');
+    expect(text.endsWith('gone.py\n@@ -1,1 +0,0 @@\n- removed')).toBe(true);
+    expect(diffCopyText([])).toBe('');
+  });
+});
+
+describe('capUnifiedRows', () => {
+  it('上限常量 = 16（DSH DiffBlock 默认）', () => {
+    expect(DIFF_BODY_MAX_LINES).toBe(16);
+  });
+
+  it('未超帽：capped=false 整段直出（head=total、tail=0）', () => {
+    expect(capUnifiedRows(DIFF_BODY_MAX_LINES, false)).toEqual({ hidden: 0, capped: false, head: 16, tail: 0 });
+    expect(capUnifiedRows(3, true)).toEqual({ hidden: 0, capped: false, head: 3, tail: 0 });
+  });
+
+  it('超帽未展开：head=8、tail=8、hidden=n-16', () => {
+    expect(capUnifiedRows(17, false)).toEqual({ hidden: 1, capped: true, head: 8, tail: 8 });
+    expect(capUnifiedRows(25, false)).toEqual({ hidden: 9, capped: true, head: 8, tail: 8 });
+  });
+
+  it('超帽已展开：capped=false 整段直出，hidden 保留（「收起」按钮靠它存在）', () => {
+    expect(capUnifiedRows(25, true)).toEqual({ hidden: 9, capped: false, head: 25, tail: 0 });
+  });
+});
+
+describe('flattenUnifiedRows / visibleUnifiedRows', () => {
+  // 行数布局：a.ts 头+10 行、b.ts 头+1 行、c.ts 头+10 行 = 24 行展平行；戴帽后中段藏 8 行，
+  // b.ts 的头与行全落中段，c.ts 的头与其前 2 行落中段（tail 起点在文件中间）。
+  const mkFiles = () => {
+    const line = (kind: 'context' | 'add' | 'del' | 'meta', text: string) => ({ kind, text });
+    return [
+      { path: 'a.ts', additions: 0, deletions: 0, lines: Array.from({ length: 10 }, (_, i) => line('context', `a${i}`)) },
+      { path: 'b.ts', additions: 1, deletions: 0, lines: [line('add', 'b0')] },
+      { path: 'c.ts', additions: 0, deletions: 10, lines: Array.from({ length: 10 }, (_, i) => line('del', `c${i}`)) },
+    ];
+  };
+
+  it('展平：文件头行先于该文件 diff 行，行归属正确', () => {
+    const files = mkFiles();
+    const rows = flattenUnifiedRows(files);
+    expect(rows).toHaveLength(24);
+    expect(rows[0]).toEqual({ kind: 'file-head', file: files[0] });
+    expect(rows[1]).toEqual({ kind: 'line', file: files[0], line: files[0].lines[0] });
+    expect(rows[11]).toEqual({ kind: 'file-head', file: files[1] });
+    expect(rows.filter((r) => r.kind === 'file-head')).toHaveLength(3);
+  });
+
+  it('戴帽切片：头 8 尾 8；全被藏掉的文件（b.ts）整组不产出，文件头也不渲染', () => {
+    const files = mkFiles();
+    const { cap, headRows, tailRows } = visibleUnifiedRows(files, false);
+    expect(cap).toEqual({ hidden: 8, capped: true, head: 8, tail: 8 });
+    expect(headRows).toHaveLength(8);
+    expect(tailRows).toHaveLength(8);
+    expect(headRows[0]).toEqual({ kind: 'file-head', file: files[0] });
+    expect(headRows[7]).toEqual({ kind: 'line', file: files[0], line: files[0].lines[6] });
+    expect([...headRows, ...tailRows].some((r) => r.file === files[1])).toBe(false);
+    // tail 起点落在 c.ts 中间：首行是裸 diff 行，不带文件头
+    expect(tailRows[0]).toEqual({ kind: 'line', file: files[2], line: files[2].lines[2] });
+    expect(tailRows.some((r) => r.kind === 'file-head')).toBe(false);
+  });
+
+  it('未超帽 / 已展开：整段直出、tail 段为空', () => {
+    const single = [{ path: 'x.ts', additions: 1, deletions: 0, lines: [{ kind: 'add' as const, text: 'x' }] }];
+    expect(visibleUnifiedRows(single, false)).toEqual({
+      cap: { hidden: 0, capped: false, head: 2, tail: 0 },
+      headRows: flattenUnifiedRows(single),
+      tailRows: [],
+    });
+    const { headRows, tailRows } = visibleUnifiedRows(mkFiles(), true);
+    expect(headRows).toHaveLength(24);
+    expect(tailRows).toHaveLength(0);
   });
 });
