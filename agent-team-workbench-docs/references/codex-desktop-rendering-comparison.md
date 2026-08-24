@@ -3,7 +3,7 @@
 > 研究对象：OpenAI Codex 桌面 app（即 ChatGPT.app，bundle id `com.openai.codex`，版本 26.818.41509，macOS arm64 Electron）。
 > 对照对象：本仓 `agent-team-workbench/web`（React + zustand + react-markdown）。
 > 方法：纯静态分析（asar 索引解析 + minified bundle 字符串/CSS 证据抽取），未运行、未修改任何专有软件；本文只描述行为与极小示意片段，不复制其源码。
-> 日期：2026-08-24。
+> 日期：2026-08-24；**二次核对**：同日对本机 `/Applications/ChatGPT.app` asar 重抽 `local-conversation-turn-*.js` 与 CSS，修正回合展示顺序与 Reasoning 归属（见 §0.3）。
 
 ---
 
@@ -35,18 +35,76 @@
 - `webview/assets/plan-summary-item-content-DB5EiBcB.js` — 计划/反馈卡
 - `webview/assets/app-initial-CaQrAMKA.css`、`app-BY4JAmsE.css` — 样式（Tailwind + 设计令牌）
 
+### 0.3 回合布局与展示顺序（二次核对结论）
+
+Codex **不在时间线上原样排列**，而是在 `local-conversation-turn-*.js` 里把同一 turn 的 items **重排为固定槽位**（`X(\`slot-key\`, …)` 注册顺序，本机 bundle 实测）：
+
+```
+┌─ 单 turn 纵向流（flex flex-col gap-3，居中限宽） ─────────────────────┐
+│ 1. user-item              用户气泡（右对齐，见下表）                    │
+│ 2. agent-activity-collapsible   工具活动组（含 reasoning 条目）         │
+│    └─ 或 agent-activity-summary  （无明细时仅组级 worked-for 摘要）    │
+│ 3. automation-update      自动化/MCP 小条目（若有）                    │
+│ 4. assistant-item         助手正文 Markdown（全宽 transcript）          │
+│ 5. tool-outputs           正文附带的工具输出块（若有）                  │
+│ 6. post-assistant-items   正文落定后追加的活动切片                      │
+│ 7. mcp-server-elicitation MCP 追问卡（若有）                           │
+│ 8. proposed-plan          计划 Markdown 卡（可反馈）                    │
+│ 9. thinking-placeholder   进行中 shimmer 占位（见 Q3，非 reasoning 正文）│
+│10. turn-diff              回合 diff 汇总（无 assistant 正文时也可先出）  │
+│11. remote-task / personality-changed / forked-from-conversation …     │
+│12. end-resource / thread-handoff-operation                           │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**思考 / 正文 / 工具 三者的 Codex 顺序（关键修正）**
+
+| 内容 | Codex 位置 | 形态 |
+| --- | --- | --- |
+| **工具 + reasoning** | turn **顶部** `agent-activity-collapsible` | `type: reasoning` 与 exec/read/search 等同列在活动组；组头滚动 **动宾摘要**（`Running {cmd}` / `Reading {target}`），不是独立 "Think" 块 |
+| **助手正文** | 活动组 **之后** `assistant-item` | 全宽 Markdown transcript |
+| **进行中占位** | 正文/计划 **之后** `thinking-placeholder` | shimmer + 文案 **"Thinking"**（`thinkingShimmer.default`）；turn 仍在进行且无 pending items 时显示 |
+| **计划** | 正文 **之后** `proposed-plan` | Markdown 计划卡；`todo-list` 步骤清单是另一类 item |
+
+**布局令牌（本机 CSS 实测）**
+
+| 区域 | Codex 类名 / 变量 | 值或行为 |
+| --- | --- | --- |
+| 线程列宽 | `--thread-content-max-width` | **40rem（640px）**，`justify-center` 居中 |
+| 用户气泡 | `rounded-3xl border border-border/80 bg-background-primary-soft/70 px-3 py-1.5 backdrop-blur-sm` | 右对齐 `w-max max-w-full`，毛玻璃边框 |
+| 助手区 | `flex w-full flex-col gap-3` | 全宽 transcript，无气泡壳 |
+| 正文 Markdown | `--markdown-font-size` + `data-markdown-text-style` | 16px 基准，三档字号 |
+| turn-diff 行 | `py-[var(--turn-diff-row-padding-y)]` | 独立汇总行样式 |
+
+**本仓 Web 编排（对照）**
+
+`buildMessages` **按事件时间线 chronological 推消息**，`renderTranscript` + `groupActivity` 只做工具折叠，**不做 turn 级重排**：
+
+```
+用户 → [计划?] → [工具活动组×N，按事件顺序] → [thinking+assistant 合并轮次] → 系统/错误 MetaLine
+审批卡挂在消息流尾部（非 turn 槽位）
+```
+
+| 差异点 | Codex | 本仓 Web |
+| --- | --- | --- |
+| 工具 vs 正文顺序 | 固定：**先活动组、后正文**（正文后还可有 post-assistant） | **按 SSE 到达顺序**；通常工具先于 `message.completed`，但无强制 |
+| Reasoning 载体 | 活动组内 `reasoning` item + 组头摘要行 | `ReasoningDisclosure` **"Think"** 独立折叠条，叠在 assistant 正文 **上方** |
+| 进行中占位 | 正文后的 `thinking-placeholder` shimmer | 流式 `AssistantTurn`：无正文时有 typing 三点 / reasoning sweep |
+| 计划位置 | 正文 **之后** `proposed-plan` | `run.plan_updated` **时间线位置**（常在工具与正文之间） |
+| 内容限宽 | 整列 40rem 居中 | 用户 `max-w-[min(525px,82%)]`；助手/工具 **scroll 区全宽**（≈32.8rem vs 40rem） |
+
 ---
 
 ## 1. Codex App 渲染分析（十问十答）
 
 ### Q1 对话流整体形态：气泡还是全宽 transcript？
 
-**混合形态：用户消息是右对齐圆角气泡；assistant 及全部工具活动是全宽 transcript。**
+**混合形态：用户消息是右对齐圆角气泡；assistant 及全部工具活动是全宽 transcript；整列 40rem 居中限宽。**
 
 证据：
-- 用户消息外层 `flex w-max max-w-full ... rounded-3xl border ... px-3 py-1.5 backdrop-blur-sm`（`local-conversation-turn-*.js` 中模板字符串，`rounded-3xl` 大圆角 + 毛玻璃边框，明显气泡）；另有 `relative z-10 w-fit ... overflow-hidden rounded-3xl` 的动画容器。
-- assistant 与工具区是 `flex w-full flex-col gap-3` 的纵向流；整条线程有 `--thread-content-max-width` 最大宽度约束并 `justify-center` 居中（`flex w-full max-w-(--thread-content-max-width) min-w-0 justify-center`）。
-- 回合内条目顺序（`local-conversation-thread-turn-entries` + `local-conversation-turn` 编排）：user items → `agent-activity-collapsible`（可折叠工具活动组，头部带 `worked-for` 时长）→ `assistant-item`（正文）→ `tool-outputs` → `proposed-plan`（计划卡）→ `thinking-placeholder`（思考占位）→ `turn-diff`（回合一键 diff）→ 尾部动作行（复制/fork/反馈）。
+- 用户消息外层 `flex w-max max-w-full ... rounded-3xl border border-border/80 bg-background-primary-soft/70 px-3 py-1.5 backdrop-blur-sm`（`local-conversation-turn-*.js`）；动画容器 `relative z-10 w-fit max-w-full overflow-hidden rounded-3xl`。
+- assistant 与工具区是 `flex w-full flex-col gap-3`；线程列 `flex w-full max-w-(--thread-content-max-width) min-w-0 justify-center`，CSS 变量 **`--thread-content-max-width: 40rem`**（`app-initial-CaQrAMKA.css`）。
+- **回合内展示顺序**见 §0.3（二次核对修正）：非旧稿写的「thinking-placeholder 在 assistant 之前」——placeholder 在正文/计划 **之后**；**reasoning 与工具同在顶部活动组**。
 
 ### Q2 assistant 正文 Markdown 支持哪些元素？代码块有什么功能？
 
@@ -65,12 +123,13 @@
 
 ### Q3 reasoning/思考过程怎么展示？
 
-**默认折叠进"工具活动组"头部，以活动摘要句流式滚动显示；有独立的 thinking 占位卡。**
+**Reasoning 不是 assistant 正文上方的独立块，而是归入顶部「工具活动组」；另有正文后的 shimmer 占位。**
 
-- 回合内的 reasoning 映射为 `type: reasoning` 条目（`presentation: thought`），归入 `agent-activity-collapsible` 组（`local-conversation-turn` 中 `agent-activity-collapsible` 分支，可折叠、`persistedCollapsed`、完成后自动折叠 `auto-collapse`）。
-- 活动标题是**现在进行时动宾短语**，由 `reasoning-item-heading` 生成：`Running <detail>{command}</detail>` / `Reading {target}` / `Searching for {query}` / `Listing files in {folder} folder` / `Ran command` / `Stopped command` 等（i18n 前缀 `localConversation.toolActivity.active.*`）。
-- 无任何内容时的占位：i18n id `thinkingShimmer.default`，默认文案 **"Thinking"**，带 shimmer 动画（`thinkingShimmer.default`）；用户输入等待态文案 "Waiting for your answer"。
-- 原始思维链走 `codex/event/agent_reasoning*`（raw/delta/section_break）事件流，summary 与 raw 分离（`reasoning_content_delta` vs `reasoning_raw_content_delta`）。
+- `type: reasoning` 条目与 exec/read/search 等 **同列**于 `agent-activity-collapsible`（`local-conversation-turn` 中 `Ba` selector 读 `reasoning` 的 `summary`，经 `reasoning-item-heading` 转成组头 **动宾摘要**）。
+- 活动标题模板（`reasoning-item-heading-*.js`）：`Running {command}` / `Reading {target}` / `Searching for {query}` / `Ran command` / `Stopped command` 等（i18n 前缀 `localConversation.toolActivity.active.*`）；**不是**固定文案 "Think"。
+- 原始思维链事件：`codex/event/agent_reasoning*`（raw/delta/section_break）；summary 与 raw 分离（`reasoning_content_delta` vs `reasoning_raw_content_delta`）。组头滚动的是 **summary 句流**，不是全文 dump。
+- **thinking-placeholder**（`Lo` 组件，槽位在 `proposed-plan` **之后**）：turn 进行中且无 pending items 时显示 shimmer + 默认文案 **"Thinking"**（`thinkingShimmer.default`）；与 reasoning 条目 **并存但职责不同**——placeholder 是等待态，reasoning item 是已产生的推理/活动摘要。
+- 活动组完成后可 `auto-collapse`（`persistedCollapsed`）；组头显示 `worked-for` 总耗时。
 
 ### Q4 工具调用怎么展示？
 
@@ -141,67 +200,78 @@
 
 ---
 
-## 2. 我们的 Web 端现状（代码引用）
+## 2. 我们的 Web 端现状（2026-08-24 代码快照）
 
-前端栈：React 18 + zustand + react-markdown(remark-gfm) + Tailwind，SSE 事件流驱动。核心文件：
+前端栈：React 18 + zustand + react-markdown(remark-gfm) + highlight.js（懒加载），SSE 事件流驱动。
 
-- `web/src/pages/chat.page.tsx` — 对话页骨架与消息编排
-- `web/src/components/chat/assistant-turn.tsx` — assistant 回合（reasoning 折叠 + 正文）
-- `web/src/components/chat/reasoning-disclosure.tsx` — 思考折叠条
-- `web/src/components/chat/markdown-body.tsx` — markdown 渲染
-- `web/src/stores/chat.store.ts` — 事件→消息推导（buildMessages）
-- `web/src/stores/events.ts` — SSE 路由
-- `web/src/index.css` — chat 样式（294-440 行）
+**核心文件**
+
+| 文件 | 职责 |
+| --- | --- |
+| `web/src/pages/chat.page.tsx` | 消息编排、`renderTranscript`、`groupActivity`、停止按钮、60s 超时 |
+| `web/src/components/chat/assistant-turn.tsx` | 助手轮：Think 折叠 + Markdown 正文 + 流式 typing |
+| `web/src/components/chat/reasoning-disclosure.tsx` | "Think" 折叠条（Codex 无对应独立块，见 §0.3） |
+| `web/src/components/chat/tool-card.tsx` | 活动组 + `ToolRow` + 终端/diff/read/search/IN-OUT 分派 |
+| `web/src/components/chat/markdown-body.tsx` | GFM + `CodeBlock` + `TableCard` |
+| `web/src/components/chat/plan-card.tsx` | `run.plan_updated` 复选清单 |
+| `web/src/components/chat/approval-card.tsx` | 流内审批 + 三级 allow scope |
+| `web/src/stores/chat.store.ts` | `buildMessages` 时间线推导、`formatTokenUsage` |
+| `web/src/index.css` | `.chat-markdown` / `.chat-activity` / `.chat-reasoning` / `.chat-plan` |
 
 ### 现状逐项
 
-1. **对话流形态**：用户右对齐圆角气泡（`chat.page.tsx:330-341`，`rounded-[22px]` 最大宽 525px/82%），assistant 全宽左侧（`assistant-turn.tsx:23-24`）；工具/错误/系统消息是**居中细行**（`MetaLine`，`chat.page.tsx:343-357`）。
-2. **Markdown**：react-markdown + remark-gfm（`markdown-body.tsx:8-9`），自定义 `a`（新窗打开）、`code`（行内样式）、`pre`（`overflow-x-auto rounded-md bg-surface-sunken`，`markdown-body.tsx:31-35`）。标题/列表/表格/引用样式在 `index.css:294-356`。**无复制按钮、无语言标签、无语法高亮、无换行开关**。
-3. **Reasoning**：折叠条（`reasoning-disclosure.tsx`），默认折叠，流式时显示最后一行摘要并横向滚动（`latestLine` + `scrollLeft` 跟随，26-31 行）+ sweep 微光动画（`index.css:362-375`）；标题文案 "Think"；展开后 `max-h-[50vh]` 纯文本。与 assistant 正文合并为一个回合组件（`chat.page.tsx:297-319` thinking+assistant 合并渲染）。
-4. **工具调用**：`tool.started` 生成居中细行「调用工具 {tool}：{args_summary}」（`chat.store.ts:106-118`），`tool.completed/failed` 按 `call_id` 折叠回同一行，输出挂 `detail` 等宽块（`chat.store.ts:120-146`；渲染 `chat.page.tsx:350-355`，`max-h-48` 滚动）。失败把前缀改成「工具失败」红色居中行。**无状态图标、无耗时、无每工具卡片化、无折叠组**。
-5. **命令输出**：无独立终端概念；输出即工具 detail（适配器截断 2000 字符、等宽 `<pre>`）。无 exit code、无 stdout/stderr 区分。
-6. **Diff**：无。后端有 `apply_patch` 类工具时只会以工具行+detail 文本出现。
-7. **审批**：消息流下方固定卡片（`chat.page.tsx:243-255`）：警告图标 + 「审批请求 · {kind} · {risk}」+ summary + 批准/拒绝两按钮；拒绝时 `prompt()` 弹窗收理由（`chat.page.tsx:379-383`）；操作后 toast。**不在消息流内、无授权粒度选项、无批准后状态卡**。
-8. **流式**：`aggregateRunStream` 聚合 delta（`chat.store.ts:46-57`），awaitingReply 时渲染流式回合（`chat.page.tsx:232-239`）；正文末尾 6px 闪烁块状光标（`index.css:377-396` `chat-caret-blink`）；三点 typing 动画（`assistant-turn.tsx:26-30`）；容器 smooth 滚动到底（`chat.page.tsx:186-190`）。
-9. **错误/中断/空态/用量**：错误居中红行 + detail 块（`MetaLine`）；空态文案「输入第一条消息…」（`chat.page.tsx:226-230`）；**无 token 用量展示、无重连进度、无中断按钮**（中断态只有状态徽标文案）。
-10. **计划/todo**：无。
+1. **对话流形态**：用户右对齐 `rounded-[22px]` 气泡，`max-w-[min(525px,82%)]`（`chat.page.tsx` `UserBubble`）；assistant / 工具 **全宽左对齐**，**无** `--thread-content-max-width` 居中列。工具连续行折叠为 **「活动 · N 次调用」** 组（`ActivityGroup`）。错误/系统仍为居中 `MetaLine`。
+2. **展示顺序**：**时间线顺序**（§0.3 对照表）；`thinking`+`assistant` 在 `renderTranscript` 中合并为单个 `AssistantTurn`（Think 在上、正文在下）。计划卡随 `run.plan_updated` 事件位置插入，**不在**正文之后强制重排。
+3. **Markdown**：react-markdown + remark-gfm；`.chat-markdown` 逐标签对齐 Codex 格局（16px/28px、CJK 段距、标题/列表/引用/表格）。`CodeBlock`：**复制 + 语言标签 + 换行开关 + highlight.js 120ms 防抖**；`TableCard` 悬停复制 TSV。无 math/directive/预览运行。
+4. **Reasoning**：独立 `ReasoningDisclosure`（"Think"），默认折叠，流式时最后一行摘要 + sweep；展开 `max-h-[50vh]` 纯文本。**与 Codex 活动组内 reasoning 模型不同**。
+5. **工具调用**：`ToolRow` 卡片：族图标 + 摘要 + 耗时 + 状态点；展开分派 `TerminalBlock` / `DiffCard` / `ReadBlock` / `SearchBlock` / IN-OUT。同 run 连续工具进 `ActivityGroup`，组头 worked-for。
+6. **命令输出**：`TerminalBlock`（ANSI 上色、exit code、prompt 行）；适配器仍可能 2000 字符截断，前端无 `[output truncated]` 标记。
+7. **Diff**：`DiffCard` unified 子集（文件头、+N/−M、25 文件/2000 行折叠阈值、复制）；无 split/merge 冲突/行内评论。
+8. **审批**：消息流内 `ApprovalCard`；allow once / thread / workspace；拒绝内联理由；决议后转完成态行。
+9. **流式**：`aggregateRunStream` + 流式 `AssistantTurn`；正文末块光标 + 块级 fade-in（`index.css` `.chat-streaming`）；Reasoning sweep；smooth scroll。
+10. **错误/中断/用量**：`MetaLine` 错误行 + `formatRunFailureMessage`；header **停止** 按钮 + 60s 首响超时；composer 右下 `{used}k / {window}k tokens`（`formatTokenUsage`）。无 stream-error 重连进度 modal。
 
 ---
 
 ## 3. 逐项对比表
 
-| 维度 | Codex App | 我们 Web | 差距/可借鉴点 |
+| 维度 | Codex App | 我们 Web（当前） | 差距 / 下一步 |
 | --- | --- | --- | --- |
-| 用户消息 | 右对齐 `rounded-3xl` 毛玻璃气泡 | 右对齐 `rounded-[22px]` 气泡 | 基本对齐；Codex 有进入动画 |
-| Assistant 排版 | 全宽 transcript，`--thread-content-max-width` 居中限宽 | 全宽左对齐 | 可借鉴：内容最大宽度变量，长行可读性 |
-| 工具活动 | 独立"活动组"：可折叠、组头 worked-for 计时、行级动宾摘要+状态图标+耗时 | 居中细行文字 | **最大差距**：改卡片化+折叠组+耗时 |
-| Reasoning | 折叠进活动组，动宾摘要实时滚动，"Thinking" shimmer | 独立折叠条+最后一行滚动+sweep | 我们已接近；可补动宾摘要与完成后自动折叠 |
-| Markdown | 自研渲染器，GFM+math+directive，流式淡入 | react-markdown+gfm | 够用；可补流式淡入与 math |
-| 代码块 | 复制/语言标签/换行开关/粘性头/highlight.js(45 语言+自动检测,120ms 防抖)/预览运行 | 纯 pre+行内 code | **高价值差距**：复制按钮+语言标签+高亮 |
-| 命令输出 | xterm 终端 tab + 内联摘要 + 20k 尾部截断 + `[output truncated]` 标记 + 控制字符处理 | 等宽 pre，2000 字符截断 | 可借鉴：尾部保留截断+显式截断标记 |
-| Diff | turn-diff + unified/split + 文件折叠阈值(25 文件/2000 行) + 行内字符高亮 + merge 冲突采纳 | 无 | **高价值差距**：至少做 unified diff 卡 |
-| 审批 | 流内 form 卡，Allow once/Always/This conversation + Reason + 权限维度行 | 流外固定卡，批准/拒绝 | 可借鉴：入流+授权粒度+拒绝理由字段化 |
-| 流式 | token 级 + 块淡入 + 二段式高亮 + shimmer | 块状闪烁光标 + typing 点 + smooth 滚动 | 我们已具备基本态；可补块级淡入 |
-| 错误/重连 | stream-error 自动重连进度文案、usage limit modal | 红色居中行 | 可借鉴：重连进度文案 |
-| Token 用量 | composer tooltip `{used}k / {window}k tokens used` | 无 | 低成本高感知，可借鉴 |
-| 计划/todo | todo-list 复选清单 + proposed-plan 卡(反馈) | 无 | 中期可借鉴 |
+| **turn 展示顺序** | 固定槽位：活动组 → 正文 → 计划 → shimmer → diff（§0.3） | 时间线顺序 + 工具组合并 | **架构差**：若要像素级对齐需 turn 级重排层 |
+| 用户消息 | `rounded-3xl` 毛玻璃边框，`px-3 py-1.5`，列宽 40rem 内右对齐 | `rounded-[22px]`，`px-4 py-2.5`，max 525px/82% | 圆角/边框/列宽略异；可统一到 40rem 列 |
+| Assistant 排版 | 全宽 transcript，**40rem 居中列** | 全宽，**无限宽居中** | 补 `--thread-content-max-width: 40rem` |
+| 工具活动 | 顶部活动组，动宾三态文案，完成后 auto-collapse | `ActivityGroup`+`ToolRow`，静态族标题 | 可补动宾文案切换 + 完成后默认折叠 |
+| **Reasoning** | **活动组内** reasoning item + 组头摘要；正文后 shimmer | **独立 "Think"** 在正文上方 | **模型不同**；对齐需把 reasoning 迁入活动组或改 UX  spec |
+| Markdown | 自研 GFM+math+directive，流式块淡入 | react-markdown GFM，`.chat-markdown` 已对齐格局 | 缺 math/directive；块淡入已有部分 |
+| 代码块 | 复制/语言/换行/粘性头/hljs 45 语言/预览运行 | 复制/语言/换行/hljs 120ms 防抖 | 基本对齐；缺粘性头与预览运行 |
+| 命令输出 | xterm tab + 内联 20k 尾截断 + 显式标记 | `TerminalBlock` + 适配器 2k 静默截断 | 补 `[output truncated]` + 尾保留策略 |
+| Diff | turn-diff + unified/split + merge 冲突 | `DiffCard` unified 子集 | 缺 split/turn 级汇总/merge |
+| 审批 | 流内 form，Allow once/Always/Conversation | 流内卡，三级 scope + 内联拒绝 | 基本对齐；缺权限维度行文案 |
+| 流式 | token 淡入 + 二段式高亮 + shimmer 占位 | caret + 块 fade-in + Think sweep + typing | 可补正文后 shimmer 占位语义 |
+| 计划 | 正文**后** `proposed-plan` + todo-list | `PlanCard` 随时间线；无 proposed-plan 反馈 | 位置与反馈 UI 未对齐 |
+| Token 用量 | composer tooltip | composer 右下 `{used}k/{window}k` | **已具备**（缺 tooltip 交互） |
+| 错误/重连 | stream-error 重连进度 modal | MetaLine + 停止/超时 | 缺重连进度文案 |
 
 ---
 
-## 4. 可借鉴清单（按价值排序）
+## 4. 可借鉴清单（按价值排序，2026-08-24 修订）
 
-1. **工具调用卡片化 + 可折叠活动组**（对齐 Q4）：把 `tool.*` 居中细行改为行卡片：图标（按工具类别）+ 动宾摘要（进行时→完成时文案切换）+ 状态色 + 耗时；同回合工具收进一个可折叠组，组头显示总耗时。数据侧只需 `started_at`/duration（事件时间线已有 `occurred_at` 可差值）。
-2. **代码块增强**（对齐 Q2）：复制按钮 + 语言标签 + highlight.js（按需异步、120ms 防抖、未知语言降级纯文本）。react-markdown 下用 `pre` 自定义组件包一层即可，零后端改动。
-3. **Unified diff 卡**（对齐 Q6）：对 `apply_patch`/edit 类工具输出解析 unified diff，渲染文件名头 + `+N/−M` 徽章 + 行背景色（对接现有 `--color-status-*` 令牌）；>25 文件或 >2000 行默认折叠。
-4. **输出截断策略显式化**（对齐 Q5）：截断保留尾部并前置 `[output truncated]` 标记（现在是适配器 2000 字符静默截断，前端无感知）；顺带过滤 ANSI/控制字符。
-5. **审批卡入流 + 粒度**（对齐 Q7）：审批卡移进消息流对应位置；按钮扩为「本次允许 / 本会话总是允许」，拒绝理由改内联输入而非 `prompt()`；批准后卡片转为完成态而非消失。
-6. **Token 用量 tooltip**（对齐 Q9）：composer 角落常驻 `{used}k / {contextWindow}k`，数据可由后端 run 维度 usage 投影（协议已按 run 幂等累计 usage）。
-7. **重连进度文案**（对齐 Q9）：`reconnecting` 状态时显示 `Reconnecting {n}/{max}`，替代静默。
-8. **流式块级淡入**（对齐 Q8）：对流式 markdown 新增块加 `@keyframes fade-in`（我们已有 caret，补块淡入成本低，注意 `prefers-reduced-motion`，Codex 同样处理了）。
-9. **线程内容最大宽度**（对齐 Q1）：`--thread-content-max-width` 居中限宽，宽屏下长行可读性。
-10. **todo/plan 卡**（对齐 Q10）：若后端后续发 `plan_update` 类事件，可复用审批卡的卡片骨架做复选清单。
+**已完成（本文 §2 快照）**：工具卡片化 + 活动组、代码块增强、Diff 卡 unified 子集、审批入流 + 三级 scope、Token 用量、停止/超时、Plan 复选清单、Markdown 格局对齐。
 
-> 注：Codex 的 xterm 终端 tab、Python 沙箱运行、Edit with AI、mermaid/vega 预览依赖桌面端能力（node-pty、codex 引擎、iframe 沙箱 CSP），Web 短期不必对齐，列为长期可选。
+**仍值得做**
+
+1. **Turn 级展示重排**（对齐 §0.3）：在 `buildMessages` 之上增加 per-run 槽位编排——活动组置顶、正文居中、计划置后；或文档化「时间线顺序」为 intentional 差异。
+2. **Reasoning 模型决策**（对齐 Q3）：二选一——(A) 把 `reasoning-delta` 迁入 `ActivityGroup` 组头动宾摘要；(B) 保留 "Think" 块但在 spec 中标注与 Codex 差异。当前实现是 B。
+3. **线程列宽 40rem 居中**（对齐 Q1）：引入 `--thread-content-max-width: 40rem` + `mx-auto`，用户气泡/助手/活动同列。
+4. **输出截断显式化**（对齐 Q5）：尾保留 + `[output truncated]` 前缀；与 Codex 20k 上限对齐协商。
+5. **工具行动宾三态文案**（对齐 Q4）：`Running…` → `Ran…` / 失败否定式，替换静态 `Bash`/`Read` 族标题。
+6. **Turn-diff 汇总行**（对齐 Q6）：run 完成时聚合 patch 为单条 diff 卡（现仅 per-tool `DiffCard`）。
+7. **Thinking shimmer 占位**（对齐 Q3/Q8）：正文/计划之后、turn 未完成时的 shimmer 行（区别于 Think 折叠全文）。
+8. **重连进度文案**（对齐 Q9）：`reconnecting` → `Reconnecting {n}/{max}`。
+9. **Proposed-plan 反馈**（对齐 Q10）：计划卡 👍/👎（依赖后端事件）。
+10. **代码块粘性头 / math / directive**（对齐 Q2）：中长期。
+
+> Codex 的 xterm 终端 tab、Python 沙箱、Edit with AI、mermaid/vega 预览依赖桌面能力，Web 短期不对齐。
 
 ---
 
@@ -209,7 +279,9 @@
 
 | 结论 | 证据文件（asar 内路径） |
 | --- | --- |
-| 用户气泡 / 线程限宽 | `webview/assets/local-conversation-turn-Bhd6WQLo.js`（`rounded-3xl`、`--thread-content-max-width`） |
+| **turn 槽位顺序** | `webview/assets/local-conversation-turn-Bhd6WQLo.js`（`X(\`agent-activity-collapsible\`)` → `assistant-item` → `post-assistant-items` → `proposed-plan` → `thinking-placeholder` → `turn-diff`） |
+| 用户气泡 / 线程限宽 | 同上（`rounded-3xl`）；`app-initial-CaQrAMKA.css`（`--thread-content-max-width: 40rem`） |
+| reasoning 在活动组 | `local-conversation-turn-*.js`（`type===\`reasoning\`` + `reasoning-item-heading-*.js`） |
 | 回合条目编排 | `webview/assets/local-conversation-thread-turn-entries-Bq-nBZ66.js` |
 | 活动行/三态文案 | `webview/assets/agent-activity-item-DtLa1Ph4.js`、`reasoning-item-heading-BfIxDFSo.js` |
 | 代码块功能 | `webview/assets/chatgpt-code-block-CfL_-YzH.js`、`highlight-code-bx-gqOKs.js` |
