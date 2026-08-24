@@ -3,10 +3,12 @@ import {
   DIFF_COLLAPSE_FILES,
   DIFF_COLLAPSE_LINES,
   diffTotalChanges,
+  effectiveView,
   looksLikeUnifiedDiff,
   parseUnifiedDiff,
   shouldCollapseBySize,
   stripControlChars,
+  toSplitHunks,
 } from './diff-card';
 
 const sample = [
@@ -101,5 +103,65 @@ describe('shouldCollapseBySize', () => {
 
   it('diffTotalChanges 跨文件累计', () => {
     expect(diffTotalChanges([file('a', 3, 1), file('b', 2, 4)])).toEqual({ additions: 5, deletions: 5 });
+  });
+});
+
+describe('toSplitHunks', () => {
+  it('上下文行双侧同文；hunk 内 -/+ 依序配对，多出侧单列', () => {
+    const [a] = parseUnifiedDiff(sample);
+    expect(toSplitHunks(a)).toEqual([
+      { kind: 'meta', text: '@@ -1,3 +1,4 @@' },
+      { kind: 'pair', left: { kind: 'context', text: 'context' }, right: { kind: 'context', text: 'context' } },
+      { kind: 'pair', left: { kind: 'del', text: 'old line' }, right: { kind: 'add', text: 'new line' } },
+      { kind: 'pair', left: null, right: { kind: 'add', text: 'added line' } },
+      { kind: 'meta', text: '\\ No newline at end of file' },
+    ]);
+  });
+
+  it('纯新增文件右列单显、纯删除文件左列单显', () => {
+    const [, newFile, gone] = parseUnifiedDiff(sample);
+    expect(toSplitHunks(newFile)).toEqual([
+      { kind: 'meta', text: '@@ -0,0 +1,1 @@' },
+      { kind: 'pair', left: null, right: { kind: 'add', text: 'created' } },
+    ]);
+    expect(toSplitHunks(gone)).toEqual([
+      { kind: 'meta', text: '@@ -1,1 +0,0 @@' },
+      { kind: 'pair', left: { kind: 'del', text: 'removed' }, right: null },
+    ]);
+  });
+
+  it('配对不跨 meta 边界：上一 hunk 尾部 - 不与下一 hunk 头部 + 配对', () => {
+    const text = [
+      '--- a/x.ts',
+      '+++ b/x.ts',
+      '@@ -1,2 +1,2 @@',
+      '-tail del',
+      ' shared',
+      '@@ -8 +8 @@',
+      '+head add',
+    ].join('\n');
+    expect(toSplitHunks(parseUnifiedDiff(text)[0])).toEqual([
+      { kind: 'meta', text: '@@ -1,2 +1,2 @@' },
+      { kind: 'pair', left: { kind: 'del', text: 'tail del' }, right: null },
+      { kind: 'pair', left: { kind: 'context', text: 'shared' }, right: { kind: 'context', text: 'shared' } },
+      { kind: 'meta', text: '@@ -8 +8 @@' },
+      { kind: 'pair', left: null, right: { kind: 'add', text: 'head add' } },
+    ]);
+  });
+
+  it('行数守恒：左列 del 数 = deletions、右列 add 数 = additions', () => {
+    for (const f of parseUnifiedDiff(sample)) {
+      const pairs = toSplitHunks(f).filter((r): r is Extract<typeof r, { kind: 'pair' }> => r.kind === 'pair');
+      expect(pairs.filter((r) => r.left?.kind === 'del')).toHaveLength(f.deletions);
+      expect(pairs.filter((r) => r.right?.kind === 'add')).toHaveLength(f.additions);
+    }
+  });
+});
+
+describe('effectiveView', () => {
+  it('窄视口强制 unified；宽视口尊重用户选择', () => {
+    expect(effectiveView('split', true)).toBe('unified');
+    expect(effectiveView('split', false)).toBe('split');
+    expect(effectiveView('unified', false)).toBe('unified');
   });
 });
