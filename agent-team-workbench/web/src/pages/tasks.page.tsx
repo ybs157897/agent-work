@@ -1,4 +1,4 @@
-import { ChevronDown, GitBranch, KanbanSquare, List, Plus } from 'lucide-react';
+import { ChevronDown, GitBranch, KanbanSquare, List, Lock, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
@@ -412,6 +412,14 @@ function TaskCard({
       <div className="flex items-center justify-between mt-auto">
         <div className="flex items-center gap-1.5">
           <PriorityBadge priority={task.priority} />
+          {task.locked_by_run_id && (
+            <span
+              title={`执行锁：run ${task.locked_by_run_id}（防止同任务双跑）`}
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-surface-base text-text-secondary border border-border-subtle"
+            >
+              <Lock className="w-3 h-3" />
+            </span>
+          )}
           {task.parent_id && (
             <span
               title="编排派生的子任务"

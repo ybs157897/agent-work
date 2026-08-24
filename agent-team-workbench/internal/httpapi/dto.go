@@ -54,22 +54,25 @@ type blockerDTO struct {
 }
 
 type workItemDTO struct {
-	ID             string      `json:"id"`
-	WorkspaceID    string      `json:"workspace_id"`
-	ParentID       string      `json:"parent_id,omitempty"`
-	Title          string      `json:"title"`
-	Description    string      `json:"description"`
-	Status         string      `json:"status"`
-	Phase          string      `json:"phase,omitempty"`
-	Priority       string      `json:"priority"`
-	DueDate        *string     `json:"due_date"`
-	AgentProfileID string      `json:"agent_profile_id,omitempty"`
-	Blocker        *blockerDTO `json:"blocker,omitempty"`
-	RunsCount      int         `json:"runs_count"`
-	LatestRunID    string      `json:"latest_run_id,omitempty"`
-	Version        int         `json:"version"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	ID             string  `json:"id"`
+	WorkspaceID    string  `json:"workspace_id"`
+	ParentID       string  `json:"parent_id,omitempty"`
+	Title          string  `json:"title"`
+	Description    string  `json:"description"`
+	Status         string  `json:"status"`
+	Phase          string  `json:"phase,omitempty"`
+	Priority       string  `json:"priority"`
+	DueDate        *string `json:"due_date"`
+	AgentProfileID string  `json:"agent_profile_id,omitempty"`
+	// 执行锁（F1）：locked_by_run_id 非空=任务正被该 run 执行（防双跑）。
+	LockedByRunID string      `json:"locked_by_run_id,omitempty"`
+	LockedAt      *time.Time  `json:"locked_at,omitempty"`
+	Blocker       *blockerDTO `json:"blocker,omitempty"`
+	RunsCount     int         `json:"runs_count"`
+	LatestRunID   string      `json:"latest_run_id,omitempty"`
+	Version       int         `json:"version"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
@@ -77,7 +80,9 @@ func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
 		ID: w.ID, WorkspaceID: w.WorkspaceID, ParentID: w.ParentID,
 		Title: w.Title, Description: w.Description,
 		Status: string(w.Status), Phase: string(w.Phase), Priority: string(w.Priority),
-		AgentProfileID: w.AgentProfileID, Version: w.Version,
+		AgentProfileID: w.AgentProfileID,
+		LockedByRunID:  w.LockedByRunID, LockedAt: w.LockedAt,
+		Version:   w.Version,
 		CreatedAt: w.CreatedAt, UpdatedAt: w.UpdatedAt,
 	}
 	if w.DueDate != nil {

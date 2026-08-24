@@ -81,6 +81,13 @@ describe('runs.store applyEvent', () => {
     expect(run.usage_basis).toBe('per_run');
   });
 
+  it('SSE 重放同 run_seq 事件时按 run_seq 去重，不重复追加', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
+    applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
+    expect(useRunsStore.getState().timelines.run_1).toHaveLength(1);
+  });
+
   it('未知聚合类型不消费', () => {
     const ev: CanonicalEvent = {
       ...runEvent(1, 'workspace.updated'),

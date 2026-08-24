@@ -130,9 +130,14 @@ CREATE TABLE agent_health (
 
 ---
 
-## F4. Adapter 方言表（代码组织项）
+## F4. Adapter 方言表（代码组织项）—— 已降级，不实施
 
-### 现状与差距
+> **2026-08-24 校准**：评审时高估。ClawTeam 的方言表管的是 CLI flag 方言
+> （它 spawn 子进程拉 CLI）；我们的 adapter 走 app-server 协议（codexapp/kimiapp
+> JSON-RPC），差异在协议状态机而非命令行 flag——一张表装不下协议差异，装了也
+> 不省事。降级为一页附录式对照（各家 resume/session 参数差异），不做 Dialect 类型。
+
+### 现状与差距（原始记录）
 
 - 各 adapter（codexapp/kimiapp/dsh/claudecode/zcode）把「CLI 权限 flag、prompt 传递方式、session 捕获/隔离、resume 参数」散落在各自 Go 代码里；新增 runtime 要通读既有 adapter 才能抄全。
 - ClawTeam 每家 CLI 一张方言卡（permission flag / prompt mode / session flag / resume command），集中可查。
@@ -194,17 +199,21 @@ type Dialect struct {
 
 ---
 
-## 里程碑建议
+## 里程碑与实施状态
 
-| 里程碑 | 内容 | 理由 |
+> 2026-08-24 校准（按真实项目阶段重排，替代最初的 M1–M5 顺序）：
+> F3/F5/F1 已实施合入 main；F2 挂起（等自动调度密度上来再做——熔断防的是
+> 自动重试风暴，当前 agent 由人/lead 指派，没人消费）；F4 砍掉（见 F4 节校准注记）。
+
+| 功能 | 状态 | 落点 |
 |---|---|---|
-| M1 | F1 任务锁 | 数据面增量、价值最直接（死任务回收是真实痛点） |
-| M2 | F3 实体幂等 | 小改动，立刻硬化刚上线的队列/fork |
-| M3 | F2 健康分熔断 | 依赖 F1 的终态事务钩子，顺势挂记分 |
-| M4 | F4 方言表 | 纯重构，任何时候插进来都行，建议在大功能间隙做 |
-| M5 | F5 MCP | 新组件、依赖评估与权限设计最重，压轴 |
+| F3 实体级幂等键 | ✅ 已实施（main `635c310`） | 迁移 0013；CreateWorkItemIdempotent/CreateRunIdempotent；队列/fork 已携带 client_key；顺带修复 parent_id 透传丢失（fork 链路真实 bug） |
+| F5 控制面 MCP 工具化 | ✅ 已实施（main `368a692`） | `cmd/atw-mcp` + `internal/mcpserver`；只读 7 工具 + 写面 task_claim/task_return；审批 resolve 等红线不暴露 |
+| F1 任务级执行锁 | 🚧 实施中 | 迁移 0014；transitionRunLocked 事务内取放锁；死锁抢占与周期回收 |
+| F2 健康分熔断 | ⏸ 挂起 | 触发条件：编排层自动派发密度上来（claim 高频无人值守）时重启 |
+| F4 方言表 | ❌ 不实施 | 协议差异不在 CLI flag 层（见 F4 节） |
 
-依赖关系：M3 依赖 M1（终态事务钩子位置）；其余相互独立。
+依赖关系：F1 依赖 F3 的迁移位（0013→0014 顺延）；其余相互独立。
 
 ## 不借清单（防回潮）
 

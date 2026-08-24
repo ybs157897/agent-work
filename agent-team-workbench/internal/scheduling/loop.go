@@ -80,7 +80,18 @@ const (
 	dueTimersLimit = 50
 	// maxWakeupAge 重试兜底：wake_at 早于 now-1h 的失败请求直接标记 coalesced，防堆积。
 	maxWakeupAge = time.Hour
+	// staleLockAge 执行锁回收阈值：locked_at 超过该时长且属主 run 已终态的锁由
+	// 兜底扫描清空（正常路径属主终态事务内已释放，这里只兜异常残留）。
+	staleLockAge = 30 * time.Minute
+	// staleLockSweepInterval 执行锁兜底扫描周期（独立于 tick 周期）。
+	staleLockSweepInterval = 5 * time.Minute
 )
+
+// StaleLockReleaser 任务执行锁回收端口（*sqlstore.WorkItemRepo 满足）。
+// 独立于 wakeup Store：锁回收是 work item 面能力，不并入唤醒仓储接口。
+type StaleLockReleaser interface {
+	ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error)
+}
 
 // Scheduler 周期生产并消费到期唤醒。
 type Scheduler struct {
@@ -90,7 +101,11 @@ type Scheduler struct {
 	HeartbeatDefault int           // 秒；缺省 domain.DefaultHeartbeatIntervalSec
 	// ForwardInput 活跃 run 合并时的 steering 转发器（可选；nil 时降级落审计）。
 	ForwardInput InputForwarder
-	Logger       Logger // 可为 nil
+	// StaleLocks 任务执行锁回收端口（可选；nil 时跳过兜底扫描）。
+	StaleLocks StaleLockReleaser
+	Logger     Logger // 可为 nil
+	// lastLockSweep 上次锁回收扫描时刻；仅调度循环单 goroutine 内访问。
+	lastLockSweep time.Time
 }
 
 func (s *Scheduler) tickInterval() time.Duration {
@@ -132,8 +147,10 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}
 }
 
-// Tick 先生产本轮到期的 timer 唤醒，再消费全部到期唤醒（单条失败不影响后续）。
+// Tick 先扫执行锁兜底回收，再生产本轮到期的 timer 唤醒，最后消费全部到期唤醒
+// （单条失败不影响后续）。
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
+	s.sweepStaleLocks(ctx, now)
 	s.ProduceTimers(ctx, now)
 	wakeups, err := s.Store.DueTimers(ctx, now, dueTimersLimit)
 	if err != nil {
@@ -144,6 +161,27 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) {
 		if _, err := s.ConsumeOne(ctx, w, now); err != nil {
 			s.logf("ConsumeOne %s 失败: %v", w.ID, err)
 		}
+	}
+}
+
+// sweepStaleLocks 执行锁兜底回收（低频，对齐 ClawTeam release_stale_locks）：
+// 每 staleLockSweepInterval 一次，释放超 staleLockAge 且属主 run 已终态的锁。
+// 属主活性由 SQL 面的 run 终态判定负责；失败只记日志不阻塞调度。
+func (s *Scheduler) sweepStaleLocks(ctx context.Context, now time.Time) {
+	if s.StaleLocks == nil {
+		return
+	}
+	if !s.lastLockSweep.IsZero() && now.Sub(s.lastLockSweep) < staleLockSweepInterval {
+		return
+	}
+	s.lastLockSweep = now
+	released, err := s.StaleLocks.ReleaseStaleLocks(ctx, now.Add(-staleLockAge))
+	if err != nil {
+		s.logf("执行锁回收扫描失败: %v", err)
+		return
+	}
+	if released > 0 {
+		s.logf("执行锁回收：%d 个死属主锁已释放", released)
 	}
 }
 

@@ -73,6 +73,9 @@ type WorkItemRepo interface {
 	CreateBlocker(ctx context.Context, b *domain.Blocker) error
 	ResolveBlockers(ctx context.Context, workItemID string, at time.Time) error
 	LatestRunID(ctx context.Context, workItemID string) (string, int, error)
+	// ReleaseStaleLocks 回收兜底：清空 locked_at 早于 olderThan 且属主 run 已终态的
+	// 执行锁，返回释放行数（调度循环低频扫描用）。
+	ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error)
 	// BoardCounts / CompletedToday 供 Dashboard Read Model 服务端聚合。
 	BoardCounts(ctx context.Context, workspaceID string) (map[domain.WorkItemStatus]int, error)
 	CompletedToday(ctx context.Context, workspaceID string, day time.Time) (int, error)

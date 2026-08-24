@@ -1,4 +1,4 @@
-import { MessageSquare, Pencil } from 'lucide-react';
+import { Lock, MessageSquare, Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
@@ -185,6 +185,14 @@ export function TaskDetail({
                   </span>
                 )}
                 <PriorityBadge priority={task.priority} />
+                {task.locked_by_run_id && (
+                  <span
+                    title={`执行锁：run ${task.locked_by_run_id}（防止同任务双跑）`}
+                    className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-caption font-medium bg-surface-base text-text-secondary border border-border-subtle"
+                  >
+                    <Lock className="w-3 h-3" />
+                  </span>
+                )}
                 {task.status !== 'completed' && task.status !== 'cancelled' && (
                   <button
                     onClick={() => setEditOpen(true)}

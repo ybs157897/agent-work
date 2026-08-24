@@ -21,6 +21,11 @@ const (
 	EventWorkItemUnblocked = "work_item.unblocked"
 	EventWorkItemCompleted = "work_item.completed"
 
+	// EventWorkItemLocked / EventWorkItemLockPreempted 任务执行锁（F1）：
+	// run 进 running 获取锁 / 死属主（终态 run）锁被抢占；载荷带 run_id。
+	EventWorkItemLocked        = "work_item.locked"
+	EventWorkItemLockPreempted = "work_item.lock_preempted"
+
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
@@ -76,8 +81,8 @@ var eventNameWhitelist = map[string]struct{}{
 	EventAgentAvailabilityChanged: {}, EventAgentPresenceUpdated: {},
 	EventWorkItemCreated: {}, EventWorkItemUpdated: {}, EventWorkItemMoved: {},
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
-	EventWorkItemCompleted: {},
-	EventRunCreated:        {}, EventRunStarted: {}, EventRunStatusChanged: {},
+	EventWorkItemCompleted: {}, EventWorkItemLocked: {}, EventWorkItemLockPreempted: {},
+	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventSessionCompacted: {},
