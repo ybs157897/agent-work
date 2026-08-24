@@ -13,13 +13,13 @@ import (
 type WorkItemRepo struct{ store *Store }
 
 const workItemCols = `id, workspace_id, parent_id, title, description, status, phase, priority,
-	due_date, agent_profile_id, version, created_at, updated_at`
+	due_date, agent_profile_id, client_key, version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
-	var parent, phase, dueDate, assignee *string
+	var parent, phase, dueDate, assignee, clientKey *string
 	var created, updated scanTime
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &parent, &w.Title, &w.Description, &w.Status, &phase,
-		&w.Priority, &dueDate, &assignee, &w.Version, &created, &updated); err != nil {
+		&w.Priority, &dueDate, &assignee, &clientKey, &w.Version, &created, &updated); err != nil {
 		return err
 	}
 	if parent != nil {
@@ -36,6 +36,9 @@ func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkI
 	if assignee != nil {
 		w.AgentProfileID = *assignee
 	}
+	if clientKey != nil {
+		w.ClientKey = *clientKey
+	}
 	w.CreatedAt, w.UpdatedAt = mustTime(created), mustTime(updated)
 	return nil
 }
@@ -47,11 +50,22 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 		due = wi.DueDate.Format("2006-01-02")
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		wi.ID, wi.WorkspaceID, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
-		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), wi.Version,
+		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey), wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
+}
+
+// GetByClientKey 按 (workspace, client_key) 定位既有实体（幂等重放的查回路径）。
+func (r *WorkItemRepo) GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.WorkItem, error) {
+	w := &domain.WorkItem{}
+	row := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT `+workItemCols+` FROM work_items WHERE workspace_id=? AND client_key=?`, workspaceID, clientKey)
+	if err := r.scan(row, w); err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	return w, nil
 }
 
 func (r *WorkItemRepo) Get(ctx context.Context, id string) (*domain.WorkItem, error) {

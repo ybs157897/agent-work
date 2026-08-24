@@ -49,6 +49,8 @@ type RunFailure struct {
 }
 
 // ExecutionRun 是一次不可覆盖的执行尝试。
+// ClientKey 非空时是客户端业务意图去重键（workspace 内唯一）：重试安全的
+// 创建语义（同 key 重复创建返回既有 run），与命令级 Idempotency-Key 互补。
 type ExecutionRun struct {
 	ID                   string
 	WorkspaceID          string
@@ -70,6 +72,7 @@ type ExecutionRun struct {
 	UsageBasis  string
 	// ErrorFamily 跨 adapter 统一错误族，驱动重试与自愈策略。
 	ErrorFamily string
+	ClientKey   string
 	Progress    *float64
 	RetryOf     string
 	Failure     *RunFailure

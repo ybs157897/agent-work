@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -32,6 +33,9 @@ type CreateRunParams struct {
 	// Evaluation 表示本 run 是 plan finish{evaluation:true} 触发的评估 run；
 	// 固化进 input.evaluation（verdict 提取以此门控），对齐 wakeup/auto_heal_of 惯例。
 	Evaluation bool
+	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有 run
+	// （队列 drain 重试等场景；撞键时事务整体回滚，不产生重复事件与重复分派）。
+	ClientKey string
 }
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
@@ -61,6 +65,29 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 		}
 	}
 	return run, nil
+}
+
+// CreateRunIdempotent 实体级幂等创建：client_key 撞唯一索引时查回既有 run，
+// replayed=true 返回。撞键发生在事务内的 insert 点，事务整体回滚——不重复
+// 发事件，也绝不会走到 Dispatch（dispatch 只在事务成功提交后执行）。
+func (s *Service) CreateRunIdempotent(ctx context.Context, workItemID string, p CreateRunParams) (run *domain.ExecutionRun, replayed bool, err error) {
+	run, err = s.CreateRun(ctx, workItemID, p)
+	if err == nil {
+		return run, false, nil
+	}
+	if p.ClientKey == "" || !errors.Is(err, domain.ErrIdempotencyConflict) {
+		return nil, false, err
+	}
+	// 查回需要 workspaceID（唯一键维度之一），从 work item 取。
+	wi, gerr := s.store.WorkItems().Get(ctx, workItemID)
+	if gerr != nil {
+		return nil, false, err
+	}
+	existing, gerr := s.store.Runs().GetByClientKey(ctx, wi.WorkspaceID, p.ClientKey)
+	if gerr != nil {
+		return nil, false, err // 查回失败时报告原始冲突错误
+	}
+	return existing, true, nil
 }
 
 // emitSessionDecision 发布 CreateRun 会话决议事件（session.decision，
@@ -168,7 +195,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	r := &domain.ExecutionRun{
 		ID: runID, WorkspaceID: wi.WorkspaceID,
 		WorkItemID: wi.ID, AgentProfileID: p.AgentProfileID, Status: domain.RunQueued,
-		RuntimeLabel: label, CapabilitySnapshotID: capsID,
+		RuntimeLabel: label, CapabilitySnapshotID: capsID, ClientKey: p.ClientKey,
 		Input: orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
 			p.RuntimePreference, agent, label, reason),
 		Version: 1, CreatedAt: now, UpdatedAt: now,

@@ -53,6 +53,12 @@ export interface RunStreamParts {
   answerDraft: string;
 }
 
+/** 队列消息：text + 入队时生成的实体级幂等键（drain 重试安全）。 */
+export interface QueuedMessage {
+  text: string;
+  clientKey: string;
+}
+
 /** 从 DSH message.delta 的 raw.chunk 提取流式块（reasoning-delta / text-delta）。 */
 export function extractDeltaChunk(data?: Record<string, unknown>): { type?: string; text?: string } | null {
   const raw = data?.raw;
@@ -427,6 +433,11 @@ export function conversationLabel(
 
 export { ACTIVE, TERMINAL };
 
+/** 队列消息的幂等键：入队时刻唯一（时间戳+随机），drain 重试沿用同一键。 */
+function newQueueKey(): string {
+  return `q:${Date.now().toString(36)}:${crypto.randomUUID()}`;
+}
+
 // 请求序号守卫：会话列表与 run 列表各自独立计数（互不干扰），只丢弃各自域的过期响应。
 const conversationsGuard = createRequestGuard();
 const runsGuard = createRequestGuard();
@@ -450,8 +461,9 @@ interface ChatStore {
   /**
    * 当前会话的待发送队列（Codex 式：运行中入队，本轮成功后自动续发）。
    * 内存级不落盘：刷新即弃、切换会话即清——持久化需要后端队列契约，暂以简单优先。
+   * 每条携 clientKey（入队时生成）：drain 重试时作 run 的实体级幂等键，防重复建轮。
    */
-  queue: string[];
+  queue: QueuedMessage[];
 
   selectAgent: (id: string | null) => void;
   openConversation: (workItemId: string | null) => void;
@@ -470,7 +482,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
   // 出队首发公共路径（send 的终态分支与 drainQueue 共用）：createRun + 订阅 + 各列表刷新。
   // 分叉会话首发：尚无 run 且 description 以分叉标记开头时，把上下文包拼进首条
   // instruction（description 原样保留在 work item 上不消费，仅本轮注入一次）。
-  const startRun = async (conversationId: string, agentId: string, text: string): Promise<void> => {
+  // clientKey 透传为 run 的实体级幂等键：同键重试由服务端查回既有 run（200 重放）。
+  const startRun = async (conversationId: string, agentId: string, text: string, clientKey?: string): Promise<void> => {
     let instruction = text;
     if (get().runs.length === 0) {
       const conversation = get().conversations.find((c) => c.id === conversationId);
@@ -481,6 +494,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     const resp = await createRun(conversationId, {
       agent_profile_id: agentId,
       input: { instruction },
+      ...(clientKey ? { client_key: clientKey } : {}),
     });
     // 先刷新 run 列表再订阅，避免时间线已加载但 runIds 仍为空导致消息不渲染。
     await get().refreshRuns();
@@ -572,11 +586,11 @@ export const useChatStore = create<ChatStore>()((set, get) => {
           await get().refreshConversations();
         }
         // 队列非空：先把本条入队再出队首条 createRun（FIFO——队头先发，本条排队尾）。
-        const pending = [...get().queue, trimmed];
+        const pending = [...get().queue, { text: trimmed, clientKey: newQueueKey() }];
         const first = pending.shift();
         if (!first) return; // 不可达（trimmed 非空）：类型收窄
         set({ queue: pending });
-        await startRun(conversationId, agentId, first);
+        await startRun(conversationId, agentId, first.text, first.clientKey);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '发送失败');
       } finally {
@@ -584,7 +598,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       }
     },
 
-    enqueue: (text) => set((s) => ({ queue: [...s.queue, text] })),
+    enqueue: (text) => set((s) => ({ queue: [...s.queue, { text, clientKey: newQueueKey() }] })),
 
     removeQueued: (index) => set((s) => ({ queue: s.queue.filter((_, i) => i !== index) })),
 
@@ -596,7 +610,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       if (!wsId || !agentId || !conversationId || !first || get().sending) return;
       set({ sending: true, queue: get().queue.slice(1) });
       try {
-        await startRun(conversationId, agentId, first);
+        await startRun(conversationId, agentId, first.text, first.clientKey);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : '发送失败');
       } finally {
@@ -620,6 +634,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
           parent_id: source.id,
           agent_profile_id: agentId,
           description: context,
+          // 同一锚点重复分叉（双击/重试）查回既有分叉会话而非重复建卡。
+          client_key: `fork:${source.id}:${atMessageKey}`,
         });
         get().openConversation(wi.id);
         await get().refreshConversations();

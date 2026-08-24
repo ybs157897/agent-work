@@ -42,6 +42,8 @@ var workItemTransitions = map[WorkItemStatus][]WorkItemStatus{
 
 // WorkItem 看板任务。version 为乐观锁，命令需带 expected_version。
 // ParentID 非空表示本任务是 plan dispatch 派生的子任务（树以主任务为根）。
+// ClientKey 非空时是客户端业务意图去重键（workspace 内唯一）：同一意图
+// （如队列 drain 重试、分叉双击）重复创建返回既有实体而非重复建行。
 type WorkItem struct {
 	ID             string
 	WorkspaceID    string
@@ -53,6 +55,7 @@ type WorkItem struct {
 	Priority       Priority
 	DueDate        *time.Time
 	AgentProfileID string
+	ClientKey      string
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

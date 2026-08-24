@@ -296,10 +296,10 @@ function ConversationPane() {
                 </button>
               )}
             </div>
-            {queue.map((text, i) => (
-              <div key={`${i}:${text}`} className="flex items-center gap-2">
+            {queue.map((q, i) => (
+              <div key={q.clientKey} className="flex items-center gap-2">
                 <span className="text-caption tabular-nums text-text-tertiary">{i + 1}</span>
-                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{text}</span>
+                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{q.text}</span>
                 <button
                   type="button"
                   aria-label="移除待发送消息"

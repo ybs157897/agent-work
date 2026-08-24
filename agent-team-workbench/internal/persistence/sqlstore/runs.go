@@ -11,12 +11,12 @@ type RunRepo struct{ store *Store }
 
 const runCols = `id, workspace_id, work_item_id, agent_profile_id, status, runtime_label,
 	adapter_id, provider, capability_snapshot_id, session_ref, session_before, session_after,
-	usage_in, usage_out, usage_cached, usage_basis, error_family, progress, retry_of,
+	usage_in, usage_out, usage_cached, usage_basis, error_family, client_key, progress, retry_of,
 	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at`
 
 func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.ExecutionRun) error {
 	var agentID, runtimeLabel, adapterID, provider, capsID, sessionRef, retryOf, fCode, fMsg *string
-	var sessionBefore, sessionAfter, usageBasis, errorFamily *string
+	var sessionBefore, sessionAfter, usageBasis, errorFamily, clientKey *string
 	var usageIn, usageOut, usageCached sql.NullInt64
 	var fRetry *bool
 	var input string
@@ -24,7 +24,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	if err := row.Scan(&run.ID, &run.WorkspaceID, &run.WorkItemID, &agentID, &run.Status,
 		&runtimeLabel, &adapterID, &provider, &capsID, &sessionRef,
 		&sessionBefore, &sessionAfter,
-		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily,
+		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily, &clientKey,
 		&run.Progress, &retryOf, &fCode, &fMsg, &fRetry, &input,
 		&run.Version, &created, &updated, &finished); err != nil {
 		return err
@@ -44,6 +44,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	setStr(&run.SessionAfter, sessionAfter)
 	setStr(&run.UsageBasis, usageBasis)
 	setStr(&run.ErrorFamily, errorFamily)
+	setStr(&run.ClientKey, clientKey)
 	run.UsageIn, run.UsageOut, run.UsageCached = usageIn.Int64, usageOut.Int64, usageCached.Int64
 	if retryOf != nil {
 		run.RetryOf = *retryOf
@@ -74,16 +75,27 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		failureRetry = &run.Failure.Retryable
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkspaceID, run.WorkItemID, nullString(run.AgentProfileID), run.Status,
 		nullString(run.RuntimeLabel), nullString(run.AdapterID), nullString(run.Provider),
 		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef),
 		nullString(run.SessionBefore), nullString(run.SessionAfter),
 		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
-		run.Progress, nullString(run.RetryOf),
+		nullString(run.ClientKey), run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
 		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt))
 	return r.store.mapErr(err)
+}
+
+// GetByClientKey 按 (workspace, client_key) 定位既有 run（幂等重放的查回路径）。
+func (r *RunRepo) GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.ExecutionRun, error) {
+	run := &domain.ExecutionRun{}
+	row := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT `+runCols+` FROM execution_runs WHERE workspace_id=? AND client_key=?`, workspaceID, clientKey)
+	if err := r.scan(row, run); err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	return run, nil
 }
 
 func (r *RunRepo) Get(ctx context.Context, id string) (*domain.ExecutionRun, error) {

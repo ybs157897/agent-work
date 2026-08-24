@@ -109,6 +109,8 @@ export interface CreateWorkItemInput {
   agent_profile_id?: string;
   /** 作为子任务创建时指定；缺省为根任务。 */
   parent_id?: string;
+  /** 实体级幂等键：同 workspace 下同 key 重复创建返回既有实体（200 + Idempotent-Replayed）。 */
+  client_key?: string;
 }
 
 export const createWorkItem = (workspaceId: string, input: CreateWorkItemInput) =>
@@ -206,6 +208,8 @@ export interface CreateRunInput {
   agent_profile_id?: string;
   runtime_preference?: { preferred: string; fallbacks?: string[] };
   requirements?: Record<string, string>;
+  /** 实体级幂等键：同 key 重复创建返回既有 run（防队列 drain 重试重复建轮）。 */
+  client_key?: string;
   input: { instruction: string; acceptance_criteria?: string[] };
 }
 

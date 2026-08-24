@@ -170,7 +170,7 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		p := application.CreateWorkItemParams{
 			Title: req.Title, Description: req.Description,
 			Status: domain.WorkItemStatus(req.Status), Priority: domain.Priority(req.Priority),
-			AgentProfileID: req.AgentProfileID,
+			AgentProfileID: req.AgentProfileID, ParentID: req.ParentID, ClientKey: req.ClientKey,
 		}
 		if req.DueDate != nil {
 			if d, err := time.Parse("2006-01-02", *req.DueDate); err == nil {
@@ -179,9 +179,14 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 				return renderProblem(http.StatusBadRequest, "bad_request", "Invalid due_date", "due_date 必须为 YYYY-MM-DD")
 			}
 		}
-		wi, err := s.svc.CreateWorkItem(r.Context(), wsID, p)
+		wi, replayed, err := s.svc.CreateWorkItemIdempotent(r.Context(), wsID, p)
 		if err != nil {
 			return problemBytes(err)
+		}
+		// 实体级幂等重放：同 client_key 返回既有实体，200 + 重放标记（区别于新建 201）。
+		if replayed {
+			w.Header().Set("Idempotent-Replayed", "true")
+			return renderJSON(w, r, http.StatusOK, s.enrichWorkItem(r, wi))
 		}
 		return renderJSON(w, r, http.StatusCreated, s.enrichWorkItem(r, wi))
 	})
@@ -312,6 +317,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Requirements:       req.Requirements,
 			Instruction:        req.Input.Instruction,
 			AcceptanceCriteria: req.Input.AcceptanceCriteria,
+			ClientKey:          req.ClientKey,
 		}
 		if req.RuntimePreference != nil {
 			p.RuntimePreference = &domain.RuntimePreference{
@@ -321,9 +327,18 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 				AgentPreset: req.RuntimePreference.AgentPreset,
 			}
 		}
-		run, err := s.svc.CreateRun(r.Context(), wiID, p)
+		run, replayed, err := s.svc.CreateRunIdempotent(r.Context(), wiID, p)
 		if err != nil {
 			return problemBytes(err)
+		}
+		// 实体级幂等重放：同 client_key 返回既有 run，200 + 重放标记（区别于新建 202）。
+		if replayed {
+			w.Header().Set("Idempotent-Replayed", "true")
+			return renderJSON(w, r, http.StatusOK, map[string]any{
+				"run_id": run.ID, "work_item_id": run.WorkItemID,
+				"status": run.Status, "version": run.Version,
+				"capability_snapshot_id": nullableString(run.CapabilitySnapshotID),
+			})
 		}
 		// 202 Accepted：真正开始执行由 SSE 事件确认。
 		return renderJSON(w, r, http.StatusAccepted, map[string]any{

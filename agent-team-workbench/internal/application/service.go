@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -331,6 +332,11 @@ type CreateWorkItemParams struct {
 	Priority       domain.Priority
 	DueDate        *time.Time
 	AgentProfileID string
+	// ParentID 非空表示作为子任务/分叉会话创建；父任务必须存在且同 workspace。
+	ParentID string
+	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有实体
+	// （防队列 drain 重试/分叉双击这类业务意图重复建卡；命令级 Idempotency-Key 防的是请求重放）。
+	ClientKey string
 }
 
 func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p CreateWorkItemParams) (*domain.WorkItem, error) {
@@ -345,11 +351,21 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 	if priority == "" {
 		priority = domain.PriorityMedium
 	}
+	if p.ParentID != "" {
+		parent, err := s.store.WorkItems().Get(ctx, p.ParentID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: parent work item 不存在", domain.ErrValidation)
+		}
+		if parent.WorkspaceID != workspaceID {
+			return nil, fmt.Errorf("%w: parent work item 不属于当前 workspace", domain.ErrValidation)
+		}
+	}
 	now := time.Now().UTC()
 	wi := &domain.WorkItem{
 		ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: workspaceID,
 		Title: p.Title, Description: p.Description, Status: status, Priority: priority,
-		DueDate: p.DueDate, AgentProfileID: p.AgentProfileID, Version: 1,
+		DueDate: p.DueDate, AgentProfileID: p.AgentProfileID, ParentID: p.ParentID,
+		ClientKey: p.ClientKey, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -367,6 +383,24 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 	}
 	s.notifier.Notify(workspaceID)
 	return wi, nil
+}
+
+// CreateWorkItemIdempotent 实体级幂等创建：client_key 撞唯一索引时查回既有实体，
+// replayed=true 返回（不产生重复事件/activity——冲突发生在事务内，整事务回滚）。
+// 无 client_key 时与 CreateWorkItem 完全等价。
+func (s *Service) CreateWorkItemIdempotent(ctx context.Context, workspaceID string, p CreateWorkItemParams) (wi *domain.WorkItem, replayed bool, err error) {
+	wi, err = s.CreateWorkItem(ctx, workspaceID, p)
+	if err == nil {
+		return wi, false, nil
+	}
+	if p.ClientKey == "" || !errors.Is(err, domain.ErrIdempotencyConflict) {
+		return nil, false, err
+	}
+	existing, gerr := s.store.WorkItems().GetByClientKey(ctx, workspaceID, p.ClientKey)
+	if gerr != nil {
+		return nil, false, err // 查回失败时报告原始冲突错误
+	}
+	return existing, true, nil
 }
 
 // MoveWorkItem 看板移动：状态机校验 + 乐观锁。
