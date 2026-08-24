@@ -67,8 +67,8 @@ components:
     #            work_item.assigned / work_item.blocked / work_item.unblocked /
     #            work_item.completed
     # Run:       run.created / run.started / run.status_changed /
-    #            run.progress_updated / run.completed / run.failed /
-    #            run.cancelled / run.lost
+    #            run.progress_updated / run.plan_updated / run.completed /
+    #            run.failed / run.cancelled / run.lost
     # Message:   message.delta / message.completed
     # Tool:      tool.started / tool.progress / tool.completed / tool.failed
     # Approval:  approval.requested / approval.resolved / approval.expired

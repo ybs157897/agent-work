@@ -653,8 +653,8 @@ func TestPumpLogsUnrecognizedNotifications(t *testing.T) {
 }
 
 // runPumpFrames 以脚本化 reader 直驱 pump（离线；stdin 由 discardCloser 吸掉
-// 握手期上行写），返回 pump 产出与终态裁决结果。
-func runPumpFrames(t *testing.T, frames []string) (*pumpResult, atwruntime.ExecResult) {
+// 握手期上行写），返回 pump 产出、事件记录与终态裁决结果。
+func runPumpFrames(t *testing.T, frames []string) (*pumpResult, *recordCallbacks, atwruntime.ExecResult) {
 	t.Helper()
 	reader := bufio.NewReader(strings.NewReader(strings.Join(frames, "\n") + "\n"))
 	cb := &recordCallbacks{}
@@ -667,14 +667,14 @@ func runPumpFrames(t *testing.T, frames []string) (*pumpResult, atwruntime.ExecR
 		stdin: discardCloser{}, pendingRequests: map[int64]string{}, approvals: map[string]chan bool{},
 	}
 	res := s.pump(reader)
-	return res, composeResult(s.ex, context.Background(), res, nil)
+	return res, cb, composeResult(s.ex, context.Background(), res, nil)
 }
 
 // 用量帧 → ExecResult.Usage：只累计归因到活动 turn（turn_1）的通知增量——
 // resume 重放帧（turn_prev）与异 turn 帧（turn_other）不得计入；snake_case
 // 容错形状（info.last_token_usage.*）与权威 camelCase 形状等价累计。
 func TestPumpAccumulatesTokenUsage(t *testing.T) {
-	res, final := runPumpFrames(t, []string{
+	res, _, final := runPumpFrames(t, []string{
 		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
 		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
 		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
@@ -702,7 +702,7 @@ func TestPumpAccumulatesTokenUsage(t *testing.T) {
 
 // 零值对照：无用量帧 → pump 与 ExecResult 的 Usage 均为 nil（不捏造上报）。
 func TestPumpUsageZeroWithoutFrames(t *testing.T) {
-	res, final := runPumpFrames(t, []string{
+	res, _, final := runPumpFrames(t, []string{
 		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
 		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
 		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
@@ -714,6 +714,56 @@ func TestPumpUsageZeroWithoutFrames(t *testing.T) {
 	}
 	if res.usage != nil || final.Usage != nil {
 		t.Fatalf("无用量帧不得捏造 Usage: pump=%+v exec=%+v", res.usage, final.Usage)
+	}
+}
+
+// eventsOfType 取指定类型的全部事件（按到达序）。
+func (c *recordCallbacks) eventsOfType(typ string) []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]map[string]any, 0, 2)
+	for _, e := range c.events {
+		if e.typ == typ {
+			out = append(out, e.data)
+		}
+	}
+	return out
+}
+
+// turn/plan/updated → run.plan_updated：status 归一（inProgress → in_progress）、
+// 每帧全量替换（第二帧不得追加在第一帧之后）、空清单帧照发（清空语义）、
+// plan 键缺失的畸形帧跳过、收尾不受影响。
+func TestPumpEmitsPlanUpdatedFromTurnPlanUpdated(t *testing.T) {
+	res, cb, final := runPumpFrames(t, []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"turn/plan/updated","params":{"threadId":"th_1","turnId":"turn_1","explanation":"开始","plan":[{"step":"调研","status":"inProgress"},{"step":"实现","status":"pending"}]}}`,
+		`{"method":"turn/plan/updated","params":{"threadId":"th_1","turnId":"turn_1","plan":[{"step":"调研","status":"completed"},{"step":"实现","status":"inProgress"}]}}`,
+		`{"method":"turn/plan/updated","params":{"threadId":"th_1","turnId":"turn_1"}}`,
+		`{"method":"turn/plan/updated","params":{"threadId":"th_1","turnId":"turn_1","plan":[]}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	})
+
+	if !res.finished || res.turnStatus != "completed" || final.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("计划通知不得影响收尾: %+v / %s", res, final.Outcome)
+	}
+	got := cb.eventsOfType(domain.EventRunPlanUpdated)
+	if len(got) != 3 {
+		t.Fatalf("期望 3 条 run.plan_updated（畸形帧跳过、空清单照发）: %v", got)
+	}
+	first, ok := got[0]["steps"].([]planStep)
+	if !ok || len(first) != 2 || first[0] != (planStep{Step: "调研", Status: "in_progress"}) ||
+		first[1] != (planStep{Step: "实现", Status: "pending"}) {
+		t.Fatalf("首帧 steps 归一错误（inProgress→in_progress）: %+v", got[0]["steps"])
+	}
+	second, ok := got[1]["steps"].([]planStep)
+	if !ok || len(second) != 2 || second[0] != (planStep{Step: "调研", Status: "completed"}) ||
+		second[1] != (planStep{Step: "实现", Status: "in_progress"}) {
+		t.Fatalf("第二帧应为全量替换而非追加: %+v", got[1]["steps"])
+	}
+	if cleared, ok := got[2]["steps"].([]planStep); !ok || len(cleared) != 0 {
+		t.Fatalf("空清单帧应照发（清空语义）: %+v", got[2]["steps"])
 	}
 }
 

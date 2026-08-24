@@ -25,6 +25,7 @@ const (
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
 	EventRunProgressUpdated = "run.progress_updated"
+	EventRunPlanUpdated     = "run.plan_updated"
 	EventRunCompleted       = "run.completed"
 	EventRunFailed          = "run.failed"
 	EventRunCancelled       = "run.cancelled"
@@ -73,8 +74,8 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {},
 	EventRunCreated:        {}, EventRunStarted: {}, EventRunStatusChanged: {},
-	EventRunProgressUpdated: {}, EventRunCompleted: {}, EventRunFailed: {},
-	EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
+	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
+	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventPlanSubmitted: {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
 	EventPlanFailed:   {},
 	EventMessageDelta: {}, EventMessageCompleted: {},

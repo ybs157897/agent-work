@@ -604,6 +604,15 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				s.turnID = n.Turn.ID
 				s.mu.Unlock()
 			}
+		case "turn/plan/updated":
+			// todo 清单（update_plan 工具）每帧携带全量 steps：canonical 替换语义
+			// 由通知天然保证；与 plan 模式的 plan item（提案正文）是两条通道，互不抑制。
+			if _, steps, ok := parsePlanUpdatedEvent(frame.Params); ok {
+				s.ex.Callbacks.OnEvent(domain.EventRunPlanUpdated, map[string]any{"steps": steps})
+			} else {
+				// 缺 plan 键的畸形帧：schema 要求 plan 必填，显式 warn 保持可观测。
+				s.ex.Callbacks.OnLog("codexapp", "warn malformed turn/plan/updated "+rawString(frame.Params))
+			}
 		case "item/started":
 			item := parseItemEvent(frame.Params)
 			if item.isTool() {
