@@ -39,6 +39,14 @@ export interface ChatMessage {
   completedAt?: string;
   /** 计划复选清单步骤（kind=plan）。 */
   steps?: PlanStepView[];
+  /** tool.started 的 args_summary 原值（未经「调用工具 X：」前缀包装）。 */
+  argsSummary?: string;
+  /** tool.started 的 args 截断 JSON（后端 canonical 新增；可能不存在）。 */
+  args?: string;
+  /** tool.completed/failed 的 exit_code。 */
+  exitCode?: number;
+  /** tool.progress 流式输出的累计文本（运行中实时展示；completed 后被 detail 取代）。 */
+  liveOutput?: string;
 }
 
 export interface RunStreamParts {
@@ -162,6 +170,13 @@ export function formatTokenUsage(used?: number, contextWindow?: number): string 
   return `${usedK}k / ${Math.round(contextWindow / 1000)}k tokens`;
 }
 
+/** liveOutput 累计上限：超出保留尾部（流式输出最新内容最有价值，头部可弃）。 */
+const LIVE_OUTPUT_LIMIT = 4_000;
+
+function capLiveOutput(text: string): string {
+  return text.length > LIVE_OUTPUT_LIMIT ? text.slice(text.length - LIVE_OUTPUT_LIMIT) : text;
+}
+
 /** 从 run 时间线推导对话气泡（user 右 / assistant 左 / tool·error·system 居中细行）。 */
 export function buildMessages(runIds: string[], timelines: Record<string, TimelineEntry[]>): ChatMessage[] {
   const out: ChatMessage[] = [];
@@ -234,10 +249,12 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         case 'tool.started': {
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
           const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';
+          const args = typeof e.data?.args === 'string' ? e.data.args : undefined;
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
-          out.push({
-            // 与 completed/failed 同键折叠：结果输出挂回同一行。
-            key: callId ? `${runId}-tool-${callId}` : e.event_id,
+          // 与 completed/failed 同键折叠：结果输出挂回同一行。
+          const key = callId ? `${runId}-tool-${callId}` : e.event_id;
+          const started: ChatMessage = {
+            key,
             runId,
             kind: 'tool',
             text: argsSummary ? `调用工具 ${tool}：${argsSummary}` : `调用工具 ${tool}`,
@@ -245,57 +262,94 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             tool,
             toolStatus: 'running',
             startedAt: e.occurred_at,
-          });
+            ...(argsSummary ? { argsSummary } : {}),
+            ...(args !== undefined ? { args } : {}),
+          };
+          // progress 先于 started（回放乱序）已建同键占位行：原地补全摘要/args，不另起一行。
+          const idx = callId ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
+          if (idx >= 0) out[idx] = { ...started, liveOutput: out[idx].liveOutput };
+          else out.push(started);
+          break;
+        }
+        case 'tool.progress': {
+          // 流式工具输出：无 call_id 或空文本的帧无法挂行，忽略。
+          const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
+          const text = typeof e.data?.text === 'string' ? e.data.text : '';
+          if (!callId || !text) break;
+          const key = `${runId}-tool-${callId}`;
+          const idx = out.findIndex((m) => m.kind === 'tool' && m.key === key);
+          if (idx >= 0) {
+            out[idx] = { ...out[idx], liveOutput: capLiveOutput((out[idx].liveOutput ?? '') + text) };
+          } else {
+            // 回放乱序下 progress 可能先于 started：先建 running 占位行，started 到达后同键补全。
+            const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
+            out.push({
+              key,
+              runId,
+              kind: 'tool',
+              text: `调用工具 ${tool}`,
+              at: e.occurred_at,
+              tool,
+              toolStatus: 'running',
+              startedAt: e.occurred_at,
+              liveOutput: capLiveOutput(text),
+            });
+          }
           break;
         }
         case 'tool.completed':
         case 'tool.failed': {
           const output = typeof e.data?.output === 'string' ? e.data.output.trim() : '';
           const exitCode = extractExitCode(e.data);
-          const exitSuffix = exitCode === undefined ? '' : ` · exit ${exitCode}`;
-          // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）。
+          // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）；退出码本身由卡片层用 exitCode 字段渲染。
           const failedExit = exitCode !== undefined && exitCode !== 0;
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
           const key = callId ? `${runId}-tool-${callId}` : '';
           const idx = key ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
+          const liveOutput = idx >= 0 ? out[idx].liveOutput : undefined;
           if (e.type === 'tool.failed') {
             const failed: ChatMessage = {
               key: key || e.event_id,
               runId,
               kind: 'error',
-              text: (idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败') + exitSuffix,
-              detail: output || undefined,
+              text: idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败',
+              detail: output || liveOutput || undefined,
               at: e.occurred_at,
               tool: idx >= 0 ? out[idx].tool : undefined,
               toolStatus: 'failed',
               startedAt: idx >= 0 ? out[idx].startedAt : undefined,
               completedAt: e.occurred_at,
+              ...(exitCode !== undefined ? { exitCode } : {}),
             };
             if (idx >= 0) out[idx] = failed;
             else out.push(failed);
             break;
           }
-          if (!output && exitCode === undefined) break; // 无输出且无退出码的完成不刷屏
+          // 无输出、无退出码、也无流式输出的完成不刷屏。
+          if (!output && exitCode === undefined && !liveOutput) break;
           if (idx >= 0) {
             out[idx] = {
               ...out[idx],
               kind: failedExit ? 'error' : out[idx].kind,
-              text: out[idx].text + exitSuffix,
-              detail: output || undefined,
+              detail: output || liveOutput || undefined,
               at: e.occurred_at,
               toolStatus: failedExit ? 'failed' : 'success',
               completedAt: e.occurred_at,
+              // 落定：流式输出并入 detail（output 优先），liveOutput 删除避免双份渲染。
+              liveOutput: undefined,
+              ...(exitCode !== undefined ? { exitCode } : {}),
             };
           } else {
             out.push({
               key: e.event_id,
               runId,
               kind: failedExit ? 'error' : 'tool',
-              text: '工具输出' + exitSuffix,
+              text: '工具输出',
               detail: output || undefined,
               at: e.occurred_at,
               toolStatus: failedExit ? 'failed' : 'success',
               completedAt: e.occurred_at,
+              ...(exitCode !== undefined ? { exitCode } : {}),
             });
           }
           break;

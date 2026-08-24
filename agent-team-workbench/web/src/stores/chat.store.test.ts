@@ -75,7 +75,7 @@ describe('buildMessages', () => {
     ]);
   });
 
-  it('exit_code 追加 · exit {n}；非零转 error 行（红色），零保持 tool，无输出也展示', () => {
+  it('exit_code 落 exitCode 字段（text 不再拼后缀）；非零转 error 行（红色），零保持 tool，无输出也展示', () => {
     const timelines = {
       run_1: [
         entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
@@ -88,12 +88,33 @@ describe('buildMessages', () => {
       ],
     };
     const msgs = buildMessages(['run_1'], timelines);
-    expect(msgs.map((m) => [m.kind, m.text, m.detail ?? ''])).toEqual([
-      ['tool', '调用工具 shell：ls · exit 0', 'a.go'],
-      ['error', '调用工具 shell：npm i · exit 134', 'err'],
-      ['error', '调用工具 shell：false · exit 1', ''],
-      ['error', '工具调用失败 · exit 137', 'killed'],
+    expect(msgs.map((m) => [m.kind, m.text, m.detail ?? '', m.exitCode])).toEqual([
+      ['tool', '调用工具 shell：ls', 'a.go', 0],
+      ['error', '调用工具 shell：npm i', 'err', 134],
+      ['error', '调用工具 shell：false', '', 1],
+      ['error', '工具调用失败', 'killed', 137],
     ]);
+  });
+
+  it('tool.started 带 args_summary/args：原值落 argsSummary/args 字段，text 仍为前缀包装形态', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', {
+          tool: 'shell',
+          call_id: 'c1',
+          args_summary: 'ls -la',
+          args: '{"command":"ls -la"}',
+        }),
+        entry('run_1', 2, 'tool.started', { tool: 'Grep', call_id: 'c2', args_summary: 'TODO' }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs[0].argsSummary).toBe('ls -la');
+    expect(msgs[0].args).toBe('{"command":"ls -la"}');
+    expect(msgs[0].text).toBe('调用工具 shell：ls -la');
+    // 后端 canonical 未带 args 时字段缺席，不落空串噪音。
+    expect(msgs[1].argsSummary).toBe('TODO');
+    expect(msgs[1].args).toBeUndefined();
   });
 
   it('跨多个 run 按顺序拼接（串行轮次）', () => {
@@ -173,6 +194,73 @@ describe('buildMessages', () => {
     expect(msgs[0].toolStatus).toBe('running');
     expect(msgs[0].startedAt).toBe('2026-08-22T00:00:00Z');
     expect(msgs[0].completedAt).toBeUndefined();
+  });
+
+  it('tool.progress 追加到同 call_id 既有工具行的 liveOutput（不新增行）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'npm i' }),
+        entry('run_1', 2, 'tool.progress', { call_id: 'c1', text: 'downloading…\n' }),
+        entry('run_1', 3, 'tool.progress', { call_id: 'c1', text: 'done' }),
+        entry('run_1', 4, 'tool.progress', { call_id: 'c1', text: '', percent: 50 }), // 空 text：忽略
+        entry('run_1', 5, 'tool.progress', { text: 'no-call-id' }), // 无 call_id：忽略
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].liveOutput).toBe('downloading…\ndone');
+    expect(msgs[0].toolStatus).toBe('running');
+  });
+
+  it('tool.progress 先于 started（回放乱序）：创建 running 占位行，started 到达后原地补全不重复', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.progress', { tool: 'shell', call_id: 'c1', text: 'partial' }),
+        entry('run_1', 2, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs).toHaveLength(1); // 同键折叠，不产生重复行
+    expect(msgs[0].key).toBe('run_1-tool-c1');
+    expect(msgs[0].text).toBe('调用工具 shell：ls');
+    expect(msgs[0].argsSummary).toBe('ls');
+    expect(msgs[0].liveOutput).toBe('partial'); // 占位期累积的流式输出不丢
+    expect(msgs[0].toolStatus).toBe('running');
+  });
+
+  it('liveOutput 累计上限 4000：超出保留尾部（最新内容最有价值）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_1', 2, 'tool.progress', { call_id: 'c1', text: 'x'.repeat(4_500) }),
+        entry('run_1', 3, 'tool.progress', { call_id: 'c1', text: 'tail' }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs[0].liveOutput?.length).toBe(4_000);
+    expect(msgs[0].liveOutput?.endsWith('xtail')).toBe(true);
+  });
+
+  it('completed 落定清除 liveOutput：无 output 时流式输出落 detail，有 output 时 output 优先', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_1', 2, 'tool.progress', { call_id: 'c1', text: 'streamed' }),
+        entry('run_1', 3, 'tool.completed', { call_id: 'c1' }), // 无 output 无 exit：靠 liveOutput 落定
+        entry('run_1', 4, 'tool.started', { tool: 'shell', call_id: 'c2', args_summary: 'ls' }),
+        entry('run_1', 5, 'tool.progress', { call_id: 'c2', text: 'streamed2' }),
+        entry('run_1', 6, 'tool.completed', { call_id: 'c2', output: 'final' }),
+        entry('run_1', 7, 'tool.started', { tool: 'shell', call_id: 'c3', args_summary: 'ls' }),
+        entry('run_1', 8, 'tool.progress', { call_id: 'c3', text: 'streamed3' }),
+        entry('run_1', 9, 'tool.failed', { call_id: 'c3' }), // failed 无 output：流式输出也不丢
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.toolStatus, m.detail, m.liveOutput])).toEqual([
+      ['success', 'streamed', undefined],
+      ['success', 'final', undefined],
+      ['failed', 'streamed3', undefined],
+    ]);
   });
 
   it('run.plan_updated 同 run 新帧替换旧帧：单卡最新快照，位置保持首现处，key 稳定', () => {
