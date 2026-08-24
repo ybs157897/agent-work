@@ -11,6 +11,7 @@ models/credentials.local.yaml
 
 .agent-work/
 .sessions/
+.atw-data/
 runtimes/dsh/.generated/
 runtimes/dsh/cordis.yml
 runtimes/dsh/run_*.cordis.yml
