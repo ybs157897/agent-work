@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, sessionLine, toolDuration, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -11,12 +11,13 @@ const entry = (
   data?: Record<string, unknown>,
   role?: string,
   text?: string,
+  occurredAt?: string,
 ): TimelineEntry => ({
   event_id: `${runId}-${runSeq}`,
   stream_seq: runSeq,
   run_seq: runSeq,
   type,
-  occurred_at: '2026-08-22T00:00:00Z',
+  occurred_at: occurredAt ?? '2026-08-22T00:00:00Z',
   role,
   text,
   data,
@@ -138,6 +139,161 @@ describe('buildMessages', () => {
       ['tool', '调用工具 shell：ls'],
       ['assistant', '目录如下'],
     ]);
+  });
+
+  it('工具行携带卡片数据：started→running+startedAt，completed→success+completedAt，failed→failed，非零 exit→failed', () => {
+    const t0 = '2026-08-22T00:00:00.000Z';
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'Read', call_id: 'c1', args_summary: 'a.go' }, undefined, undefined, t0),
+        entry('run_1', 2, 'tool.completed', { call_id: 'c1', output: 'ok' }, undefined, undefined, '2026-08-22T00:00:02.500Z'),
+        entry('run_1', 3, 'tool.started', { tool: 'Bash', call_id: 'c2', args_summary: 'npm i' }, undefined, undefined, '2026-08-22T00:00:03.000Z'),
+        entry('run_1', 4, 'tool.failed', { call_id: 'c2', output: 'boom' }, undefined, undefined, '2026-08-22T00:00:09.000Z'),
+        entry('run_1', 5, 'tool.completed', { call_id: 'c3', output: 'orphan' }, undefined, undefined, '2026-08-22T00:00:10.000Z'),
+        entry('run_1', 6, 'tool.started', { tool: 'Bash', call_id: 'c4', args_summary: 'false' }, undefined, undefined, '2026-08-22T00:00:11.000Z'),
+        entry('run_1', 7, 'tool.completed', { call_id: 'c4', exit_code: 1 }, undefined, undefined, '2026-08-22T00:00:12.000Z'),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(
+      msgs.map((m) => [m.kind, m.tool, m.toolStatus, m.startedAt, m.completedAt]),
+    ).toEqual([
+      ['tool', 'Read', 'success', t0, '2026-08-22T00:00:02.500Z'],
+      ['error', 'Bash', 'failed', '2026-08-22T00:00:03.000Z', '2026-08-22T00:00:09.000Z'],
+      ['tool', undefined, 'success', undefined, '2026-08-22T00:00:10.000Z'],
+      ['error', 'Bash', 'failed', '2026-08-22T00:00:11.000Z', '2026-08-22T00:00:12.000Z'],
+    ]);
+  });
+
+  it('仅有 started 的工具行保持 running（进行中卡片）', () => {
+    const timelines = {
+      run_1: [entry('run_1', 1, 'tool.started', { tool: 'Grep', call_id: 'c1', args_summary: 'TODO' })],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs[0].toolStatus).toBe('running');
+    expect(msgs[0].startedAt).toBe('2026-08-22T00:00:00Z');
+    expect(msgs[0].completedAt).toBeUndefined();
+  });
+
+  it('run.plan_updated 同 run 新帧替换旧帧：单卡最新快照，位置保持首现处，key 稳定', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: '做点什么' }),
+        entry('run_1', 2, 'run.plan_updated', {
+          steps: [
+            { step: '调研', status: 'completed' },
+            { step: '实现', status: 'in_progress' },
+          ],
+        }),
+        entry('run_1', 3, 'tool.started', { tool: 'Bash', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_1', 4, 'run.plan_updated', {
+          steps: [
+            { step: '调研', status: 'completed' },
+            { step: '实现', status: 'completed' },
+            { step: '验证', status: 'pending' },
+          ],
+        }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.filter((m) => m.kind === 'plan')).toHaveLength(1);
+    const plan = msgs.find((m) => m.kind === 'plan');
+    expect(plan?.key).toBe('run_1-plan');
+    expect(plan?.steps?.map((s) => [s.step, s.status])).toEqual([
+      ['调研', 'completed'],
+      ['实现', 'completed'],
+      ['验证', 'pending'],
+    ]);
+    // 位置保持首现处（用户气泡后、工具行前），不被新帧顶到流尾。
+    expect(msgs.map((m) => m.kind)).toEqual(['user', 'plan', 'tool']);
+  });
+
+  it('run.plan_updated 载荷无效时不产生卡片（防御式，不报错）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: 'go' }),
+        entry('run_1', 2, 'run.plan_updated', {}),
+        entry('run_1', 3, 'run.plan_updated', { steps: 'not-array' }),
+        entry('run_1', 4, 'run.plan_updated', { steps: [] }),
+        entry('run_1', 5, 'run.plan_updated', { steps: [{ step: '', status: 'pending' }, { step: 42 }, { step: 'x', status: 'bogus' }] }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.some((m) => m.kind === 'plan')).toBe(false);
+  });
+});
+
+describe('parsePlanSteps', () => {
+  it('仅认 step 非空字符串 + 三态 status 的条目，顺序保留', () => {
+    expect(
+      parsePlanSteps({
+        steps: [
+          { step: 'a', status: 'pending' },
+          { step: 'b', status: 'in_progress' },
+          { step: 'c', status: 'completed' },
+        ],
+      }),
+    ).toEqual([
+      { step: 'a', status: 'pending' },
+      { step: 'b', status: 'in_progress' },
+      { step: 'c', status: 'completed' },
+    ]);
+  });
+
+  it('steps 缺失/非数组/无有效条目返回 null', () => {
+    expect(parsePlanSteps()).toBeNull();
+    expect(parsePlanSteps({})).toBeNull();
+    expect(parsePlanSteps({ steps: null })).toBeNull();
+    expect(parsePlanSteps({ steps: [{ step: 'a', status: 'done' }] })).toBeNull();
+  });
+});
+
+describe('sessionLine', () => {
+  it('tier×reason 全量映射', () => {
+    expect(sessionLine({ tier: 'resume', reason: 'resume_hit' })).toBe('已续接会话');
+    expect(sessionLine({ tier: 'rotation', reason: 'budget' })).toBe('已轮换新会话（预算）');
+    expect(sessionLine({ tier: 'rotation', reason: 'threshold' })).toBe('已轮换新会话（阈值）');
+    expect(sessionLine({ tier: 'rotation' })).toBe('已轮换新会话');
+    expect(sessionLine({ tier: 'inline', reason: 'session_unknown' })).toBe('已重建会话（自愈）');
+    expect(sessionLine({ tier: 'inline', reason: 'config_drift' })).toBe('已重建会话（配置漂移）');
+    expect(sessionLine({ tier: 'inline', reason: 'fresh' })).toBe('已开新会话');
+    expect(sessionLine({ tier: 'compacted' })).toBe('会话已压缩');
+  });
+
+  it('未知 tier/inline 未知 reason/缺输入返回 null（不渲染）', () => {
+    expect(sessionLine()).toBeNull();
+    expect(sessionLine({ tier: 'mystery' })).toBeNull();
+    expect(sessionLine({ tier: '' })).toBeNull();
+    expect(sessionLine({ tier: 'inline', reason: 'future_reason' })).toBeNull();
+  });
+});
+
+describe('buildMessages 会话元信息行', () => {
+  it('session.decision 渲染居中 system 行；session.compacted 渲染压缩行', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: '继续' }),
+        entry('run_1', 2, 'session.decision', { tier: 'resume', reason: 'resume_hit', session_ref: 'sess_9' }),
+        entry('run_1', 3, 'message.completed', { role: 'assistant', text: '好的' }, 'assistant', '好的'),
+        entry('run_1', 4, 'session.compacted', {}),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['user', '继续'],
+      ['system', '已续接会话'],
+      ['assistant', '好的'],
+      ['system', '会话已压缩'],
+    ]);
+  });
+
+  it('未知 tier 的 decision 不产生行（防御式）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'session.decision', { tier: 'quantum' }),
+      ],
+    };
+    expect(buildMessages(['run_1'], timelines)).toHaveLength(0);
   });
 });
 
@@ -317,5 +473,29 @@ describe('formatTokenUsage', () => {
     expect(formatTokenUsage(1_500, 128_000)).toBe('2k / 128k tokens');
     expect(formatTokenUsage(1_500, 0)).toBe('2k tokens');
     expect(formatTokenUsage(1_500, Number.NaN)).toBe('2k tokens');
+  });
+});
+
+describe('toolDuration', () => {
+  const at = (s: number) => new Date(s).toISOString();
+
+  it('<1s 显示 ms；<60s 显示 1 位小数 s（整数不带小数点）', () => {
+    expect(toolDuration(at(0), at(450))).toBe('450ms');
+    expect(toolDuration(at(0), at(999))).toBe('999ms');
+    expect(toolDuration(at(0), at(1_500))).toBe('1.5s');
+    expect(toolDuration(at(0), at(2_000))).toBe('2s');
+    expect(toolDuration(at(0), at(59_400))).toBe('59.4s');
+  });
+
+  it('≥60s 显示 m+s；跨分钟余数四舍五入到秒', () => {
+    expect(toolDuration(at(0), at(60_000))).toBe('1m 0s');
+    expect(toolDuration(at(0), at(125_000))).toBe('2m 5s');
+  });
+
+  it('缺时间/不可解析/负差值返回 null（不渲染徽章）', () => {
+    expect(toolDuration()).toBeNull();
+    expect(toolDuration(at(0))).toBeNull();
+    expect(toolDuration('not-a-date', at(0))).toBeNull();
+    expect(toolDuration(at(1_000), at(0))).toBeNull();
   });
 });
