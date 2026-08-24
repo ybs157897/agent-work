@@ -1,4 +1,4 @@
-import { MessageSquare, Plus, SendHorizonal } from 'lucide-react';
+import { GitBranch, MessageSquare, Plus, SendHorizonal, X } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AssistantTurn } from '../components/chat/assistant-turn';
@@ -131,7 +131,12 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
               conversationId === c.id ? 'bg-brand-primary/10 ring-1 ring-brand-primary/30' : 'hover:bg-surface-base'
             }`}
           >
-            <div className="text-body text-text-primary truncate">{c.title}</div>
+            <div className="flex items-center gap-1 text-body text-text-primary">
+              {c.parent_id && (
+                <GitBranch className="h-3 w-3 shrink-0 text-text-tertiary" aria-label="分叉会话" />
+              )}
+              <span className="truncate">{c.title}</span>
+            </div>
             <div className="text-caption text-text-tertiary">
               {c.runs_count} 轮 · {conversationLabel(c, runSnapshots)}
             </div>
@@ -150,6 +155,10 @@ function ConversationPane() {
   const runs = useChatStore((s) => s.runs);
   const sending = useChatStore((s) => s.sending);
   const send = useChatStore((s) => s.send);
+  const queue = useChatStore((s) => s.queue);
+  const removeQueued = useChatStore((s) => s.removeQueued);
+  const drainQueue = useChatStore((s) => s.drainQueue);
+  const forkConversation = useChatStore((s) => s.forkConversation);
   const agents = useAgentsStore((s) => s.agents);
 
   const timelines = useRunsStore((s) => s.timelines);
@@ -202,6 +211,18 @@ function ConversationPane() {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length, runApprovals.length]);
 
+  // 自动续发：最新 run「进入」succeeded 且队列非空时出队首条开新轮。
+  // 只在状态边沿触发一次：drain 失败后 sending 复位也不会原地重试风暴；
+  // failed/cancelled/lost/interrupted 不自动发（留给用户手动「继续发送」）。
+  const drainedEdgeRef = useRef('');
+  useEffect(() => {
+    if (!latestRun || latestRun.status !== 'succeeded' || sending || queue.length === 0) return;
+    const edge = `${latestRun.id}:succeeded`;
+    if (drainedEdgeRef.current === edge) return;
+    drainedEdgeRef.current = edge;
+    void drainQueue();
+  }, [latestRun, sending, queue.length, drainQueue]);
+
   // 最新 run 的累计输入用量；后端未上报（字段缺失）时不渲染。
   // 上下文窗口需另拉 /models 匹配 agent 模型——不值得为凑格式加请求，只显 used。
   const usageText = formatTokenUsage(latestRun?.usage_in);
@@ -243,7 +264,7 @@ function ConversationPane() {
             输入第一条消息，为该 Agent 创建任务并开始运行
           </div>
         )}
-        {renderTranscript(messages, stoppedRuns)}
+        {renderTranscript(messages, stoppedRuns, (key) => void forkConversation(key))}
         {awaitingReply && (
           <AssistantTurn
             reasoning={liveStream.reasoning}
@@ -259,6 +280,39 @@ function ConversationPane() {
 
       {/* 输入框 */}
       <div className="shrink-0 border-t border-border-subtle p-comfortable">
+        {/* 待发送队列：运行中入队的消息，本轮成功后自动续发；终态非成功时可手动继续 */}
+        {queue.length > 0 && (
+          <div className="mb-2 space-y-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-caption text-text-tertiary">待发送队列（{queue.length} 条）</span>
+              {latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded' && (
+                <button
+                  type="button"
+                  onClick={() => void drainQueue()}
+                  disabled={sending}
+                  className="text-caption font-medium text-brand-primary transition-colors hover:text-brand-accent disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  继续发送
+                </button>
+              )}
+            </div>
+            {queue.map((text, i) => (
+              <div key={`${i}:${text}`} className="flex items-center gap-2">
+                <span className="text-caption tabular-nums text-text-tertiary">{i + 1}</span>
+                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{text}</span>
+                <button
+                  type="button"
+                  aria-label="移除待发送消息"
+                  title="移除"
+                  onClick={() => removeQueued(i)}
+                  className="shrink-0 rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             value={draft}
@@ -270,8 +324,8 @@ function ConversationPane() {
               }
             }}
             rows={2}
-            placeholder={latestRun && !['succeeded', 'interrupted', 'cancelled', 'lost', 'failed'].includes(latestRun.status)
-              ? '运行中：支持 steering 的 Runtime 可追加指令…'
+            placeholder={latestRun && !TERMINAL.has(latestRun.status)
+              ? '运行中——消息将进入队列，完成后自动发送'
               : '输入消息，Enter 发送，Shift+Enter 换行'}
             className="flex-1 rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 resize-none"
           />
@@ -294,7 +348,11 @@ function ConversationPane() {
   );
 }
 
-function renderTranscript(messages: ChatMessage[], stoppedRuns: ReadonlySet<string>): ReactNode[] {
+function renderTranscript(
+  messages: ChatMessage[],
+  stoppedRuns: ReadonlySet<string>,
+  onFork: (key: string) => void,
+): ReactNode[] {
   const nodes: ReactNode[] = [];
   const segments = groupActivity(messages);
   for (let i = 0; i < segments.length; i++) {
@@ -319,6 +377,10 @@ function renderTranscript(messages: ChatMessage[], stoppedRuns: ReadonlySet<stri
             text={next.text}
             at={next.at}
             reasoningOnly={!next.text && Boolean(msg.text)}
+            // 分叉锚定随轮落定的 assistant 正文（合并分支用 next 的 key）；
+            // reasoningOnly 无正文的不给入口。
+            forkKey={next.text ? next.key : undefined}
+            onFork={next.text ? onFork : undefined}
           />,
         );
         i += 1;
@@ -334,7 +396,7 @@ function renderTranscript(messages: ChatMessage[], stoppedRuns: ReadonlySet<stri
       continue;
     }
     if (msg.kind === 'assistant') {
-      nodes.push(<AssistantTurn key={msg.key} text={msg.text} at={msg.at} />);
+      nodes.push(<AssistantTurn key={msg.key} text={msg.text} at={msg.at} forkKey={msg.key} onFork={onFork} />);
       continue;
     }
     if (msg.kind === 'plan') {

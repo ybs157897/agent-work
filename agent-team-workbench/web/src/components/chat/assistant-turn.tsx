@@ -9,12 +9,17 @@ export function AssistantTurn({
   at,
   streaming = false,
   reasoningOnly = false,
+  forkKey,
+  onFork,
 }: {
   reasoning?: string;
   text?: string;
   at?: string;
   streaming?: boolean;
   reasoningOnly?: boolean;
+  /** 分叉锚点：本轮 assistant 消息的 key（有正文的落定轮次才出现分叉入口）。 */
+  forkKey?: string;
+  onFork?: (key: string) => void;
 }) {
   const showReasoning = Boolean(reasoning);
   const showTyping = streaming && !text && !reasoning;
@@ -40,7 +45,15 @@ export function AssistantTurn({
           </div>
         )}
         {/* 悬停操作行：streaming 不渲染；reasoningOnly 且无正文时无可复制内容，也不渲染。 */}
-        {at && !streaming && text ? <MessageActions text={text} at={at} side="left" className="mt-2" /> : null}
+        {at && !streaming && text ? (
+          <MessageActions
+            text={text}
+            at={at}
+            side="left"
+            className="mt-2"
+            onFork={forkKey && onFork ? () => onFork(forkKey) : undefined}
+          />
+        ) : null}
       </div>
     </div>
   );

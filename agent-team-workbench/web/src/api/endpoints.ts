@@ -261,13 +261,6 @@ export const listRunEvents = (runId: string) =>
 export const listWorkItemRuns = (workItemId: string) =>
   apiFetch<{ items: ExecutionRun[] }>(`/work-items/${workItemId}/runs`);
 
-/** 向活动 Run 追加用户输入 / steering（协议 §5.3）。 */
-export const sendRunInput = (runId: string, instruction: string) =>
-  apiFetch<{ accepted: boolean }>(`/runs/${runId}/commands/input`, {
-    method: 'POST',
-    body: { instruction },
-  });
-
 // ── Agent 配置（agents/ 目录为真相源）──────────────────────────────
 
 export interface PatchAgentInput {
