@@ -16,11 +16,17 @@ import { useWorkspaceStore } from './workspace.store';
 /** 工具行卡片状态：started 时 running，completed/failed 后落定。 */
 export type ToolStatus = 'running' | 'success' | 'failed';
 
+/** run.plan_updated 的步骤视图（契约：data.steps=[{step,status}]，同 run 新帧替换旧帧）。 */
+export interface PlanStepView {
+  step: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
 /** 对话消息气泡（由 run 事件时间线推导）。 */
 export interface ChatMessage {
   key: string;
   runId: string;
-  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'error' | 'system';
+  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'error' | 'system' | 'plan';
   text: string;
   /** 工具结果输出等附属正文（适配器已截断），渲染为等宽块。 */
   detail?: string;
@@ -31,6 +37,8 @@ export interface ChatMessage {
   /** 耗时数据源：时间线事件的 occurred_at（同 call_id 的 started→completed 差值）。 */
   startedAt?: string;
   completedAt?: string;
+  /** 计划复选清单步骤（kind=plan）。 */
+  steps?: PlanStepView[];
 }
 
 export interface RunStreamParts {
@@ -73,6 +81,26 @@ export function toolDuration(startedAt?: string, completedAt?: string): string |
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
+const PLAN_STEP_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
+
+/**
+ * 防御式解析 run.plan_updated 载荷：steps 非数组或全为无效条目返回 null
+ * （事件契约未落地/载荷异常时卡片不出现，不报错）。
+ */
+export function parsePlanSteps(data?: Record<string, unknown>): PlanStepView[] | null {
+  const raw = data?.steps;
+  if (!Array.isArray(raw)) return null;
+  const steps: PlanStepView[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== 'object') continue;
+    const rec = s as Record<string, unknown>;
+    if (typeof rec.step !== 'string' || !rec.step.trim()) continue;
+    if (typeof rec.status !== 'string' || !PLAN_STEP_STATUSES.has(rec.status)) continue;
+    steps.push({ step: rec.step, status: rec.status as PlanStepView['status'] });
+  }
+  return steps.length ? steps : null;
+}
+
 /** 聚合单个 run 时间线中的推理与回复草稿（用于实时展示）。 */
 export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
   let reasoning = '';
@@ -110,9 +138,21 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
     const entries = timelines[runId] ?? [];
     let reasoningBuf = '';
     let answerBuf = '';
+    let planIdx = -1; // 同 run 的 plan 快照在 out 中的位置：新帧原地替换
     for (const e of entries) {
       const instruction = typeof e.data?.instruction === 'string' ? e.data.instruction : '';
       switch (e.type) {
+        case 'run.plan_updated': {
+          const steps = parsePlanSteps(e.data);
+          if (!steps) break; // 契约未落地/载荷异常：不产生卡片
+          if (planIdx >= 0) {
+            out[planIdx] = { ...out[planIdx], steps, at: e.occurred_at };
+          } else {
+            out.push({ key: `${runId}-plan`, runId, kind: 'plan', text: '', steps, at: e.occurred_at });
+            planIdx = out.length - 1;
+          }
+          break;
+        }
         case 'run.created':
           if (instruction) {
             out.push({ key: e.event_id, runId, kind: 'user', text: instruction, at: e.occurred_at });

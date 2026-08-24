@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, toolDuration, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, toolDuration, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -173,6 +173,78 @@ describe('buildMessages', () => {
     expect(msgs[0].toolStatus).toBe('running');
     expect(msgs[0].startedAt).toBe('2026-08-22T00:00:00Z');
     expect(msgs[0].completedAt).toBeUndefined();
+  });
+
+  it('run.plan_updated 同 run 新帧替换旧帧：单卡最新快照，位置保持首现处，key 稳定', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: '做点什么' }),
+        entry('run_1', 2, 'run.plan_updated', {
+          steps: [
+            { step: '调研', status: 'completed' },
+            { step: '实现', status: 'in_progress' },
+          ],
+        }),
+        entry('run_1', 3, 'tool.started', { tool: 'Bash', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_1', 4, 'run.plan_updated', {
+          steps: [
+            { step: '调研', status: 'completed' },
+            { step: '实现', status: 'completed' },
+            { step: '验证', status: 'pending' },
+          ],
+        }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.filter((m) => m.kind === 'plan')).toHaveLength(1);
+    const plan = msgs.find((m) => m.kind === 'plan');
+    expect(plan?.key).toBe('run_1-plan');
+    expect(plan?.steps?.map((s) => [s.step, s.status])).toEqual([
+      ['调研', 'completed'],
+      ['实现', 'completed'],
+      ['验证', 'pending'],
+    ]);
+    // 位置保持首现处（用户气泡后、工具行前），不被新帧顶到流尾。
+    expect(msgs.map((m) => m.kind)).toEqual(['user', 'plan', 'tool']);
+  });
+
+  it('run.plan_updated 载荷无效时不产生卡片（防御式，不报错）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: 'go' }),
+        entry('run_1', 2, 'run.plan_updated', {}),
+        entry('run_1', 3, 'run.plan_updated', { steps: 'not-array' }),
+        entry('run_1', 4, 'run.plan_updated', { steps: [] }),
+        entry('run_1', 5, 'run.plan_updated', { steps: [{ step: '', status: 'pending' }, { step: 42 }, { step: 'x', status: 'bogus' }] }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.some((m) => m.kind === 'plan')).toBe(false);
+  });
+});
+
+describe('parsePlanSteps', () => {
+  it('仅认 step 非空字符串 + 三态 status 的条目，顺序保留', () => {
+    expect(
+      parsePlanSteps({
+        steps: [
+          { step: 'a', status: 'pending' },
+          { step: 'b', status: 'in_progress' },
+          { step: 'c', status: 'completed' },
+        ],
+      }),
+    ).toEqual([
+      { step: 'a', status: 'pending' },
+      { step: 'b', status: 'in_progress' },
+      { step: 'c', status: 'completed' },
+    ]);
+  });
+
+  it('steps 缺失/非数组/无有效条目返回 null', () => {
+    expect(parsePlanSteps()).toBeNull();
+    expect(parsePlanSteps({})).toBeNull();
+    expect(parsePlanSteps({ steps: null })).toBeNull();
+    expect(parsePlanSteps({ steps: [{ step: 'a', status: 'done' }] })).toBeNull();
   });
 });
 

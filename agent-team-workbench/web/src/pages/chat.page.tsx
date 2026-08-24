@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import { AssistantTurn } from '../components/chat/assistant-turn';
 import { ApprovalCard } from '../components/chat/approval-card';
 import { ActivityGroup, groupActivity } from '../components/chat/tool-card';
+import { PlanCard } from '../components/chat/plan-card';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
@@ -322,6 +323,10 @@ function renderTranscript(messages: ChatMessage[]): ReactNode[] {
     }
     if (msg.kind === 'assistant') {
       nodes.push(<AssistantTurn key={msg.key} text={msg.text} at={msg.at} />);
+      continue;
+    }
+    if (msg.kind === 'plan') {
+      nodes.push(<PlanCard key={msg.key} msg={msg} />);
       continue;
     }
     nodes.push(<MetaLine key={msg.key} msg={msg} />);

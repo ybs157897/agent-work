@@ -500,6 +500,35 @@
   @apply text-text-tertiary;
 }
 
+/* ---- Chat 计划复选清单卡（plan-card.tsx，对齐 codex Q10） ---- */
+.chat-plan {
+  @apply rounded-lg border border-border-subtle bg-surface-raised/70 px-snug py-tight;
+}
+
+.chat-plan-head {
+  @apply flex items-center gap-1.5 pb-1 text-caption text-text-secondary;
+}
+
+.chat-plan-list {
+  @apply space-y-0.5;
+}
+
+.chat-plan-row {
+  @apply flex items-start gap-2 rounded px-1 py-0.5 text-caption;
+}
+
+.chat-plan-box {
+  @apply mt-0.5 h-3.5 w-3.5 shrink-0 rounded border border-border-strong bg-surface-raised;
+}
+
+.chat-plan-box-done {
+  @apply flex items-center justify-center border-status-success bg-status-success text-white;
+}
+
+.chat-plan-box-active {
+  @apply border-status-info ring-1 ring-status-info/40;
+}
+
 /* ---- Chat 代码块（code-block.tsx：github 主题的 token 色保留，容器外观交给组件 utilities） ---- */
 .code-block pre code.hljs,
 .code-block code.hljs {
