@@ -706,20 +706,29 @@ describe('send 队列语义（不再 steering）', () => {
     const fetchMock = stubFetch();
     useChatStore.setState({ runs: [run('run_1', 'running')] });
     await useChatStore.getState().send('  追加指令  ');
-    expect(useChatStore.getState().queue).toEqual(['追加指令']); // 入队前 trim
+    expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['追加指令']); // 入队前 trim
+    expect(useChatStore.getState().queue[0].clientKey).toMatch(/^q:/); // 入队即带实体级幂等键
     expect(inputCalls(fetchMock)).toHaveLength(0); // steering 面不再触达
     expect(createRunCalls(fetchMock)).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('终态 + 队列非空：先入队再出队首条 createRun（FIFO）', async () => {
+  it('终态 + 队列非空：先入队再出队首条 createRun（FIFO），client_key 随队头走', async () => {
     const fetchMock = stubFetch();
-    useChatStore.setState({ runs: [run('run_1', 'succeeded')], queue: ['第一条', '第二条'] });
+    useChatStore.setState({
+      runs: [run('run_1', 'succeeded')],
+      queue: [
+        { text: '第一条', clientKey: 'q:k1' },
+        { text: '第二条', clientKey: 'q:k2' },
+      ],
+    });
     await useChatStore.getState().send('第三条');
     const creates = createRunCalls(fetchMock);
     expect(creates).toHaveLength(1); // 只发队头，不整队连发
-    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('第一条');
-    expect(useChatStore.getState().queue).toEqual(['第二条', '第三条']); // 本条排到队尾
+    const sentBody = JSON.parse(String(creates[0][1]?.body));
+    expect(sentBody.input.instruction).toBe('第一条');
+    expect(sentBody.client_key).toBe('q:k1'); // drain 携带入队时的幂等键（重试安全）
+    expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['第二条', '第三条']); // 本条排到队尾
     expect(inputCalls(fetchMock)).toHaveLength(0);
   });
 
@@ -739,17 +748,25 @@ describe('send 队列语义（不再 steering）', () => {
     s.enqueue('b');
     s.enqueue('c');
     s.removeQueued(1);
-    expect(useChatStore.getState().queue).toEqual(['a', 'c']);
+    expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['a', 'c']);
   });
 
-  it('drainQueue：出队首条 createRun，剩余保留', async () => {
+  it('drainQueue：出队首条 createRun（携带其幂等键），剩余保留', async () => {
     const fetchMock = stubFetch();
-    useChatStore.setState({ runs: [run('run_1', 'succeeded')], queue: ['head', 'tail'] });
+    useChatStore.setState({
+      runs: [run('run_1', 'succeeded')],
+      queue: [
+        { text: 'head', clientKey: 'q:head' },
+        { text: 'tail', clientKey: 'q:tail' },
+      ],
+    });
     await useChatStore.getState().drainQueue();
     const creates = createRunCalls(fetchMock);
     expect(creates).toHaveLength(1);
-    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('head');
-    expect(useChatStore.getState().queue).toEqual(['tail']);
+    const sentBody = JSON.parse(String(creates[0][1]?.body));
+    expect(sentBody.input.instruction).toBe('head');
+    expect(sentBody.client_key).toBe('q:head');
+    expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['tail']);
     expect(useChatStore.getState().sending).toBe(false); // 复位 sending 闸
   });
 
@@ -757,7 +774,7 @@ describe('send 队列语义（不再 steering）', () => {
     const fetchMock = stubFetch();
     useChatStore.setState({ queue: [] });
     await useChatStore.getState().drainQueue();
-    useChatStore.setState({ queue: ['x'], conversationId: null });
+    useChatStore.setState({ queue: [{ text: 'x', clientKey: 'q:x' }], conversationId: null });
     await useChatStore.getState().drainQueue();
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -899,6 +916,8 @@ describe('forkConversation', () => {
     expect(body.description).toContain(FORK_CONTEXT_MARKER);
     expect(body.description).toContain('用户：第一问');
     expect(body.description).toContain('助手：第一答');
+    // 实体级幂等键：同一锚点重复分叉由服务端查回既有会话（防双击/重试重复建卡）。
+    expect(body.client_key).toBe('fork:wi_1:run_1-2');
     expect(useChatStore.getState().conversationId).toBe('wi_fork');
   });
 
