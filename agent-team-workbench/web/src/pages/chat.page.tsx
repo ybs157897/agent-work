@@ -1,18 +1,15 @@
-import { MessageSquare, Plus, SendHorizonal, ShieldAlert } from 'lucide-react';
+import { MessageSquare, Plus, SendHorizonal } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ApiError } from '../api/client';
-import { resolveApproval } from '../api/endpoints';
 import { AssistantTurn } from '../components/chat/assistant-turn';
+import { ApprovalCard } from '../components/chat/approval-card';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { buildMessages, conversationLabel, aggregateRunStream, useChatStore, ACTIVE, type ChatMessage } from '../stores/chat.store';
 import { useRunsStore } from '../stores/runs.store';
-import { toast } from '../stores/toast.store';
 import { formatTime } from '../utils/format';
-import { promptRejectionReason } from '../utils/prompt';
 
 /** 对话页：Agent 选择器 + 会话列表 + 气泡消息流 + 输入框（协议 §5.2/§5.3）。 */
 export default function ChatPage() {
@@ -183,13 +180,14 @@ function ConversationPane() {
   const awaitingReply =
     !!latestRun && ACTIVE.has(latestRun.status) && !messages.some((m) => m.kind === 'assistant' && m.runId === latestRunId);
 
+  // 最新 run 的全部审批：pending 渲染交互卡，已决议转完成态行留在流内。
+  const runApprovals = latestRunId ? (approvals[latestRunId] ?? []) : [];
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length]);
-
-  const pendingApprovals = latestRunId ? (approvals[latestRunId] ?? []).filter((a) => a.status === 'pending') : [];
+  }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length, runApprovals.length]);
 
   const doSend = () => {
     const text = draft.trim();
@@ -237,22 +235,10 @@ function ConversationPane() {
             reasoningOnly={!liveStream.answerDraft && Boolean(liveStream.reasoning)}
           />
         )}
+        {runApprovals.map((a) => (
+          <ApprovalCard key={a.id} approval={a} />
+        ))}
       </div>
-
-      {/* 待审批卡片 */}
-      {pendingApprovals.map((a) => (
-        <div key={a.id} className="mx-comfortable mb-2 rounded-lg border border-status-warning/30 bg-status-warning/5 p-snug">
-          <div className="flex items-center gap-1.5 text-body font-medium text-text-primary">
-            <ShieldAlert className="w-4 h-4 text-status-warning" />
-            审批请求 · {a.kind} · {a.risk}
-          </div>
-          <p className="text-caption text-text-secondary mt-1">{a.summary}</p>
-          <div className="flex gap-2 mt-2">
-            <ApprovalButton approvalId={a.id} runId={a.run_id} decision="approved" label="批准" />
-            <ApprovalButton approvalId={a.id} runId={a.run_id} decision="rejected" label="拒绝" />
-          </div>
-        </div>
-      ))}
 
       {/* 输入框 */}
       <div className="shrink-0 border-t border-border-subtle p-comfortable">
@@ -356,47 +342,3 @@ function MetaLine({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function ApprovalButton({
-  approvalId,
-  runId,
-  decision,
-  label,
-}: {
-  approvalId: string;
-  runId: string;
-  decision: 'approved' | 'rejected';
-  label: string;
-}) {
-  const fetchApprovals = useRunsStore((s) => s.fetchApprovals);
-  const [busy, setBusy] = useState(false);
-  return (
-    <button
-      disabled={busy}
-      onClick={async () => {
-        setBusy(true);
-        try {
-          let reason = '';
-          if (decision === 'rejected') {
-            const input = promptRejectionReason();
-            if (input === null) return; // 用户取消弹窗：中止提交，不视为空理由拒绝
-            reason = input;
-          }
-          await resolveApproval(approvalId, runId, decision, reason);
-          await fetchApprovals(runId);
-          toast.success(decision === 'approved' ? '已批准' : '已拒绝');
-        } catch (err) {
-          toast.error(err instanceof ApiError ? err.message : '操作失败');
-        } finally {
-          setBusy(false);
-        }
-      }}
-      className={`text-caption rounded-button px-2 py-1 disabled:opacity-50 ${
-        decision === 'approved'
-          ? 'bg-status-success text-white'
-          : 'border border-status-error/40 text-status-error'
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
