@@ -523,7 +523,8 @@ func TestGatewayApprovalResponds(t *testing.T) {
 	})
 	select {
 	case req := <-cb.approvals:
-		if req.kind != "tool" || req.risk != "bash" || !strings.Contains(req.summary, "rm -rf") {
+		// risk 固定 "high"（与 kimiapp/codexapp 一致）：toolName 不得误传 risk 位。
+		if req.kind != "tool" || req.risk != "high" || !strings.Contains(req.summary, "rm -rf") {
 			t.Fatalf("审批映射不符: %+v", req)
 		}
 		controls <- runtime.Control{Kind: runtime.ControlApproval, ApprovalID: req.id, Approved: true}
@@ -703,6 +704,68 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 					tc.wantIn, tc.wantOut, tc.wantCache, res.Usage)
 			}
 		})
+	}
+}
+
+// 工具事件 canonical 契约（notes/implemented/architecture/
+// 2026-08-23-tool-event-canonical-contract.md）：started 带
+// {tool, call_id, args_summary?}（command 类参数优先、≤200），
+// completed/failed 带 {call_id, output?}（≤2000）——此前整帧塞 raw，
+// 前端读平铺 output 导致 DSH 工具输出永不可见；isError 藏在
+// message.content[0] 的 tool-result 块内，顶层读取永远漏判。
+func TestGatewayToolEventsCanonicalContract(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	long := strings.Repeat("x", 3000)
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() {
+			f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(1)}, 1))
+			f.push("", sessEvent("s_known", "tool/call", map[string]any{
+				"turn": float64(1), "step": 1, "callId": "tc_1", "name": "bash",
+				"arguments": `{"command":"rm -rf /tmp/x","workdir":"/tmp"}`,
+			}, 2))
+			f.push("", sessEvent("s_known", "tool/result", map[string]any{
+				"turn": float64(1), "step": 1,
+				"message": map[string]any{"content": []map[string]any{{
+					"type": "tool-result", "toolCallId": "tc_1",
+					"content": []map[string]any{{"type": "text", "text": long}},
+				}}},
+			}, 3))
+			f.push("", sessEvent("s_known", "tool/result", map[string]any{
+				"turn": float64(1), "step": 2,
+				"message": map[string]any{"content": []map[string]any{{
+					"type": "tool-result", "toolCallId": "tc_2", "isError": true,
+					"content": []map[string]any{{"type": "text", "text": "boom"}},
+				}}},
+			}, 4))
+			f.push("", sessEvent("s_known", "turn/end", map[string]any{
+				"turn": float64(1), "reason": map[string]any{"kind": "completed"},
+			}, 5))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	started, ok := cb.find(domain.EventToolStarted)
+	if !ok || started.data["tool"] != "bash" || started.data["call_id"] != "tc_1" ||
+		started.data["args_summary"] != "rm -rf /tmp/x" {
+		t.Fatalf("tool.started 契约漂移（args_summary 应取 command 键）: %+v", started.data)
+	}
+	completed, ok := cb.find(domain.EventToolCompleted)
+	if !ok || completed.data["call_id"] != "tc_1" {
+		t.Fatalf("tool.completed 缺 call_id: %+v", completed.data)
+	}
+	if out, _ := completed.data["output"].(string); len(out) != 2000 {
+		t.Fatalf("output 应截断 2000，得到 %d", len(out))
+	}
+	if _, has := completed.data["raw"]; has {
+		t.Fatal("tool.completed 不得整帧塞 raw（前端读平铺 output）")
+	}
+	failed, ok := cb.find(domain.EventToolFailed)
+	if !ok || failed.data["call_id"] != "tc_2" || failed.data["output"] != "boom" {
+		t.Fatalf("tool.failed 契约漂移（isError 应映射 failed）: %+v", failed.data)
 	}
 }
 

@@ -20,3 +20,11 @@ Status: implemented
 ## 复活条件
 
 若需要完整工具输出审查（合规/排障场景）→ 返工点：适配器把完整 output 落 artifact，事件里带 artifact 引用，前端 detail 块加「查看完整输出」跳转。
+
+## 2026-08-24 增补：dsh 网关对齐
+
+dsh 网关 adapter（`internal/runtime/adapters/dsh/gateway.go`）补入同一契约：
+
+- `tool/call.arguments` 是模型原始 JSON 字符串（dsh-harness `appendToolCall`）：args_summary 按 command/cmd/path/file_path/query/url 键优先提取，其余原串截 200。
+- `tool/result` 的 callId/isError/输出都在 `message.content[0]` 的 tool-result 块内（顶层无平铺字段）——旧实现读顶层 `data["isError"]` 永远漏判、整帧塞 `{raw: …}` 前端不可见，均修正为契约形状（output 取块内 text 块拼接、截 2000；无文本块则省略）。
+- 附带修正：审批 risk 位误传 `frame.ToolName`（kimiapp 同款 bug 的 dsh 残留），统一固定 `"high"`——dsh 网关不提供风险分级，工具审批一律按 high 走人工确认；question/requested 映射为审批的行为不变。
