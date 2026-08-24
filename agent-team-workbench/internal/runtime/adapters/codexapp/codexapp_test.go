@@ -970,6 +970,7 @@ type strictSink struct {
 	run            *domain.ExecutionRun
 	statuses       []domain.RunStatus
 	events         []string
+	eventData      []map[string]any
 	sessions       []atwruntime.SessionUpdate
 	usages         []atwruntime.Usage
 	unknownEvents  []string
@@ -1028,6 +1029,7 @@ func (f *strictSink) RecordRunEvent(ctx context.Context, runID, evType string, d
 		f.unknownEvents = append(f.unknownEvents, evType)
 	}
 	f.events = append(f.events, evType)
+	f.eventData = append(f.eventData, data)
 	return nil
 }
 
@@ -1068,6 +1070,20 @@ func (f *strictSink) status() domain.RunStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.run.Status
+}
+
+// eventPayloadsOfType 取指定类型事件的 payload（与 events 平行下标）：
+// conformance 逐事件形状断言（如 run.plan_updated 的终态行集）的最小观测面。
+func (f *strictSink) eventPayloadsOfType(typ string) []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]map[string]any, 0, 2)
+	for i, ev := range f.events {
+		if ev == typ {
+			out = append(out, f.eventData[i])
+		}
+	}
+	return out
 }
 
 func (f *strictSink) snapshot() (statuses []domain.RunStatus, events []string, sessions []atwruntime.SessionUpdate, usages []atwruntime.Usage, illegal, afterTerminal, unknown []string) {
@@ -1171,12 +1187,54 @@ func TestConformanceCodexApp(t *testing.T) {
 		if !strings.HasPrefix(sessions[0].Ref, "codex://") {
 			t.Fatalf("会话 ref 期望前缀 codex://，实际 %s", sessions[0].Ref)
 		}
-		// 用量零值对照：回放 fixture 不发 token 用量帧 → OnUsage 流式与
-		// ExecResult.Usage 结算两条路都不得捏造上报。
-		// 正向映射（tokenUsage 帧 → OnUsage 过程帧 + Usage 三字段/per_run）
-		// 见 TestPumpAccumulatesTokenUsage。
-		if len(usages) != 0 {
-			t.Fatalf("无用量帧不得上报 Usage: %+v", usages)
+		// 回放桩三类通知帧的端到端断言（泵级脚本化直测见 TestPump*；此处
+		// 走真实子进程 + ModuleRunner 全链）。
+		// turn/plan/updated 两帧 → 每帧恰一条 run.plan_updated：末条 steps 为
+		// 第二帧行集（同两步全 completed，全量替换而非追加）。
+		plans := e.sink.eventPayloadsOfType(domain.EventRunPlanUpdated)
+		if len(plans) != 2 {
+			t.Fatalf("期望恰 2 条 run.plan_updated（每帧一事件）: %d", len(plans))
+		}
+		firstPlan, ok := plans[0]["steps"].([]planStep)
+		if !ok || len(firstPlan) != 2 ||
+			firstPlan[0] != (planStep{Step: "调研现有实现", Status: "in_progress"}) ||
+			firstPlan[1] != (planStep{Step: "补回放桩帧", Status: "pending"}) {
+			t.Fatalf("首条 run.plan_updated 行集漂移（inProgress→in_progress）: %+v", plans[0]["steps"])
+		}
+		finalPlan, ok := plans[1]["steps"].([]planStep)
+		if !ok || len(finalPlan) != 2 ||
+			finalPlan[0] != (planStep{Step: "调研现有实现", Status: "completed"}) ||
+			finalPlan[1] != (planStep{Step: "补回放桩帧", Status: "completed"}) {
+			t.Fatalf("末条 run.plan_updated 应为第二帧全量替换行集: %+v", plans[1]["steps"])
+		}
+		// contextCompaction started+completed 两帧 → session.compacted 恰一次
+		//（started 只表压缩进行中，不得发事件），payload 带信封 turnId。
+		compactions := e.sink.eventPayloadsOfType(domain.EventSessionCompacted)
+		if len(compactions) != 1 {
+			t.Fatalf("期望恰 1 条 session.compacted: %d", len(compactions))
+		}
+		if compactions[0]["turnId"] != "turn_fake_1" {
+			t.Fatalf("session.compacted 应带信封 turnId: %+v", compactions[0])
+		}
+		// tokenUsage 帧（turn_prev 异 turn 不计入 + turn_fake_1 两帧，last 增量
+		// 120+230/40+60/80+150）：OnUsage 过程帧逐归因帧上报累计值（异 turn 不
+		// 触发），末条为 ModuleRunner 原样转发的 ExecResult.Usage——结算三字段
+		// 等于预期累计（total 不参与、异 turn 不泄漏）。
+		wantUsage := atwruntime.Usage{
+			InputTokens: 350, OutputTokens: 100, CachedTokens: 230, Basis: atwruntime.UsagePerRun,
+		}
+		wantUsageFrames := []atwruntime.Usage{
+			{InputTokens: 120, OutputTokens: 40, CachedTokens: 80, Basis: atwruntime.UsagePerRun},
+			wantUsage,
+			wantUsage, // 结算 = ExecResult.Usage 原样转发
+		}
+		if len(usages) != len(wantUsageFrames) {
+			t.Fatalf("用量上报帧数不符（turn_prev 不得触发 OnUsage）: %+v", usages)
+		}
+		for i, w := range wantUsageFrames {
+			if usages[i] != w {
+				t.Fatalf("第 %d 条用量不符: got %+v want %+v", i+1, usages[i], w)
+			}
 		}
 	})
 

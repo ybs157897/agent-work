@@ -115,6 +115,39 @@ def main():
                 "id": "it_1", "type": "commandExecution", "command": "echo hi",
                 "cwd": "/tmp", "status": "completed",
                 "aggregatedOutput": "hi\n", "exitCode": 0}}})
+            # 三类通知帧的回放覆盖（泵级脚本化直测见 codexapp_test.go 的
+            # TestPump*；conformance 端到端路径依赖这里发帧）。
+            # turn/plan/updated 两帧：每帧携带全量清单（末帧行集为终态，替换非追加）。
+            send({"method": "turn/plan/updated", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1", "explanation": "fake plan",
+                "plan": [{"step": "调研现有实现", "status": "inProgress"},
+                         {"step": "补回放桩帧", "status": "pending"}]}})
+            send({"method": "turn/plan/updated", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1",
+                "plan": [{"step": "调研现有实现", "status": "completed"},
+                         {"step": "补回放桩帧", "status": "completed"}]}})
+            # contextCompaction 主路径：started 只表压缩进行中（不得发事件），
+            # completed 才落 session.compacted。
+            send({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1",
+                "item": {"id": "it_compact_1", "type": "contextCompaction"}}})
+            send({"method": "item/completed", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1", "completedAtMs": 1756000000000,
+                "item": {"id": "it_compact_1", "type": "contextCompaction"}}})
+            # token 用量：per_run 增量只取 last（total 是 thread 累计，不参与）；
+            # turn_prev 帧演练归因过滤——异 turn 增量不得计入本轮累计。
+            send({"method": "thread/tokenUsage/updated", "params": {
+                "threadId": thread_id, "turnId": "turn_prev",
+                "tokenUsage": {"total": {"inputTokens": 9000, "cachedInputTokens": 8000, "outputTokens": 7000},
+                               "last": {"inputTokens": 3000, "cachedInputTokens": 2000, "outputTokens": 1000}}}})
+            send({"method": "thread/tokenUsage/updated", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1",
+                "tokenUsage": {"total": {"inputTokens": 120, "cachedInputTokens": 80, "outputTokens": 40},
+                               "last": {"inputTokens": 120, "cachedInputTokens": 80, "outputTokens": 40}}}})
+            send({"method": "thread/tokenUsage/updated", "params": {
+                "threadId": thread_id, "turnId": "turn_fake_1",
+                "tokenUsage": {"total": {"inputTokens": 350, "cachedInputTokens": 230, "outputTokens": 100},
+                               "last": {"inputTokens": 230, "cachedInputTokens": 150, "outputTokens": 60}}}})
             send({"method": "item/agentMessage/delta",
                   "params": {"threadId": thread_id, "turnId": "turn_fake_1",
                              "itemId": "msg_1", "delta": "fake codex 输出"}})
