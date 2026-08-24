@@ -180,6 +180,11 @@ export interface ExecutionRun {
   version: number;
   created_at: string;
   updated_at: string;
+  /** Run 维度累计用量投影（usage_basis 说明口径）；未上报时缺省，UI 防御式不渲染。 */
+  usage_in?: number;
+  usage_out?: number;
+  usage_cached?: number;
+  usage_basis?: string;
 }
 
 export interface ApprovalRequest {

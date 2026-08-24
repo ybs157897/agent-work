@@ -7,7 +7,7 @@ import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
-import { buildMessages, conversationLabel, aggregateRunStream, useChatStore, ACTIVE, type ChatMessage } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, useChatStore, ACTIVE, type ChatMessage } from '../stores/chat.store';
 import { useRunsStore } from '../stores/runs.store';
 import { formatTime } from '../utils/format';
 
@@ -189,6 +189,10 @@ function ConversationPane() {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length, runApprovals.length]);
 
+  // 最新 run 的累计输入用量；后端未上报（字段缺失）时不渲染。
+  // 上下文窗口需另拉 /models 匹配 agent 模型——不值得为凑格式加请求，只显 used。
+  const usageText = formatTokenUsage(latestRun?.usage_in);
+
   const doSend = () => {
     const text = draft.trim();
     if (!text) return;
@@ -267,6 +271,11 @@ function ConversationPane() {
             {sending ? '发送中' : '发送'}
           </button>
         </div>
+        {usageText && (
+          <div className="mt-1 flex justify-end">
+            <span className="text-[11px] tabular-nums text-text-tertiary">{usageText}</span>
+          </div>
+        )}
       </div>
     </div>
   );
