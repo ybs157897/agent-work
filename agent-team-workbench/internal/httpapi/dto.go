@@ -199,6 +199,8 @@ type createWorkItemRequest struct {
 	Priority       string  `json:"priority"`
 	DueDate        *string `json:"due_date"`
 	AgentProfileID string  `json:"agent_profile_id"`
+	ParentID       string  `json:"parent_id"`
+	ClientKey      string  `json:"client_key"`
 }
 
 type moveWorkItemRequest struct {
@@ -237,6 +239,7 @@ type createRunRequest struct {
 	AgentProfileID    string            `json:"agent_profile_id"`
 	RuntimePreference *runtimePrefDTO   `json:"runtime_preference"`
 	Requirements      map[string]string `json:"requirements"`
+	ClientKey         string            `json:"client_key"`
 	Input             struct {
 		Instruction        string   `json:"instruction"`
 		AcceptanceCriteria []string `json:"acceptance_criteria"`
