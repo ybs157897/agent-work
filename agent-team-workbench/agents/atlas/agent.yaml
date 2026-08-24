@@ -2,12 +2,13 @@
 name: Atlas
 role: architect
 skills:
-    - 系统设计、契约评审
+    - 专业产品经理子 agent。当任务涉及产品规划、需求分析、PRD 撰写、竞品调研、用户研究、路线图制定、功能优先级排序等产品向工作时使用；主 agent 可将调研与分析类子任务委派给它并行执行。
 runtime:
-    preferred: kimi_local
+    preferred: codex_local
     mode: default
 model:
-    ref: kimi-2-7
+    ref: ox-alpha
+    reasoning_effort: xhigh
 permissions:
     approval_policy: approve_high_risk
     sandbox: workspace-write

@@ -7,7 +7,8 @@ runtime:
     preferred: codex_local
     mode: default
 model:
-    ref: deepseek-v4-flash
+    ref: ox-alpha
+    reasoning_effort: xhigh
 permissions:
     approval_policy: auto
     sandbox: danger-full-access
