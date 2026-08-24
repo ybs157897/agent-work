@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, sessionLine, toolDuration, useChatStore } from './chat.store';
-import type { TimelineEntry } from './runs.store';
+import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
+import { useRunsStore, type TimelineEntry } from './runs.store';
+import { useTasksStore } from './tasks.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
 
@@ -585,5 +586,327 @@ describe('toolDuration', () => {
     expect(toolDuration(at(0))).toBeNull();
     expect(toolDuration('not-a-date', at(0))).toBeNull();
     expect(toolDuration(at(1_000), at(0))).toBeNull();
+  });
+});
+
+describe('buildForkContext', () => {
+  const msg = (key: string, kind: ChatMessage['kind'], text: string, tool?: string): ChatMessage => ({
+    key,
+    runId: 'run_1',
+    kind,
+    text,
+    at: '',
+    ...(tool ? { tool } : {}),
+  });
+
+  it('截取 [0..atKey]：用户/助手交替；thinking/plan/system 跳过', () => {
+    const messages = [
+      msg('k1', 'user', '第一问'),
+      msg('k2', 'thinking', '内部推理不进包'),
+      msg('k3', 'assistant', '第一答'),
+      msg('k4', 'plan', ''),
+      msg('k5', 'system', '已续接会话'),
+      msg('k6', 'user', '第二问'),
+      msg('k7', 'assistant', '第二答'),
+    ];
+    expect(buildForkContext(messages, 'k7')).toBe(
+      `${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：\n\n用户：第一问\n助手：第一答\n用户：第二问\n助手：第二答`,
+    );
+    // 锚点之前的消息不进包（截断在锚点处）。
+    expect(buildForkContext(messages, 'k3')).not.toContain('第二问');
+  });
+
+  it('atKey 不存在返回 null（调用方不分叉）', () => {
+    expect(buildForkContext([msg('k1', 'user', 'hi')], 'nope')).toBeNull();
+    expect(buildForkContext([], 'k1')).toBeNull();
+  });
+
+  it('tool/error 折叠为一行 [工具] 标记：正文与 detail 不进包', () => {
+    const messages = [
+      msg('k1', 'user', '跑一下'),
+      { ...msg('k2', 'tool', '调用工具 shell：ls'), tool: 'shell', detail: 'file.go' },
+      msg('k3', 'error', '工具失败 shell', 'shell'),
+      msg('k4', 'assistant', '完成'),
+    ];
+    const out = buildForkContext(messages, 'k4');
+    expect(out?.split('\n')).toEqual([
+      `${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：`,
+      '',
+      '用户：跑一下',
+      '[工具] shell',
+      '[工具] shell',
+      '助手：完成',
+    ]);
+  });
+
+  it('超 4000 字符保头截断，尾部加截断标记', () => {
+    const messages = [msg('k1', 'user', 'x'.repeat(5_000)), msg('k2', 'assistant', '尾部不应出现')];
+    const out = buildForkContext(messages, 'k2');
+    expect(out).not.toBeNull();
+    expect(out!.startsWith(`${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：\n\n用户：`)).toBe(true);
+    expect(out!.endsWith('\n…（已截断）')).toBe(true);
+    expect(out!.length).toBe(4_000 + '\n…（已截断）'.length);
+    expect(out).not.toContain('尾部不应出现');
+  });
+});
+
+describe('send 队列语义（不再 steering）', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  const run = (id: string, status: string): ExecutionRun =>
+    ({ id, work_item_id: 'wi_1', status, created_at: '2026-08-22T00:00:00Z' }) as ExecutionRun;
+
+  /** createRun 的 POST 调用（URL 以 /runs 结尾且 method=POST）。 */
+  const createRunCalls = (mock: ReturnType<typeof vi.fn>) =>
+    mock.mock.calls.filter(([u, init]) => {
+      const url = String(u);
+      return (init?.method ?? '') === 'POST' && /\/work-items\/[^/]+\/runs$/.test(url);
+    });
+
+  const inputCalls = (mock: ReturnType<typeof vi.fn>) =>
+    mock.mock.calls.filter(([u, init]) => String(u).includes('/commands/input') && (init?.method ?? '') === 'POST');
+
+  /** 通用 fetch 桩：createRun POST 返回固定 run_id，其余 GET 回空列表。 */
+  const stubFetch = () => {
+    const mock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if ((init?.method ?? 'GET') === 'POST' && /\/work-items\/[^/]+\/runs$/.test(String(input))) {
+        return Promise.resolve(
+          json({ run_id: 'run_new', work_item_id: 'wi_1', status: 'queued', version: 1, capability_snapshot_id: null }),
+        );
+      }
+      return Promise.resolve(json({ items: [], next_cursor: null }));
+    });
+    vi.stubGlobal('fetch', mock);
+    return mock;
+  };
+
+  beforeEach(() => {
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 },
+    });
+    useChatStore.setState({
+      agentId: 'agent_1',
+      conversationId: 'wi_1',
+      conversations: [],
+      runs: [],
+      sending: false,
+      queue: [],
+    });
+    // 屏蔽 watchRun/tasks refresh 的连带请求：本组只断言 send/drain 的出网面。
+    useRunsStore.setState({ runs: {}, timelines: {}, watchRun: () => {} });
+    useTasksStore.setState({ refresh: async () => {} });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('最新 run 活跃：send 只入队，不调 sendRunInput 也不 createRun', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ runs: [run('run_1', 'running')] });
+    await useChatStore.getState().send('  追加指令  ');
+    expect(useChatStore.getState().queue).toEqual(['追加指令']); // 入队前 trim
+    expect(inputCalls(fetchMock)).toHaveLength(0); // steering 面不再触达
+    expect(createRunCalls(fetchMock)).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('终态 + 队列非空：先入队再出队首条 createRun（FIFO）', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ runs: [run('run_1', 'succeeded')], queue: ['第一条', '第二条'] });
+    await useChatStore.getState().send('第三条');
+    const creates = createRunCalls(fetchMock);
+    expect(creates).toHaveLength(1); // 只发队头，不整队连发
+    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('第一条');
+    expect(useChatStore.getState().queue).toEqual(['第二条', '第三条']); // 本条排到队尾
+    expect(inputCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it('队空 + 终态：直接 createRun 本条（现行为）', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ runs: [run('run_1', 'succeeded')] });
+    await useChatStore.getState().send('新消息');
+    const creates = createRunCalls(fetchMock);
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('新消息');
+    expect(useChatStore.getState().queue).toEqual([]);
+  });
+
+  it('removeQueued 按下标移除对应条目', () => {
+    const s = useChatStore.getState();
+    s.enqueue('a');
+    s.enqueue('b');
+    s.enqueue('c');
+    s.removeQueued(1);
+    expect(useChatStore.getState().queue).toEqual(['a', 'c']);
+  });
+
+  it('drainQueue：出队首条 createRun，剩余保留', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ runs: [run('run_1', 'succeeded')], queue: ['head', 'tail'] });
+    await useChatStore.getState().drainQueue();
+    const creates = createRunCalls(fetchMock);
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('head');
+    expect(useChatStore.getState().queue).toEqual(['tail']);
+    expect(useChatStore.getState().sending).toBe(false); // 复位 sending 闸
+  });
+
+  it('drainQueue 空队列/无会话：不触网', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ queue: [] });
+    await useChatStore.getState().drainQueue();
+    useChatStore.setState({ queue: ['x'], conversationId: null });
+    await useChatStore.getState().drainQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('分叉会话首发：description 上下文包拼进首条 instruction', async () => {
+    const fetchMock = stubFetch();
+    const description = `${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：\n\n用户：第一问\n助手：第一答`;
+    const forkWi = {
+      id: 'wi_fork',
+      workspace_id: 'ws_1',
+      title: '原会话（分叉）',
+      description,
+      status: 'todo',
+      priority: 'medium',
+      due_date: null,
+      runs_count: 0,
+      version: 1,
+      created_at: '',
+      updated_at: '',
+      parent_id: 'wi_src',
+    } as WorkItem;
+    useChatStore.setState({ conversationId: 'wi_fork', conversations: [forkWi], runs: [], queue: [] });
+    await useChatStore.getState().send('新指令');
+    const creates = fetchMock.mock.calls.filter(
+      ([u, init]) => /\/work-items\/wi_fork\/runs$/.test(String(u)) && (init?.method ?? '') === 'POST',
+    );
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe(`${description}\n\n【用户新指令】\n新指令`);
+  });
+
+  it('分叉会话已有 run 后续轮：不再注入上下文包', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'wi_1',
+          workspace_id: 'ws_1',
+          title: '分叉会话',
+          description: `${FORK_CONTEXT_MARKER}旧上下文`,
+          status: 'todo',
+          priority: 'medium',
+          due_date: null,
+          runs_count: 1,
+          version: 1,
+          created_at: '',
+          updated_at: '',
+        } as WorkItem,
+      ],
+      runs: [run('run_1', 'succeeded')],
+      queue: [],
+    });
+    await useChatStore.getState().send('第二轮');
+    const creates = createRunCalls(fetchMock);
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('第二轮');
+  });
+});
+
+describe('forkConversation', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 },
+    });
+    useChatStore.setState({
+      agentId: 'agent_1',
+      conversationId: 'wi_1',
+      conversations: [
+        {
+          id: 'wi_1',
+          workspace_id: 'ws_1',
+          title: '原会话',
+          description: '',
+          status: 'todo',
+          priority: 'medium',
+          due_date: null,
+          runs_count: 1,
+          version: 1,
+          created_at: '',
+          updated_at: '',
+        } as WorkItem,
+      ],
+      runs: [{ id: 'run_1', work_item_id: 'wi_1', status: 'succeeded', created_at: '2026-08-22T00:00:00Z' } as ExecutionRun],
+      sending: false,
+      queue: [],
+    });
+    useRunsStore.setState({
+      runs: {},
+      timelines: {
+        run_1: [
+          entry('run_1', 1, 'run.created', { instruction: '第一问' }),
+          entry('run_1', 2, 'message.completed', { role: 'assistant', text: '第一答' }, 'assistant', '第一答'),
+        ],
+      },
+      watchRun: () => {},
+    });
+    useTasksStore.setState({ refresh: async () => {} });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('创建带 parent_id 与上下文包的分叉会话并切过去', async () => {
+    const forkWi = {
+      id: 'wi_fork',
+      workspace_id: 'ws_1',
+      title: '原会话（分叉）',
+      description: '',
+      status: 'todo',
+      priority: 'medium',
+      due_date: null,
+      runs_count: 0,
+      version: 1,
+      created_at: '',
+      updated_at: '',
+      parent_id: 'wi_1',
+    } as WorkItem;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      if ((init?.method ?? 'GET') === 'POST' && /\/workspaces\/ws_1\/work-items$/.test(String(input))) {
+        return Promise.resolve(json(forkWi));
+      }
+      return Promise.resolve(json({ items: [], next_cursor: null }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useChatStore.getState().forkConversation('run_1-2');
+
+    const creates = fetchMock.mock.calls.filter(
+      ([u, init]) => /\/workspaces\/ws_1\/work-items$/.test(String(u)) && (init?.method ?? '') === 'POST',
+    );
+    expect(creates).toHaveLength(1);
+    const body = JSON.parse(String(creates[0][1]?.body));
+    expect(body.title).toBe('原会话（分叉）');
+    expect(body.parent_id).toBe('wi_1');
+    expect(body.agent_profile_id).toBe('agent_1');
+    expect(body.description).toContain(FORK_CONTEXT_MARKER);
+    expect(body.description).toContain('用户：第一问');
+    expect(body.description).toContain('助手：第一答');
+    expect(useChatStore.getState().conversationId).toBe('wi_fork');
+  });
+
+  it('锚点 key 不在投影里：不分叉、不触网', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(json({ items: [], next_cursor: null })));
+    vi.stubGlobal('fetch', fetchMock);
+    await useChatStore.getState().forkConversation('no-such-key');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().conversationId).toBe('wi_1');
   });
 });

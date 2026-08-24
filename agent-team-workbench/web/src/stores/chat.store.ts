@@ -4,7 +4,6 @@ import {
   createWorkItem,
   listWorkItemRuns,
   listWorkItems,
-  sendRunInput,
 } from '../api/endpoints';
 import type { ExecutionRun, WorkItem } from '../api/types';
 import { useRunsStore, type TimelineEntry } from './runs.store';
@@ -384,6 +383,30 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
   return out;
 }
 
+/** 分叉上下文包的标记前缀：work item 的 description 以此开头即识别为分叉会话。 */
+export const FORK_CONTEXT_MARKER = '【分叉上下文】';
+
+/** 分叉上下文包上限：整体（含标记行）超限保头截断——头部指令密度最高，尾部可弃。 */
+const FORK_CONTEXT_LIMIT = 4_000;
+
+/**
+ * 分叉上下文包：截取 [0..atKey] 的对话投影为纯文本（用户/助手交替）。
+ * tool/error 折叠为一行 `[工具] {tool}`（正文/detail 不进包）；thinking/plan/system 跳过。
+ * atKey 不在 messages 中返回 null（调用方不分叉）。
+ */
+export function buildForkContext(messages: ChatMessage[], atKey: string): string | null {
+  const idx = messages.findIndex((m) => m.key === atKey);
+  if (idx < 0) return null;
+  const lines: string[] = [];
+  for (const m of messages.slice(0, idx + 1)) {
+    if (m.kind === 'user') lines.push(`用户：${m.text}`);
+    else if (m.kind === 'assistant') lines.push(`助手：${m.text}`);
+    else if (m.kind === 'tool' || m.kind === 'error') lines.push(`[工具] ${m.tool ?? ''}`.trimEnd());
+  }
+  const body = `${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：\n\n${lines.join('\n')}`;
+  return body.length > FORK_CONTEXT_LIMIT ? body.slice(0, FORK_CONTEXT_LIMIT) + '\n…（已截断）' : body;
+}
+
 /** 会话侧栏展示：优先反映最新 Run 状态，避免任务 in_progress 与 Run 已成功不一致。 */
 export function conversationLabel(
   item: WorkItem,
@@ -424,106 +447,185 @@ interface ChatStore {
   /** 当前会话的 run 列表（创建时间正序）。 */
   runs: ExecutionRun[];
   sending: boolean;
+  /**
+   * 当前会话的待发送队列（Codex 式：运行中入队，本轮成功后自动续发）。
+   * 内存级不落盘：刷新即弃、切换会话即清——持久化需要后端队列契约，暂以简单优先。
+   */
+  queue: string[];
 
   selectAgent: (id: string | null) => void;
   openConversation: (workItemId: string | null) => void;
   refreshConversations: () => Promise<void>;
   refreshRuns: () => Promise<void>;
   send: (text: string) => Promise<void>;
+  enqueue: (text: string) => void;
+  removeQueued: (index: number) => void;
+  /** 出队首条开新轮（自动续发与手动「继续发送」共用；复用 sending 闸防重）。 */
+  drainQueue: () => Promise<void>;
+  /** 从指定消息分叉新会话：上下文包写入新 work item 的 description，首发时注入。 */
+  forkConversation: (atMessageKey: string) => Promise<void>;
 }
 
-export const useChatStore = create<ChatStore>()((set, get) => ({
-  agentId: null,
-  conversationId: null,
-  conversations: [],
-  runs: [],
-  sending: false,
-
-  selectAgent: (id) => {
-    set({ agentId: id, conversationId: null, runs: [] });
-    void get().refreshConversations();
-  },
-
-  openConversation: (workItemId) => {
-    set({ conversationId: workItemId, runs: [] });
-    void get().refreshRuns();
-  },
-
-  refreshConversations: async () => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    const agentId = get().agentId;
-    if (!wsId || !agentId) {
-      set({ conversations: [] });
-      return;
-    }
-    const isStale = conversationsGuard.begin();
-    const { items } = await listWorkItems(wsId, { assignee: agentId });
-    if (isStale()) return; // 期间已切换 agent：丢弃旧响应
-    items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-    set({ conversations: items });
-    const runsStore = useRunsStore.getState();
-    const runIds = [...new Set(items.map((i) => i.latest_run_id).filter((id): id is string => !!id))];
-    await Promise.all(runIds.map((id) => runsStore.fetchRun(id)));
-  },
-
-  refreshRuns: async () => {
-    const conversationId = get().conversationId;
-    if (!conversationId) {
-      set({ runs: [] });
-      return;
-    }
-    const isStale = runsGuard.begin();
-    const { items } = await listWorkItemRuns(conversationId);
-    // 期间已切换会话（openConversation 会 bump 票号）或已切走 agent
-    // （selectAgent 把 conversationId 置空但不 bump 票号）：两种都丢弃旧响应。
-    if (isStale() || get().conversationId !== conversationId) return;
-    items.sort((a, b) => a.created_at.localeCompare(b.created_at));
-    set({ runs: items });
-  },
-
-  send: async (text) => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    const agentId = get().agentId;
-    if (!wsId || !agentId || !text.trim() || get().sending) return;
-    set({ sending: true });
-    try {
-      let conversationId = get().conversationId;
-      if (!conversationId) {
-        // 首发消息：建会话（work item）+ 建 run；任务状态由控制平面推进。
-        const title = text.trim().slice(0, 24) + (text.trim().length > 24 ? '…' : '');
-        const wi = await createWorkItem(wsId, {
-          title,
-          status: 'todo',
-          priority: 'medium',
-          agent_profile_id: agentId,
-        });
-        conversationId = wi.id;
-        set({ conversationId });
-        await get().refreshConversations();
+export const useChatStore = create<ChatStore>()((set, get) => {
+  // 出队首发公共路径（send 的终态分支与 drainQueue 共用）：createRun + 订阅 + 各列表刷新。
+  // 分叉会话首发：尚无 run 且 description 以分叉标记开头时，把上下文包拼进首条
+  // instruction（description 原样保留在 work item 上不消费，仅本轮注入一次）。
+  const startRun = async (conversationId: string, agentId: string, text: string): Promise<void> => {
+    let instruction = text;
+    if (get().runs.length === 0) {
+      const conversation = get().conversations.find((c) => c.id === conversationId);
+      if (conversation?.description.startsWith(FORK_CONTEXT_MARKER)) {
+        instruction = `${conversation.description}\n\n【用户新指令】\n${text}`;
       }
+    }
+    const resp = await createRun(conversationId, {
+      agent_profile_id: agentId,
+      input: { instruction },
+    });
+    // 先刷新 run 列表再订阅，避免时间线已加载但 runIds 仍为空导致消息不渲染。
+    await get().refreshRuns();
+    useRunsStore.getState().watchRun(resp.run_id);
+    await get().refreshConversations();
+    await get().refreshRuns();
+    await useTasksStore.getState().refresh();
+  };
+
+  return {
+    agentId: null,
+    conversationId: null,
+    conversations: [],
+    runs: [],
+    sending: false,
+    queue: [],
+
+    selectAgent: (id) => {
+      set({ agentId: id, conversationId: null, runs: [], queue: [] });
+      void get().refreshConversations();
+    },
+
+    openConversation: (workItemId) => {
+      set({ conversationId: workItemId, runs: [], queue: [] });
+      void get().refreshRuns();
+    },
+
+    refreshConversations: async () => {
+      const wsId = useWorkspaceStore.getState().workspace?.id;
+      const agentId = get().agentId;
+      if (!wsId || !agentId) {
+        set({ conversations: [] });
+        return;
+      }
+      const isStale = conversationsGuard.begin();
+      const { items } = await listWorkItems(wsId, { assignee: agentId });
+      if (isStale()) return; // 期间已切换 agent：丢弃旧响应
+      items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      set({ conversations: items });
+      const runsStore = useRunsStore.getState();
+      const runIds = [...new Set(items.map((i) => i.latest_run_id).filter((id): id is string => !!id))];
+      await Promise.all(runIds.map((id) => runsStore.fetchRun(id)));
+    },
+
+    refreshRuns: async () => {
+      const conversationId = get().conversationId;
+      if (!conversationId) {
+        set({ runs: [] });
+        return;
+      }
+      const isStale = runsGuard.begin();
+      const { items } = await listWorkItemRuns(conversationId);
+      // 期间已切换会话（openConversation 会 bump 票号）或已切走 agent
+      // （selectAgent 把 conversationId 置空但不 bump 票号）：两种都丢弃旧响应。
+      if (isStale() || get().conversationId !== conversationId) return;
+      items.sort((a, b) => a.created_at.localeCompare(b.created_at));
+      set({ runs: items });
+    },
+
+    send: async (text) => {
+      const trimmed = text.trim();
+      const wsId = useWorkspaceStore.getState().workspace?.id;
+      const agentId = get().agentId;
+      if (!wsId || !agentId || !trimmed) return;
+
       const runsStore = useRunsStore.getState();
       const latest = get().runs[get().runs.length - 1];
       const latestSnapshot = currentRunSnapshot(latest, runsStore.runs);
-
-      if (latestSnapshot && !TERMINAL.has(latestSnapshot.status)) {
-        // 活动 Run：steering 追加（协议 §5.3 commands/input）。
-        await sendRunInput(latestSnapshot.id, text.trim());
-      } else {
-        const resp = await createRun(conversationId, {
-          agent_profile_id: agentId,
-          input: { instruction: text.trim() },
-        });
-        // 先刷新 run 列表再订阅，避免时间线已加载但 runIds 仍为空导致消息不渲染。
-        await get().refreshRuns();
-        runsStore.watchRun(resp.run_id);
+      // 活动 Run 或有首发在途（sending，含 drain）：入队等本轮完成后自动续发，
+      // 不再走 sendRunInput 的 steering 追加。
+      if ((latestSnapshot && !TERMINAL.has(latestSnapshot.status)) || get().sending) {
+        get().enqueue(trimmed);
+        return;
       }
-      await get().refreshConversations();
-      await get().refreshRuns();
-      await useTasksStore.getState().refresh();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : '发送失败');
-    } finally {
-      set({ sending: false });
-    }
-  },
-}));
+      set({ sending: true });
+      let conversationId = get().conversationId;
+      try {
+        if (!conversationId) {
+          // 首发消息：建会话（work item）+ 建 run；任务状态由控制平面推进。
+          const title = trimmed.slice(0, 24) + (trimmed.length > 24 ? '…' : '');
+          const wi = await createWorkItem(wsId, {
+            title,
+            status: 'todo',
+            priority: 'medium',
+            agent_profile_id: agentId,
+          });
+          conversationId = wi.id;
+          set({ conversationId });
+          await get().refreshConversations();
+        }
+        // 队列非空：先把本条入队再出队首条 createRun（FIFO——队头先发，本条排队尾）。
+        const pending = [...get().queue, trimmed];
+        const first = pending.shift();
+        if (!first) return; // 不可达（trimmed 非空）：类型收窄
+        set({ queue: pending });
+        await startRun(conversationId, agentId, first);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '发送失败');
+      } finally {
+        set({ sending: false });
+      }
+    },
+
+    enqueue: (text) => set((s) => ({ queue: [...s.queue, text] })),
+
+    removeQueued: (index) => set((s) => ({ queue: s.queue.filter((_, i) => i !== index) })),
+
+    drainQueue: async () => {
+      const wsId = useWorkspaceStore.getState().workspace?.id;
+      const agentId = get().agentId;
+      const conversationId = get().conversationId;
+      const first = get().queue[0];
+      if (!wsId || !agentId || !conversationId || !first || get().sending) return;
+      set({ sending: true, queue: get().queue.slice(1) });
+      try {
+        await startRun(conversationId, agentId, first);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '发送失败');
+      } finally {
+        set({ sending: false });
+      }
+    },
+
+    forkConversation: async (atMessageKey) => {
+      const wsId = useWorkspaceStore.getState().workspace?.id;
+      const agentId = get().agentId;
+      const source = get().conversations.find((c) => c.id === get().conversationId);
+      if (!wsId || !agentId || !source) return;
+      const context = buildForkContext(
+        buildMessages(get().runs.map((r) => r.id), useRunsStore.getState().timelines),
+        atMessageKey,
+      );
+      if (!context) return; // 锚点消息不在当前投影里（时间线未加载等）：不分叉
+      try {
+        const wi = await createWorkItem(wsId, {
+          title: `${source.title}（分叉）`,
+          parent_id: source.id,
+          agent_profile_id: agentId,
+          description: context,
+        });
+        get().openConversation(wi.id);
+        await get().refreshConversations();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : '分叉失败');
+      }
+    },
+  };
+});

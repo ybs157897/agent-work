@@ -1,4 +1,4 @@
-import { Check, Copy } from 'lucide-react';
+import { Check, Copy, GitBranch } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { formatTime } from '../../utils/format';
 import { writeClipboard } from './blocks/clipboard';
@@ -14,6 +14,7 @@ export function MessageActions({
   at,
   side,
   className,
+  onFork,
 }: {
   /** 复制到剪贴板的原文。 */
   text: string;
@@ -21,6 +22,8 @@ export function MessageActions({
   at?: string;
   side: 'left' | 'right';
   className?: string;
+  /** 分叉对话入口（可选）：从本条消息截取上下文创建分叉会话。 */
+  onFork?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<number | undefined>(undefined);
@@ -60,6 +63,17 @@ export function MessageActions({
           <Copy className="h-3.5 w-3.5" />
         )}
       </button>
+      {onFork ? (
+        <button
+          type="button"
+          aria-label="分叉对话"
+          title="分叉对话"
+          onClick={onFork}
+          className="rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary"
+        >
+          <GitBranch className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
       {side === 'right' ? clock : null}
     </div>
   );
