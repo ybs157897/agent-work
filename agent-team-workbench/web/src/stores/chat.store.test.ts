@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -294,5 +294,28 @@ describe('chat.store refresh 请求序号守卫', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await new Promise((r) => setTimeout(r, 0));
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['wi_b']);
+  });
+});
+
+describe('formatTokenUsage', () => {
+  it('used 缺失/非法时返回 null：UI 不渲染、不报错', () => {
+    expect(formatTokenUsage()).toBeNull();
+    expect(formatTokenUsage(0)).toBeNull();
+    expect(formatTokenUsage(-42)).toBeNull();
+    expect(formatTokenUsage(Number.NaN)).toBeNull();
+    expect(formatTokenUsage(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it('只有 used 时渲染 {used}k tokens：k 取整，不足 1k 记 1k', () => {
+    expect(formatTokenUsage(300)).toBe('1k tokens');
+    expect(formatTokenUsage(1_400)).toBe('1k tokens');
+    expect(formatTokenUsage(1_500)).toBe('2k tokens');
+    expect(formatTokenUsage(16_400)).toBe('16k tokens');
+  });
+
+  it('窗口可得时渲染 {used}k / {window}k；窗口非法降级为只显 used', () => {
+    expect(formatTokenUsage(1_500, 128_000)).toBe('2k / 128k tokens');
+    expect(formatTokenUsage(1_500, 0)).toBe('2k tokens');
+    expect(formatTokenUsage(1_500, Number.NaN)).toBe('2k tokens');
   });
 });

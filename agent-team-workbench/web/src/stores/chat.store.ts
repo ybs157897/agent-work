@@ -66,6 +66,19 @@ export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
 const TERMINAL: ReadonlySet<string> = new Set(['succeeded', 'interrupted', 'cancelled', 'lost', 'failed']);
 const ACTIVE: ReadonlySet<string> = new Set(['queued', 'starting', 'running', 'waiting_approval', 'interrupting', 'cancelling', 'reconnecting', 'succeeding']);
 
+/**
+ * Composer 用量提示文案：`{used}k tokens`，窗口可得时 `{used}k / {window}k tokens`。
+ * used 缺失/非有限/非正返回 null（调用方不渲染）；k 取整，不足 1k 记 1k 避免「0k」噪音。
+ */
+export function formatTokenUsage(used?: number, contextWindow?: number): string | null {
+  if (typeof used !== 'number' || !Number.isFinite(used) || used <= 0) return null;
+  const usedK = Math.max(1, Math.round(used / 1000));
+  if (typeof contextWindow !== 'number' || !Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return `${usedK}k tokens`;
+  }
+  return `${usedK}k / ${Math.round(contextWindow / 1000)}k tokens`;
+}
+
 /** 从 run 时间线推导对话气泡（user 右 / assistant 左 / tool·error·system 居中细行）。 */
 export function buildMessages(runIds: string[], timelines: Record<string, TimelineEntry[]>): ChatMessage[] {
   const out: ChatMessage[] = [];
