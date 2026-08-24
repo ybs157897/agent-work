@@ -1,5 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
 @import url('https://font.emtech.cc/css/chironHeiHK');
+@import 'highlight.js/styles/github.min.css';
 
 @tailwind base;
 @tailwind components;
@@ -435,4 +436,12 @@
   .chat-typing span {
     animation: none;
   }
+}
+
+/* ---- Chat 代码块（code-block.tsx：github 主题的 token 色保留，容器外观交给组件 utilities） ---- */
+.code-block pre code.hljs,
+.code-block code.hljs {
+  padding: 0;
+  background: transparent;
+  color: inherit;
 }
