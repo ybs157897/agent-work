@@ -652,6 +652,71 @@ func TestPumpLogsUnrecognizedNotifications(t *testing.T) {
 	}
 }
 
+// runPumpFrames 以脚本化 reader 直驱 pump（离线；stdin 由 discardCloser 吸掉
+// 握手期上行写），返回 pump 产出与终态裁决结果。
+func runPumpFrames(t *testing.T, frames []string) (*pumpResult, atwruntime.ExecResult) {
+	t.Helper()
+	reader := bufio.NewReader(strings.NewReader(strings.Join(frames, "\n") + "\n"))
+	cb := &recordCallbacks{}
+	s := &execStream{
+		module: New(Config{}), ctx: context.Background(),
+		ex: &atwruntime.ExecContext{
+			Ctx: context.Background(), Run: newRun(nil), Instruction: "codex fake run",
+			Callbacks: cb, Controls: make(chan atwruntime.Control, 1),
+		},
+		stdin: discardCloser{}, pendingRequests: map[int64]string{}, approvals: map[string]chan bool{},
+	}
+	res := s.pump(reader)
+	return res, composeResult(s.ex, context.Background(), res, nil)
+}
+
+// 用量帧 → ExecResult.Usage：只累计归因到活动 turn（turn_1）的通知增量——
+// resume 重放帧（turn_prev）与异 turn 帧（turn_other）不得计入；snake_case
+// 容错形状（info.last_token_usage.*）与权威 camelCase 形状等价累计。
+func TestPumpAccumulatesTokenUsage(t *testing.T) {
+	res, final := runPumpFrames(t, []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"turn_prev","tokenUsage":{"total":{"inputTokens":9000,"cachedInputTokens":8000,"outputTokens":7000},"last":{"inputTokens":3000,"cachedInputTokens":2000,"outputTokens":1000}}}}`,
+		`{"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"turn_1","tokenUsage":{"total":{"inputTokens":9100,"cachedInputTokens":8040,"outputTokens":7020},"last":{"inputTokens":100,"cachedInputTokens":40,"outputTokens":20}}}}`,
+		`{"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"turn_1","info":{"total_token_usage":{"input_tokens":9250,"cached_input_tokens":8100,"output_tokens":7050},"last_token_usage":{"input_tokens":150,"cached_input_tokens":60,"output_tokens":30}}}}`,
+		`{"method":"thread/tokenUsage/updated","params":{"threadId":"th_1","turnId":"turn_other","tokenUsage":{"last":{"inputTokens":999,"cachedInputTokens":999,"outputTokens":999}}}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	})
+
+	if !res.finished || res.turnStatus != "completed" {
+		t.Fatalf("用量通知不得影响通知流收尾: %+v", res)
+	}
+	want := &atwruntime.Usage{InputTokens: 250, OutputTokens: 50, CachedTokens: 100, Basis: atwruntime.UsagePerRun}
+	if res.usage == nil || *res.usage != *want {
+		t.Fatalf("pump 用量累计错误（期望 100+150/20+30/40+60 且只计 turn_1）: %+v", res.usage)
+	}
+	if final.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("期望 succeeded，得到 %s (%+v)", final.Outcome, final.Failure)
+	}
+	if final.Usage == nil || *final.Usage != *want {
+		t.Fatalf("ExecResult.Usage 映射错误: %+v", final.Usage)
+	}
+}
+
+// 零值对照：无用量帧 → pump 与 ExecResult 的 Usage 均为 nil（不捏造上报）。
+func TestPumpUsageZeroWithoutFrames(t *testing.T) {
+	res, final := runPumpFrames(t, []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	})
+
+	if !res.finished || res.turnStatus != "completed" {
+		t.Fatalf("收尾异常: %+v", res)
+	}
+	if res.usage != nil || final.Usage != nil {
+		t.Fatalf("无用量帧不得捏造 Usage: pump=%+v exec=%+v", res.usage, final.Usage)
+	}
+}
+
 // 无终态意图的 ctx 取消（如服务关停）默认 interrupted（保留 resume 时机）。
 func TestExecuteContextCancelDefaultsToInterrupted(t *testing.T) {
 	t.Setenv("CODEX_FAKE_HANG", "1")
@@ -976,9 +1041,11 @@ func TestConformanceCodexApp(t *testing.T) {
 		if !strings.HasPrefix(sessions[0].Ref, "codex://") {
 			t.Fatalf("会话 ref 期望前缀 codex://，实际 %s", sessions[0].Ref)
 		}
-		// 旧实现无 token 用量解析：不产生 Usage 上报（能力不静默捏造）。
+		// 用量零值对照：回放 fixture 不发 token 用量帧 → 不得捏造 Usage 上报；
+		// 同时钉住 codexapp 不走 OnUsage 流式（用量唯一出口是 ExecResult.Usage）。
+		// 正向映射（tokenUsage 帧 → Usage 三字段/per_run）见 TestPumpAccumulatesTokenUsage。
 		if len(usages) != 0 {
-			t.Fatalf("codexapp 未接用量解析，不应上报 Usage: %+v", usages)
+			t.Fatalf("无用量帧不得上报 Usage: %+v", usages)
 		}
 	})
 
