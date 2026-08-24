@@ -642,6 +642,10 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "error":
 			res.failure = codexFailure("codex_error", rawString(frame.Params))
 			return res
+		default:
+			// 未识别的 app-server 通知：显式记 warn 日志保持可观测（协议词表
+			// 演进时能发现），不改变通知流继续消费。
+			s.ex.Callbacks.OnLog("codexapp", "warn unhandled notification "+frame.Method+" "+rawString(frame.Params))
 		}
 	}
 }

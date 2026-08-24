@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/exec"
@@ -598,6 +599,56 @@ func TestExecuteSteering(t *testing.T) {
 	}
 	if text := r.cb.completedText(); text != "steered" {
 		t.Fatalf("steering 后的最终消息错误: %q", text)
+	}
+}
+
+// discardCloser 吸掉 pump 握手期的上行写（initialize/initialized/thread/start/
+// turn/start），使 pump 可离线直测：通知帧由脚本化 reader 供给。
+type discardCloser struct{}
+
+func (discardCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardCloser) Close() error                { return nil }
+
+// 未识别的 app-server 通知不得静默丢弃：default 分支记 warn OnLog（含 method
+// 名，params 截 200），且通知流继续消费到 turn/completed。
+func TestPumpLogsUnrecognizedNotifications(t *testing.T) {
+	frames := []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"item/mysteryStarted","params":{"itemId":"ms_1","detail":"` + strings.Repeat("A", 300) + `Z"}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	}
+	reader := bufio.NewReader(strings.NewReader(strings.Join(frames, "\n") + "\n"))
+	cb := &recordCallbacks{}
+	s := &execStream{
+		module: New(Config{}), ctx: context.Background(),
+		ex: &atwruntime.ExecContext{
+			Ctx: context.Background(), Run: newRun(nil), Instruction: "codex fake run",
+			Callbacks: cb, Controls: make(chan atwruntime.Control, 1),
+		},
+		stdin: discardCloser{}, pendingRequests: map[int64]string{}, approvals: map[string]chan bool{},
+	}
+
+	res := s.pump(reader)
+
+	if !res.finished || res.turnStatus != "completed" {
+		t.Fatalf("未知通知不得影响通知流收尾: %+v", res)
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	i := -1
+	for j, l := range cb.logs {
+		if strings.Contains(l.line, "item/mysteryStarted") {
+			i = j
+		}
+	}
+	if i < 0 {
+		t.Fatalf("未知通知应记 warn OnLog: %v", cb.logs)
+	}
+	if line := cb.logs[i]; !strings.Contains(line.line, "warn") ||
+		strings.Contains(line.line, "Z") { // params 截 200：300+A 的尾部不得进入日志
+		t.Fatalf("warn 日志形状不符（应含 warn 标记且截断）: %+v", line)
 	}
 }
 
