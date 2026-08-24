@@ -115,9 +115,9 @@ func TestConformanceCodexApp(t *testing.T) {
 	runSuite(t, "codex-appserver",
 		codexConfModule(t),
 		codexConfModule(t),
-		// thread scheme 是 codex://；app-server 协议未暴露用量统计。
+		// thread scheme 是 codex://；thread/tokenUsage/updated 已接用量累计。
 		suiteOpts{
-			scheme: "codex", requireUsage: false,
+			scheme: "codex", requireUsage: true,
 			beforeHeld: func(t *testing.T) { t.Setenv("CODEX_FAKE_HANG", "1") },
 		},
 	)
