@@ -152,6 +152,15 @@ func (t *turnRun) usageTotals() (in, out, cached int64) {
 	return t.usageChunkInput, t.usageChunkOutput, t.usageChunkCached
 }
 
+// emitUsageProgress 累计后即时过程观测：按结算同源口径（usageTotals）上报
+// 当前累计值；OnUsage 是覆盖语义，终态结算仍走 turnEndResult 的 ExecResult.Usage。
+func emitUsageProgress(ex *runtime.ExecContext, state *turnRun) {
+	in, out, cached := state.usageTotals()
+	ex.Callbacks.OnUsage(runtime.Usage{
+		InputTokens: in, OutputTokens: out, CachedTokens: cached, Basis: runtime.UsagePerRun,
+	})
+}
+
 // Execute 阻塞执行一轮：建订阅 → 解析/创建会话 → prompt → 消费 mux 流到
 // turn/end → 结构化返回。
 func (g *Gateway) Execute(ex *runtime.ExecContext) runtime.ExecResult {
@@ -483,6 +492,7 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 			state.usageChunkInput += chunk.Usage.InputTokens + chunk.Usage.CacheReadTokens
 			state.usageChunkOutput += chunk.Usage.OutputTokens
 			state.usageChunkCached += chunk.Usage.CacheReadTokens
+			emitUsageProgress(ex, state)
 		}
 	case "assistant/message":
 		ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
@@ -493,6 +503,7 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 			state.usageMsgInput += num(u["inputTokens"]) + num(u["cacheReadTokens"])
 			state.usageMsgOutput += num(u["outputTokens"])
 			state.usageMsgCached += num(u["cacheReadTokens"])
+			emitUsageProgress(ex, state)
 		}
 	case "tool/call":
 		// canonical 契约：{tool, call_id, args_summary?}（notes:

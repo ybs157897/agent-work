@@ -224,6 +224,7 @@ type recordCallbacks struct {
 	mu        sync.Mutex
 	events    []recordedEvent
 	sessions  []runtime.SessionUpdate
+	usages    []runtime.Usage
 	logs      []string
 	approvals chan approvalReq
 }
@@ -243,8 +244,12 @@ func (c *recordCallbacks) OnLog(stream, line string) {
 	defer c.mu.Unlock()
 	c.logs = append(c.logs, stream+" "+line)
 }
-func (c *recordCallbacks) OnSpawn(pid, pgid int)   {}
-func (c *recordCallbacks) OnUsage(u runtime.Usage) {}
+func (c *recordCallbacks) OnSpawn(pid, pgid int) {}
+func (c *recordCallbacks) OnUsage(u runtime.Usage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.usages = append(c.usages, u)
+}
 func (c *recordCallbacks) OnSession(u runtime.SessionUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -254,6 +259,13 @@ func (c *recordCallbacks) RequestApproval(kind, risk, summary string) string {
 	req := approvalReq{id: "eng_" + kind, kind: kind, risk: risk, summary: summary}
 	c.approvals <- req
 	return req.id
+}
+
+// usageFrames 取 OnUsage 过程观测帧（按到达序的快照副本）。
+func (c *recordCallbacks) usageFrames() []runtime.Usage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]runtime.Usage(nil), c.usages...)
 }
 
 func (c *recordCallbacks) find(kind string) (recordedEvent, bool) {
@@ -637,6 +649,7 @@ func TestGatewayTurnErrorClassified(t *testing.T) {
 
 // F7d：同一 turn 的 assistant/chunk 与 assistant/message 都携带 usage 时，
 // 以 message.usage 为权威计数一次，chunk.usage 仅在整轮无 message.usage 时兜底。
+// OnUsage 过程观测与结算同源（usageTotals 口径），观测末帧 == 结算值。
 func TestGatewayUsageDeduplication(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -645,6 +658,7 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 		wantIn    int64
 		wantOut   int64
 		wantCache int64
+		wantFrms  []runtime.Usage // OnUsage 过程观测帧（按到达序）
 	}{
 		{
 			name:     "双帧同值只计一次（message 权威）",
@@ -653,11 +667,19 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 				{"inputTokens": 100, "outputTokens": 20, "cacheReadTokens": 8},
 			},
 			wantIn: 108, wantOut: 20, wantCache: 8,
+			// 先兜底（chunk 累计 54/10/4），message 到达后切权威口径（108/20/8）。
+			wantFrms: []runtime.Usage{
+				{InputTokens: 54, OutputTokens: 10, CachedTokens: 4, Basis: runtime.UsagePerRun},
+				{InputTokens: 108, OutputTokens: 20, CachedTokens: 8, Basis: runtime.UsagePerRun},
+			},
 		},
 		{
 			name:     "仅 chunk 携带 usage 时兜底采纳",
 			chunkUsg: map[string]any{"inputTokens": 40, "outputTokens": 6, "cacheReadTokens": 2},
 			wantIn:   42, wantOut: 6, wantCache: 2,
+			wantFrms: []runtime.Usage{
+				{InputTokens: 42, OutputTokens: 6, CachedTokens: 2, Basis: runtime.UsagePerRun},
+			},
 		},
 		{
 			name: "多条 message 各自带 usage 时累加",
@@ -666,6 +688,10 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 				{"inputTokens": 20, "outputTokens": 3, "cacheReadTokens": 0},
 			},
 			wantIn: 31, wantOut: 5, wantCache: 1,
+			wantFrms: []runtime.Usage{
+				{InputTokens: 11, OutputTokens: 2, CachedTokens: 1, Basis: runtime.UsagePerRun},
+				{InputTokens: 31, OutputTokens: 5, CachedTokens: 1, Basis: runtime.UsagePerRun},
+			},
 		},
 	}
 	for _, tc := range cases {
@@ -702,6 +728,15 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 				res.Usage.CachedTokens != tc.wantCache || res.Usage.Basis != runtime.UsagePerRun {
 				t.Fatalf("Usage 去重口径不符（want in=%d out=%d cached=%d）: %+v",
 					tc.wantIn, tc.wantOut, tc.wantCache, res.Usage)
+			}
+			frames := cb.usageFrames()
+			if len(frames) != len(tc.wantFrms) {
+				t.Fatalf("OnUsage 帧数不符（want %d）: %+v", len(tc.wantFrms), frames)
+			}
+			for i, w := range tc.wantFrms {
+				if frames[i] != w {
+					t.Fatalf("OnUsage 第 %d 帧不符（口径应与结算同源）: got %+v want %+v", i+1, frames[i], w)
+				}
 			}
 		})
 	}

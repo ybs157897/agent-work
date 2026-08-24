@@ -87,6 +87,7 @@ type recordCallbacks struct {
 	events    []recEvent
 	logs      []recLog
 	sessions  []atwruntime.SessionUpdate
+	usages    []atwruntime.Usage
 	approvals []recApproval
 	spawned   bool
 	pid       int
@@ -117,7 +118,18 @@ func (c *recordCallbacks) OnSpawn(pid, processGroupID int) {
 	c.spawned, c.pid, c.pgid = true, pid, processGroupID
 }
 
-func (c *recordCallbacks) OnUsage(u atwruntime.Usage) {}
+func (c *recordCallbacks) OnUsage(u atwruntime.Usage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.usages = append(c.usages, u)
+}
+
+// usageFrames 取 OnUsage 过程观测帧（按到达序的快照副本）。
+func (c *recordCallbacks) usageFrames() []atwruntime.Usage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]atwruntime.Usage(nil), c.usages...)
+}
 
 func (c *recordCallbacks) OnSession(update atwruntime.SessionUpdate) {
 	c.mu.Lock()
@@ -673,8 +685,9 @@ func runPumpFrames(t *testing.T, frames []string) (*pumpResult, *recordCallbacks
 // 用量帧 → ExecResult.Usage：只累计归因到活动 turn（turn_1）的通知增量——
 // resume 重放帧（turn_prev）与异 turn 帧（turn_other）不得计入；snake_case
 // 容错形状（info.last_token_usage.*）与权威 camelCase 形状等价累计。
+// OnUsage 过程观测同步接通：归因帧逐条上报累计值，异 turn 帧不触发。
 func TestPumpAccumulatesTokenUsage(t *testing.T) {
-	res, _, final := runPumpFrames(t, []string{
+	res, cb, final := runPumpFrames(t, []string{
 		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
 		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
 		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
@@ -698,11 +711,24 @@ func TestPumpAccumulatesTokenUsage(t *testing.T) {
 	if final.Usage == nil || *final.Usage != *want {
 		t.Fatalf("ExecResult.Usage 映射错误: %+v", final.Usage)
 	}
+	frames := cb.usageFrames()
+	wantFrames := []atwruntime.Usage{
+		{InputTokens: 100, OutputTokens: 20, CachedTokens: 40, Basis: atwruntime.UsagePerRun},
+		{InputTokens: 250, OutputTokens: 50, CachedTokens: 100, Basis: atwruntime.UsagePerRun},
+	}
+	if len(frames) != len(wantFrames) {
+		t.Fatalf("OnUsage 帧数不符（turn_prev/turn_other 不得触发）: %+v", frames)
+	}
+	for i, w := range wantFrames {
+		if frames[i] != w {
+			t.Fatalf("OnUsage 第 %d 帧不符（累计值覆盖语义）: got %+v want %+v", i+1, frames[i], w)
+		}
+	}
 }
 
 // 零值对照：无用量帧 → pump 与 ExecResult 的 Usage 均为 nil（不捏造上报）。
 func TestPumpUsageZeroWithoutFrames(t *testing.T) {
-	res, _, final := runPumpFrames(t, []string{
+	res, cb, final := runPumpFrames(t, []string{
 		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
 		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
 		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
@@ -714,6 +740,9 @@ func TestPumpUsageZeroWithoutFrames(t *testing.T) {
 	}
 	if res.usage != nil || final.Usage != nil {
 		t.Fatalf("无用量帧不得捏造 Usage: pump=%+v exec=%+v", res.usage, final.Usage)
+	}
+	if frames := cb.usageFrames(); len(frames) != 0 {
+		t.Fatalf("无用量帧不得捏造 OnUsage: %+v", frames)
 	}
 }
 
@@ -1142,9 +1171,10 @@ func TestConformanceCodexApp(t *testing.T) {
 		if !strings.HasPrefix(sessions[0].Ref, "codex://") {
 			t.Fatalf("会话 ref 期望前缀 codex://，实际 %s", sessions[0].Ref)
 		}
-		// 用量零值对照：回放 fixture 不发 token 用量帧 → 不得捏造 Usage 上报；
-		// 同时钉住 codexapp 不走 OnUsage 流式（用量唯一出口是 ExecResult.Usage）。
-		// 正向映射（tokenUsage 帧 → Usage 三字段/per_run）见 TestPumpAccumulatesTokenUsage。
+		// 用量零值对照：回放 fixture 不发 token 用量帧 → OnUsage 流式与
+		// ExecResult.Usage 结算两条路都不得捏造上报。
+		// 正向映射（tokenUsage 帧 → OnUsage 过程帧 + Usage 三字段/per_run）
+		// 见 TestPumpAccumulatesTokenUsage。
 		if len(usages) != 0 {
 			t.Fatalf("无用量帧不得上报 Usage: %+v", usages)
 		}

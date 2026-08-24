@@ -64,8 +64,10 @@ resume 重放归因旧 turn、turn 开始前的通知不属于本轮，天然被
 - **OnUsage 流式上报**：RecordRunUsage 是覆盖语义 + 差值幂等，流式每次都要写库事务，
   而用量没有实时消费面（agents 页锚点弹窗读 task_sessions.input_tokens_cum 投影，
   非 run 事件流）；单 turn 内通知次数 = 模型响应次数（个位到几十），收尾一次上报足够。
-  kimiapp 同样只在收尾写 ExecResult.Usage。**负向保证：codexapp 的用量唯一出口是
-  ExecResult.Usage，不调用 Callbacks.OnUsage。**
+  kimiapp 同样只在收尾写 ExecResult.Usage。
+  **（2026-08-24 翻转：实时消费面落地——见
+  [usage-realtime-telemetry](../feature/2026-08-24-usage-realtime-telemetry.md)，
+  pump 已在累计处追加 `Callbacks.OnUsage` 过程观测，终态结算口径不变。）**
 - **把 `token_count` 方法名加进处理词表**：app-server v2 0.149.0 schema 证明该方法名
   不存在于本协议；未识别通知已有 warn 日志兜底（协议漂移可发现），不预埋死代码。
   容错只做在键名层（camelCase/snake_case），因为那是同一结构两种序列化的真实风险面。
@@ -80,8 +82,11 @@ resume 重放归因旧 turn、turn 开始前的通知不属于本轮，天然被
 
 ## 复活条件
 
-- 若 run 事件流需要实时 token 进度（如对话页实时上下文水位条）→ 返工点：pump 在
-  累计处追加 `Callbacks.OnUsage`（RecordRunUsage 差值幂等已兼容），并在本 note 增补。
+- ~~若 run 事件流需要实时 token 进度（如对话页实时上下文水位条）→ 返工点：pump 在
+  累计处追加 `Callbacks.OnUsage`（RecordRunUsage 差值幂等已兼容），并在本 note 增补。~~
+  （2026-08-24 已触发并执行：对话页 composer 用量提示要即时刷新，三家 adapter
+  统一接 OnUsage，设计见
+  [usage-realtime-telemetry](../feature/2026-08-24-usage-realtime-telemetry.md)。）
 - 若 codex 后续版本改用其他通知名/形状 → 证据入口：重跑
   `codex app-server generate-json-schema --experimental` 比对
   `protocolSchemaSHA256`（`internal/runtime/adapters/codexapp/protocol.go`）。

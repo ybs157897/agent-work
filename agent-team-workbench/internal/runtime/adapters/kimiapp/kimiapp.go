@@ -560,6 +560,8 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		})
 	case "turn.step.completed":
 		// usage 权威来源：逐 step 累计（per_run）；input 计入 cacheRead/Creation。
+		// 累计后即时 OnUsage 过程观测（覆盖语义）；终态结算仍走
+		// turnEndResult 的 ExecResult.Usage。
 		var ev evStepCompleted
 		_ = json.Unmarshal(frame.Payload, &ev)
 		if p.state.activeSeen && ev.TurnID == p.state.activeTurn && ev.Usage != nil {
@@ -567,6 +569,10 @@ func (p *eventPump) handle(frame wsFrame) bool {
 			p.state.usageOut += ev.Usage.Output
 			p.state.usageCached += ev.Usage.InputCacheRead
 			p.state.usageSeen = true
+			p.ex.Callbacks.OnUsage(runtime.Usage{
+				InputTokens: p.state.usageIn, OutputTokens: p.state.usageOut,
+				CachedTokens: p.state.usageCached, Basis: runtime.UsagePerRun,
+			})
 		}
 	case "tool.call.started":
 		var ev evToolCallStarted
