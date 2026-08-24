@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AssistantTurn } from '../components/chat/assistant-turn';
 import { ApprovalCard } from '../components/chat/approval-card';
+import { ActivityGroup, groupActivity } from '../components/chat/tool-card';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
@@ -281,16 +282,22 @@ function ConversationPane() {
   );
 }
 
-function renderTranscript(messages: ChatMessage[]) {
+function renderTranscript(messages: ChatMessage[]): ReactNode[] {
   const nodes: ReactNode[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
+  const segments = groupActivity(messages);
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.kind === 'activity') {
+      nodes.push(<ActivityGroup key={seg.items[0].key} items={seg.items} />);
+      continue;
+    }
+    const msg = seg.item;
     if (msg.kind === 'user') {
       nodes.push(<UserBubble key={msg.key} msg={msg} />);
       continue;
     }
     if (msg.kind === 'thinking') {
-      const next = messages[i + 1];
+      const next = segments[i + 1]?.kind === 'single' ? segments[i + 1].item : undefined;
       if (next?.kind === 'assistant' && next.runId === msg.runId) {
         nodes.push(
           <AssistantTurn

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, toolDuration, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -11,12 +11,13 @@ const entry = (
   data?: Record<string, unknown>,
   role?: string,
   text?: string,
+  occurredAt?: string,
 ): TimelineEntry => ({
   event_id: `${runId}-${runSeq}`,
   stream_seq: runSeq,
   run_seq: runSeq,
   type,
-  occurred_at: '2026-08-22T00:00:00Z',
+  occurred_at: occurredAt ?? '2026-08-22T00:00:00Z',
   role,
   text,
   data,
@@ -138,6 +139,40 @@ describe('buildMessages', () => {
       ['tool', '调用工具 shell：ls'],
       ['assistant', '目录如下'],
     ]);
+  });
+
+  it('工具行携带卡片数据：started→running+startedAt，completed→success+completedAt，failed→failed，非零 exit→failed', () => {
+    const t0 = '2026-08-22T00:00:00.000Z';
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'Read', call_id: 'c1', args_summary: 'a.go' }, undefined, undefined, t0),
+        entry('run_1', 2, 'tool.completed', { call_id: 'c1', output: 'ok' }, undefined, undefined, '2026-08-22T00:00:02.500Z'),
+        entry('run_1', 3, 'tool.started', { tool: 'Bash', call_id: 'c2', args_summary: 'npm i' }, undefined, undefined, '2026-08-22T00:00:03.000Z'),
+        entry('run_1', 4, 'tool.failed', { call_id: 'c2', output: 'boom' }, undefined, undefined, '2026-08-22T00:00:09.000Z'),
+        entry('run_1', 5, 'tool.completed', { call_id: 'c3', output: 'orphan' }, undefined, undefined, '2026-08-22T00:00:10.000Z'),
+        entry('run_1', 6, 'tool.started', { tool: 'Bash', call_id: 'c4', args_summary: 'false' }, undefined, undefined, '2026-08-22T00:00:11.000Z'),
+        entry('run_1', 7, 'tool.completed', { call_id: 'c4', exit_code: 1 }, undefined, undefined, '2026-08-22T00:00:12.000Z'),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(
+      msgs.map((m) => [m.kind, m.tool, m.toolStatus, m.startedAt, m.completedAt]),
+    ).toEqual([
+      ['tool', 'Read', 'success', t0, '2026-08-22T00:00:02.500Z'],
+      ['error', 'Bash', 'failed', '2026-08-22T00:00:03.000Z', '2026-08-22T00:00:09.000Z'],
+      ['tool', undefined, 'success', undefined, '2026-08-22T00:00:10.000Z'],
+      ['error', 'Bash', 'failed', '2026-08-22T00:00:11.000Z', '2026-08-22T00:00:12.000Z'],
+    ]);
+  });
+
+  it('仅有 started 的工具行保持 running（进行中卡片）', () => {
+    const timelines = {
+      run_1: [entry('run_1', 1, 'tool.started', { tool: 'Grep', call_id: 'c1', args_summary: 'TODO' })],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs[0].toolStatus).toBe('running');
+    expect(msgs[0].startedAt).toBe('2026-08-22T00:00:00Z');
+    expect(msgs[0].completedAt).toBeUndefined();
   });
 });
 
@@ -317,5 +352,29 @@ describe('formatTokenUsage', () => {
     expect(formatTokenUsage(1_500, 128_000)).toBe('2k / 128k tokens');
     expect(formatTokenUsage(1_500, 0)).toBe('2k tokens');
     expect(formatTokenUsage(1_500, Number.NaN)).toBe('2k tokens');
+  });
+});
+
+describe('toolDuration', () => {
+  const at = (s: number) => new Date(s).toISOString();
+
+  it('<1s 显示 ms；<60s 显示 1 位小数 s（整数不带小数点）', () => {
+    expect(toolDuration(at(0), at(450))).toBe('450ms');
+    expect(toolDuration(at(0), at(999))).toBe('999ms');
+    expect(toolDuration(at(0), at(1_500))).toBe('1.5s');
+    expect(toolDuration(at(0), at(2_000))).toBe('2s');
+    expect(toolDuration(at(0), at(59_400))).toBe('59.4s');
+  });
+
+  it('≥60s 显示 m+s；跨分钟余数四舍五入到秒', () => {
+    expect(toolDuration(at(0), at(60_000))).toBe('1m 0s');
+    expect(toolDuration(at(0), at(125_000))).toBe('2m 5s');
+  });
+
+  it('缺时间/不可解析/负差值返回 null（不渲染徽章）', () => {
+    expect(toolDuration()).toBeNull();
+    expect(toolDuration(at(0))).toBeNull();
+    expect(toolDuration('not-a-date', at(0))).toBeNull();
+    expect(toolDuration(at(1_000), at(0))).toBeNull();
   });
 });

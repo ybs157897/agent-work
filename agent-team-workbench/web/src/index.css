@@ -438,6 +438,23 @@
   }
 }
 
+/* ---- Chat 工具活动组（tool-card.tsx：行卡片 + 可折叠组，对齐 codex Q4） ---- */
+.chat-activity {
+  @apply rounded-lg border border-border-subtle bg-surface-raised/70;
+}
+
+.chat-activity-head {
+  @apply flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-caption text-text-secondary transition-colors hover:bg-surface-base;
+}
+
+.chat-activity-body {
+  @apply space-y-0.5 border-t border-border-subtle p-1;
+}
+
+.chat-tool-row {
+  @apply flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-caption transition-colors hover:bg-surface-base;
+}
+
 /* ---- Chat 代码块（code-block.tsx：github 主题的 token 色保留，容器外观交给组件 utilities） ---- */
 .code-block pre code.hljs,
 .code-block code.hljs {

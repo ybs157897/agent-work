@@ -13,6 +13,9 @@ import { useTasksStore } from './tasks.store';
 import { toast } from './toast.store';
 import { useWorkspaceStore } from './workspace.store';
 
+/** 工具行卡片状态：started 时 running，completed/failed 后落定。 */
+export type ToolStatus = 'running' | 'success' | 'failed';
+
 /** 对话消息气泡（由 run 事件时间线推导）。 */
 export interface ChatMessage {
   key: string;
@@ -22,6 +25,12 @@ export interface ChatMessage {
   /** 工具结果输出等附属正文（适配器已截断），渲染为等宽块。 */
   detail?: string;
   at: string;
+  /** 工具行卡片数据（kind=tool 与工具失败的 error 行）：无则不按工具行渲染。 */
+  tool?: string;
+  toolStatus?: ToolStatus;
+  /** 耗时数据源：时间线事件的 occurred_at（同 call_id 的 started→completed 差值）。 */
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export interface RunStreamParts {
@@ -47,6 +56,21 @@ export function extractExitCode(data?: Record<string, unknown>): number | undefi
   const v = data?.exit_code;
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   return undefined;
+}
+
+/**
+ * 工具耗时人话格式：<1s 显示 ms，<60s 显示 s（1 位小数，整数不带小数点），≥60s 显示 m+s。
+ * 任一时间缺失/不可解析/差值为负返回 null（调用方不渲染徽章）。
+ */
+export function toolDuration(startedAt?: string, completedAt?: string): string | null {
+  if (!startedAt || !completedAt) return null;
+  const ms = Date.parse(completedAt) - Date.parse(startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) {
+    return `${Math.round(ms / 100) / 10}s`;
+  }
+  return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
 
 /** 聚合单个 run 时间线中的推理与回复草稿（用于实时展示）。 */
@@ -134,6 +158,9 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             kind: 'tool',
             text: argsSummary ? `调用工具 ${tool}：${argsSummary}` : `调用工具 ${tool}`,
             at: e.occurred_at,
+            tool,
+            toolStatus: 'running',
+            startedAt: e.occurred_at,
           });
           break;
         }
@@ -155,6 +182,10 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               text: (idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败') + exitSuffix,
               detail: output || undefined,
               at: e.occurred_at,
+              tool: idx >= 0 ? out[idx].tool : undefined,
+              toolStatus: 'failed',
+              startedAt: idx >= 0 ? out[idx].startedAt : undefined,
+              completedAt: e.occurred_at,
             };
             if (idx >= 0) out[idx] = failed;
             else out.push(failed);
@@ -168,6 +199,8 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               text: out[idx].text + exitSuffix,
               detail: output || undefined,
               at: e.occurred_at,
+              toolStatus: failedExit ? 'failed' : 'success',
+              completedAt: e.occurred_at,
             };
           } else {
             out.push({
@@ -177,6 +210,8 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               text: '工具输出' + exitSuffix,
               detail: output || undefined,
               at: e.occurred_at,
+              toolStatus: failedExit ? 'failed' : 'success',
+              completedAt: e.occurred_at,
             });
           }
           break;
