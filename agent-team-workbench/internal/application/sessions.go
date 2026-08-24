@@ -224,6 +224,9 @@ func (s *Service) RecordRunSessionUpdate(ctx context.Context, runID string, upda
 }
 
 // RecordRunUsage 落 execution_runs.usage_* 并累计 task_sessions 输入 token（轮换阈值输入）。
+// 进程内（Callbacks.OnUsage）与远程（runnergateway usage.updated 帧）两条上报路径
+// 汇聚于此：每次调用同事务发一条 usage.updated SSE（aggregate=execution_run，data 四字段
+// 与 runDTO 一致），终态随行与过程观测帧语义对称（web 端 patch 幂等）。
 func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtime.Usage) error {
 	var workspaceID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -244,6 +247,16 @@ func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtim
 		r.UsageIn, r.UsageOut, r.UsageCached = usage.InputTokens, usage.OutputTokens, usage.CachedTokens
 		r.UsageBasis = string(usage.Basis)
 		if err := s.store.Runs().Update(ctx, r, r.Version); err != nil {
+			return err
+		}
+		data := map[string]any{
+			"usage_in": usage.InputTokens, "usage_out": usage.OutputTokens,
+			"usage_cached": usage.CachedTokens, "usage_basis": string(usage.Basis),
+		}
+		// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventUsageUpdated,
+			domain.AggregateExecutionRun, r.ID, r.Version+1,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventUsageUpdated, Payload: data}, data); err != nil {
 			return err
 		}
 		if r.AdapterID != "" && usage.Basis == runtime.UsagePerRun {
