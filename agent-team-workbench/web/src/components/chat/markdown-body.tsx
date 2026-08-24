@@ -1,5 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { CodeBlock } from './code-block';
 
 /** Agent 正文 Markdown（对齐 deepseek-harness agent-chat 的 .ac-markdown）。 */
 export function MarkdownBody({ text }: { text: string }) {
@@ -28,11 +29,7 @@ export function MarkdownBody({ text }: { text: string }) {
             </code>
           );
         },
-        pre: ({ children }) => (
-          <pre className="my-2 overflow-x-auto rounded-md bg-surface-sunken px-3 py-2 text-[13px] leading-relaxed">
-            {children}
-          </pre>
-        ),
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
       }}
     >
       {text}
