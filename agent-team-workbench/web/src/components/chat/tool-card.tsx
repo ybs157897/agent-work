@@ -1,20 +1,40 @@
-import { ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, Terminal, Wrench, type LucideIcon } from 'lucide-react';
-import { createElement, useState } from 'react';
-import { toolDuration, type ChatMessage, type ToolStatus } from '../../stores/chat.store';
+import { ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
+import { createElement, useState, type ReactNode } from 'react';
+import { toolDuration, type ChatMessage } from '../../stores/chat.store';
 import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
+import { DisclosureRow } from './blocks/DisclosureRow';
+import { StateDot } from './blocks/StateDot';
+import { TerminalBlock } from './blocks/TerminalBlock';
+import { ReadBlock } from './blocks/ReadBlock';
+import { SearchBlock } from './blocks/SearchBlock';
+import { cx } from './blocks/cx';
+import { toolRowModel, classifyTool, type ToolRowModel, type ToolRowState } from './tool-model';
+import { readBlockFromOutput } from './read-model';
+import { parseGrepOutput, parsePathList } from './search-parse';
+import css from './tool-row.module.css';
 
 /**
- * 工具名 → 类别图标（宽松子串匹配，覆盖各 runtime 的命名习惯：Bash/Read/Write/Grep/
- * mcp__server__tool 等；未知落 Wrench）。纯函数：同输入同输出。
+ * 工具名 → 类别图标：mcp 优先特判，其余走 tool-model 的族分类
+ * （bash→Terminal、read→FileText、write/edit→FilePen、search→Search、code→SquareCode、未知→Wrench）。
  */
 export function toolIcon(tool?: string): LucideIcon {
   const t = (tool ?? '').toLowerCase();
-  if (/(shell|bash|zsh|exec|terminal|command)/.test(t)) return Terminal;
-  if (/(^|[^a-z])(read|view|cat)([^a-z]|$)/.test(t)) return FileText;
-  if (/(write|edit|patch|save)/.test(t)) return FilePen;
-  if (/(search|grep|glob|find|query|list)/.test(t)) return Search;
   if (t.includes('mcp')) return Plug;
-  return Wrench;
+  switch (classifyTool(tool)) {
+    case 'bash':
+      return Terminal;
+    case 'read':
+      return FileText;
+    case 'write':
+    case 'edit':
+      return FilePen;
+    case 'search':
+      return Search;
+    case 'code':
+      return SquareCode;
+    default:
+      return Wrench;
+  }
 }
 
 /** 活动段：同 run 连续工具行折叠为 activity 组，其余消息原样透传（保持时间线顺序）。 */
@@ -58,19 +78,20 @@ export function groupWorkedFor(items: ChatMessage[]): string | null {
   return toolDuration(earliest, latest);
 }
 
-function toolStatusClass(status: ToolStatus | undefined): string {
-  if (status === 'failed') return 'text-status-error';
-  if (status === 'running') return 'text-text-secondary';
-  return 'text-text-tertiary'; // 成功后弱化
-}
-
 /**
  * 同 run 工具行的可折叠「活动」组：组头 worked-for 计时；有进行中工具时强制展开
  * （完成后可由用户折叠）。collapsed 是本地 state——刷新回默认展开。
+ * stoppedRuns：已终态但未成功（中断/取消/丢失/失败）的 run 集，组内仍 running 的行按中断态展示。
  */
-export function ActivityGroup({ items }: { items: ChatMessage[] }) {
+export function ActivityGroup({
+  items,
+  stoppedRuns,
+}: {
+  items: ChatMessage[];
+  stoppedRuns?: ReadonlySet<string>;
+}) {
   const [collapsed, setCollapsed] = useState(false);
-  const running = items.some((m) => m.toolStatus === 'running');
+  const running = items.some((m) => m.toolStatus === 'running' && !stoppedRuns?.has(m.runId));
   const open = !collapsed || running;
   const workedFor = groupWorkedFor(items);
   return (
@@ -85,7 +106,7 @@ export function ActivityGroup({ items }: { items: ChatMessage[] }) {
       {open && (
         <div className="chat-activity-body">
           {items.map((m) => (
-            <ToolRow key={m.key} msg={m} />
+            <ToolRow key={m.key} msg={m} stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'} />
           ))}
         </div>
       )}
@@ -93,46 +114,183 @@ export function ActivityGroup({ items }: { items: ChatMessage[] }) {
   );
 }
 
-/**
- * 单次工具调用的行卡片：类别图标 + 摘要 + 状态色 + 耗时徽章；点击行展开输出。
- * 失败行默认展开（错误要响亮），成功行默认收起。
- */
-export function ToolRow({ msg }: { msg: ChatMessage }) {
-  const [open, setOpen] = useState(msg.toolStatus === 'failed');
-  const duration = toolDuration(msg.startedAt, msg.completedAt);
-  // diff 输出走专用卡（刀2）；等宽 pre 仍是其余输出的默认形态。
-  const detail = msg.detail;
-  const isDiff = detail !== undefined && looksLikeUnifiedDiff(stripControlChars(detail));
-  const hasDetail = detail !== undefined;
-  // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
-  const icon = (className: string) => createElement(toolIcon(msg.tool), { className });
+/** 展开体卡片分派：按工具族 + 输出形态选终端/diff/read/search 卡，均不适用时落 IN/OUT 通用卡。 */
+function ExpandedBody({ model, state }: { model: ToolRowModel; state: ToolRowState }) {
+  const output = model.output;
+  switch (model.family) {
+    case 'bash':
+      // 终端卡恒定存在（running 时只画 prompt 行）；命令取摘要，输出含 ANSI 上色。
+      return (
+        <TerminalBlock
+          className={css.cardBody}
+          command={model.summary}
+          output={output ?? undefined}
+          exitCode={model.exitCode}
+          running={state === 'running'}
+        />
+      );
+    case 'write':
+    case 'edit': {
+      const detail = output !== null ? stripControlChars(output) : '';
+      if (detail !== '' && looksLikeUnifiedDiff(detail)) {
+        return (
+          <div className={css.cardBody}>
+            <DiffCard text={output ?? ''} />
+          </div>
+        );
+      }
+      break;
+    }
+    case 'read': {
+      if (state !== 'running' && output !== null) {
+        const read = readBlockFromOutput(output, model.filePath);
+        if (read !== null) return <ReadBlock {...read} className={css.cardBody} />;
+      }
+      break;
+    }
+    case 'search': {
+      if (output !== null) {
+        const grep = parseGrepOutput(output);
+        if (grep !== null) {
+          return (
+            <SearchBlock
+              kind="matches"
+              className={css.cardBody}
+              files={grep.files}
+              truncated={grep.truncated}
+              total={grep.files.reduce((n, f) => n + f.matches.length, 0)}
+            />
+          );
+        }
+        const paths = parsePathList(output);
+        if (paths !== null) {
+          return (
+            <SearchBlock
+              kind="paths"
+              className={css.cardBody}
+              paths={paths}
+              truncated={output.length >= 1900}
+              total={paths.length}
+            />
+          );
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  // 通用 IN/OUT 卡：单文件工具不暴露 IN（路径已是摘要；对齐 DSH single-file 取舍）。
+  const singleFile = model.filePath !== undefined;
+  const body = singleFile ? null : model.body;
+  if (body === null && output === null) return null;
   return (
-    <div className="min-w-0">
-      <button
-        className={`chat-tool-row ${toolStatusClass(msg.toolStatus)}`}
-        onClick={() => hasDetail && setOpen((v) => !v)}
-        aria-expanded={hasDetail ? open : undefined}
-      >
-        {icon(msg.toolStatus === 'running' ? 'h-3.5 w-3.5 shrink-0 animate-pulse' : 'h-3.5 w-3.5 shrink-0')}
-        <span className="min-w-0 flex-1 truncate">{msg.text}</span>
-        {duration && (
-          <span className="shrink-0 rounded bg-surface-sunken px-1 tabular-nums text-[11px] text-text-tertiary">
-            {duration}
+    <div className={cx(css.ioCard, css.cardBody)}>
+      {body !== null && (
+        <div className={css.ioSection}>
+          <span className={css.ioLabel}>IN</span>
+          <span className={css.ioText}>{body}</span>
+        </div>
+      )}
+      {body !== null && output !== null && <span className={css.ioDivider} aria-hidden />}
+      {output !== null && (
+        <div className={css.ioSection}>
+          <span className={css.ioLabel}>OUT</span>
+          <span className={css.ioText} data-error={state === 'error' || undefined}>
+            {output}
           </span>
-        )}
-      </button>
-      {open &&
-        (isDiff ? (
-          msg.detail ? (
-            <div className="mx-1 mt-0.5 mb-1">
-              <DiffCard text={msg.detail} />
-            </div>
-          ) : null
-        ) : (
-          <pre className="mx-1 mt-0.5 mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
-            {msg.detail}
-          </pre>
-        ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 运行态的无障碍文本：扫光与状态点是纯视觉，AT 需要文字承载状态。 */
+function stateStatus(state: ToolRowState): string | null {
+  switch (state) {
+    case 'running':
+      return '进行中';
+    case 'error':
+      return '失败';
+    case 'stopped':
+      return '已中断';
+    default:
+      return null;
+  }
+}
+
+/** 前导槽：error/stopped 换成状态点（红/琥珀），running 保持图标（行扫光承载进行中信号）。 */
+function leadingFor(state: ToolRowState, icon: ReactNode): ReactNode {
+  switch (state) {
+    case 'error':
+      return <StateDot state="error" />;
+    case 'stopped':
+      return <StateDot state="warning" />;
+    default:
+      return icon;
+  }
+}
+
+/**
+ * 单次工具调用的摘要行（DSH ToolRow chrome）：16px 前导槽（图标/状态点，悬停换
+ * chevron 预览）+ 族标题 + 圆点 + 截断摘要 + 耗时徽章；整行点击展开（Enter/Space
+ * 同效），展开体按族分派终端/diff/read/search/IN-OUT 卡。错误行折叠摘要直接是
+ * 失败首行红字；中断 run 的挂起行按 stopped（琥珀点、无扫光）展示。
+ */
+export function ToolRow({ msg, stopped = false }: { msg: ChatMessage; stopped?: boolean }) {
+  const model = toolRowModel(msg);
+  const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
+  const [expanded, setExpanded] = useState(false);
+  const duration = toolDuration(msg.startedAt, msg.completedAt);
+  // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
+  const icon = createElement(toolIcon(msg.tool), { className: 'h-3.5 w-3.5' });
+  // 卡片存在性判定与 ExpandedBody 的分派保持一致（行能否展开取决于有无任何展开体）。
+  const singleFile = model.filePath !== undefined;
+  const hasIoBody = (!singleFile && model.body !== null) || model.output !== null;
+  const hasCard =
+    model.family === 'bash' ||
+    ((model.family === 'write' || model.family === 'edit') &&
+      model.output !== null &&
+      looksLikeUnifiedDiff(stripControlChars(model.output))) ||
+    (model.family === 'read' && state !== 'running' && model.output !== null) ||
+    (model.family === 'search' && model.output !== null);
+  const expandable = hasCard || hasIoBody;
+  const open = expanded && expandable;
+  const failureLine = state === 'error' ? model.errorSummary : null;
+  const summaryText = failureLine ?? model.summary;
+  const status = stateStatus(state);
+
+  return (
+    <div className={css.root} data-tool={msg.tool} data-state={state}>
+      {status !== null && <span className={css.visuallyHidden}>{status}</span>}
+      <DisclosureRow
+        rowClassName={css.row}
+        leadingClassName={css.leading}
+        titleClassName={css.title}
+        chevronClassName={css.chevron}
+        icon={leadingFor(state, icon)}
+        title={model.title}
+        open={open}
+        expandable={expandable}
+        expandOnRowClick
+        keepContentWhenOpen
+        onToggle={() => setExpanded((v) => !v)}
+        collapsedContent={
+          summaryText !== '' || duration !== null ? (
+            <>
+              {summaryText !== '' && <span className={css.sep} aria-hidden />}
+              {summaryText !== '' && (
+                <span className={cx(css.summary, failureLine !== null && css.errorSummary)}>{summaryText}</span>
+              )}
+              {duration !== null && <span className={css.summarySuffix}>{duration}</span>}
+            </>
+          ) : undefined
+        }
+      >
+        <div className={css.bodyWrap}>
+          <ExpandedBody model={model} state={state} />
+        </div>
+      </DisclosureRow>
     </div>
   );
 }

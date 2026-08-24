@@ -4,12 +4,13 @@ import { useSearchParams } from 'react-router-dom';
 import { AssistantTurn } from '../components/chat/assistant-turn';
 import { ApprovalCard } from '../components/chat/approval-card';
 import { ActivityGroup, groupActivity } from '../components/chat/tool-card';
+import { MessageActions } from '../components/chat/message-actions';
 import { PlanCard } from '../components/chat/plan-card';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
-import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, useChatStore, ACTIVE, type ChatMessage } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
 import { useRunsStore } from '../stores/runs.store';
 import { formatTime } from '../utils/format';
 
@@ -175,6 +176,16 @@ function ConversationPane() {
   }, [runIds.join(','), watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
+  // 已到任何终态的 run：其内仍 running 的工具行按 stopped（中断/截断）展示，不再扫光——
+  // 覆盖中断/取消，也覆盖历史数据缺 completed 帧的挂起行（对齐 DSH 的 interruption 投影语义）。
+  const stoppedRuns = useMemo(() => {
+    const set = new Set<string>();
+    for (const id of runIds) {
+      const status = runSnapshots[id]?.status;
+      if (status && TERMINAL.has(status)) set.add(id);
+    }
+    return set;
+  }, [runIds, runSnapshots]);
   const liveStream = useMemo(
     () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
     [latestRunId, timelines],
@@ -232,7 +243,7 @@ function ConversationPane() {
             输入第一条消息，为该 Agent 创建任务并开始运行
           </div>
         )}
-        {renderTranscript(messages)}
+        {renderTranscript(messages, stoppedRuns)}
         {awaitingReply && (
           <AssistantTurn
             reasoning={liveStream.reasoning}
@@ -283,13 +294,13 @@ function ConversationPane() {
   );
 }
 
-function renderTranscript(messages: ChatMessage[]): ReactNode[] {
+function renderTranscript(messages: ChatMessage[], stoppedRuns: ReadonlySet<string>): ReactNode[] {
   const nodes: ReactNode[] = [];
   const segments = groupActivity(messages);
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (seg.kind === 'activity') {
-      nodes.push(<ActivityGroup key={seg.items[0].key} items={seg.items} />);
+      nodes.push(<ActivityGroup key={seg.items[0].key} items={seg.items} stoppedRuns={stoppedRuns} />);
       continue;
     }
     const msg = seg.item;
@@ -337,12 +348,10 @@ function renderTranscript(messages: ChatMessage[]): ReactNode[] {
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <div className="flex justify-end py-1">
+    <div className="group flex justify-end py-1">
       <div className="max-w-[min(525px,82%)] rounded-[22px] bg-[hsl(var(--color-brand-muted))] px-4 py-2.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
         {msg.text}
-        <span className="mt-1 block text-right text-[11px] tabular-nums text-text-tertiary">
-          {formatTime(msg.at)}
-        </span>
+        <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
       </div>
     </div>
   );
