@@ -291,7 +291,8 @@
   }
 }
 
-/* ---- Chat transcript（对齐 deepseek-harness ui-conversation / agent-chat） ---- */
+/* ---- Chat transcript（.chat-markdown 逐标签格局对齐 Codex 桌面端正文渲染，
+   规格：agent-team-workbench-docs/references/codex-desktop-markdown-tags-inventory.md §2/§3） ---- */
 .chat-markdown {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -306,51 +307,167 @@
 .chat-markdown > :last-child {
   margin-bottom: 0;
 }
+
+/* 段落：基准段距 11px；连续两个含汉字段落加大到 16px（CJK 专门排版规则，
+   data-markdown-han-text 由 markdown-body.tsx 按段内纯文本打标） */
 .chat-markdown p {
-  margin: 16px 0;
+  margin: 0 0 11px;
 }
+.chat-markdown > p[data-markdown-han-text]:has(+ p[data-markdown-han-text]) {
+  margin-bottom: 16px;
+}
+
+/* 标题：统一 20px/10px margin + 600 字重；字号按级（h1 24 / h2 20 / h3·h4 17 / h5·h6 15） */
 .chat-markdown h1,
 .chat-markdown h2,
-.chat-markdown h3 {
-  @apply font-semibold;
-  margin: 32px 0 16px;
-  line-height: 1.35;
-}
+.chat-markdown h3,
 .chat-markdown h4,
 .chat-markdown h5,
 .chat-markdown h6 {
-  @apply font-semibold;
-  margin: 16px 0;
-  line-height: 1.4;
+  margin: 20px 0 10px;
+  font-weight: 600;
+  line-height: 1.25;
 }
+.chat-markdown h1 {
+  font-size: 24px;
+}
+.chat-markdown h2 {
+  font-size: 20px;
+}
+.chat-markdown h3,
+.chat-markdown h4 {
+  font-size: 17px;
+  line-height: 22px;
+}
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: 15px;
+  line-height: 20px;
+}
+
+/* 引用：透明底 + 左侧 4px 圆角竖条（::after 定位条），子段落 margin 归零 */
+.chat-markdown blockquote {
+  position: relative;
+  margin: 0 0 8px;
+  padding: 8px 0 8px 24px;
+}
+.chat-markdown blockquote::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  border-radius: 2px;
+  background: hsl(var(--color-border-strong));
+}
+.chat-markdown blockquote > p {
+  margin: 0;
+}
+
+/* 列表：ol 十进制；ul 嵌套子弹三级轮换 disc→circle→square；li 内嵌套列表只留 .5rem 顶距 */
 .chat-markdown ul,
 .chat-markdown ol {
-  margin: 16px 0;
-  padding-left: 22px;
+  margin: 0 0 11px;
+  padding-inline-start: 1.3125rem;
+  list-style-position: outside;
 }
-.chat-markdown li {
-  margin: 2px 0;
+.chat-markdown li > ul,
+.chat-markdown li > ol {
+  margin: 0.5rem 0 0;
+}
+.chat-markdown ul {
+  list-style-type: disc;
+}
+.chat-markdown ul ul {
+  list-style-type: circle;
+}
+.chat-markdown ul ul ul {
+  list-style-type: square;
+}
+.chat-markdown ol {
+  list-style-type: decimal;
+}
+
+/* 列表项：相邻项 .5rem 间距；项内首尾子元素与段落 margin 收敛 */
+.chat-markdown li + li {
+  margin-top: 0.5rem;
+}
+.chat-markdown li > :first-child {
+  margin-top: 0;
+}
+.chat-markdown li > :last-child {
+  margin-bottom: 0;
 }
 .chat-markdown li > p {
   margin: 0;
 }
-.chat-markdown blockquote {
-  margin: 16px 0;
-  padding-left: 12px;
-  border-left: 3px solid hsl(var(--color-border-strong));
-  color: hsl(var(--color-text-secondary));
+.chat-markdown li > p + p {
+  margin-top: 11px;
 }
-.chat-markdown table {
-  margin: 16px 0;
+
+/* 任务列表项（remark-gfm 渲染为 li > input[type=checkbox]，checkbox 天生 disabled 只读）：
+   去子弹，grid 两列（checkbox 列 auto + 内容列），checkbox 用品牌色 */
+.chat-markdown li:has(> input[type='checkbox']) {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 0.375rem;
+  align-items: start;
+  list-style-type: none;
+}
+.chat-markdown li:has(> input[type='checkbox']) > input[type='checkbox'] {
+  /* 16px 字号 28px 行高下，13px 高的原生 checkbox 下移约 7px 对齐首行视觉中心 */
+  margin: 7px 0 0;
+  accent-color: hsl(var(--color-brand-primary));
+}
+/* 任务项内再嵌套列表时兜到内容列，避免落进 checkbox 列 */
+.chat-markdown li:has(> input[type='checkbox']) > ul,
+.chat-markdown li:has(> input[type='checkbox']) > ol {
+  grid-column: 2;
+}
+
+/* 行内 code：pill 底 + 跨行不断壳（clone 块装饰随断行复制）；
+   块级 code 不经过这里（pre 已被 CodeBlock 接管，且 :not(pre) 排除其内部 code） */
+.chat-markdown :not(pre) > code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  background: hsl(var(--color-surface-sunken));
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 0.92em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* 表格：table-card.tsx 渲染的 .chat-table-wrap 容器（悬停复制 TSV）；行线制（无竖线）：
+   表头 600 字重 + strong 底线，行间 subtle 底线；td 上下 10px / th 8px、inline-end 24px（末列 0）；
+   table 元素自身 display:block + 横向滚动（GitHub markdown 同款做法） */
+.chat-table-wrap {
+  position: relative;
+  margin: 0 0 11px;
+}
+.chat-table-wrap table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   font-size: 13px;
 }
-.chat-markdown th,
-.chat-markdown td {
-  @apply border border-border-subtle px-2.5 py-1 text-left;
+.chat-table-wrap th,
+.chat-table-wrap td {
+  padding: 8px 24px 8px 0;
+  text-align: left;
+  border-bottom: 1px solid hsl(var(--color-border-subtle));
 }
-.chat-markdown th {
-  @apply bg-surface-sunken;
+.chat-table-wrap td {
+  padding-block: 10px;
+}
+.chat-table-wrap th {
+  font-weight: 600;
+  border-bottom-color: hsl(var(--color-border-strong));
+}
+.chat-table-wrap th:last-child,
+.chat-table-wrap td:last-child {
+  padding-inline-end: 0;
 }
 .chat-markdown a {
   @apply text-brand-primary no-underline hover:underline;
@@ -396,6 +513,24 @@
   }
 }
 
+/* 流式块级淡入：新出现的列表项/表格行/引用/分割线从透明淡入（对齐 Codex 块级 fade 思路）；
+   只作用于流式期间新挂载的块（React 复用既有 DOM 节点，动画不会随 token 重放） */
+.chat-streaming .chat-markdown li,
+.chat-streaming .chat-markdown tr,
+.chat-streaming .chat-markdown blockquote,
+.chat-streaming .chat-markdown hr {
+  animation: chat-md-fade-in 0.3s ease-out both;
+}
+
+@keyframes chat-md-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @keyframes chat-reasoning-sweep {
   0% {
     left: -300px;
@@ -432,6 +567,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-streaming .chat-markdown > :last-child::after,
+  .chat-streaming .chat-markdown li,
+  .chat-streaming .chat-markdown tr,
+  .chat-streaming .chat-markdown blockquote,
+  .chat-streaming .chat-markdown hr,
   .chat-reasoning-toggle .chat-reasoning-sweep,
   .chat-typing span {
     animation: none;
