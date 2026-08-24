@@ -1,0 +1,56 @@
+/* 实心态：同色 0.10 透明度外晕（::before）+ 6/10 比例实心核（::after），
+ * 颜色由 data-state 设置的 currentColor 驱动。 */
+.dot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+
+.dot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.1;
+}
+
+.dot::after {
+  content: '';
+  position: absolute;
+  inset: 20%;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.dot[data-state='done'] {
+  color: hsl(var(--color-status-success));
+}
+
+.dot[data-state='warning'] {
+  color: hsl(var(--color-status-warning));
+}
+
+.dot[data-state='error'] {
+  color: hsl(var(--color-status-error));
+}
+
+/* 像素追逐：3x3 矩阵的外圈 8 格按阶梯亮度顺时针点亮（关键帧是硬保持、
+ * 无补间的复古感），相位差由组件内联的 animationDelay 提供。 */
+.matrix {
+  flex: none;
+  color: hsl(var(--color-status-info));
+}
+
+.cell {
+  fill: currentColor;
+  opacity: 0.15;
+  animation: state-dot-chase 1s infinite;
+}
+
+@keyframes state-dot-chase {
+  0%, 12.4% { opacity: 1; }
+  12.5%, 24.9% { opacity: 0.6; }
+  25%, 37.4% { opacity: 0.35; }
+  37.5%, 100% { opacity: 0.15; }
+}

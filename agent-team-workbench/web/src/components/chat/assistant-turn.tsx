@@ -1,6 +1,6 @@
 import { MarkdownBody } from './markdown-body';
+import { MessageActions } from './message-actions';
 import { ReasoningDisclosure } from './reasoning-disclosure';
-import { formatTime } from '../../utils/format';
 
 /** Agent 一轮回复：思考折叠 + 正文 Markdown（对齐 agent-chat 透明气泡）。 */
 export function AssistantTurn({
@@ -20,7 +20,7 @@ export function AssistantTurn({
   const showTyping = streaming && !text && !reasoning;
 
   return (
-    <div className="flex justify-start py-1">
+    <div className="group flex justify-start py-1">
       <div className="w-full min-w-0">
         {showReasoning && <ReasoningDisclosure text={reasoning} streaming={streaming && !text} />}
         {showTyping && (
@@ -39,11 +39,8 @@ export function AssistantTurn({
             )}
           </div>
         )}
-        {at && !streaming && (
-          <time className="mt-2 block text-right text-[11px] tabular-nums text-text-tertiary">
-            {formatTime(at)}
-          </time>
-        )}
+        {/* 悬停操作行：streaming 不渲染；reasoningOnly 且无正文时无可复制内容，也不渲染。 */}
+        {at && !streaming && text ? <MessageActions text={text} at={at} side="left" className="mt-2" /> : null}
       </div>
     </div>
   );

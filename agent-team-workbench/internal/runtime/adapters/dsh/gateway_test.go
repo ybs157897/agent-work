@@ -744,7 +744,8 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 
 // 工具事件 canonical 契约（notes/implemented/architecture/
 // 2026-08-23-tool-event-canonical-contract.md）：started 带
-// {tool, call_id, args_summary?}（command 类参数优先、≤200），
+// {tool, call_id, args_summary?, args?}（summary 取 command 类参数、≤200；
+// args 为完整入参原文、≤2000，见 TestGatewayToolStartedArgsPayload），
 // completed/failed 带 {call_id, output?}（≤2000）——此前整帧塞 raw，
 // 前端读平铺 output 导致 DSH 工具输出永不可见；isError 藏在
 // message.content[0] 的 tool-result 块内，顶层读取永远漏判。
@@ -788,6 +789,10 @@ func TestGatewayToolEventsCanonicalContract(t *testing.T) {
 		started.data["args_summary"] != "rm -rf /tmp/x" {
 		t.Fatalf("tool.started 契约漂移（args_summary 应取 command 键）: %+v", started.data)
 	}
+	// 正例：args 为 arguments 原文（模型紧凑 JSON，不重新 marshal）。
+	if got := started.data["args"]; got != `{"command":"rm -rf /tmp/x","workdir":"/tmp"}` {
+		t.Fatalf("args 应为完整入参原文: %v", got)
+	}
 	completed, ok := cb.find(domain.EventToolCompleted)
 	if !ok || completed.data["call_id"] != "tc_1" {
 		t.Fatalf("tool.completed 缺 call_id: %+v", completed.data)
@@ -801,6 +806,57 @@ func TestGatewayToolEventsCanonicalContract(t *testing.T) {
 	failed, ok := cb.find(domain.EventToolFailed)
 	if !ok || failed.data["call_id"] != "tc_2" || failed.data["output"] != "boom" {
 		t.Fatalf("tool.failed 契约漂移（isError 应映射 failed）: %+v", failed.data)
+	}
+}
+
+// tool.started args 键的边界：完整入参原文超 maxToolArgs 截断；arguments
+// 缺失/非法 JSON 不带键（args_summary 是一行摘要，无法还原完整入参）。
+func TestGatewayToolStartedArgsPayload(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() {
+			f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(1)}, 1))
+			f.push("", sessEvent("s_known", "tool/call", map[string]any{
+				"turn": float64(1), "step": 1, "callId": "tc_long", "name": "bash",
+				"arguments": `{"data":"` + strings.Repeat("y", 2200) + `"}`,
+			}, 2))
+			f.push("", sessEvent("s_known", "tool/call", map[string]any{
+				"turn": float64(1), "step": 2, "callId": "tc_empty", "name": "bash",
+			}, 3))
+			f.push("", sessEvent("s_known", "tool/call", map[string]any{
+				"turn": float64(1), "step": 3, "callId": "tc_bad", "name": "bash",
+				"arguments": "not-json",
+			}, 4))
+			f.push("", sessEvent("s_known", "turn/end", map[string]any{
+				"turn": float64(1), "reason": map[string]any{"kind": "completed"},
+			}, 5))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	cb.mu.Lock()
+	byID := map[string]recordedEvent{}
+	for _, e := range cb.events {
+		if e.kind == domain.EventToolStarted {
+			id, _ := e.data["call_id"].(string)
+			byID[id] = e
+		}
+	}
+	cb.mu.Unlock()
+	if len(byID) != 3 {
+		t.Fatalf("tool.started 期望 3 帧，得到 %d: %+v", len(byID), byID)
+	}
+	if got, _ := byID["tc_long"].data["args"].(string); len(got) != 2000 {
+		t.Fatalf("args 应截断到 2000，得到 %d", len(got))
+	}
+	for _, id := range []string{"tc_empty", "tc_bad"} {
+		if _, has := byID[id].data["args"]; has {
+			t.Fatalf("%s 不应携带 args 键: %+v", id, byID[id].data)
+		}
 	}
 }
 

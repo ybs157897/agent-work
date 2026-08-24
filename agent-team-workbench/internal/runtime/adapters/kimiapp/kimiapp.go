@@ -584,6 +584,9 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if s := toolArgsSummary(ev.Description, ev.Args); s != "" {
 			payload["args_summary"] = s
 		}
+		if a := toolArgsJSON(ev.Args); a != "" {
+			payload["args"] = a
+		}
 		p.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool.result":
 		var ev evToolResult
@@ -740,12 +743,13 @@ func permissionMode(policy runtime.PolicySnapshot) string {
 
 // ── 工具事件载荷整形（与 codexapp 对齐的 canonical 契约）────────────────
 //
-// tool.started: {tool, call_id, args_summary?}；tool.completed/failed:
+// tool.started: {tool, call_id, args_summary?, args?}；tool.completed/failed:
 // {call_id, output?}；tool.progress: {call_id, text, percent?}。输出统一截断，
 // 防 run_events 膨胀（完整输出本就可达数 MB 级）。
 
 const (
 	maxToolArgsSummary = 200
+	maxToolArgs        = 2000
 	maxToolOutput      = 2000
 )
 
@@ -767,6 +771,26 @@ func toolArgsSummary(description string, args json.RawMessage) string {
 		}
 	}
 	return truncate(string(args), maxToolArgsSummary)
+}
+
+// toolArgsJSON 完整入参的紧凑 JSON 文本（截断 ≤maxToolArgs），供前端工具行
+// IN/OUT 展开卡还原完整参数（args_summary 只是一行摘要）。仅参数非空且为
+// JSON 对象/数组时携带；直接用 RawMessage 原文，不重新 marshal 以保键序；
+// 截断发生在字符串层，不保证截断后仍是合法 JSON（前端只展示，不解析）。
+func toolArgsJSON(args json.RawMessage) string {
+	s := strings.TrimSpace(string(args))
+	if s == "" {
+		return ""
+	}
+	var v any
+	if json.Unmarshal([]byte(s), &v) != nil {
+		return ""
+	}
+	switch v.(type) {
+	case map[string]any, []any:
+		return truncate(s, maxToolArgs)
+	}
+	return ""
 }
 
 // toolOutputText 提取 tool.result 输出文本：string 直出；ContentPart[]

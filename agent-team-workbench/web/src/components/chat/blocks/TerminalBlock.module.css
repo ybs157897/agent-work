@@ -1,0 +1,178 @@
+/* 终端卡：几何照抄 DSH TerminalBlock（12px 圆角、22px 行高、30px 状态点槽）。
+   颜色一律走 hsl(var(--color-*)) 语义通道。输出不软换行（white-space: pre +
+   横向滚动）：列对齐是终端输出的载荷。 */
+
+.block {
+  --terminal-radius: 12px;
+  --terminal-line-height: 22px;
+  /* 状态点独占的左槽：作为卡片自身 padding，消费方整写 margin 时不会丢槽。 */
+  --terminal-gutter: 30px;
+
+  position: relative;
+  margin: 16px 0;
+  padding-left: var(--terminal-gutter);
+  color: hsl(var(--color-text-primary));
+  background: hsl(var(--color-surface-sunken));
+  border-radius: var(--terminal-radius);
+  /* 头部横幅裁进卡片圆角：消费方加边框时不出豁口。 */
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
+/* Pill 与复制按钮顶齐第一条 prompt 行（高度封顶到 prompt 行高）。 */
+.header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  /* 拉通横幅铺满卡面后等量回缩：prompt 文本与状态点位置不变。 */
+  margin-left: calc(-1 * var(--terminal-gutter));
+  padding: 9px 14px 9px var(--terminal-gutter);
+  border-top-left-radius: var(--terminal-radius);
+  border-top-right-radius: var(--terminal-radius);
+  /* 长多行命令在横幅内滚动，不把输出挤出屏。 */
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.header::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+
+.header::-webkit-scrollbar-track {
+  margin: 6px;
+}
+
+/* 运行中的卡只有横幅，不画分隔线。 */
+.block:not([data-running]) .header {
+  border-bottom: 1px solid hsl(var(--color-border-subtle));
+}
+
+/* prompt 列是唯一允许收缩的元素；Pill 与复制按钮保持固有宽度。 */
+.prompt {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.promptLine {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  line-height: var(--terminal-line-height);
+}
+
+/* 状态点脱离文档流挂进左槽：不缩进命令，也不依赖命令字宽度对齐；按行盒垂直居中。 */
+.runState {
+  position: absolute;
+  left: calc(-1 * var(--terminal-gutter) + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* 状态点 aria 隐藏，此文本是它的读屏标签。 */
+.runStateLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.cwd {
+  flex: none;
+  color: hsl(var(--color-text-tertiary));
+}
+
+/* pre 而非 nowrap：缩进续行的空格与对齐按原样保留，同时保住单行与省略号截断。 */
+.command {
+  min-width: 0;
+  color: hsl(var(--color-text-primary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+/* 状态 Pill（信号/退出码）：错误色胶囊，sticky 顶住横幅自身滚动。 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  position: sticky;
+  top: 0;
+  height: var(--terminal-line-height);
+  padding: 0 8px;
+  border: 1px solid hsl(var(--color-status-error) / 0.4);
+  border-radius: 11px;
+  font-size: 12px;
+  line-height: 18px;
+  color: hsl(var(--color-status-error));
+  background: hsl(var(--color-status-error) / 0.08);
+}
+
+.copyButton {
+  flex: none;
+  position: sticky;
+  top: 0;
+  /* 卡面底色而非透明：sticky 悬浮于横幅滚动之上时，滚过的命令文本不透出。 */
+  background-color: hsl(var(--color-surface-sunken));
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: hsl(var(--color-text-secondary));
+  cursor: pointer;
+  font: inherit;
+  line-height: var(--terminal-line-height);
+}
+
+/* 纵向滚动挂在输出区而非卡根：滚动条不压横幅与复制按钮。
+   未设置 max 变量时高度不限，auto 溢出永不触发。 */
+.output {
+  max-height: var(--terminal-output-max-height, none);
+  padding: 12px 14px 12px 0;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+.output::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 6px;
+}
+
+.output::-webkit-scrollbar-track {
+  margin: 6px;
+}
+
+/* 不换行不断词：对齐是终端输出的载荷。 */
+.line {
+  min-height: var(--terminal-line-height);
+  white-space: pre;
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: hsl(var(--color-text-tertiary));
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.expand:hover {
+  color: hsl(var(--color-text-secondary));
+}
+
+.empty {
+  padding: 12px 14px 12px 0;
+  color: hsl(var(--color-text-tertiary));
+}
