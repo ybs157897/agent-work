@@ -1,7 +1,9 @@
-import { AlertCircle, Bot, CheckCircle2, Circle, Zap, type LucideIcon } from 'lucide-react';
+import { AlertCircle, Bot, CheckCircle2, Circle, Inbox, Zap, type LucideIcon } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { Avatar } from '../components/avatar';
 import { Loading } from '../components/async-state';
 import { PresenceDot, presenceText } from '../components/status';
+import { Button, Card, EmptyState } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { useDashboardStore } from '../stores/dashboard.store';
 import { useTasksStore } from '../stores/tasks.store';
@@ -14,6 +16,7 @@ export default function DashboardPage() {
   const dashboard = useDashboardStore((s) => s.dashboard);
   const agents = useAgentsStore((s) => s.agents);
   const workItems = useTasksStore((s) => s.items);
+  const navigate = useNavigate();
 
   if (!dashboard) return <Loading />;
 
@@ -22,7 +25,7 @@ export default function DashboardPage() {
 
   return (
     <div className="page-shell">
-      <section className="ui-card-padded relative overflow-hidden">
+      <Card padded className="relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-brand-primary/8 via-transparent to-brand-accent/5 pointer-events-none" />
         <div className="relative">
           <p className="text-caption font-medium uppercase tracking-wider text-brand-primary mb-2">工作台总览</p>
@@ -31,14 +34,14 @@ export default function DashboardPage() {
             今天共有 <span className="font-semibold text-text-primary">{dashboard.active_agents}</span> 个 Agent 在线运行
           </p>
         </div>
-      </section>
+      </Card>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-comfortable">
         <StatCard
           title="活跃 Agent 数"
           value={dashboard.active_agents}
           icon={Bot}
-          accent="from-sky-500/15 to-sky-500/5 text-sky-600"
+          accent="from-brand-primary/15 to-brand-primary/5 text-brand-primary"
         />
         <StatCard
           title="运行中任务"
@@ -50,12 +53,12 @@ export default function DashboardPage() {
           title="今日完成"
           value={dashboard.completed_today}
           icon={CheckCircle2}
-          accent="from-emerald-500/15 to-emerald-500/5 text-status-success"
+          accent="from-status-success/15 to-status-success/5 text-status-success"
         />
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-comfortable items-start">
-        <div className="xl:col-span-2 ui-card-padded">
+        <Card padded className="xl:col-span-2">
           <h2 className="ui-section-title">Agent 状态速览</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-snug">
             {agents.map((agent) => {
@@ -84,12 +87,22 @@ export default function DashboardPage() {
               );
             })}
             {agents.length === 0 && (
-              <div className="text-caption text-text-tertiary py-4 col-span-full text-center">暂无 Agent</div>
+              <EmptyState
+                className="col-span-full"
+                icon={<Bot className="w-5 h-5" />}
+                title="暂无智能体"
+                description="配置你的第一个智能体，组建你的团队"
+                action={
+                  <Button variant="primary" size="sm" onClick={() => navigate('/agents')}>
+                    配置智能体
+                  </Button>
+                }
+              />
             )}
           </div>
-        </div>
+        </Card>
 
-        <div className="ui-card-padded">
+        <Card padded>
           <h2 className="ui-section-title">任务进度快照</h2>
           <div className="space-y-2">
             <TaskStatRow label="待办" count={counts.todo} total={taskTotal} color="bg-text-tertiary" />
@@ -97,10 +110,10 @@ export default function DashboardPage() {
             <TaskStatRow label="完成" count={counts.completed} total={taskTotal} color="bg-status-success" />
             <TaskStatRow label="阻塞" count={counts.blocked} total={taskTotal} color="bg-status-error" />
           </div>
-        </div>
+        </Card>
       </section>
 
-      <section className="ui-card-padded">
+      <Card padded>
         <h2 className="ui-section-title">最近日志</h2>
         <div className="divide-y divide-border-subtle">
           {dashboard.recent_activities.map((log) => (
@@ -119,10 +132,14 @@ export default function DashboardPage() {
             </div>
           ))}
           {dashboard.recent_activities.length === 0 && (
-            <div className="text-caption text-text-tertiary py-6 text-center">暂无活动记录</div>
+            <EmptyState
+              icon={<Inbox className="w-5 h-5" />}
+              title="暂无活动记录"
+              description="任务开始执行后，动态会出现在这里"
+            />
           )}
         </div>
-      </section>
+      </Card>
     </div>
   );
 }
@@ -139,7 +156,7 @@ function StatCard({
   accent: string;
 }) {
   return (
-    <div className="ui-card-padded flex items-start justify-between gap-4">
+    <Card padded className="flex items-start justify-between gap-4">
       <div>
         <h3 className="text-body text-text-secondary mb-2">{title}</h3>
         <p className="text-display text-text-primary tabular-nums">{value}</p>
@@ -147,7 +164,7 @@ function StatCard({
       <div className={`w-11 h-11 rounded-xl bg-gradient-to-br flex items-center justify-center shrink-0 ${accent}`}>
         <Icon className="w-5 h-5" />
       </div>
-    </div>
+    </Card>
   );
 }
 
