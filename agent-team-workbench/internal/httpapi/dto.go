@@ -253,6 +253,9 @@ type runtimePrefDTO struct {
 type resolveApprovalRequest struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason"`
+	// Scope 决议作用域（once|thread|workspace；缺省 once）。approved 且非 once
+	// 时创建「总是允许」授权，仅 command/file_change/permissions 支持。
+	Scope string `json:"scope"`
 }
 
 // ── TaskSession ──────────────────────────────────────────────────────

@@ -420,7 +420,14 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		if req.Decision != "approved" && req.Decision != "rejected" {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid decision", "decision 必须是 approved 或 rejected")
 		}
-		a, err := s.svc.ResolveApproval(r.Context(), approvalID, req.Decision == "approved", "user_demo", req.Reason, domain.ApprovalScopeOnce)
+		scope := domain.ApprovalScope(req.Scope)
+		if scope == "" {
+			scope = domain.ApprovalScopeOnce
+		}
+		if !scope.Valid() {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid scope", "scope 必须是 once、thread 或 workspace")
+		}
+		a, err := s.svc.ResolveApproval(r.Context(), approvalID, req.Decision == "approved", "user_demo", req.Reason, scope)
 		if err != nil {
 			return problemBytes(err)
 		}
