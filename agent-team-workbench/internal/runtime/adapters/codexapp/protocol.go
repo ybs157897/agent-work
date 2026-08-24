@@ -268,6 +268,47 @@ func parseTokenUsageEvent(raw json.RawMessage) (tokenUsageEvent, bool) {
 	return ev, true
 }
 
+// ── 计划清单通知（turn/plan/updated）────────────────────────────────
+
+// planStep canonical run.plan_updated 的单步；status 归一为
+// pending|in_progress|completed（schema 枚举 inProgress → in_progress）。
+type planStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
+// parsePlanUpdatedEvent 解析计划清单通知 params：app-server v2 权威形状为
+// {turnId, plan:[{step,status}]}（证据见
+// notes/implemented/architecture/2026-08-24-plan-and-compaction-events.md），
+// plan 为全量清单（每帧整表替换，空数组=清空）。ok=false 表示 plan 键缺失/
+// 非 数组（畸形帧，不捏造事件）；step/status 键缺失容错为零值。
+func parsePlanUpdatedEvent(raw json.RawMessage) (turnID string, steps []planStep, ok bool) {
+	var params struct {
+		TurnID string `json:"turnId"`
+		Plan   []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &params) != nil || params.Plan == nil {
+		return "", nil, false
+	}
+	steps = make([]planStep, 0, len(params.Plan))
+	for _, p := range params.Plan {
+		steps = append(steps, planStep{Step: p.Step, Status: canonicalPlanStepStatus(p.Status)})
+	}
+	return params.TurnID, steps, true
+}
+
+// canonicalPlanStepStatus schema 枚举（camelCase）→ canonical 契约
+// （snake_case）；未知值原样透传（协议漂移在消费侧可见，不静默吞）。
+func canonicalPlanStepStatus(status string) string {
+	if status == "inProgress" {
+		return "in_progress"
+	}
+	return status
+}
+
 func firstString(m map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if s, _ := m[k].(string); s != "" {

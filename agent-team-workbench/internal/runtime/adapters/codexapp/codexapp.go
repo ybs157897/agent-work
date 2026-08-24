@@ -592,6 +592,10 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.accumulateUsage(ev)
 				}
 			}
+		case "thread/compacted":
+			// 弃用路径（schema 在册、0.149.0 不向 v2 发射）：防协议漂移的兜底，
+			// 真实路径是 item/completed(contextCompaction)。
+			s.ex.Callbacks.OnEvent(domain.EventSessionCompacted, compactedPayload(frame.Params))
 		case "turn/started":
 			var n struct {
 				Turn struct {
@@ -603,6 +607,15 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				s.mu.Lock()
 				s.turnID = n.Turn.ID
 				s.mu.Unlock()
+			}
+		case "turn/plan/updated":
+			// todo 清单（update_plan 工具）每帧携带全量 steps：canonical 替换语义
+			// 由通知天然保证；与 plan 模式的 plan item（提案正文）是两条通道，互不抑制。
+			if _, steps, ok := parsePlanUpdatedEvent(frame.Params); ok {
+				s.ex.Callbacks.OnEvent(domain.EventRunPlanUpdated, map[string]any{"steps": steps})
+			} else {
+				// 缺 plan 键的畸形帧：schema 要求 plan 必填，显式 warn 保持可观测。
+				s.ex.Callbacks.OnLog("codexapp", "warn malformed turn/plan/updated "+rawString(frame.Params))
 			}
 		case "item/started":
 			item := parseItemEvent(frame.Params)
@@ -618,6 +631,11 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "item/completed":
 			item := parseItemEvent(frame.Params)
 			switch {
+			case item.Type == "contextCompaction":
+				// 0.149.0 v2 压缩事实的 canonical 路径：item/started 只表示压缩
+				// 进行中，completed 才成立（天然去重，无 turnId 重放陷阱——resume
+				// 不重放历史 item 通知）。
+				s.ex.Callbacks.OnEvent(domain.EventSessionCompacted, compactedPayload(frame.Params))
 			case item.Type == "agentMessage" || item.Type == "plan":
 				if text, ok := s.finalAnswer(item.Text); ok {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
@@ -694,6 +712,20 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 			s.ex.Callbacks.OnLog("codexapp", "warn unhandled notification "+frame.Method+" "+rawString(frame.Params))
 		}
 	}
+}
+
+// compactedPayload session.compacted 的 data：turnId 可得则带（thread/compacted
+// 与 item/completed 信封均携 turnId），否则空对象——canonical 契约允许两形态。
+func compactedPayload(raw json.RawMessage) map[string]any {
+	data := map[string]any{}
+	var n struct {
+		TurnID string `json:"turnId"`
+	}
+	_ = json.Unmarshal(raw, &n)
+	if n.TurnID != "" {
+		data["turnId"] = n.TurnID
+	}
+	return data
 }
 
 // handleServerRequest 处理三类官方审批请求；决定经 Controls（ControlApproval）

@@ -25,6 +25,7 @@ const (
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
 	EventRunProgressUpdated = "run.progress_updated"
+	EventRunPlanUpdated     = "run.plan_updated"
 	EventRunCompleted       = "run.completed"
 	EventRunFailed          = "run.failed"
 	EventRunCancelled       = "run.cancelled"
@@ -33,6 +34,10 @@ const (
 	// EventSessionDecision CreateRun 会话决议（resume/rotation/inline）的观测事件；
 	// 纯审计面，不驱动任何状态。
 	EventSessionDecision = "session.decision"
+
+	// EventSessionCompacted adapter 侧上下文压缩事实（如 codex contextCompaction）；
+	// 观测面，data 允许空对象或带 turnId。
+	EventSessionCompacted = "session.compacted"
 
 	EventPlanSubmitted    = "plan.submitted"
 	EventPlanStepExecuted = "plan.step_executed"
@@ -73,9 +78,10 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {},
 	EventRunCreated:        {}, EventRunStarted: {}, EventRunStatusChanged: {},
-	EventRunProgressUpdated: {}, EventRunCompleted: {}, EventRunFailed: {},
-	EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
-	EventPlanSubmitted: {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
+	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
+	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
+	EventSessionCompacted: {},
+	EventPlanSubmitted:    {}, EventPlanStepExecuted: {}, EventPlanWaiting: {}, EventPlanFinished: {},
 	EventPlanFailed:   {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},
