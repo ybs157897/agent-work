@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, Terminal, Wrench, type LucideIcon } from 'lucide-react';
 import { createElement, useState } from 'react';
 import { toolDuration, type ChatMessage, type ToolStatus } from '../../stores/chat.store';
+import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
 
 /**
  * 工具名 → 类别图标（宽松子串匹配，覆盖各 runtime 的命名习惯：Bash/Read/Write/Grep/
@@ -99,7 +100,10 @@ export function ActivityGroup({ items }: { items: ChatMessage[] }) {
 export function ToolRow({ msg }: { msg: ChatMessage }) {
   const [open, setOpen] = useState(msg.toolStatus === 'failed');
   const duration = toolDuration(msg.startedAt, msg.completedAt);
-  const hasDetail = Boolean(msg.detail);
+  // diff 输出走专用卡（刀2）；等宽 pre 仍是其余输出的默认形态。
+  const detail = msg.detail;
+  const isDiff = detail !== undefined && looksLikeUnifiedDiff(stripControlChars(detail));
+  const hasDetail = detail !== undefined;
   // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
   const icon = (className: string) => createElement(toolIcon(msg.tool), { className });
   return (
@@ -117,11 +121,16 @@ export function ToolRow({ msg }: { msg: ChatMessage }) {
           </span>
         )}
       </button>
-      {open && hasDetail && (
-        <pre className="mx-1 mt-0.5 mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
-          {msg.detail}
-        </pre>
-      )}
+      {open &&
+        (isDiff ? (
+          <div className="mx-1 mt-0.5 mb-1">
+            <DiffCard text={msg.detail} />
+          </div>
+        ) : (
+          <pre className="mx-1 mt-0.5 mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
+            {msg.detail}
+          </pre>
+        ))}
     </div>
   );
 }

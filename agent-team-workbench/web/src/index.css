@@ -455,6 +455,51 @@
   @apply flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-caption transition-colors hover:bg-surface-base;
 }
 
+/* ---- Chat diff 卡（diff-card.tsx：行底色对接 status tokens，对齐 codex Q6） ---- */
+.chat-diff {
+  @apply overflow-hidden rounded-lg border border-border-subtle bg-surface-raised;
+}
+
+.chat-diff-summary {
+  @apply flex w-full items-center gap-1.5 bg-surface-sunken/50 px-2.5 py-1.5 text-left text-caption text-text-secondary transition-colors hover:bg-surface-sunken;
+}
+
+.chat-diff-files {
+  @apply divide-y divide-border-subtle;
+}
+
+.chat-diff-file-head {
+  @apply flex items-center gap-2 bg-surface-base/60 px-2.5 py-1;
+}
+
+.chat-diff-body {
+  @apply overflow-x-auto py-1 font-mono text-[11px] leading-4;
+}
+
+.chat-diff-line {
+  @apply flex min-w-max whitespace-pre px-2.5;
+}
+
+.chat-diff-prefix {
+  @apply mr-1 w-2 shrink-0 text-left text-text-tertiary select-none;
+}
+
+.chat-diff-text {
+  @apply text-text-primary;
+}
+
+.chat-diff-add {
+  background-color: hsl(var(--color-status-success) / 0.1);
+}
+
+.chat-diff-del {
+  background-color: hsl(var(--color-status-error) / 0.1);
+}
+
+.chat-diff-meta {
+  @apply text-text-tertiary;
+}
+
 /* ---- Chat 代码块（code-block.tsx：github 主题的 token 色保留，容器外观交给组件 utilities） ---- */
 .code-block pre code.hljs,
 .code-block code.hljs {
