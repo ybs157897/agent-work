@@ -111,13 +111,19 @@ func providerKey(spec orchestrator.ModelSpec) string {
 	return strings.Trim(key, "-")
 }
 
-// CustomProviderReady 判断 CODEX_HOME 是否已配置自定义 provider 且对应 env 已注入。
-func CustomProviderReady(home string) bool {
+// CustomProviderEnv 返回 CODEX_HOME 当前自定义 provider 需要的环境变量名；
+// 内置 OpenAI/account 配置或无配置时返回空串。
+func CustomProviderEnv(home string) string {
 	data, err := os.ReadFile(filepath.Join(home, "config.toml"))
 	if err != nil {
-		return false
+		return ""
 	}
-	envKey := parseEnvKey(string(data))
+	return parseEnvKey(string(data))
+}
+
+// CustomProviderReady 判断 CODEX_HOME 是否已配置自定义 provider 且对应 env 已注入。
+func CustomProviderReady(home string) bool {
+	envKey := CustomProviderEnv(home)
 	if envKey == "" {
 		return false
 	}

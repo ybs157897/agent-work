@@ -62,3 +62,24 @@ func TestResolveBundledBinFallsBackToPathName(t *testing.T) {
 		t.Fatalf("got %q want codex", got)
 	}
 }
+
+func TestBundledRuntimeSkipsGitLFSPointer(t *testing.T) {
+	wb := t.TempDir()
+	platform := runtimePlatformDir()
+	binName := "codex"
+	if runtime.GOOS == "windows" {
+		binName += ".exe"
+	}
+	dir := filepath.Join(wb, "runtimes", "codex", platform)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, binName)
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n"
+	if err := os.WriteFile(path, []byte(pointer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := BundledRuntime(wb, "codex"); got != "" {
+		t.Fatalf("LFS pointer must not be executable runtime: %q", got)
+	}
+}

@@ -65,7 +65,23 @@ export async function apiFetch<T>(path: string, opts: FetchOptions = {}): Promis
   }
 
   const resp = await fetch(`${BASE}${path}`, { method, headers, body });
+  return decodeResponse<T>(resp);
+}
 
+/** multipart 写入：浏览器负责生成 boundary，仍保留请求 ID 与幂等键。 */
+export async function apiUpload<T>(path: string, body: FormData, idempotencyKey = newIdempotencyKey()): Promise<T> {
+  const resp = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: {
+      'X-Request-Id': newRequestId(),
+      'Idempotency-Key': idempotencyKey,
+    },
+    body,
+  });
+  return decodeResponse<T>(resp);
+}
+
+async function decodeResponse<T>(resp: Response): Promise<T> {
   if (resp.ok) {
     if (resp.status === 204) return undefined as T;
     return (await resp.json()) as T;

@@ -375,7 +375,8 @@ interface ChatStore {
   openConversation: (workItemId: string | null) => void;
   refreshConversations: () => Promise<void>;
   refreshRuns: () => Promise<void>;
-  send: (text: string) => Promise<void>;
+  /** 返回是否已被控制平面接受；失败/重复提交返回 false，便于调用方保留草稿。 */
+  send: (text: string) => Promise<boolean>;
 }
 
 export const useChatStore = create<ChatStore>()((set, get) => ({
@@ -430,7 +431,7 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
   send: async (text) => {
     const wsId = useWorkspaceStore.getState().workspace?.id;
     const agentId = get().agentId;
-    if (!wsId || !agentId || !text.trim() || get().sending) return;
+    if (!wsId || !agentId || !text.trim() || get().sending) return false;
     set({ sending: true });
     try {
       let conversationId = get().conversationId;
@@ -466,8 +467,10 @@ export const useChatStore = create<ChatStore>()((set, get) => ({
       await get().refreshConversations();
       await get().refreshRuns();
       await useTasksStore.getState().refresh();
+      return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : '发送失败');
+      return false;
     } finally {
       set({ sending: false });
     }

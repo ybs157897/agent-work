@@ -88,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/dashboard", s.guard(security.PermRead, s.handleDashboard))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/activities", s.guard(security.PermRead, s.handleActivities))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/events", s.guard(security.PermRead, s.handleSSE))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/uploads/images", s.guard(security.PermRunControl, s.handleUploadImage))
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/agent-profiles", s.guard(security.PermRead, s.handleListAgents))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/agent-profiles", s.guard(security.PermAgentWrite, s.handleCreateAgent))
@@ -197,7 +198,11 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, scope string
 
 	h := sha256.Sum256(append([]byte(r.Method+" "+r.URL.Path+" "), body...))
 	reqHash := hex.EncodeToString(h[:])
+	s.idempotentHashed(w, r, scope, key, reqHash, exec)
+}
 
+// idempotentHashed 复用幂等存储，但允许 multipart 等调用方按业务内容计算稳定 hash。
+func (s *Server) idempotentHashed(w http.ResponseWriter, r *http.Request, scope, key, reqHash string, exec func() (int, []byte)) {
 	if c, ok := s.store.Idempotency().(idempotencyClaimer); ok {
 		s.idempotentClaimFirst(c, w, r, scope, key, reqHash, exec)
 		return

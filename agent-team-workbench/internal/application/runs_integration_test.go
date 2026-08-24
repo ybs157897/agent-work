@@ -120,6 +120,103 @@ func TestCreateRunBuildsMultiTurnResumeSnapshot(t *testing.T) {
 	}
 }
 
+func TestCreateRunSkipsUnavailableRuntimeAndUsesReadyFallback(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	dispatcher := &captureDispatcher{}
+	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_runtime_fallback", Name: "runtime fallback", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	agent := &domain.AgentProfile{
+		ID: "agent_runtime_fallback", WorkspaceID: ws.ID, Name: "Agent", Role: "developer",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "codex_local", Fallbacks: []string{"dsh_local"}},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	bindings := []*domain.RuntimeBinding{
+		{ID: "rb_unavailable_codex", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver", Capabilities: map[string]string{}, Status: domain.BindingUnavailable, Version: 1, CreatedAt: now, UpdatedAt: now},
+		{ID: "rb_unavailable_dsh", WorkspaceID: ws.ID, RuntimeLabel: "dsh_local", AdapterID: "dsh", Capabilities: map[string]string{}, Status: domain.BindingUnavailable, Version: 1, CreatedAt: now, UpdatedAt: now},
+		{ID: "rb_ready_mock", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock", Capabilities: map[string]string{}, Status: domain.BindingReady, Version: 1, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, binding := range bindings {
+		if err := store.Bindings().Create(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{
+		Title: "fallback", AgentProfileID: agent.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: agent.ID, Instruction: "使用可用运行环境",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.RuntimeLabel != "mock" || run.AdapterID != "mock" {
+		t.Fatalf("runtime = %s adapter = %s, want ready mock", run.RuntimeLabel, run.AdapterID)
+	}
+	scheduling, ok := run.Input["scheduling"].(map[string]string)
+	if !ok || scheduling["reason"] != "fallback" {
+		t.Fatalf("scheduling = %#v, want fallback", run.Input["scheduling"])
+	}
+	if len(dispatcher.runs) != 1 || dispatcher.runs[0].ID != run.ID {
+		t.Fatalf("dispatch = %#v", dispatcher.runs)
+	}
+}
+
+func TestCreateRunRejectsConfiguredRuntimesWhenNoneAreReady(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_runtime_unready", Name: "runtime unready", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	agent := &domain.AgentProfile{
+		ID: "agent_runtime_unready", WorkspaceID: ws.ID, Name: "Agent", Role: "developer",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "codex_local"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{
+		ID: "rb_only_unavailable", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
+		Capabilities: map[string]string{}, Status: domain.BindingUnavailable,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{
+		Title: "unready", AgentProfileID: agent.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: agent.ID, Instruction: "不能静默运行",
+	}); err == nil || !strings.Contains(err.Error(), "没有已就绪的运行环境") {
+		t.Fatalf("err = %v, want no ready runtime", err)
+	}
+}
+
 // TestTaskSessionAnchorLifecycle 覆盖 task_sessions 锚点的核心生命周期：
 // 双写 → 指纹漂移丢弃 → reset 后 fresh → 用量累计。
 func TestTaskSessionAnchorLifecycle(t *testing.T) {

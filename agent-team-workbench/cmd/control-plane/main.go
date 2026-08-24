@@ -20,6 +20,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
@@ -93,6 +95,23 @@ func resolveDshRepo(workbenchRoot string) string {
 	return ""
 }
 
+// dshRepoReady 校验默认启动命令依赖的入口与 tsx loader，避免把残缺仓库
+// 注册成可用 Adapter 后进入无休止的 supervisor 重启循环。
+func dshRepoReady(repo string) bool {
+	if strings.TrimSpace(repo) == "" {
+		return false
+	}
+	for _, path := range []string{
+		filepath.Join(repo, "apps", "cli", "src", "bin.ts"),
+		filepath.Join(repo, "node_modules", "tsx", "package.json"),
+	} {
+		if st, err := os.Stat(path); err != nil || st.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 func main() {
 	if err := run(); err != nil {
 		log.Fatal(err)
@@ -133,17 +152,23 @@ func run() error {
 	}
 	credStore := modelconfig.NewCredentialsStore(workbenchRoot)
 	executionRoot := resolveExecutionRoot(workbenchRoot, env("ATW_WORKSPACE_ROOT", env("ATW_DSH_WORKDIR", "")))
-	dshGateway := dsh.NewGateway(dsh.GatewayConfig{
-		BaseURL:       env("ATW_DSH_GATEWAY_URL", ""),
-		Port:          atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
-		RepoDir:       resolveDshRepo(workbenchRoot),
-		Home:          projectSpace.DSHHome(),
-		WorkspaceRoot: executionRoot,
-		Model:         env("DSH_MODEL", "deepseek-v4-flash"),
-	})
-	// 退出时回收网关进程（对齐 runnerd；supervisor Close 幂等，未拉起也可安全调用）。
-	defer dshGateway.Close()
-	modules.RegisterTo(registry, "dsh", dshGateway)
+	dshBaseURL := env("ATW_DSH_GATEWAY_URL", "")
+	dshRepo := resolveDshRepo(workbenchRoot)
+	if dshBaseURL != "" || dshRepoReady(dshRepo) {
+		dshGateway := dsh.NewGateway(dsh.GatewayConfig{
+			BaseURL:       dshBaseURL,
+			Port:          atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
+			RepoDir:       dshRepo,
+			Home:          projectSpace.DSHHome(),
+			WorkspaceRoot: executionRoot,
+			Model:         env("DSH_MODEL", "deepseek-v4-flash"),
+		})
+		// 退出时回收网关进程（对齐 runnerd；supervisor Close 幂等，未拉起也可安全调用）。
+		defer dshGateway.Close()
+		modules.RegisterTo(registry, "dsh", dshGateway)
+	} else {
+		log.Printf("dsh: 未注册（未找到已安装依赖的 deepseek-harness；可设置 ATW_DSH_REPO 或 ATW_DSH_GATEWAY_URL）")
+	}
 	// M3 真实 Adapter：OpenAI Codex app-server（本机 CLI 存在时启用）。
 	codexBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_CODEX_BIN", "codex", "codex")
 	if agentwork.ExecutableOK(codexBin) {
@@ -267,6 +292,12 @@ func run() error {
 			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
 		}, true
 	}
+	// agents/ 导入发生在模型注册表装配之前；启动时补做一次 Runtime 本地配置同步，
+	// 再统一 Probe。否则新建 binding 会永远保留 unavailable，只有手动进入设置页
+	// 点击 Probe 才能恢复。
+	configureAgentRuntimeModels(ctx, store, projectSpace, svc.ModelResolver)
+	probeRuntimeBindingsOnStartup(ctx, svc, store,
+		time.Duration(atoiEnv("ATW_RUNTIME_PROBE_TIMEOUT_SEC", 15))*time.Second)
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
@@ -515,6 +546,108 @@ func ensureBuiltinRuntimeBindings(ctx context.Context, svc *application.Service,
 		}
 	}
 	return nil
+}
+
+// configureAgentRuntimeModels 把文件真相源导入得到的 Agent 模型选择同步到本地
+// Runtime home。执行每个 Run 前仍会按快照再次同步；这里负责让启动 Probe 具备
+// 与真实执行一致的 provider/model/credential 环境。
+func configureAgentRuntimeModels(ctx context.Context, store application.Store, root agentwork.Root, resolve orchestrator.ModelResolver) {
+	workspaceIDs, err := store.Workspaces().ListIDs(ctx)
+	if err != nil {
+		log.Printf("runtime 启动配置：读取 workspace 失败: %v", err)
+		return
+	}
+	configured := map[string]bool{}
+	for _, workspaceID := range workspaceIDs {
+		agents, err := store.Agents().List(ctx, workspaceID)
+		if err != nil {
+			log.Printf("runtime 启动配置：读取 workspace %s Agent 失败: %v", workspaceID, err)
+			continue
+		}
+		for _, agent := range agents {
+			label := strings.TrimSpace(agent.RuntimePreference.Preferred)
+			if configured[label] || (label != "codex_local" && label != "kimi_local") {
+				continue
+			}
+			spec := orchestrator.EffectiveModel(agent, nil, resolve)
+			if strings.TrimSpace(spec.Model) == "" {
+				log.Printf("runtime 启动配置：Agent %s 的 %s 未解析到模型", agent.Name, label)
+				continue
+			}
+			var applyErr error
+			switch label {
+			case "codex_local":
+				applyErr = codexconfig.Apply(root.CodexHome(), spec)
+			case "kimi_local":
+				applyErr = kimiconfig.Apply(root.KimiHome(), spec)
+			}
+			if applyErr != nil {
+				log.Printf("runtime 启动配置：%s 同步失败: %v", label, applyErr)
+				continue
+			}
+			configured[label] = true
+			log.Printf("runtime 启动配置：%s 已同步模型 %s", label, spec.Model)
+		}
+	}
+}
+
+type startupProbeResult struct {
+	label string
+	ok    bool
+	err   string
+}
+
+// probeRuntimeBindingsOnStartup 并发刷新所有 binding 的权威健康状态。单个 Adapter
+// 有独立超时，某个外部 CLI/网关故障不会拖死整个控制平面启动。
+func probeRuntimeBindingsOnStartup(ctx context.Context, svc *application.Service, store application.Store, timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	workspaceIDs, err := store.Workspaces().ListIDs(ctx)
+	if err != nil {
+		log.Printf("runtime 启动探测：读取 workspace 失败: %v", err)
+		return
+	}
+	var bindings []*domain.RuntimeBinding
+	for _, workspaceID := range workspaceIDs {
+		items, err := store.Bindings().List(ctx, workspaceID)
+		if err != nil {
+			log.Printf("runtime 启动探测：读取 workspace %s binding 失败: %v", workspaceID, err)
+			continue
+		}
+		bindings = append(bindings, items...)
+	}
+	if len(bindings) == 0 {
+		return
+	}
+	results := make(chan startupProbeResult, len(bindings))
+	for _, binding := range bindings {
+		binding := binding
+		go func() {
+			probeCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			_, result, err := svc.ProbeRuntimeBinding(probeCtx, binding.ID)
+			if err != nil {
+				results <- startupProbeResult{label: binding.RuntimeLabel, err: err.Error()}
+				return
+			}
+			results <- startupProbeResult{label: binding.RuntimeLabel, ok: result.OK, err: result.Error}
+		}()
+	}
+	ready := 0
+	for range bindings {
+		result := <-results
+		if result.ok {
+			ready++
+			log.Printf("runtime 启动探测：%s ready", result.label)
+			continue
+		}
+		if result.err == "" {
+			result.err = "未知错误"
+		}
+		log.Printf("runtime 启动探测：%s unavailable: %s", result.label, result.err)
+	}
+	log.Printf("runtime 启动探测完成：%d/%d ready", ready, len(bindings))
 }
 
 func dirExists(path string) bool {

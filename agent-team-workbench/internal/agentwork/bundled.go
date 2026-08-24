@@ -39,17 +39,31 @@ func BundledRuntime(workbenchRoot, runtimeName string) string {
 	return ""
 }
 
-// ExecutableOK 判断可执行文件可用（PATH 名或文件路径）。
+const gitLFSPointerHeader = "version https://git-lfs.github.com/spec/v1"
+
+// ExecutableOK 判断可执行文件可用（PATH 名或文件路径）。Git LFS 未拉取时，
+// 仓库里的“大文件”实际只是带可执行位的文本指针；这种文件必须视为不可用，
+// 让解析逻辑继续回退到系统 PATH，而不是等到 Probe 才报 exec format error。
 func ExecutableOK(bin string) bool {
 	if strings.TrimSpace(bin) == "" {
 		return false
 	}
-	if strings.Contains(bin, string(os.PathSeparator)) {
-		_, err := os.Stat(bin)
-		return err == nil
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return false
 	}
-	_, err := exec.LookPath(bin)
-	return err == nil
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	header := make([]byte, len(gitLFSPointerHeader))
+	n, _ := f.Read(header)
+	return string(header[:n]) != gitLFSPointerHeader
 }
 
 func runtimePlatformDir() string {

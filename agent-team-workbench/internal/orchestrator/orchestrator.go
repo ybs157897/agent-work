@@ -16,7 +16,7 @@ import (
 const DefaultRuntimeLabel = "mock"
 
 // ResolveRuntimeCandidates 按优先级给出 runtime label 候选（显式 > Agent 偏好 > 兜底）。
-// 调用方按序取第一个存在对应 RuntimeBinding 的 label。
+// 调用方按序取第一个 ready 的 RuntimeBinding label。
 func ResolveRuntimeCandidates(explicit *domain.RuntimePreference, agent *domain.AgentProfile) []string {
 	var out []string
 	seen := map[string]bool{}

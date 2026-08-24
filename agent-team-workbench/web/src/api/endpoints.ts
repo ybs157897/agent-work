@@ -1,4 +1,4 @@
-import { apiFetch } from './client';
+import { apiFetch, apiUpload } from './client';
 import type {
   Activity,
   AgentPolicy,
@@ -42,6 +42,20 @@ export const getBootstrap = (workspaceId: string) =>
 
 export const getDashboard = (workspaceId: string) =>
   apiFetch<Dashboard>(`/workspaces/${workspaceId}/dashboard`);
+
+export interface UploadedImage {
+  name: string;
+  mime: string;
+  size: number;
+  path: string;
+}
+
+/** 上传对话图片到控制平面本地空间，返回 Agent 可读取的绝对路径。 */
+export const uploadWorkspaceImage = (workspaceId: string, file: File) => {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  return apiUpload<UploadedImage>(`/workspaces/${workspaceId}/uploads/images`, body);
+};
 
 export const listActivities = (workspaceId: string) =>
   apiFetch<{ items: Activity[]; next_cursor: string | null }>(`/workspaces/${workspaceId}/activities`);

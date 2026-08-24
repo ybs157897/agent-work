@@ -36,17 +36,18 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const me = useWorkspaceStore((s) => s.me);
   const sseStatus = useWorkspaceStore((s) => s.sseStatus);
   const breadcrumb = BREADCRUMBS[location.pathname] ?? '';
+  const isChat = location.pathname === '/chat';
   const isFullBleed = location.pathname === '/chat' || location.pathname === '/models' || location.pathname === '/agents';
 
   return (
     <div className="flex h-screen w-full bg-surface-base overflow-hidden">
       <aside className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border flex flex-col z-20">
-        <div className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-sidebar-border">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-accent flex items-center justify-center text-white font-bold text-sm shadow-md shadow-brand-primary/25">
+        <div className="h-14 shrink-0 px-4 gap-3 flex items-center border-b border-sidebar-border">
+          <div className="w-8 h-8 text-sm rounded-xl bg-brand-primary flex items-center justify-center text-white font-bold shadow-md shadow-brand-primary/20">
             A
           </div>
           <div className="min-w-0">
-            <div className="font-display text-body font-semibold text-text-on-sidebar-active leading-tight truncate">
+            <div className="font-display font-semibold text-text-on-sidebar-active leading-tight truncate text-body">
               Agent Team
             </div>
             <div className="text-[11px] text-text-on-sidebar/70 leading-tight">Workbench</div>
@@ -59,8 +60,8 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        <div className="shrink-0 p-3 border-t border-sidebar-border" title={me?.name ?? ''}>
-          <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-sidebar-hover transition-colors">
+        <div className="shrink-0 border-t border-sidebar-border p-3" title={me?.name ?? ''}>
+          <div className="flex items-center rounded-lg hover:bg-sidebar-hover transition-colors gap-3 px-2 py-2">
             <div className="w-9 h-9 rounded-full bg-brand-primary/20 text-brand-primary flex items-center justify-center text-caption font-semibold shrink-0 ring-1 ring-brand-primary/20">
               {(me?.name ?? 'D').slice(0, 1)}
             </div>
@@ -77,20 +78,22 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 shrink-0 px-6 flex items-center justify-between border-b border-border-subtle bg-surface-raised/80 backdrop-blur-md z-10 sticky top-0">
-          <div className="flex items-center gap-2 text-body">
-            <span className="text-text-tertiary font-medium">{workspace?.name ?? '…'}</span>
-            <span className="text-text-tertiary/60">/</span>
-            <span className="text-text-primary font-semibold">{breadcrumb}</span>
-          </div>
-          <div className="status-pill" title="SSE 实时事件连接状态">
-            <div className={`w-2 h-2 rounded-full ${SSE_DOT[sseStatus]}`} />
-            <span>{SSE_LABEL[sseStatus]}</span>
-          </div>
-        </header>
+        {!isChat && (
+          <header className="h-14 shrink-0 px-6 flex items-center justify-between border-b border-border-subtle bg-surface-raised/80 backdrop-blur-md z-10 sticky top-0">
+            <div className="flex items-center gap-2 text-body">
+              <span className="text-text-tertiary font-medium">{workspace?.name ?? '…'}</span>
+              <span className="text-text-tertiary/60">/</span>
+              <span className="text-text-primary font-semibold">{breadcrumb}</span>
+            </div>
+            <div className="status-pill" title="SSE 实时事件连接状态">
+              <div className={`w-2 h-2 rounded-full ${SSE_DOT[sseStatus]}`} />
+              <span>{SSE_LABEL[sseStatus]}</span>
+            </div>
+          </header>
+        )}
 
         <main
-          className={`flex-1 min-h-0 relative isolate mesh-bg ${
+          className={`flex-1 min-h-0 relative isolate ${isChat ? 'bg-surface-raised' : 'mesh-bg'} ${
             isFullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
           }`}
         >
@@ -117,7 +120,7 @@ function NavItem({
       to={to}
       end={end}
       className={({ isActive }) =>
-        `group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-body transition-all duration-200 focus-visible:ring-offset-sidebar ${
+        `group relative flex items-center rounded-lg transition-all duration-200 focus-visible:ring-offset-sidebar gap-3 px-3 py-2.5 text-body ${
           isActive
             ? 'bg-sidebar-hover text-text-on-sidebar-active font-semibold shadow-sm'
             : 'text-text-on-sidebar font-medium hover:bg-sidebar-hover hover:text-text-on-sidebar-active'

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -125,20 +126,30 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		agent = a
 	}
 	// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
-	// 第一个存在 RuntimeBinding 的候选胜出，调度原因写入快照（协议 §8.2）。
+	// 第一个 ready 的 RuntimeBinding 胜出。仅“存在”但尚未通过 Probe 的 binding
+	// 不得阻断后续 fallback，否则 preferred 一次探测失败会永久锁死整个 Agent。
 	label, reason, binding := orchestrator.DefaultRuntimeLabel, "default", (*domain.RuntimeBinding)(nil)
+	foundCandidate := false
 	for i, candidate := range orchestrator.ResolveRuntimeCandidates(p.RuntimePreference, agent) {
 		b, err := s.store.Bindings().GetByLabel(ctx, wi.WorkspaceID, candidate)
-		if err == nil {
-			label, binding = candidate, b
-			switch i {
-			case 0:
-				reason = "requested"
-			default:
-				reason = "fallback"
-			}
-			break
+		if err != nil {
+			continue
 		}
+		foundCandidate = true
+		if b.Status != domain.BindingReady {
+			continue
+		}
+		label, binding = candidate, b
+		switch i {
+		case 0:
+			reason = "requested"
+		default:
+			reason = "fallback"
+		}
+		break
+	}
+	if binding == nil && foundCandidate {
+		return nil, fmt.Errorf("%w: 没有已就绪的运行环境，请检查 Runtime 探测结果", domain.ErrValidation)
 	}
 	if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
 		return nil, err
@@ -342,6 +353,10 @@ func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.Mode
 		}
 		if strings.TrimSpace(spec.APIKeyEnv) == "" {
 			return fmt.Errorf("%w: Codex 使用注册表模型需要 api_key_env（请在模型页保存凭据）", domain.ErrValidation)
+		}
+		if strings.TrimSpace(os.Getenv(spec.APIKeyEnv)) == "" {
+			return fmt.Errorf("%w: 模型 %q 缺少凭据 %s（请在模型页保存对应供应商 API Key）",
+				domain.ErrValidation, spec.Model, spec.APIKeyEnv)
 		}
 		if _, err := codexconfig.ResolveBaseURL(spec); err != nil {
 			return err

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, apiFetch } from './client';
+import { ApiError, apiFetch, apiUpload } from './client';
 
 const jsonResponse = (status: number, body: unknown, contentType = 'application/json') =>
   new Response(JSON.stringify(body), {
@@ -74,5 +74,22 @@ describe('apiFetch', () => {
     if (!(err instanceof ApiError)) throw new Error('expected ApiError');
     expect(err.code).toBe('http_error');
     expect(err.retryable).toBe(true);
+  });
+
+  it('multipart 上传不手动设置 Content-Type，并携带请求 ID 与幂等键', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, { path: '/tmp/image.png' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const body = new FormData();
+    body.append('file', new Blob(['png'], { type: 'image/png' }), 'image.png');
+
+    await apiUpload('/workspaces/ws_1/uploads/images', body, 'upload-key');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(url).toBe('/api/v1/workspaces/ws_1/uploads/images');
+    expect(init.body).toBe(body);
+    expect(headers['Content-Type']).toBeUndefined();
+    expect(headers['Idempotency-Key']).toBe('upload-key');
+    expect(headers['X-Request-Id']).toMatch(/^req_/);
   });
 });

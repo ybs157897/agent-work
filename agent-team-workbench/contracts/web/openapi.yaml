@@ -69,6 +69,30 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Dashboard" } } } }
 
+  /workspaces/{workspace_id}/uploads/images:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [artifacts]
+      operationId: uploadWorkspaceImage
+      summary: 上传对话图片并返回 Agent 可读取的本地绝对路径
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PNG、JPEG、WebP 或 GIF；最大 10MB。
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/UploadedImage" } } } }
+        "413": { description: 图片超过 10MB }
+        "415": { description: 不支持的图片格式 }
+
   /workspaces/{workspace_id}/events:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
@@ -1223,6 +1247,15 @@ components:
         sha256: { type: string }
         status: { type: string, enum: [draft, accepted] }
         created_at: { type: string, format: date-time }
+
+    UploadedImage:
+      type: object
+      required: [name, mime, size, path]
+      properties:
+        name: { type: string }
+        mime: { type: string, enum: [image/png, image/jpeg, image/webp, image/gif] }
+        size: { type: integer, format: int64 }
+        path: { type: string, description: 控制平面本地绝对路径；随 Run instruction 传给 Agent。 }
 
     ActivityList:
       type: object

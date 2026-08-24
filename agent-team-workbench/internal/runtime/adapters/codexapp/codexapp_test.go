@@ -330,6 +330,23 @@ func TestProbeRejectsMissingAuth(t *testing.T) {
 	}
 }
 
+func TestProbeRejectsMissingCustomProviderCredential(t *testing.T) {
+	t.Setenv("ATW_TEST_MISSING_MODEL_KEY", "")
+	m := newTestModule(t)
+	m.cfg.Home = t.TempDir()
+	config := "model = \"test\"\n[model_providers.test]\nenv_key = \"ATW_TEST_MISSING_MODEL_KEY\"\n"
+	if err := os.WriteFile(filepath.Join(m.cfg.Home, "config.toml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := m.Probe(context.Background(), atwruntime.ProbeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || !strings.Contains(result.Error, "ATW_TEST_MISSING_MODEL_KEY") {
+		t.Fatalf("probe should reject missing custom provider credential: %+v", result)
+	}
+}
+
 // ── Execute：帧→事件映射 / 会话 / 进程上报（协议文档 §9）──────────────
 
 // initialize → thread/start → turn/start；通知流映射 canonical 事件，

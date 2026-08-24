@@ -83,6 +83,8 @@ func TestValidateRequiredCapabilities(t *testing.T) {
 }
 
 func TestCodexRuntimeAcceptsRegistryModelWithCredentials(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "sk-test-deepseek")
+	t.Setenv("OPENROUTER_API_KEY", "sk-test-openrouter")
 	binding := &domain.RuntimeBinding{AdapterID: "codex-appserver"}
 	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
 		Ref: "deepseek-v4-flash", Provider: "deepseek-official", Model: "deepseek-v4-flash",
@@ -103,5 +105,11 @@ func TestCodexRuntimeAcceptsRegistryModelWithCredentials(t *testing.T) {
 		Provider: "openrouter", Model: "ox-alpha", BaseURL: "https://openrouter.ai/api/v1",
 	}); err == nil {
 		t.Fatal("missing api_key_env should fail")
+	}
+	t.Setenv("MISSING_MODEL_KEY", "")
+	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
+		Provider: "deepseek-official", Model: "deepseek-v4-flash", APIKeyEnv: "MISSING_MODEL_KEY",
+	}); err == nil || !strings.Contains(err.Error(), "缺少凭据") {
+		t.Fatalf("missing credential value should fail: %v", err)
 	}
 }

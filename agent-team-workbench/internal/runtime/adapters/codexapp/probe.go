@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
@@ -14,6 +15,13 @@ import (
 // 二进制存在但协议漂移、未登录或没有模型时必须报告 unavailable。
 func (m *Module) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
 	manifest, _ := m.Manifest(ctx)
+	// account/read 成功只证明本机 Codex 登录态可用；当 config.toml 已切到
+	// DeepSeek/OpenRouter 等自定义 provider 时，还必须验证该 provider 的 env_key。
+	// 否则 Probe 会错误报告 ready，真正 turn/start 才因缺少 API Key 失败。
+	if envKey := codexconfig.CustomProviderEnv(m.cfg.Home); envKey != "" && strings.TrimSpace(os.Getenv(envKey)) == "" {
+		return runtime.ProbeResult{OK: false, Manifest: &manifest,
+			Error: "Codex 模型凭据缺失：" + envKey + "，请在模型页保存对应供应商 API Key"}, nil
+	}
 	if _, err := exec.LookPath(m.cfg.BinPath); err != nil {
 		if _, statErr := os.Stat(m.cfg.BinPath); statErr != nil {
 			return runtime.ProbeResult{OK: false, Manifest: &manifest, Error: "codex 不可用: " + m.cfg.BinPath}, nil

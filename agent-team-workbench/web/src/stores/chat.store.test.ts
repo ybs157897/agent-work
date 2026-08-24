@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, sessionLine, toolDuration, useChatStore } from './chat.store';
-import type { TimelineEntry } from './runs.store';
+import { useRunsStore, type TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
 
@@ -450,6 +450,75 @@ describe('chat.store refresh 请求序号守卫', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await new Promise((r) => setTimeout(r, 0));
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['wi_b']);
+  });
+});
+
+describe('chat.store send 结果语义', () => {
+  const problem = (detail: string) =>
+    new Response(JSON.stringify({ title: 'Runtime unavailable', detail, status: 503, code: 'runtime_unavailable' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/problem+json' },
+    });
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  beforeEach(() => {
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 },
+    });
+    useRunsStore.setState({ runs: {} });
+    useChatStore.setState({
+      agentId: 'agent_1',
+      conversationId: 'wi_1',
+      conversations: [],
+      runs: [],
+      sending: false,
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('发送失败返回 false 并复位 sending，供页面保留草稿', async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(problem('runner 未连接')));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(useChatStore.getState().send('保留这条消息')).resolves.toBe(false);
+    expect(useChatStore.getState().sending).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('已有发送进行中时拒绝重复提交且不发请求', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({ sending: true });
+
+    await expect(useChatStore.getState().send('第二条')).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('活动 Run 接受追加输入后返回 true', async () => {
+    useChatStore.setState({
+      runs: [{ id: 'run_1', status: 'running', created_at: '2026-08-24T00:00:00Z' } as ExecutionRun],
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/runs/run_1/commands/input') && init?.method === 'POST') {
+        return Promise.resolve(json({ accepted: true }));
+      }
+      if (url.endsWith('/work-items/wi_1/runs')) return Promise.resolve(json({ items: [] }));
+      if (url.includes('/workspaces/ws_1/work-items')) return Promise.resolve(json({ items: [], next_cursor: null }));
+      return Promise.resolve(problem(`未覆盖请求 ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(useChatStore.getState().send('继续处理')).resolves.toBe(true);
+    expect(useChatStore.getState().sending).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/runs/run_1/commands/input',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });
 
