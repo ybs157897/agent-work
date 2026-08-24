@@ -96,9 +96,15 @@ type runDTO struct {
 	Progress       *float64    `json:"progress,omitempty"`
 	RetryOf        string      `json:"retry_of,omitempty"`
 	Failure        *failureDTO `json:"failure,omitempty"`
-	Version        int         `json:"version"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	// 本轮 token 用量（adapter 上报；零值省略）。usage_basis 为口径标注
+	// （per_run | session_cumulative），字段名是前端契约，不得改动。
+	UsageIn     int64     `json:"usage_in,omitempty"`
+	UsageOut    int64     `json:"usage_out,omitempty"`
+	UsageCached int64     `json:"usage_cached,omitempty"`
+	UsageBasis  string    `json:"usage_basis,omitempty"`
+	Version     int       `json:"version"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type failureDTO struct {
@@ -112,6 +118,7 @@ func toRunDTO(r *domain.ExecutionRun) runDTO {
 		ID: r.ID, WorkItemID: r.WorkItemID, AgentProfileID: r.AgentProfileID,
 		Status: string(r.Status), RuntimeLabel: r.RuntimeLabel, Progress: r.Progress,
 		RetryOf: r.RetryOf, Version: r.Version, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		UsageIn: r.UsageIn, UsageOut: r.UsageOut, UsageCached: r.UsageCached, UsageBasis: r.UsageBasis,
 	}
 	if r.Failure != nil {
 		d.Failure = &failureDTO{Code: r.Failure.Code, Message: r.Failure.Message, Retryable: r.Failure.Retryable}

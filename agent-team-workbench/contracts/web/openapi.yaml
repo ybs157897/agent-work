@@ -1165,6 +1165,10 @@ components:
             code: { type: string }
             message: { type: string }
             retryable: { type: boolean }
+        usage_in: { type: integer, format: int64, description: 本轮输入 token（adapter 上报；零值省略） }
+        usage_out: { type: integer, format: int64, description: 本轮输出 token（adapter 上报；零值省略） }
+        usage_cached: { type: integer, format: int64, description: 本轮缓存命中 token（adapter 上报；零值省略） }
+        usage_basis: { type: string, enum: [per_run, session_cumulative], description: 用量口径；per_run 为本轮增量，session_cumulative 为会话累计（消费方做差量） }
         version: { type: integer }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
