@@ -1,0 +1,121 @@
+/* 几何照抄 DSH SearchBlock（12px 圆角、22px 行高、banner 9x14 内边距、body 8/14/12/0 内边距）；
+   颜色走本项目 hsl(var(--color-*)) 令牌。结果行保持 white-space: pre 不换行——折行会毁掉
+   读者扫视依赖的对齐，长行随 body 横向滚动。 */
+
+.block {
+  --search-radius: 12px;
+  --search-line-height: 22px;
+
+  position: relative;
+  margin: 16px 0;
+  color: hsl(var(--color-text-primary));
+  background: hsl(var(--color-surface-sunken) / 0.55);
+  border-radius: var(--search-radius);
+}
+
+/* 横幅：左侧结果摘要，右侧复制控件保持固有宽度 */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: hsl(var(--color-surface-sunken));
+  border-top-left-radius: var(--search-radius);
+  border-top-right-radius: var(--search-radius);
+}
+
+.summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: hsl(var(--color-text-secondary));
+}
+
+.copyButton {
+  flex: none;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: hsl(var(--color-text-secondary));
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.body {
+  padding: 8px 14px 12px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: var(--search-line-height);
+  tab-size: 4;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 不换行：命中行/路径整行保持单行，超宽横向滚动而非折叠 */
+.line {
+  min-height: var(--search-line-height);
+  padding-left: 14px;
+  white-space: pre;
+}
+
+/* grep 命中行前的 1 起行号，弱化以突出命中内容 */
+.lineNumber {
+  color: hsl(var(--color-text-tertiary));
+}
+
+/* 文件组头：粗体路径 + 命中数，整行即折叠开关 */
+.fileHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--search-line-height);
+  padding: 0 14px;
+  border: none;
+  background-color: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.filePath {
+  min-width: 0;
+  font-weight: 600;
+  color: hsl(var(--color-text-primary));
+  white-space: pre;
+}
+
+.fileCount {
+  flex: none;
+  color: hsl(var(--color-text-tertiary));
+}
+
+.expand {
+  display: block;
+  width: 100%;
+  padding: 0 14px;
+  border: none;
+  background-color: transparent;
+  color: hsl(var(--color-text-tertiary));
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.expand:hover {
+  color: hsl(var(--color-text-secondary));
+}
+
+.empty {
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: var(--search-line-height);
+  color: hsl(var(--color-text-tertiary));
+}

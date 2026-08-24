@@ -1,0 +1,132 @@
+/* 几何照抄 DSH ReadBlock（12px 圆角、22px 行高、48px gutter 列、banner 9x14 内边距）；
+   颜色走本项目 hsl(var(--color-*)) 令牌。内容 white-space: pre 不换行、随 body 横向滚动，
+   行号列与内容列以相同固定行高对齐。 */
+
+.block {
+  --read-radius: 12px;
+  --read-line-height: 22px;
+  /* 固定宽行号列：行号随文件变宽时内容左缘整列不动 */
+  --read-gutter: 48px;
+
+  position: relative;
+  margin: 16px 0;
+  color: hsl(var(--color-text-primary));
+  background: hsl(var(--color-surface-sunken) / 0.55);
+  border-radius: var(--read-radius);
+}
+
+.banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  background: hsl(var(--color-surface-sunken));
+  border-top-left-radius: var(--read-radius);
+  border-top-right-radius: var(--read-radius);
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: hsl(var(--color-text-primary));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.lang {
+  color: hsl(var(--color-text-tertiary));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.count {
+  color: hsl(var(--color-text-tertiary));
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.copyButton {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: hsl(var(--color-text-secondary));
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.body {
+  padding: 12px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: var(--read-line-height);
+  tab-size: 4;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 双列 grid：行号列 + 内容列。宽取 max-content，长行撑宽后由 .body 横向滚动；
+   行高由组件内联 repeat(n, 22px) 钉死，pre 跨全部行，两列永不错位。 */
+.grid {
+  display: grid;
+  grid-template-columns: var(--read-gutter) auto;
+  width: max-content;
+  min-width: 100%;
+}
+
+.gutter {
+  grid-column: 1;
+  padding-right: 14px;
+  text-align: right;
+  color: hsl(var(--color-text-tertiary));
+  line-height: var(--read-line-height);
+  /* 行号是 chrome 不是内容：排除在文本选择外，可见区域复制只带走源码 */
+  user-select: none;
+}
+
+.content {
+  grid-column: 2;
+  margin: 0;
+  white-space: pre;
+  /* UA 对 pre 自带 font-family 声明、压过继承；显式重设，与行号列同字体同字号 */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: hsl(var(--color-text-primary));
+  line-height: var(--read-line-height);
+}
+
+/* github 主题给 .hljs 挂了自带底色/基色；双类选择器压回本卡令牌（token span 仍走主题色） */
+.content.hljs {
+  color: hsl(var(--color-text-primary));
+  background: transparent;
+}
+
+.expand {
+  grid-column: 1 / -1;
+  display: block;
+  width: 100%;
+  padding: 0 0 0 var(--read-gutter);
+  border: none;
+  background-color: transparent;
+  color: hsl(var(--color-text-tertiary));
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.expand:hover {
+  color: hsl(var(--color-text-secondary));
+}
