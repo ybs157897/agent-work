@@ -83,6 +83,37 @@ export function toolDuration(startedAt?: string, completedAt?: string): string |
 
 const PLAN_STEP_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
 
+/** sessionLine 输入：session.decision 的 tier/reason；'compacted' 为 session.compacted 的 UI 本地判别。 */
+export interface SessionEventData {
+  tier: string;
+  reason?: string;
+}
+
+/**
+ * 会话状态元信息行文案映射（tier×reason → 人话；未知组合返回 null 不渲染）。
+ * 会话管理可视化：续接/轮换/自愈/压缩从隐形变可见。
+ */
+export function sessionLine(data?: SessionEventData): string | null {
+  if (!data) return null;
+  switch (data.tier) {
+    case 'resume':
+      return '已续接会话';
+    case 'rotation':
+      if (data.reason === 'budget') return '已轮换新会话（预算）';
+      if (data.reason === 'threshold') return '已轮换新会话（阈值）';
+      return '已轮换新会话';
+    case 'inline':
+      if (data.reason === 'session_unknown') return '已重建会话（自愈）';
+      if (data.reason === 'config_drift') return '已重建会话（配置漂移）';
+      if (data.reason === 'fresh') return '已开新会话';
+      return null;
+    case 'compacted':
+      return '会话已压缩';
+    default:
+      return null;
+  }
+}
+
 /**
  * 防御式解析 run.plan_updated 载荷：steps 非数组或全为无效条目返回 null
  * （事件契约未落地/载荷异常时卡片不出现，不报错）。
@@ -158,6 +189,19 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             out.push({ key: e.event_id, runId, kind: 'user', text: instruction, at: e.occurred_at });
           }
           break;
+        case 'session.decision': {
+          // CreateRun 会话决议（纯观测面）：映射失败（未知 tier/reason）不渲染。
+          const tier = typeof e.data?.tier === 'string' ? e.data.tier : '';
+          const reason = typeof e.data?.reason === 'string' ? e.data.reason : '';
+          const text = sessionLine({ tier, reason });
+          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at });
+          break;
+        }
+        case 'session.compacted': {
+          const text = sessionLine({ tier: 'compacted' });
+          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at });
+          break;
+        }
         case 'message.delta': {
           const chunk = extractDeltaChunk(e.data);
           if (chunk?.type === 'reasoning-delta' && chunk.text) {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, toolDuration, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, parsePlanSteps, sessionLine, toolDuration, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -245,6 +245,55 @@ describe('parsePlanSteps', () => {
     expect(parsePlanSteps({})).toBeNull();
     expect(parsePlanSteps({ steps: null })).toBeNull();
     expect(parsePlanSteps({ steps: [{ step: 'a', status: 'done' }] })).toBeNull();
+  });
+});
+
+describe('sessionLine', () => {
+  it('tier×reason 全量映射', () => {
+    expect(sessionLine({ tier: 'resume', reason: 'resume_hit' })).toBe('已续接会话');
+    expect(sessionLine({ tier: 'rotation', reason: 'budget' })).toBe('已轮换新会话（预算）');
+    expect(sessionLine({ tier: 'rotation', reason: 'threshold' })).toBe('已轮换新会话（阈值）');
+    expect(sessionLine({ tier: 'rotation' })).toBe('已轮换新会话');
+    expect(sessionLine({ tier: 'inline', reason: 'session_unknown' })).toBe('已重建会话（自愈）');
+    expect(sessionLine({ tier: 'inline', reason: 'config_drift' })).toBe('已重建会话（配置漂移）');
+    expect(sessionLine({ tier: 'inline', reason: 'fresh' })).toBe('已开新会话');
+    expect(sessionLine({ tier: 'compacted' })).toBe('会话已压缩');
+  });
+
+  it('未知 tier/inline 未知 reason/缺输入返回 null（不渲染）', () => {
+    expect(sessionLine()).toBeNull();
+    expect(sessionLine({ tier: 'mystery' })).toBeNull();
+    expect(sessionLine({ tier: '' })).toBeNull();
+    expect(sessionLine({ tier: 'inline', reason: 'future_reason' })).toBeNull();
+  });
+});
+
+describe('buildMessages 会话元信息行', () => {
+  it('session.decision 渲染居中 system 行；session.compacted 渲染压缩行', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: '继续' }),
+        entry('run_1', 2, 'session.decision', { tier: 'resume', reason: 'resume_hit', session_ref: 'sess_9' }),
+        entry('run_1', 3, 'message.completed', { role: 'assistant', text: '好的' }, 'assistant', '好的'),
+        entry('run_1', 4, 'session.compacted', {}),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['user', '继续'],
+      ['system', '已续接会话'],
+      ['assistant', '好的'],
+      ['system', '会话已压缩'],
+    ]);
+  });
+
+  it('未知 tier 的 decision 不产生行（防御式）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'session.decision', { tier: 'quantum' }),
+      ],
+    };
+    expect(buildMessages(['run_1'], timelines)).toHaveLength(0);
   });
 });
 
