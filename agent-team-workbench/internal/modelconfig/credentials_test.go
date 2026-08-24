@@ -1,6 +1,9 @@
 package modelconfig
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestSuggestAPIKeyEnv(t *testing.T) {
 	if SuggestAPIKeyEnv("openrouter") != "OPENROUTER_API_KEY" {
@@ -20,6 +23,9 @@ func TestCredentialsStoreRoundTrip(t *testing.T) {
 	got, ok := store.Get("prov-openrouter")
 	if !ok || got != "sk-test-key" {
 		t.Fatalf("got (%q, %v)", got, ok)
+	}
+	if _, err := os.Stat(store.Path()); err != nil {
+		t.Fatalf("credentials file: %v", err)
 	}
 	if err := store.Delete("prov-openrouter"); err != nil {
 		t.Fatal(err)

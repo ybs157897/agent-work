@@ -444,9 +444,8 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if meta == nil || meta["cwd"] != "/tmp/atw-kimiapp-test" {
 		t.Fatalf("create metadata.cwd 不符: %v", createBody)
 	}
-	agentCfg, _ := createBody["agent_config"].(map[string]any)
-	if agentCfg == nil || agentCfg["model"] != "test-model" {
-		t.Fatalf("create agent_config.model 不符: %v", createBody)
+	if _, ok := createBody["agent_config"]; ok {
+		t.Fatalf("agent_config 是服务端不应用的死透传，不应再发送: %v", createBody)
 	}
 	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
 	content, _ := promptBody["content"].([]any)
@@ -484,14 +483,27 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if !ok || completed.data["text"] != "ALPHA" {
 		t.Fatalf("message.completed 不符: %+v", completed)
 	}
-	if _, ok := cb.find(domain.EventToolStarted); !ok {
+	started, ok := cb.find(domain.EventToolStarted)
+	if !ok {
 		t.Fatal("未见 tool.started")
 	}
-	if _, ok := cb.find(domain.EventToolCompleted); !ok {
+	// 工具契约：tool/call_id + args_summary（args.command 提取）。
+	if started.data["tool"] != "shell" || started.data["call_id"] != "tc_1" || started.data["args_summary"] != "ls" {
+		t.Fatalf("tool.started 契约不符: %+v", started.data)
+	}
+	completedTool, ok := cb.find(domain.EventToolCompleted)
+	if !ok {
 		t.Fatal("未见 tool.completed")
 	}
-	if _, ok := cb.find(domain.EventToolFailed); !ok { // isError=true → tool.failed
+	if completedTool.data["call_id"] != "tc_1" || completedTool.data["output"] != "done" {
+		t.Fatalf("tool.completed 契约不符: %+v", completedTool.data)
+	}
+	failedTool, ok := cb.find(domain.EventToolFailed) // isError=true → tool.failed
+	if !ok {
 		t.Fatal("未见 tool.failed")
+	}
+	if failedTool.data["call_id"] != "tc_2" || failedTool.data["output"] != "boom" {
+		t.Fatalf("tool.failed 契约不符: %+v", failedTool.data)
 	}
 	// usage：两 step 累计（input=inputOther+cacheRead+cacheCreation；cached=cacheRead）。
 	if res.Usage == nil {
@@ -502,6 +514,112 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 	if res.Usage.Basis != runtime.UsagePerRun {
 		t.Fatalf("usage basis 不符: %+v", res.Usage)
+	}
+}
+
+// 防回归：prompt 排队/resume 期间，同会话旧 turn 的 tool.*/approval 帧不得
+// 归入本 run（只放行 activeTurn 的帧）。
+func TestForeignTurnEventsDropped(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			// 本 turn 尚未 started（activeSeen=false）时旧 turn 的在途帧。
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 98, "toolCallId": "tc_old", "name": "shell",
+			}, 1, false))
+			f.push(kapEvent("s_1", "event.approval.requested", map[string]any{
+				"approval_id": "ap_old", "session_id": "s_1", "turn_id": 98,
+				"tool_call_id": "tc_old", "tool_name": "shell", "action": "rm -rf /",
+			}, 2, false))
+			// 本 turn 开始后，排队中的旧 turn 帧仍会混入同一会话流。
+			f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 3, false))
+			f.push(kapEvent("s_1", "tool.result", map[string]any{
+				"turnId": 98, "toolCallId": "tc_old", "output": mustJSON("stale"),
+			}, 4, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_new", "name": "shell", "args": map[string]any{"command": "ls"},
+			}, 5, false))
+			f.push(kapEvent("s_1", "tool.result", map[string]any{
+				"turnId": 1, "toolCallId": "tc_new", "output": mustJSON("fresh"),
+			}, 6, false))
+			f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 7, false))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if got := cb.count(domain.EventToolStarted); got != 1 {
+		t.Fatalf("旧 turn 的 tool.call.started 应被过滤，got %d", got)
+	}
+	if got := cb.count(domain.EventToolCompleted); got != 1 {
+		t.Fatalf("旧 turn 的 tool.result 应被过滤，got %d", got)
+	}
+	select {
+	case req := <-cb.approvals:
+		t.Fatalf("旧 turn 的审批不应进入 engine: %+v", req)
+	default:
+	}
+	started, _ := cb.find(domain.EventToolStarted)
+	if started.data["call_id"] != "tc_new" || started.data["args_summary"] != "ls" {
+		t.Fatalf("本 turn tool.started 契约不符: %+v", started.data)
+	}
+}
+
+// 防回归：persona/plan 语义只能靠 prompt 文本注入（kap 无 system_prompt 应用
+// 通道、prompt.plan_mode 不应用）——fresh 会话首 prompt 带 persona，plan 模式
+// 每个 prompt 带指令；resume 轮不重注 persona（会话上下文已含首轮注入）。
+func TestPersonaAndPlanInjectedIntoPrompt(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	ex := newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8))
+	ex.Run.Input = map[string]any{"system_prompt": "你是代码评审员", "mode": "plan"}
+	res := runKapExecute(t, m, ex, f, func(pid string) { pushHappyTurn(f, "s_1", 7, pid, 1) })
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
+	content, _ := promptBody["content"].([]any)
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "你是代码评审员") || !strings.Contains(text, "本轮指令：记住 ALPHA") {
+		t.Fatalf("persona 未注入 fresh 首 prompt: %q", text)
+	}
+	if !strings.Contains(text, "Plan mode") {
+		t.Fatalf("plan 指令未注入: %q", text)
+	}
+	if _, ok := promptBody["plan_mode"]; ok {
+		t.Fatalf("plan_mode 服务端不应用，不应前向: %v", promptBody)
+	}
+}
+
+func TestResumeTurnSkipsPersonaKeepsPlan(t *testing.T) {
+	f := newFakeKap(t)
+	f.mu.Lock()
+	f.sessions["s_known"] = true
+	f.mu.Unlock()
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	ex := newTestExec(context.Background(), "kimiapp://s_known", cb, make(chan runtime.Control, 8))
+	ex.Run.Input = map[string]any{"system_prompt": "你是代码评审员", "mode": "plan"}
+	res := runKapExecute(t, m, ex, f, func(pid string) { pushHappyTurn(f, "s_known", 3, pid, 1) })
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	promptBody := f.waitCall("/api/v1/sessions/s_known/prompts")
+	content, _ := promptBody["content"].([]any)
+	part, _ := content[0].(map[string]any)
+	text, _ := part["text"].(string)
+	if strings.Contains(text, "你是代码评审员") {
+		t.Fatalf("resume 轮不应重注 persona（会话上下文已含首轮注入）: %q", text)
+	}
+	if !strings.Contains(text, "Plan mode") {
+		t.Fatalf("plan 指令每个 plan prompt 都带: %q", text)
 	}
 }
 
@@ -582,7 +700,8 @@ func TestApprovalResolveRoundtrip(t *testing.T) {
 			"tool_call_id": "tc_1", "tool_name": "shell", "action": "run rm -rf",
 		}, 2, false))
 		req := <-cb.approvals
-		if req.kind != "tool" || req.risk != "shell" {
+		// 防回归：risk 字段曾是工具名（如 "shell"）；kap 审批一律登记 high。
+		if req.kind != "tool" || req.risk != "high" || req.summary != "shell: run rm -rf" {
 			t.Fatalf("审批请求不符: %+v", req)
 		}
 		controls <- runtime.Control{Kind: runtime.ControlApproval, ApprovalID: req.id, Approved: true}

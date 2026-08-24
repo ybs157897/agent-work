@@ -42,6 +42,8 @@ If Agent prompt, model, mode, sandbox, approval policy, or Runtime changes, the 
 
 An empty Codex model means “use the current Codex CLI default”. Non-Codex provider models are rejected before dispatch.
 
+Workbench sets `CODEX_HOME` to `.agent-work/codex` under the control-plane working directory so Codex auth, config, and thread history stay project-local (not `~/.codex`).
+
 ## Event projection
 
 | App-server method/item | Canonical Workbench event |

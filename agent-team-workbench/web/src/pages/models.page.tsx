@@ -27,6 +27,8 @@ import {
   formatContextBadge,
   generateProviderId,
   groupByProvider,
+  isProviderDeleteConfirmed,
+  modelDeleteHint,
   resolveModelRefId,
   type ModelProviderGroup,
 } from './models/provider-utils';
@@ -42,6 +44,9 @@ function modelApiError(err: unknown, fallback: string): string {
   }
   if (detail.includes('base_url 必须是 http(s) URL')) {
     return 'Base URL 必须以 http:// 或 https:// 开头';
+  }
+  if (detail.includes('配置了 base_url 时必须指定 api')) {
+    return '填写 Base URL 后需选择 API 格式（默认选 Chat Completions 即可）';
   }
   return detail || fallback;
 }
@@ -73,6 +78,8 @@ export default function ModelsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [addingModel, setAddingModel] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelEntry | null>(null);
+  const [deletingModel, setDeletingModel] = useState<ModelEntry | null>(null);
+  const [deletingProvider, setDeletingProvider] = useState<ModelProviderGroup | null>(null);
 
   const providers = useMemo(() => (models ? groupByProvider(models) : []), [models]);
   const isAddingProvider = selectedKey === ADD_PROVIDER_KEY;
@@ -95,27 +102,40 @@ export default function ModelsPage() {
 
   useEffect(load, []);
 
-  const removeModel = async (m: ModelEntry) => {
-    if (!window.confirm(`删除模型「${m.display_name || m.id}」？`)) return;
-    try {
-      await deleteModel(m.id);
-      toast.success(`已删除 ${m.id}`);
-      load();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : '删除失败');
-    }
+  const afterRegistryChange = (removedProviderId?: string) => {
+    setDeletingModel(null);
+    setDeletingProvider(null);
+    setRefreshing(true);
+    listModels()
+      .then(({ items }) => {
+        setModels(items);
+        setSelectedKey((prev) => {
+          if (removedProviderId && prev === removedProviderId) {
+            return items[0]?.provider_id ?? null;
+          }
+          if (prev === ADD_PROVIDER_KEY) return prev;
+          if (prev && items.some((m) => m.provider_id === prev)) return prev;
+          return items.length ? items[0]!.provider_id! : null;
+        });
+      })
+      .catch((err) => toast.error(err instanceof ApiError ? err.message : '加载模型注册表失败'))
+      .finally(() => setRefreshing(false));
   };
 
-  const removeProvider = async (group: ModelProviderGroup) => {
-    if (!window.confirm(`删除供应商「${group.label}」及其 ${group.models.length} 个模型？`)) return;
-    try {
-      await putProviderCredential(group.id, '');
-      for (const m of group.models) await deleteModel(m.id);
-      toast.success(`已删除供应商 ${group.label}`);
-      load();
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : '删除失败');
+  const deleteModelEntry = async (m: ModelEntry, modelCountInProvider: number) => {
+    await deleteModel(m.id);
+    if (modelCountInProvider <= 1 && m.provider_id) {
+      await putProviderCredential(m.provider_id, '');
     }
+    toast.success(`已删除模型 ${m.id}`);
+    afterRegistryChange(modelCountInProvider <= 1 ? m.provider_id : undefined);
+  };
+
+  const deleteProviderGroup = async (group: ModelProviderGroup) => {
+    await Promise.all(group.models.map((m) => deleteModel(m.id)));
+    await putProviderCredential(group.id, '');
+    toast.success(`已删除供应商「${group.label}」`);
+    afterRegistryChange(group.id);
   };
 
   const startAddProvider = () => setSelectedKey(ADD_PROVIDER_KEY);
@@ -186,8 +206,8 @@ export default function ModelsPage() {
               onRefresh={load}
               onAddModel={() => setAddingModel(true)}
               onEditModel={setEditingModel}
-              onDeleteModel={(m) => void removeModel(m)}
-              onDeleteProvider={() => void removeProvider(selected)}
+              onDeleteModel={setDeletingModel}
+              onDeleteProvider={() => setDeletingProvider(selected)}
             />
           )}
         </ConfigMain>
@@ -211,6 +231,21 @@ export default function ModelsPage() {
             setEditingModel(null);
             load();
           }}
+        />
+      )}
+      {deletingModel && selected && (
+        <DeleteModelModal
+          entry={deletingModel}
+          modelCountInProvider={selected.models.length}
+          onClose={() => setDeletingModel(null)}
+          onConfirm={() => deleteModelEntry(deletingModel, selected.models.length)}
+        />
+      )}
+      {deletingProvider && (
+        <DeleteProviderModal
+          group={deletingProvider}
+          onClose={() => setDeletingProvider(null)}
+          onConfirm={() => deleteProviderGroup(deletingProvider)}
         />
       )}
     </ConfigPage>
@@ -455,6 +490,7 @@ function ProviderPanel({
     setSaving(true);
     try {
       const name = label.trim();
+      const resolvedAPI = api || (baseURL.trim() ? 'openai-completions' : '');
       await putProviderCredential(group.id, apiKey.trim());
       for (const m of group.models) {
         await updateModel(m.id, {
@@ -462,7 +498,7 @@ function ProviderPanel({
           category: name,
           provider_id: group.id,
           provider: group.provider,
-          api: api as ModelEntry['api'],
+          api: resolvedAPI as ModelEntry['api'],
           model: m.model,
           base_url: baseURL.trim(),
           context_window: m.context_window,
@@ -474,7 +510,7 @@ function ProviderPanel({
       toast.success('供应商配置已保存');
       onRefresh();
     } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : '保存失败');
+      toast.error(modelApiError(err, '保存失败'));
     } finally {
       setSaving(false);
     }
@@ -496,14 +532,6 @@ function ProviderPanel({
               已启用
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onDeleteProvider}
-            className="p-2 rounded-lg text-text-tertiary hover:text-status-error hover:bg-status-error/10 transition-colors"
-            title="删除供应商"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
         </ConfigToolbar>
 
         <ConfigSection title="连接配置">
@@ -583,7 +611,8 @@ function ProviderPanel({
                     type="button"
                     onClick={() => onDeleteModel(m)}
                     className="p-1.5 rounded-md text-text-tertiary hover:text-status-error hover:bg-status-error/10"
-                    title="删除"
+                    title="删除模型"
+                    aria-label={`删除模型 ${m.id}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -604,8 +633,24 @@ function ProviderPanel({
         <ConfigSection noPadding>
           <p className="text-caption text-text-tertiary flex items-start gap-1.5 px-comfortable py-base">
             <Settings2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            API Key 保存在本机 credentials.local.yaml；模型配置在 registry.yaml。
+            API Key 保存在本机 `.agent-work/credentials.local.yaml`；模型配置在 registry.yaml。
           </p>
+        </ConfigSection>
+
+        <ConfigSection title="危险操作" hint="不可恢复，请确认没有 Agent 仍引用下列模型">
+          <div className="rounded-lg border border-status-error/25 bg-status-error/5 p-4 space-y-3">
+            <p className="text-body text-text-secondary">
+              删除供应商将移除其下 <strong className="text-text-primary">{group.models.length}</strong> 个模型注册表条目，并清除本机 API Key。
+            </p>
+            <button
+              type="button"
+              onClick={onDeleteProvider}
+              className="inline-flex items-center gap-1.5 rounded-button border border-status-error/40 px-base py-tight text-body font-medium text-status-error hover:bg-status-error/10 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              删除供应商及全部模型
+            </button>
+          </div>
         </ConfigSection>
       </ConfigFormCard>
 
@@ -618,6 +663,150 @@ function ProviderPanel({
         />
       ) : null}
     </ConfigPanel>
+  );
+}
+
+function DeleteModelModal({
+  entry,
+  modelCountInProvider,
+  onClose,
+  onConfirm,
+}: {
+  entry: ModelEntry;
+  modelCountInProvider: number;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const hint = modelDeleteHint(modelCountInProvider);
+
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await onConfirm();
+    } catch (err) {
+      toast.error(modelApiError(err, '删除失败'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} title="删除模型" width={480}>
+      <div className="space-y-base">
+        <p className="text-body text-text-secondary">
+          即将删除注册表条目 <span className="font-mono text-text-primary">{entry.id}</span>
+          {entry.display_name ? (
+            <>
+              {' '}
+             （{entry.display_name}）
+            </>
+          ) : null}
+          。
+        </p>
+        <div className="rounded-lg border border-border-subtle bg-surface-base px-3 py-2.5 text-caption font-mono text-text-tertiary">
+          API 模型名：{entry.model}
+        </div>
+        {hint ? (
+          <p className="text-body text-status-warning bg-status-warning/10 border border-status-warning/20 rounded-lg px-3 py-2.5">
+            {hint}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-snug pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="border border-border-strong rounded-button px-base py-tight text-text-secondary disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={busy}
+            className="rounded-button px-base py-tight font-medium text-white bg-status-error hover:bg-status-error/90 disabled:opacity-50"
+          >
+            {busy ? '删除中…' : '确认删除'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteProviderModal({
+  group,
+  onClose,
+  onConfirm,
+}: {
+  group: ModelProviderGroup;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const [confirmText, setConfirmText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canDelete = isProviderDeleteConfirmed(group.label, confirmText);
+
+  const submit = async () => {
+    if (!canDelete) return;
+    setBusy(true);
+    try {
+      await onConfirm();
+    } catch (err) {
+      toast.error(modelApiError(err, '删除失败'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} title={`删除供应商 · ${group.label}`} width={520}>
+      <div className="space-y-base">
+        <p className="text-body text-text-secondary">
+          将永久删除以下 {group.models.length} 个模型，并清除本机保存的 API Key。此操作无法撤销。
+        </p>
+        <ul className="max-h-40 overflow-y-auto rounded-lg border border-border-subtle bg-surface-base divide-y divide-border-subtle">
+          {group.models.map((m) => (
+            <li key={m.id} className="px-3 py-2 text-body">
+              <div className="font-medium text-text-primary">{m.display_name || m.id}</div>
+              <div className="text-caption font-mono text-text-tertiary">{m.id}</div>
+            </li>
+          ))}
+        </ul>
+        <label className="block">
+          <span className="text-body text-text-secondary">
+            输入供应商名称 <span className="font-medium text-text-primary">{group.label}</span> 以确认删除
+          </span>
+          <input
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+            placeholder={group.label}
+            disabled={busy}
+            className={`${inputCls} mt-1.5`}
+            autoComplete="off"
+          />
+        </label>
+        <div className="flex justify-end gap-snug pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="border border-border-strong rounded-button px-base py-tight text-text-secondary disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!canDelete || busy}
+            className="rounded-button px-base py-tight font-medium text-white bg-status-error hover:bg-status-error/90 disabled:opacity-50"
+          >
+            {busy ? '删除中…' : '确认删除'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

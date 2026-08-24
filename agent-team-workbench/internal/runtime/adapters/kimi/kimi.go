@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -31,6 +33,7 @@ import (
 type Config struct {
 	BinPath       string   // kimi 可执行文件
 	Args          []string // 覆盖默认参数（测试用回放桩）
+	Home          string   // KIMI_CODE_HOME 项目空间（默认 .agent-work/kimi）
 	WorkspaceRoot string
 	Model         string // 可选 -m
 	MaxFrameBytes int
@@ -96,8 +99,18 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
 			Failure: configFailure("instruction_required", "instruction required")}
 	}
-	// 模型注册表快照（orchestrator 写入 run.Input）：per-run 覆盖 -m；凭据由 CLI 自身配置管理。
-	model := runtime.ModelSnapshotOf(ex.Run).Model
+	// 模型注册表快照（orchestrator 写入 run.Input）：per-run 覆盖 -m。
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if (snap.Model != "" || snap.Provider != "") && strings.TrimSpace(a.cfg.Home) != "" {
+		if err := kimiconfig.ApplySnapshot(a.cfg.Home, snap); err != nil {
+			return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+				Failure: configFailure("kimi_config", err.Error())}
+		}
+	}
+	model := kimiconfig.ModelAlias(snap)
+	if model == "" {
+		model = a.cfg.Model
+	}
 	systemPrompt := runtime.SystemPromptOf(ex.Run)
 	policy := runtime.PolicySnapshotOf(ex.Run)
 	resumeSessionID := runtime.SessionIDFromRef(ex.Session.Ref, "kimi")
@@ -133,7 +146,7 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 
 	cmd := exec.Command(a.cfg.BinPath, args...)
 	cmd.Dir = a.cfg.WorkspaceRoot
-	cmd.Env = os.Environ()
+	cmd.Env = a.processEnv()
 	setProcGroup(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -467,4 +480,11 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func (a *Adapter) processEnv() []string {
+	if strings.TrimSpace(a.cfg.Home) == "" {
+		return os.Environ()
+	}
+	return agentwork.WithEnv(os.Environ(), "KIMI_CODE_HOME", a.cfg.Home)
 }

@@ -82,15 +82,26 @@ func TestValidateRequiredCapabilities(t *testing.T) {
 	}
 }
 
-func TestCodexRuntimeRejectsForeignProviderModel(t *testing.T) {
+func TestCodexRuntimeAcceptsRegistryModelWithCredentials(t *testing.T) {
 	binding := &domain.RuntimeBinding{AdapterID: "codex-appserver"}
-	if err := validateAdapterModel(binding, orchestrator.ModelSpec{Provider: "deepseek-official", Model: "deepseek-v4"}); err == nil {
-		t.Fatal("Codex Runtime 不得接收 DeepSeek provider 模型")
+	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
+		Ref: "deepseek-v4-flash", Provider: "deepseek-official", Model: "deepseek-v4-flash",
+		APIKeyEnv: "DEEPSEEK_API_KEY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
+		Provider: "openrouter", Model: "ox-alpha", APIKeyEnv: "OPENROUTER_API_KEY",
+		BaseURL: "https://openrouter.ai/api/v1",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := validateAdapterModel(binding, orchestrator.ModelSpec{Provider: "codex", Model: ""}); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateAdapterModel(binding, orchestrator.ModelSpec{Provider: "openai", Model: "gpt-test"}); err != nil {
-		t.Fatal(err)
+	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
+		Provider: "openrouter", Model: "ox-alpha", BaseURL: "https://openrouter.ai/api/v1",
+	}); err == nil {
+		t.Fatal("missing api_key_env should fail")
 	}
 }

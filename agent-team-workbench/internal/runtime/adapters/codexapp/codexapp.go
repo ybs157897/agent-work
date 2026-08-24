@@ -25,12 +25,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -38,6 +38,7 @@ import (
 type Config struct {
 	BinPath       string   // codex 可执行文件
 	Args          []string // 启动参数；缺省 ["app-server","--stdio"]（测试可替换为回放桩）
+	Home          string   // CODEX_HOME 项目空间（默认 .agent-work/codex）
 	WorkspaceRoot string   // thread/start.cwd
 	Model         string   // 可选：thread/start.model
 	MaxFrameBytes int
@@ -114,9 +115,16 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		return failedResult(configFailure("tools_unsupported", "codex app-server 当前协议不支持内建工具白名单"))
 	}
 
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if snap.Model != "" || snap.Provider != "" {
+		if err := codexconfig.ApplySnapshot(m.cfg.Home, snap); err != nil {
+			return failedResult(configFailure("codex_config", err.Error()))
+		}
+	}
+
 	cmd := exec.Command(m.cfg.BinPath, m.commandArgs()...)
 	cmd.Dir = m.cfg.WorkspaceRoot
-	cmd.Env = os.Environ()
+	cmd.Env = m.processEnv()
 	setProcGroup(cmd)
 
 	stdin, err := cmd.StdinPipe()
@@ -279,7 +287,14 @@ func (s *execStream) appendAnswer(text string) {
 	s.mu.Unlock()
 }
 
-// finalAnswer 权威答案只发一次：item/completed 的文本优先，缺省回退累计 delta。
+func (s *execStream) resetAnswerState() {
+	s.mu.Lock()
+	s.answer.Reset()
+	s.finalMessageEmitted = false
+	s.mu.Unlock()
+}
+
+// finalAnswer 权威答案只发一次（同一 agent 消息段内 item/completed 与 turn/completed 去重）。
 func (s *execStream) finalAnswer(authoritative string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -546,7 +561,13 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "item/started":
 			item := parseItemEvent(frame.Params)
 			if item.isTool() {
-				s.ex.Callbacks.OnEvent(domain.EventToolStarted, item.canonicalPayload())
+				payload := item.canonicalPayload()
+				if s := item.argsSummary(); s != "" {
+					payload["args_summary"] = s
+				}
+				s.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
+			} else if item.Type == "agentMessage" || item.Type == "plan" {
+				s.resetAnswerState()
 			}
 		case "item/completed":
 			item := parseItemEvent(frame.Params)
@@ -556,9 +577,17 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
 						"role": "assistant", "text": text, "item_type": item.Type,
 					})
+					s.resetAnswerState()
 				}
 			case item.isTool():
-				s.ex.Callbacks.OnEvent(toolCompletionEvent(item), item.canonicalPayload())
+				payload := item.canonicalPayload()
+				if out := item.resultOutput(); out != "" {
+					payload["output"] = out
+				}
+				if ec, ok := item.Raw["exitCode"]; ok {
+					payload["exit_code"] = ec
+				}
+				s.ex.Callbacks.OnEvent(toolCompletionEvent(item), payload)
 			}
 		case "item/agentMessage/delta", "item/plan/delta":
 			text := codexDeltaText(frame.Params)
@@ -576,9 +605,15 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 			}
 		case "item/commandExecution/outputDelta":
 			if text := codexDeltaText(frame.Params); text != "" {
-				s.ex.Callbacks.OnEvent(domain.EventToolProgress, map[string]any{
-					"tool": "shell", "text": truncateSummary(text),
-				})
+				payload := map[string]any{"tool": "shell", "text": truncateSummary(text)}
+				var ref struct {
+					ItemID string `json:"itemId"`
+				}
+				_ = json.Unmarshal(frame.Params, &ref)
+				if ref.ItemID != "" {
+					payload["call_id"] = ref.ItemID
+				}
+				s.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
 			}
 		case "turn/completed":
 			var n struct {
@@ -600,6 +635,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
 						"role": "assistant", "text": answer,
 					})
+					s.resetAnswerState()
 				}
 			}
 			return res
@@ -716,6 +752,8 @@ func codexFailure(code, message string) *runtime.Failure {
 		family, retryable = runtime.FamilyConfig, false
 	case containsAny(low,
 		"thread not found", "unknown thread", "no such thread",
+		// codex 0.149.0 thread/resume 死锚点的真实文案（code -32600）。
+		"no rollout found",
 		"session not found", "unknown session", "no such session",
 		"conversation not found", "no conversation found"):
 		// 已丢失的 codex thread 盲目重试只会原地失败：显式 session_unknown

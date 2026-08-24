@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,7 +132,7 @@ func (s *Supervisor) spawnLocked(ctx context.Context, host, base string) error {
 	s.pgid = processGroupID(cmd) // 启动时采样缓存；组长僵尸后不可再查
 	s.started = true
 	go s.monitor()
-	log.Printf("kimiapp: kap-server 已拉起 pid=%d pgid=%d base=%s home=%s", cmd.Process.Pid, s.pgid, base, s.cfg.Home)
+	log.Printf("kimiapp: kap-server 已拉起 pid=%d pgid=%d port=%d home=%s", cmd.Process.Pid, s.pgid, s.port, s.cfg.Home)
 	return nil
 }
 
@@ -170,6 +171,36 @@ func (s *Supervisor) monitor() {
 			s.cmd = nil
 		}
 		s.mu.Unlock()
+	}
+}
+
+// recycle 终止当前 kap-server 子进程；轮询 healthz 直至不可用再返回。
+// 不在此调用 cmd.Wait()：monitor 协程负责回收，避免双重 wait 触发 "no child processes"。
+func (s *Supervisor) recycle() {
+	s.mu.Lock()
+	if s.stopped || s.cmd == nil {
+		s.started = false
+		s.mu.Unlock()
+		return
+	}
+	cmd, pgid := s.cmd, s.pgid
+	host := s.cfg.Host
+	port := s.port
+	s.cmd = nil
+	s.started = false
+	s.mu.Unlock()
+	signalGroup(cmd, pgid, sigTerm)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	base := fmt.Sprintf("http://%s:%d", host, port)
+	probe := newRestClient(base, "")
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if probe.healthz(context.Background()) != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -265,9 +296,20 @@ func readTokenFile(home string) (string, error) {
 }
 
 // logWriter 逐行转发子进程输出（单行截断 512 字节），防日志爆量。
+// kap-server 就绪横幅会打印带 #token= 的 Local URL；脱敏后避免 IDE/终端自动打开浏览器。
 type logWriter struct {
 	prefix string
 	buf    []byte
+}
+
+var kapLogURLPattern = regexp.MustCompile(`https?://[^\s]+`)
+
+func sanitizeKapLogLine(line string) string {
+	line = kapLogURLPattern.ReplaceAllString(line, "[kap-server]")
+	if i := strings.Index(line, "Token:"); i >= 0 {
+		return line[:i+len("Token:")] + " [redacted]"
+	}
+	return line
 }
 
 func (w *logWriter) Write(p []byte) (int, error) {
@@ -280,6 +322,7 @@ func (w *logWriter) Write(p []byte) (int, error) {
 		line := strings.TrimRight(string(w.buf[:idx]), "\r")
 		w.buf = w.buf[idx+1:]
 		if strings.TrimSpace(line) != "" {
+			line = sanitizeKapLogLine(line)
 			if len(line) > 512 {
 				line = line[:512] + "…"
 			}

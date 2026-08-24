@@ -1,17 +1,6 @@
 # 模型注册表（models/registry.yaml 为真相源；Web 编辑会回写此文件）
-# API Key 存于 credentials.local.yaml（按供应商 id 匹配），勿写密钥明文。
+# API Key 存于 credentials.local.yaml，勿写密钥明文。
 providers:
-    - id: prov-openrouter
-      label: OpenRouter
-      provider: openrouter
-      api: openai-completions
-      base_url: https://openrouter.ai/api/v1
-      api_key_env: OPENROUTER_API_KEY
-      models:
-        - id: ox-alpha
-          display_name: OpenRouter Ox Alpha
-          model: ox-alpha
-          notes: OpenRouter 网关；DSH 走 llm-pi-ai 路由透传
     - id: prov-kimi
       label: Kimi
       provider: moonshot
@@ -28,59 +17,11 @@ providers:
           model: kimi-k3
           context_window: 1000000
           notes: DSH 走 llm-pi-ai 路由；kimi CLI runtime 忽略 provider/base_url（用 CLI 自身配置）
-    - id: prov-zhipu
-      label: 智谱
-      provider: 智谱
-      api: openai-completions
-      base_url: https://open.bigmodel.cn/api/paas/v4
-      api_key_env: ATW_8BCEF512_API_KEY
-      models:
-        - id: glm-4
-          display_name: 智谱 GLM-4
-          model: glm-4-flash
-    - id: prov-baidu
-      label: 百度
-      provider: 百度
-      api: openai-completions
-      base_url: https://aip.baidubce.com/v1
-      api_key_env: ATW_455ECE81_API_KEY
-      models:
-        - id: model
-          display_name: 文心一言
-          model: ernie-4
-    - id: prov-alibaba
-      label: 阿里
-      provider: 阿里
-      api: openai-completions
-      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-      api_key_env: ATW_1D99CC69_API_KEY
-      models:
-        - id: model-2
-          display_name: 通义千问
-          model: qwen-max
-    - id: prov-test
-      label: 测试供应商
-      provider: 测试供应商
-      api: openai-completions
-      base_url: https://api.test.com/v1
-      api_key_env: ATW_FC2207B5_API_KEY
-      models:
-        - id: test-model
-          display_name: test-model
-          model: test-model
-    - id: prov-example
-      label: 新供应商
-      provider: 新供应商
-      api: openai-completions
-      base_url: https://api.example.com/v1
-      api_key_env: ATW_569D331C_API_KEY
-      models:
-        - id: max
-          display_name: 通义千问 Max
-          model: qwen-max
     - id: prov-deepseek-official
       label: DeepSeek
       provider: deepseek-official
+      api: openai-completions
+      base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
       models:
         - id: deepseek-v4-flash
@@ -91,3 +32,14 @@ providers:
           display_name: DeepSeek V4 Pro
           model: deepseek-v4-pro
           notes: 高能力档位；复杂任务手动切换
+    - id: prov-openrouter
+      label: OpenRouter
+      provider: openrouter
+      api: openai-completions
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_API_KEY
+      models:
+        - id: ox-alpha
+          display_name: OpenRouter Ox Alpha
+          model: ox-alpha
+          notes: OpenRouter 网关；DSH 走 llm-pi-ai 路由透传

@@ -5,7 +5,7 @@ Web「模型」页的增删改直接回写此文件；Agent 配置（`agents/<sl
 以 `model.ref` 引用模型 `id`，创建 Run 时编排层把条目解析为模型快照固化进
 run.Input——运行中修改注册表不影响已启动的 Run。
 
-API Key 保存在 `credentials.local.yaml`（gitignore），不在注册表里写密钥明文。
+API Key 保存在 `.agent-work/credentials.local.yaml`（gitignore，按供应商 id 匹配），不在注册表里写密钥明文。
 
 ## 文件结构
 

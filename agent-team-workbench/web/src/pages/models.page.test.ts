@@ -5,7 +5,9 @@ import {
   generateProviderId,
   groupByProvider,
   groupModels,
+  isProviderDeleteConfirmed,
   modelCategory,
+  modelDeleteHint,
   resolveModelRefId,
   slugifyModelRef,
 } from './models/provider-utils';
@@ -136,5 +138,18 @@ describe('generateProviderId', () => {
     const id = generateProviderId('智谱', '智谱');
     expect(id.startsWith('prov-')).toBe(true);
     expect(id).not.toBe('prov-model');
+  });
+});
+
+describe('delete confirmation helpers', () => {
+  it('requires exact provider label to confirm provider delete', () => {
+    expect(isProviderDeleteConfirmed('DeepSeek', 'DeepSeek')).toBe(true);
+    expect(isProviderDeleteConfirmed('DeepSeek', 'deepseek')).toBe(false);
+    expect(isProviderDeleteConfirmed('DeepSeek', ' DeepSeek ')).toBe(true);
+  });
+
+  it('warns when deleting the last model under a provider', () => {
+    expect(modelDeleteHint(1)).toMatch(/最后一个模型/);
+    expect(modelDeleteHint(2)).toMatch(/Agent/);
   });
 });

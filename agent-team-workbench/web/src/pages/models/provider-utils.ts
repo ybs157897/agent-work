@@ -122,6 +122,23 @@ export function formatContextBadge(tokens?: number): string | null {
   return String(tokens);
 }
 
+/** 删除供应商时需输入的确认文案（与 label 精确匹配）。 */
+export function providerDeleteConfirmLabel(label: string): string {
+  return label.trim();
+}
+
+export function isProviderDeleteConfirmed(label: string, typed: string): boolean {
+  return typed.trim() === providerDeleteConfirmLabel(label);
+}
+
+/** 删除单个模型时的补充说明（最后一个模型会连带移除供应商分组）。 */
+export function modelDeleteHint(modelCountInProvider: number): string | null {
+  if (modelCountInProvider <= 1) {
+    return '这是该供应商下的最后一个模型。删除后供应商分组与本机 API Key 也会一并移除。';
+  }
+  return '已绑定此 ref 的 Agent 在下次运行前需改选其他模型。';
+}
+
 /** @deprecated 保留给旧测试。 */
 export function modelCategory(model: ModelEntry) {
   return model.category?.trim() || PROVIDER_LABELS[model.provider.toLowerCase()] || model.provider || '其他';

@@ -9,8 +9,9 @@ web/.next/
 # 本地模型凭据（勿提交）
 models/credentials.local.yaml
 
-.atw-data/
+.agent-work/
 .sessions/
+.atw-data/
 runtimes/dsh/.generated/
 runtimes/dsh/cordis.yml
 runtimes/dsh/run_*.cordis.yml

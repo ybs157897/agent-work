@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -71,11 +73,11 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 			// REST abort（WS 无 abort 帧）：turn 级精确取消，非进程级。
 			"interrupt":       runtime.CapSupported,
 			"workspace_files": runtime.CapSupported,
-			// agent_config.system_prompt 前向透传，但服务端
-			// applySessionAgentConfig 当前不应用（核对 sessionAgentConfig.ts）：
-			// 语义靠适配器侧 persona 注入翻译，非原生。
-			"system_prompt":     runtime.CapAdapterTranslated,
-			"modes":             runtime.CapSupported,         // prompt.plan_mode 原生
+			// kap 无 system_prompt 应用通道（创建路由忽略 agent_config，
+			// /profile 也不落）：persona 由适配器注入 fresh 会话的首个 prompt。
+			"system_prompt": runtime.CapAdapterTranslated,
+			// prompt.plan_mode 服务端接受但不应用：plan 语义经 prompt 文本注入。
+			"modes":             runtime.CapAdapterTranslated,
 			"permissions":       runtime.CapAdapterTranslated, // prompt.permission_mode 三档映射
 			"multi_vendor":      runtime.CapAdapterTranslated, // 服务端 provider 配置决定
 			"structured_output": runtime.CapAdapterTranslated,
@@ -85,11 +87,21 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 	}, nil
 }
 
-// Probe 确保 kap-server 可用（含拉起）后返回 OK。
+// Probe 校验 kimi CLI 可用；不在此阶段拉起 kap-server（避免就绪横幅 URL 触发 IDE 跳转）。
 func (m *Module) Probe(ctx context.Context, req runtime.ProbeRequest) (runtime.ProbeResult, error) {
 	mf, _ := m.Manifest(ctx)
-	if _, err := m.sup.Ensure(ctx); err != nil {
-		return runtime.ProbeResult{OK: false, Manifest: &mf, Error: err.Error()}, nil
+	if m.cfg.BaseURL != "" {
+		if _, err := m.sup.Ensure(ctx); err != nil {
+			return runtime.ProbeResult{OK: false, Manifest: &mf, Error: err.Error()}, nil
+		}
+		return runtime.ProbeResult{OK: true, Manifest: &mf}, nil
+	}
+	bin := m.cfg.KimiBin
+	if bin == "" {
+		bin = "kimi"
+	}
+	if !agentwork.ExecutableOK(bin) {
+		return runtime.ProbeResult{OK: false, Manifest: &mf, Error: "kimi CLI 不可用"}, nil
 	}
 	return runtime.ProbeResult{OK: true, Manifest: &mf}, nil
 }
@@ -119,6 +131,17 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
 			Failure: modFailure(runtime.FamilyConfig, "instruction_required", "instruction required", false)}
 	}
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if snap.Model != "" || snap.Provider != "" {
+		changed, err := kimiconfig.ApplySnapshotIfChanged(m.cfg.Home, snap)
+		if err != nil {
+			return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+				Failure: modFailure(runtime.FamilyConfig, "kimi_config", err.Error(), false)}
+		}
+		if changed {
+			m.sup.recycle()
+		}
+	}
 	state := &turnState{}
 	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
 	// 不得误报成 gateway_unavailable/io 失败（否则终态会变成 failed）。
@@ -132,7 +155,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	}
 	client := newRestClient(ep.BaseURL, ep.Token)
 
-	sessionID, res := m.resolveSession(ex, client, state)
+	sessionID, fresh, res := m.resolveSession(ex, client, state)
 	if res != nil {
 		if ex.Ctx.Err() != nil {
 			return intentResult(ex, state)
@@ -154,7 +177,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	}
 	defer stream.close()
 
-	prompt, res := m.submitPrompt(ex, client, sessionID)
+	prompt, res := m.submitPrompt(ex, client, sessionID, fresh)
 	if res != nil {
 		if ex.Ctx.Err() != nil {
 			// 取消可能落在 prompt 提交在途窗口：请求或已被服务端受理（无
@@ -170,18 +193,19 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	return m.pump(ex, client, ep, stream, sessionID, state)
 }
 
-// resolveSession 返回可用的 kap 会话 id。resume 铁律：ResumeID 非空时先
+// resolveSession 返回可用的 kap 会话 id 与是否 fresh 创建（fresh 决定
+// persona 是否随首个 prompt 注入）。resume 铁律：ResumeID 非空时先
 // GET /sessions/{id} 探测；40401 → Failure{Family: session_unknown,
 // Retryable: false}，绝不静默降级 fresh；探测的传输层失败（网络错/5xx）保持
 // transient/io 分类，不误报会话丢失。
-func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, state *turnState) (string, *runtime.ExecResult) {
+func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, state *turnState) (string, bool, *runtime.ExecResult) {
 	if resumeID := runtime.SessionIDFromRef(ex.Session.Ref, refScheme); resumeID != "" {
 		if _, kerr := client.getSession(ex.Ctx, resumeID); kerr != nil {
 			f := kapFailure(kerr)
 			if f.Family == runtime.FamilySessionUnknown {
 				f.Code = "resume_" + f.Code
 			}
-			return "", &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: f}
+			return "", false, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: f}
 		}
 		// resume 命中：沿用原 ref 重报 SessionUpdate（runs_count 幂等语义：
 		// 每个新 run 重报同 ref，是会话轮换计数增长的必要输入）。会话创建即报
@@ -191,24 +215,14 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 			Params: map[string]any{"kap_session": resumeID},
 		}
 		ex.Callbacks.OnSession(*state.sessionUpdate)
-		return resumeID, nil
+		return resumeID, false, nil
 	}
-	// fresh：创建会话。metadata.cwd 必填；agent_config 前向透传 model 与
-	// system_prompt（后者服务端当前不应用，见 Manifest 注释）。
+	// fresh：创建会话。metadata.cwd 必填；agent_config 服务端不应用（创建路由
+	// 完全忽略，/profile 也无 system_prompt 通道），不透传。
 	req := &createSessionRequest{Metadata: map[string]string{"cwd": m.cwd()}}
-	agentCfg := map[string]any{}
-	if model := m.modelOf(ex); model != "" {
-		agentCfg["model"] = model
-	}
-	if persona := personaOf(ex); persona != "" {
-		agentCfg["system_prompt"] = truncate(persona, 8000)
-	}
-	if len(agentCfg) > 0 {
-		req.AgentConfig = agentCfg
-	}
 	created, kerr := client.createSession(ex.Ctx, req)
 	if kerr != nil {
-		return "", &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: kapFailure(kerr)}
+		return "", false, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: kapFailure(kerr)}
 	}
 	sessionID := created.ID
 	state.sessionUpdate = &runtime.SessionUpdate{
@@ -216,7 +230,7 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 		Params: map[string]any{"kap_session": sessionID},
 	}
 	ex.Callbacks.OnSession(*state.sessionUpdate)
-	return sessionID, nil
+	return sessionID, true, nil
 }
 
 // openStream 建立事件流并完成订阅；订阅 not_found（会话在探测后被删）按
@@ -260,19 +274,26 @@ func (m *Module) openStream(ex *runtime.ExecContext, ep *endpoint, sessionID str
 	return stream, nil
 }
 
-// submitPrompt 提交本轮 prompt；model/plan_mode/permission_mode 为 prompt 级
-// 前向字段（resume 轮同样生效）。
-func (m *Module) submitPrompt(ex *runtime.ExecContext, client *restClient, sessionID string) (*promptSubmitResult, *runtime.ExecResult) {
-	req := &promptSubmitRequest{
-		Content: []promptContentPart{{Type: "text", Text: ex.Instruction}},
-	}
-	if model := m.modelOf(ex); model != "" {
-		req.Model = model
+// submitPrompt 提交本轮 prompt；model/permission_mode 为 prompt 级前向字段
+// （resume 轮同样生效）。persona 只在 fresh 会话的首个 prompt 注入（kap 无
+// system_prompt 应用通道；resume 轮会话上下文已含首轮注入）；plan 指令每个
+// plan 模式 prompt 都带（prompt.plan_mode 服务端不应用，只能文本注入）。
+func (m *Module) submitPrompt(ex *runtime.ExecContext, client *restClient, sessionID string, fresh bool) (*promptSubmitResult, *runtime.ExecResult) {
+	text := ex.Instruction
+	if fresh {
+		if persona := personaOf(ex); persona != "" {
+			text = "[本会话的角色与行为设定，请在本次及后续对话中始终遵循]\n" + persona + "\n\n" + text
+		}
 	}
 	policy := runtime.PolicySnapshotOf(ex.Run)
 	if policy.Mode == "plan" {
-		t := true
-		req.PlanMode = &t
+		text += "\n\n" + planDirective
+	}
+	req := &promptSubmitRequest{
+		Content: []promptContentPart{{Type: "text", Text: text}},
+	}
+	if model := m.modelOf(ex); model != "" {
+		req.Model = model
 	}
 	req.PermissionMode = permissionMode(policy)
 	pr, kerr := client.submitPrompt(ex.Ctx, sessionID, req)
@@ -550,23 +571,36 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "tool.call.started":
 		var ev evToolCallStarted
 		_ = json.Unmarshal(frame.Payload, &ev)
-		p.ex.Callbacks.OnEvent(domain.EventToolStarted, map[string]any{
-			"tool": ev.Name, "call_id": ev.ToolCallID,
-		})
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
+		payload := map[string]any{"tool": ev.Name, "call_id": ev.ToolCallID}
+		if s := toolArgsSummary(ev.Description, ev.Args); s != "" {
+			payload["args_summary"] = s
+		}
+		p.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool.result":
 		var ev evToolResult
-		var data map[string]any
 		_ = json.Unmarshal(frame.Payload, &ev)
-		_ = json.Unmarshal(frame.Payload, &data)
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
+		payload := map[string]any{"call_id": ev.ToolCallID}
+		if out := toolOutputText(ev.Output); out != "" {
+			payload["output"] = out
+		}
 		if ev.IsError != nil && *ev.IsError {
-			p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"raw": data})
+			p.ex.Callbacks.OnEvent(domain.EventToolFailed, payload)
 		} else {
-			p.ex.Callbacks.OnEvent(domain.EventToolCompleted, map[string]any{"raw": data})
+			p.ex.Callbacks.OnEvent(domain.EventToolCompleted, payload)
 		}
 	case "tool.progress":
 		var ev evToolProgress
 		_ = json.Unmarshal(frame.Payload, &ev)
-		payload := map[string]any{"tool_call_id": ev.ToolCallID, "text": ev.Update.Text}
+		if !p.myTurn(ev.TurnID) {
+			return false
+		}
+		payload := map[string]any{"call_id": ev.ToolCallID, "text": ev.Update.Text}
 		if ev.Update.Percent != nil {
 			payload["percent"] = *ev.Update.Percent
 		}
@@ -587,6 +621,12 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	return false
 }
 
+// myTurn 只放行本轮 turn 的事件：prompt 排队/resume 期间，同会话旧 turn 的
+// 在途事件（tool.*/approval 等）不归入本 run 时间线（与 delta 过滤同一条件）。
+func (p *eventPump) myTurn(turnID int64) bool {
+	return p.state.activeSeen && turnID == p.state.activeTurn
+}
+
 // handleApproval 把服务端审批请求映射为 engine 审批；发起失败立即拒绝，
 // 防 harness 工具悬挂。
 func (p *eventPump) handleApproval(frame wsFrame) {
@@ -595,11 +635,18 @@ func (p *eventPump) handleApproval(frame wsFrame) {
 	if ev.ApprovalID == "" {
 		return
 	}
+	// 旧 turn 的在途审批不进本 run（turn_id 可缺省，缺省时无法判定、不过滤）；
+	// 丢弃即不答——在途 turn 的归属方（原 run 的事件泵）会自行决议。
+	if !p.state.activeSeen || (ev.TurnID != 0 && ev.TurnID != p.state.activeTurn) {
+		return
+	}
 	summary := ev.ToolName
 	if ev.Action != "" {
 		summary += ": " + ev.Action
 	}
-	engineID := p.ex.Callbacks.RequestApproval("tool", ev.ToolName, truncate(summary, 160))
+	// risk 与 codexapp 对齐：kap 只在策略要求时才发起审批，一律按 high 登记
+	//（kap 事件不携带风险分级；工具名属于 summary，不是 risk）。
+	engineID := p.ex.Callbacks.RequestApproval("tool", "high", truncate(summary, 160))
 	if engineID == "" {
 		if kerr := p.client.resolveApproval(context.WithoutCancel(p.ex.Ctx), p.sessionID, ev.ApprovalID, "rejected", ""); kerr != nil {
 			log.Printf("kimiapp: run %s 兜底拒绝审批失败: %v", p.ex.Run.ID, kerr)
@@ -654,23 +701,23 @@ func (m *Module) cwd() string {
 	return "."
 }
 
-// modelOf 编排快照模型优先，回落配置缺省模型。
+// modelOf 编排快照模型别名优先，回落配置缺省模型。
 func (m *Module) modelOf(ex *runtime.ExecContext) string {
-	if model := runtime.ModelSnapshotOf(ex.Run).Model; model != "" {
+	snap := runtime.ModelSnapshotOf(ex.Run)
+	if model := kimiconfig.ModelAlias(snap); model != "" {
 		return model
 	}
 	return m.cfg.Model
 }
 
-// personaOf 编排快照 → system_prompt 前向透传（plan 模式语义一并注入）。
+// personaOf 编排快照 → persona 文本。kap 无 system_prompt 应用通道，只能由
+// 适配器文本注入（fresh 会话首个 prompt，见 submitPrompt）。
 func personaOf(ex *runtime.ExecContext) string {
-	persona := strings.TrimSpace(runtime.SystemPromptOf(ex.Run))
-	policy := runtime.PolicySnapshotOf(ex.Run)
-	if policy.Mode == "plan" {
-		persona = strings.TrimSpace(persona + "\n\nPlan mode: analyze and produce a plan only; do not modify workspace files.")
-	}
-	return persona
+	return strings.TrimSpace(runtime.SystemPromptOf(ex.Run))
 }
+
+// planDirective plan 模式的注入指令（prompt.plan_mode 服务端接受但不应用）。
+const planDirective = "Plan mode: analyze and produce a plan only; do not modify workspace files."
 
 // permissionMode 统一审批策略 → kap permission_mode 三档：
 // auto→yolo（免审批）、manual→manual（全审批）、默认（approve_high_risk）→auto。
@@ -683,6 +730,65 @@ func permissionMode(policy runtime.PolicySnapshot) string {
 	default:
 		return "auto"
 	}
+}
+
+// ── 工具事件载荷整形（与 codexapp 对齐的 canonical 契约）────────────────
+//
+// tool.started: {tool, call_id, args_summary?}；tool.completed/failed:
+// {call_id, output?}；tool.progress: {call_id, text, percent?}。输出统一截断，
+// 防 run_events 膨胀（完整输出本就可达数 MB 级）。
+
+const (
+	maxToolArgsSummary = 200
+	maxToolOutput      = 2000
+)
+
+// toolArgsSummary 给 UI 的一行输入摘要：优先服务端 description，其次
+// 命令/路径类参数，最后紧凑 JSON 截断。
+func toolArgsSummary(description string, args json.RawMessage) string {
+	if s := strings.TrimSpace(description); s != "" {
+		return truncate(s, maxToolArgsSummary)
+	}
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(args, &m) == nil {
+		for _, key := range []string{"command", "cmd", "path", "file_path", "query", "url"} {
+			if v, _ := m[key].(string); strings.TrimSpace(v) != "" {
+				return truncate(v, maxToolArgsSummary)
+			}
+		}
+	}
+	return truncate(string(args), maxToolArgsSummary)
+}
+
+// toolOutputText 提取 tool.result 输出文本：string 直出；ContentPart[]
+// （{type:"text",text}）拼 text 段；其余紧凑 JSON 原样截断。
+func toolOutputText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return truncate(s, maxToolOutput)
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) == nil && len(parts) > 0 {
+		var b strings.Builder
+		for _, part := range parts {
+			if part.Type == "text" {
+				b.WriteString(part.Text)
+			}
+		}
+		if b.Len() > 0 {
+			return truncate(b.String(), maxToolOutput)
+		}
+	}
+	return truncate(string(raw), maxToolOutput)
 }
 
 // ── 杂项 ──────────────────────────────────────────────────────────────

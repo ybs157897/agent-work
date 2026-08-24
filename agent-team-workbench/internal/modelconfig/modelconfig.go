@@ -133,7 +133,9 @@ func (rf *RegistryFile) flatten() []*Entry {
 func (rf *RegistryFile) validate() error {
 	seenModel := map[string]bool{}
 	seenProvider := map[string]bool{}
-	for _, p := range rf.Providers {
+	for i := range rf.Providers {
+		p := &rf.Providers[i]
+		normalizeProvider(p)
 		if strings.TrimSpace(p.ID) == "" {
 			return fmt.Errorf("%w: 供应商 id 必填", domain.ErrValidation)
 		}
@@ -170,6 +172,12 @@ func (rf *RegistryFile) validate() error {
 		}
 	}
 	return nil
+}
+
+func normalizeProvider(p *ProviderDef) {
+	if strings.TrimSpace(p.BaseURL) != "" && strings.TrimSpace(p.API) == "" {
+		p.API = "openai-completions"
+	}
 }
 
 // GenerateProviderID 在名称与 provider 路由不一致或含非 ASCII 时生成稳定供应商 id。
@@ -212,6 +220,21 @@ func (r *Registry) List() ([]*Entry, error) {
 		return nil, nil
 	}
 	return rf.flatten(), nil
+}
+
+// Providers 返回 registry.yaml 中的供应商定义（用于凭据注入）。
+func (r *Registry) Providers() ([]ProviderDef, error) {
+	if err := r.ensureRegistry(); err != nil {
+		return nil, err
+	}
+	rf, err := r.load()
+	if err != nil {
+		return nil, err
+	}
+	if rf == nil {
+		return nil, nil
+	}
+	return rf.Providers, nil
 }
 
 // Get 按模型 id 读取；不存在返回 nil, nil。

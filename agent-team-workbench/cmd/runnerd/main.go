@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	rt "github.com/ybs/agent-team-workbench/internal/runtime"
 	"github.com/ybs/agent-team-workbench/internal/runtime/adapters/dsh"
@@ -513,11 +513,14 @@ func (e *moduleEngine) Run(ctx context.Context, id string) (*domain.ExecutionRun
 // 直接复用已运行的网关实例（不重复拉起）。
 func newDshGateway(r *runner) {
 	workbenchRoot, _ := os.Getwd()
+	projectSpace := agentwork.Resolve(workbenchRoot)
+	_ = projectSpace.Ensure()
 	repo := resolveDshRepo(workbenchRoot)
 	gw := dsh.NewGateway(dsh.GatewayConfig{
 		BaseURL:       envOr("DSH_GATEWAY_URL", ""),
 		Port:          atoiEnv("DSH_GATEWAY_PORT", 3090),
 		RepoDir:       repo,
+		Home:          projectSpace.DSHHome(),
 		WorkspaceRoot: envOr("WORKSPACE_ROOT", "."),
 		Model:         envOr("DSH_MODEL", "deepseek-v4-flash"),
 	})
@@ -529,9 +532,11 @@ func newDshGateway(r *runner) {
 // newKimiModule 构造 kimiapp 网关执行面（本机 kimi CLI 存在或显式直连 URL
 // 时启用）；env 语义与 control-plane 的 ATW_KIMIAPP_* 一致。
 func newKimiModule(r *runner) {
-	bin := envOr("ATW_KIMIAPP_BIN", envOr("ATW_KIMI_BIN", "kimi"))
+	workbenchRoot, _ := os.Getwd()
+	kimiBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMI_BIN", "kimi", "kimi")
+	bin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMIAPP_BIN", "kimi", kimiBin)
 	if envOr("ATW_KIMIAPP_URL", "") == "" {
-		if _, err := exec.LookPath(bin); err != nil {
+		if !agentwork.ExecutableOK(bin) {
 			return
 		}
 	}
@@ -540,7 +545,7 @@ func newKimiModule(r *runner) {
 		Token:         envOr("ATW_KIMIAPP_TOKEN", ""),
 		Port:          atoiEnv("ATW_KIMIAPP_PORT", 0),
 		KimiBin:       bin,
-		Home:          envOr("ATW_KIMIAPP_HOME", filepath.Join(".atw-data", "kimi-home")),
+		Home:          envOr("ATW_KIMIAPP_HOME", agentwork.Resolve(workbenchRoot).KimiHome()),
 		WorkspaceRoot: envOr("WORKSPACE_ROOT", "."),
 		Model:         envOr("ATW_KIMIAPP_MODEL", ""),
 	})

@@ -19,6 +19,8 @@ export interface ChatMessage {
   runId: string;
   kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'error' | 'system';
   text: string;
+  /** 工具结果输出等附属正文（适配器已截断），渲染为等宽块。 */
+  detail?: string;
   at: string;
 }
 
@@ -63,6 +65,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
   for (const runId of runIds) {
     const entries = timelines[runId] ?? [];
     let reasoningBuf = '';
+    let answerBuf = '';
     for (const e of entries) {
       const instruction = typeof e.data?.instruction === 'string' ? e.data.instruction : '';
       switch (e.type) {
@@ -76,6 +79,9 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           if (chunk?.type === 'reasoning-delta' && chunk.text) {
             reasoningBuf += chunk.text;
           }
+          if (chunk?.type === 'text-delta' && chunk.text) {
+            answerBuf += chunk.text;
+          }
           if (e.role === 'user' && e.text) {
             out.push({ key: e.event_id, runId, kind: 'user', text: e.text, at: e.occurred_at });
           }
@@ -84,7 +90,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         case 'message.completed':
           if (reasoningBuf) {
             out.push({
-              key: `${runId}-thinking`,
+              key: `${runId}-thinking-${e.event_id}`,
               runId,
               kind: 'thinking',
               text: reasoningBuf,
@@ -92,18 +98,52 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             });
             reasoningBuf = '';
           }
+          answerBuf = '';
           if (e.text) {
             out.push({ key: e.event_id, runId, kind: 'assistant', text: e.text, at: e.occurred_at });
           }
           break;
         case 'tool.started': {
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
-          out.push({ key: e.event_id, runId, kind: 'tool', text: `调用工具 ${tool}`, at: e.occurred_at });
+          const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';
+          const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
+          out.push({
+            // 与 completed/failed 同键折叠：结果输出挂回同一行。
+            key: callId ? `${runId}-tool-${callId}` : e.event_id,
+            runId,
+            kind: 'tool',
+            text: argsSummary ? `调用工具 ${tool}：${argsSummary}` : `调用工具 ${tool}`,
+            at: e.occurred_at,
+          });
           break;
         }
-        case 'tool.failed':
-          out.push({ key: e.event_id, runId, kind: 'error', text: '工具调用失败', at: e.occurred_at });
+        case 'tool.completed':
+        case 'tool.failed': {
+          const output = typeof e.data?.output === 'string' ? e.data.output.trim() : '';
+          const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
+          const key = callId ? `${runId}-tool-${callId}` : '';
+          const idx = key ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
+          if (e.type === 'tool.failed') {
+            const failed: ChatMessage = {
+              key: key || e.event_id,
+              runId,
+              kind: 'error',
+              text: idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败',
+              detail: output || undefined,
+              at: e.occurred_at,
+            };
+            if (idx >= 0) out[idx] = failed;
+            else out.push(failed);
+            break;
+          }
+          if (!output) break; // 无输出的完成不刷屏
+          if (idx >= 0) {
+            out[idx] = { ...out[idx], detail: output, at: e.occurred_at };
+          } else {
+            out.push({ key: e.event_id, runId, kind: 'tool', text: '工具输出', detail: output, at: e.occurred_at });
+          }
           break;
+        }
         case 'run.failed': {
           const msg = typeof e.data?.message === 'string' ? e.data.message : '运行失败';
           const code = typeof e.data?.code === 'string' ? e.data.code : '';
@@ -111,6 +151,24 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
       }
+    }
+    if (reasoningBuf) {
+      out.push({
+        key: `${runId}-thinking-tail`,
+        runId,
+        kind: 'thinking',
+        text: reasoningBuf,
+        at: entries[entries.length - 1]?.occurred_at ?? '',
+      });
+    }
+    if (answerBuf) {
+      out.push({
+        key: `${runId}-answer-tail`,
+        runId,
+        kind: 'assistant',
+        text: answerBuf,
+        at: entries[entries.length - 1]?.occurred_at ?? '',
+      });
     }
   }
   return out;

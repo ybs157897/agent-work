@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,30 +19,42 @@ type credentialsFile struct {
 	Items []credentialItem `yaml:"items,omitempty"`
 }
 
-// CredentialsStore 保存 models/credentials.local.yaml（gitignore），仅存本地 API Key。
+// CredentialsStore 保存 .agent-work/credentials.local.yaml（gitignore），仅存本地 API Key。
 type CredentialsStore struct {
-	path string
+	path       string
+	legacyPath string
 }
 
-func NewCredentialsStore(modelsDir string) *CredentialsStore {
-	return &CredentialsStore{path: filepath.Join(modelsDir, "credentials.local.yaml")}
+// NewCredentialsStore 创建凭据存储；主路径为项目空间 .agent-work/，兼容旧 models/ 路径。
+func NewCredentialsStore(workbenchRoot string) *CredentialsStore {
+	space := agentwork.Resolve(workbenchRoot)
+	return &CredentialsStore{
+		path:       space.CredentialsPath(),
+		legacyPath: space.LegacyCredentialsPath(),
+	}
 }
 
 func (s *CredentialsStore) Path() string { return s.path }
 
 func (s *CredentialsStore) load() (*credentialsFile, error) {
-	data, err := os.ReadFile(s.path)
-	if os.IsNotExist(err) {
-		return &credentialsFile{}, nil
+	for _, p := range []string{s.path, s.legacyPath} {
+		if p == "" {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var f credentialsFile
+		if err := yaml.Unmarshal(data, &f); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		return &f, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	var f credentialsFile
-	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("%s: %w", s.path, err)
-	}
-	return &f, nil
+	return &credentialsFile{}, nil
 }
 
 func (s *CredentialsStore) save(f *credentialsFile) error {
