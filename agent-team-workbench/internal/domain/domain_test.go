@@ -211,16 +211,18 @@ func TestEventNameWhitelist(t *testing.T) {
 	}
 }
 
-// adapter 新接的 run.plan_updated 必须在白名单内（否则 SSE 发布前即被拒）。
-func TestEventNameWhitelistCoversRunPlanUpdated(t *testing.T) {
-	if !IsKnownEventName(EventRunPlanUpdated) {
-		t.Fatal("run.plan_updated 必须在事件白名单内")
-	}
-	ev, err := NewCanonicalEvent("ws_1", EventRunPlanUpdated, AggregateExecutionRun, "run_1", 1, nil)
-	if err != nil {
-		t.Fatalf("run.plan_updated 应可构造 canonical 事件: %v", err)
-	}
-	if ev.Aggregate.Type != AggregateExecutionRun {
-		t.Fatalf("聚合类型错误: %+v", ev.Aggregate)
+// adapter 新接的 execution_run 域事件必须在白名单内（否则 SSE 发布前即被拒）。
+func TestEventNameWhitelistCoversRunPlanAndSessionCompaction(t *testing.T) {
+	for _, name := range []string{EventRunPlanUpdated, EventSessionCompacted} {
+		if !IsKnownEventName(name) {
+			t.Fatalf("%s 必须在事件白名单内", name)
+		}
+		ev, err := NewCanonicalEvent("ws_1", name, AggregateExecutionRun, "run_1", 1, nil)
+		if err != nil {
+			t.Fatalf("%s 应可构造 canonical 事件: %v", name, err)
+		}
+		if ev.Aggregate.Type != AggregateExecutionRun {
+			t.Fatalf("%s 聚合类型错误: %+v", name, ev.Aggregate)
+		}
 	}
 }

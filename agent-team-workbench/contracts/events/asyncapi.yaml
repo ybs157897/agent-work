@@ -75,7 +75,7 @@ components:
     # Artifact:  artifact.created / artifact.updated
     # Plan:      plan.submitted / plan.step_executed / plan.waiting / plan.finished /
     #            plan.failed
-    # Session:   session.decision
+    # Session:   session.decision / session.compacted
     # Usage:     usage.updated
     # Runtime:   runtime.health_changed / runner.connected / runner.disconnected /
     #            run.recovery_started / run.recovery_completed / run.recovery_failed

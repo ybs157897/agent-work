@@ -767,6 +767,57 @@ func TestPumpEmitsPlanUpdatedFromTurnPlanUpdated(t *testing.T) {
 	}
 }
 
+// contextCompaction item → session.compacted：started 不发（压缩进行中）、
+// completed 发一次且带信封 turnId；item 流照常收尾。
+func TestPumpEmitsSessionCompactedFromContextCompactionItem(t *testing.T) {
+	res, cb, final := runPumpFrames(t, []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"item/started","params":{"threadId":"th_1","turnId":"turn_1","item":{"id":"it_c1","type":"contextCompaction"}}}`,
+		`{"method":"item/completed","params":{"threadId":"th_1","turnId":"turn_1","completedAtMs":1756000000000,"item":{"id":"it_c1","type":"contextCompaction"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	})
+
+	if !res.finished || res.turnStatus != "completed" || final.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("压缩 item 不得影响收尾: %+v / %s", res, final.Outcome)
+	}
+	events := cb.eventsOfType(domain.EventSessionCompacted)
+	if len(events) != 1 {
+		t.Fatalf("item/started 不得发、completed 恰发一次: %v", events)
+	}
+	if events[0]["turnId"] != "turn_1" {
+		t.Fatalf("session.compacted 应带信封 turnId: %+v", events[0])
+	}
+}
+
+// thread/compacted（schema 在册、0.149.0 不发射的弃用通知）→ session.compacted：
+// 防协议漂移的兜底路径；turnId 缺失时 data 为空对象。
+func TestPumpEmitsSessionCompactedFromThreadCompactedNotification(t *testing.T) {
+	res, cb, _ := runPumpFrames(t, []string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"thread/compacted","params":{"threadId":"th_1","turnId":"turn_1"}}`,
+		`{"method":"thread/compacted","params":{"threadId":"th_1"}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	})
+
+	if !res.finished || res.turnStatus != "completed" {
+		t.Fatalf("压缩通知不得影响收尾: %+v", res)
+	}
+	events := cb.eventsOfType(domain.EventSessionCompacted)
+	if len(events) != 2 {
+		t.Fatalf("弃用通知路径也应落事件: %v", events)
+	}
+	if events[0]["turnId"] != "turn_1" || events[1]["turnId"] != nil {
+		t.Fatalf("turnId 可得则带、缺失则空对象: %+v %+v", events[0], events[1])
+	}
+	if len(events[1]) != 0 {
+		t.Fatalf("turnId 缺失时 data 应为空对象: %+v", events[1])
+	}
+}
+
 // 无终态意图的 ctx 取消（如服务关停）默认 interrupted（保留 resume 时机）。
 func TestExecuteContextCancelDefaultsToInterrupted(t *testing.T) {
 	t.Setenv("CODEX_FAKE_HANG", "1")
