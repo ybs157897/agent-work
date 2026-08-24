@@ -212,7 +212,7 @@ type execStream struct {
 	approvals           map[string]chan bool
 
 	// 本轮 token 用量（thread/tokenUsage/updated 的 last 增量逐通知累计）；
-	// 唯一出口是 ExecResult.Usage（收尾一次上报，不走 OnUsage 流式）。
+	// 过程经 OnUsage 流式观测（累计值逐帧覆盖），终态结算出口是 ExecResult.Usage。
 	usageIn     int64
 	usageOut    int64
 	usageCached int64
@@ -323,6 +323,18 @@ func (s *execStream) usageSnapshot() *runtime.Usage {
 		InputTokens: s.usageIn, OutputTokens: s.usageOut,
 		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
 	}
+}
+
+// emitUsageProgress 累计后即时过程观测：上报当前累计值（OnUsage 覆盖语义，
+// 终态结算仍以 ExecResult.Usage 为准）。
+func (s *execStream) emitUsageProgress() {
+	s.mu.Lock()
+	u := runtime.Usage{
+		InputTokens: s.usageIn, OutputTokens: s.usageOut,
+		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
+	}
+	s.mu.Unlock()
+	s.ex.Callbacks.OnUsage(u)
 }
 
 // finalAnswer 权威答案只发一次（同一 agent 消息段内 item/completed 与 turn/completed 去重）。
@@ -590,6 +602,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				s.mu.Unlock()
 				if turnID != "" && ev.TurnID == turnID {
 					s.accumulateUsage(ev)
+					s.emitUsageProgress()
 				}
 			}
 		case "thread/compacted":

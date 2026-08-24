@@ -52,6 +52,22 @@ function entryRole(ev: CanonicalEvent): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
+/**
+ * usage.updated → 快照用量四字段 patch（run 进行中用量就地更新，不等终态
+ * fetchRun）。契约上四件齐全；防御式只取类型匹配项，避免半帧清除已知值。
+ */
+function parseUsagePatch(
+  data?: Record<string, unknown>,
+): Partial<Pick<ExecutionRun, 'usage_in' | 'usage_out' | 'usage_cached' | 'usage_basis'>> | undefined {
+  if (!data) return undefined;
+  const patch: Partial<Pick<ExecutionRun, 'usage_in' | 'usage_out' | 'usage_cached' | 'usage_basis'>> = {};
+  if (typeof data.usage_in === 'number') patch.usage_in = data.usage_in;
+  if (typeof data.usage_out === 'number') patch.usage_out = data.usage_out;
+  if (typeof data.usage_cached === 'number') patch.usage_cached = data.usage_cached;
+  if (typeof data.usage_basis === 'string') patch.usage_basis = data.usage_basis;
+  return Object.keys(patch).length > 0 ? patch : undefined;
+}
+
 /** 历史与 SSE 增量按 run_seq 去重合并（SSE 条目优先，run_seq 缺省的历史条目保留）。 */
 function mergeTimeline(history: TimelineEntry[], live: TimelineEntry[]): TimelineEntry[] {
   const bySeq = new Map<number, TimelineEntry>();
@@ -154,11 +170,12 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         },
       }));
 
-      // 已加载的 run 快照做就地状态/进度更新；watched 但未知时拉取快照。
+      // 已加载的 run 快照做就地状态/进度/用量更新；watched 但未知时拉取快照。
       const cached = get().runs[runId];
       const status = typeof ev.data?.status === 'string' ? (ev.data.status as ExecutionRun['status']) : undefined;
       const progress = typeof ev.data?.progress === 'number' ? ev.data.progress : undefined;
-      if (cached && (status || progress !== undefined)) {
+      const usage = ev.type === 'usage.updated' ? parseUsagePatch(ev.data) : undefined;
+      if (cached && (status || progress !== undefined || usage)) {
         set((s) => ({
           runs: {
             ...s.runs,
@@ -166,6 +183,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
               ...cached,
               status: status ?? cached.status,
               progress: progress ?? cached.progress,
+              ...usage,
             },
           },
         }));

@@ -330,6 +330,7 @@ type recordCallbacks struct {
 	mu        sync.Mutex
 	events    []recordedEvent
 	sessions  []runtime.SessionUpdate
+	usages    []runtime.Usage
 	logs      []string
 	approvals chan approvalReq
 }
@@ -349,8 +350,12 @@ func (c *recordCallbacks) OnLog(stream, line string) {
 	defer c.mu.Unlock()
 	c.logs = append(c.logs, stream+" "+line)
 }
-func (c *recordCallbacks) OnSpawn(pid, pgid int)   {}
-func (c *recordCallbacks) OnUsage(u runtime.Usage) {}
+func (c *recordCallbacks) OnSpawn(pid, pgid int) {}
+func (c *recordCallbacks) OnUsage(u runtime.Usage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.usages = append(c.usages, u)
+}
 func (c *recordCallbacks) OnSession(u runtime.SessionUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -360,6 +365,13 @@ func (c *recordCallbacks) RequestApproval(kind, risk, summary string) string {
 	req := approvalReq{id: "eng_" + kind, kind: kind, risk: risk, summary: summary}
 	c.approvals <- req
 	return req.id
+}
+
+// usageFrames 取 OnUsage 过程观测帧（按到达序的快照副本）。
+func (c *recordCallbacks) usageFrames() []runtime.Usage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]runtime.Usage(nil), c.usages...)
 }
 
 func (c *recordCallbacks) find(kind string) (recordedEvent, bool) {
@@ -514,6 +526,20 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 	if res.Usage.Basis != runtime.UsagePerRun {
 		t.Fatalf("usage basis 不符: %+v", res.Usage)
+	}
+	// OnUsage 过程观测：逐 step 上报累计值（终帧与 ExecResult.Usage 结算一致）。
+	frames := cb.usageFrames()
+	want := []runtime.Usage{
+		{InputTokens: 110, OutputTokens: 20, CachedTokens: 8, Basis: runtime.UsagePerRun},
+		{InputTokens: 168, OutputTokens: 50, CachedTokens: 16, Basis: runtime.UsagePerRun},
+	}
+	if len(frames) != len(want) {
+		t.Fatalf("OnUsage 帧数不符（want %d）: %+v", len(want), frames)
+	}
+	for i, w := range want {
+		if frames[i] != w {
+			t.Fatalf("OnUsage 第 %d 帧不符（累计值覆盖语义）: got %+v want %+v", i+1, frames[i], w)
+		}
 	}
 }
 
