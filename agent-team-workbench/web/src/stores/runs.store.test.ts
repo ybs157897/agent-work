@@ -47,6 +47,40 @@ describe('runs.store applyEvent', () => {
     expect(s.timelines.run_1[2].run_seq).toBe(3);
   });
 
+  it('usage.updated 就地更新已缓存 run 的用量四字段，且不被后续状态事件清除', () => {
+    useRunsStore.setState((s) => ({
+      runs: {
+        ...s.runs,
+        run_1: {
+          id: 'run_1',
+          work_item_id: 'wi_1',
+          status: 'running',
+          version: 1,
+          created_at: '',
+          updated_at: '',
+          usage_in: 100,
+        },
+      },
+    }));
+    const { applyEvent } = useRunsStore.getState();
+
+    expect(
+      applyEvent(runEvent(4, 'usage.updated', { usage_in: 1200, usage_out: 300, usage_cached: 400, usage_basis: 'per_run' })),
+    ).toBe(true);
+    let run = useRunsStore.getState().runs.run_1;
+    expect(run.usage_in).toBe(1200);
+    expect(run.usage_out).toBe(300);
+    expect(run.usage_cached).toBe(400);
+    expect(run.usage_basis).toBe('per_run');
+
+    // 后续仅状态的 SSE 事件（如 succeeding）不得清掉已知用量。
+    expect(applyEvent(runEvent(5, 'run.status_changed', { from: 'running', status: 'succeeding' }))).toBe(true);
+    run = useRunsStore.getState().runs.run_1;
+    expect(run.status).toBe('succeeding');
+    expect(run.usage_in).toBe(1200);
+    expect(run.usage_basis).toBe('per_run');
+  });
+
   it('未知聚合类型不消费', () => {
     const ev: CanonicalEvent = {
       ...runEvent(1, 'workspace.updated'),
