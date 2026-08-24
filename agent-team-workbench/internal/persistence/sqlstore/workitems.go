@@ -13,13 +13,14 @@ import (
 type WorkItemRepo struct{ store *Store }
 
 const workItemCols = `id, workspace_id, parent_id, title, description, status, phase, priority,
-	due_date, agent_profile_id, client_key, version, created_at, updated_at`
+	due_date, agent_profile_id, client_key, locked_by_run_id, locked_at, version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
-	var parent, phase, dueDate, assignee, clientKey *string
-	var created, updated scanTime
+	var parent, phase, dueDate, assignee, clientKey, lockedBy *string
+	var created, updated, lockedAt scanTime
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &parent, &w.Title, &w.Description, &w.Status, &phase,
-		&w.Priority, &dueDate, &assignee, &clientKey, &w.Version, &created, &updated); err != nil {
+		&w.Priority, &dueDate, &assignee, &clientKey, &lockedBy, &lockedAt,
+		&w.Version, &created, &updated); err != nil {
 		return err
 	}
 	if parent != nil {
@@ -39,6 +40,10 @@ func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkI
 	if clientKey != nil {
 		w.ClientKey = *clientKey
 	}
+	if lockedBy != nil {
+		w.LockedByRunID = *lockedBy
+	}
+	w.LockedAt = optTime(lockedAt)
 	w.CreatedAt, w.UpdatedAt = mustTime(created), mustTime(updated)
 	return nil
 }
@@ -50,9 +55,10 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 		due = wi.DueDate.Format("2006-01-02")
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		wi.ID, wi.WorkspaceID, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
-		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey), wi.Version,
+		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey),
+		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -153,10 +159,12 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE work_items SET title=?, description=?, status=?, phase=?, priority=?,
-			due_date=?, agent_profile_id=?, version=version+1, updated_at=?
+			due_date=?, agent_profile_id=?, locked_by_run_id=?, locked_at=?,
+			version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
 		wi.Title, wi.Description, wi.Status, nullString(string(wi.Phase)), wi.Priority,
-		due, nullString(wi.AgentProfileID), d.TimeParam(timeNow()), wi.ID, expectedVersion)
+		due, nullString(wi.AgentProfileID), nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt),
+		d.TimeParam(timeNow()), wi.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -214,6 +222,36 @@ func (r *WorkItemRepo) ResolveBlockers(ctx context.Context, workItemID string, a
 		`UPDATE blockers SET resolved_at=? WHERE work_item_id=? AND resolved_at IS NULL`,
 		d.TimeParam(at), workItemID)
 	return r.store.mapErr(err)
+}
+
+// runTerminalStatuses 与 domain.RunStatus.IsTerminal 的终态集保持一致：
+// ReleaseStaleLocks 的 SQL IN 条件依赖此清单，Run 状态机新增终态必须同步这里。
+var runTerminalStatuses = []string{
+	string(domain.RunSucceeded), string(domain.RunInterrupted), string(domain.RunCancelled),
+	string(domain.RunLost), string(domain.RunFailed),
+}
+
+// ReleaseStaleLocks 回收兜底：一把 UPDATE 清空 locked_at 早于 olderThan 且属主
+// run 已终态的执行锁。正常路径属主 run 落终态时已在同事务内释放（application
+// releaseTaskLock）；这里只兜「终态写入绕过状态机」的异常残留（调度循环低频扫描）。
+// 属主 run 仍活跃的锁无论多旧都不动——活性判定只有 run 状态面这一套。
+func (r *WorkItemRepo) ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error) {
+	placeholders := strings.Repeat("?,", len(runTerminalStatuses))
+	args := make([]any, 0, len(runTerminalStatuses)+1)
+	args = append(args, r.store.dialect.TimeParam(olderThan))
+	for _, s := range runTerminalStatuses {
+		args = append(args, s)
+	}
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE work_items SET locked_by_run_id=NULL, locked_at=NULL
+		 WHERE locked_at IS NOT NULL AND locked_at < ?
+		   AND locked_by_run_id IN (SELECT id FROM execution_runs
+		                            WHERE status IN (`+placeholders[:len(placeholders)-1]+`))`, args...)
+	if err != nil {
+		return 0, r.store.mapErr(err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 func (r *WorkItemRepo) LatestRunID(ctx context.Context, workItemID string) (string, int, error) {

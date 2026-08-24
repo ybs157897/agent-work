@@ -39,7 +39,7 @@ func openGrantsTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 		"0009_plan_consult_knowledge.sql",
 		"0010_plan_join_guardrails.sql",
 		"0011_activity_work_item.sql",
-		"0012_approval_grants.sql", "0013_entity_client_keys.sql",
+		"0012_approval_grants.sql", "0013_entity_client_keys.sql", "0014_task_execution_lock.sql",
 	} {
 		body, err := os.ReadFile(filepath.Join(migrationDir, name))
 		if err != nil {
