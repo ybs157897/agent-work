@@ -460,8 +460,24 @@
   @apply overflow-hidden rounded-lg border border-border-subtle bg-surface-raised;
 }
 
+.chat-diff-head {
+  @apply flex items-center bg-surface-sunken/50;
+}
+
 .chat-diff-summary {
-  @apply flex w-full items-center gap-1.5 bg-surface-sunken/50 px-2.5 py-1.5 text-left text-caption text-text-secondary transition-colors hover:bg-surface-sunken;
+  @apply flex min-w-0 flex-1 items-center gap-1.5 px-2.5 py-1.5 text-left text-caption text-text-secondary transition-colors hover:bg-surface-sunken;
+}
+
+.chat-diff-toolbar {
+  @apply flex shrink-0 items-center gap-0.5 px-2;
+}
+
+.chat-diff-toggle {
+  @apply rounded px-1.5 py-0.5 text-[11px] text-text-secondary transition-colors hover:bg-surface-sunken;
+}
+
+.chat-diff-toggle[aria-pressed='true'] {
+  @apply bg-surface-sunken text-text-primary;
 }
 
 .chat-diff-files {
@@ -498,6 +514,21 @@
 
 .chat-diff-meta {
   @apply text-text-tertiary;
+}
+
+/* split 双栏：单文件一个网格，两列等宽（各取两侧最长行），超宽由 body 横向滚动。 */
+.chat-diff-split {
+  @apply w-max;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.chat-diff-right {
+  @apply border-l border-border-subtle;
+}
+
+.chat-diff-span {
+  grid-column: 1 / -1;
 }
 
 /* ---- Chat 计划复选清单卡（plan-card.tsx，对齐 codex Q10） ---- */
