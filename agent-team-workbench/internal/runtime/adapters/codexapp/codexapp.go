@@ -210,6 +210,13 @@ type execStream struct {
 	answer              strings.Builder
 	finalMessageEmitted bool
 	approvals           map[string]chan bool
+
+	// 本轮 token 用量（thread/tokenUsage/updated 的 last 增量逐通知累计）；
+	// 唯一出口是 ExecResult.Usage（收尾一次上报，不走 OnUsage 流式）。
+	usageIn     int64
+	usageOut    int64
+	usageCached int64
+	usageSeen   bool
 }
 
 func (s *execStream) send(frame map[string]any) error {
@@ -292,6 +299,30 @@ func (s *execStream) resetAnswerState() {
 	s.answer.Reset()
 	s.finalMessageEmitted = false
 	s.mu.Unlock()
+}
+
+// accumulateUsage 累计一条归因到本 turn 的用量增量（调用方负责 turnId 过滤）。
+func (s *execStream) accumulateUsage(ev tokenUsageEvent) {
+	s.mu.Lock()
+	s.usageIn += ev.Input
+	s.usageOut += ev.Output
+	s.usageCached += ev.Cached
+	s.usageSeen = true
+	s.mu.Unlock()
+}
+
+// usageSnapshot 收尾用量（per_run 增量，与 kimiapp 同口径）；未见用量帧或全零
+// 返回 nil（不捏造上报）。
+func (s *execStream) usageSnapshot() *runtime.Usage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.usageSeen || (s.usageIn == 0 && s.usageOut == 0) {
+		return nil
+	}
+	return &runtime.Usage{
+		InputTokens: s.usageIn, OutputTokens: s.usageOut,
+		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
+	}
 }
 
 // finalAnswer 权威答案只发一次（同一 agent 消息段内 item/completed 与 turn/completed 去重）。
@@ -415,6 +446,7 @@ func (s *execStream) consumeControls(stop <-chan struct{}) {
 // pumpResult 一轮流驱动的原始产出；终态裁决在 composeResult。
 type pumpResult struct {
 	session    *runtime.SessionUpdate
+	usage      *runtime.Usage
 	failure    *runtime.Failure
 	finished   bool   // turn/completed 已见
 	turnStatus string // completed | interrupted | failed
@@ -425,6 +457,8 @@ type pumpResult struct {
 // 直到 turn/completed、协议失败或流中断。事件映射与旧实现逐字段一致。
 func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 	res := &pumpResult{}
+	// 任意退出路径（含流中断/失败）都带上已观测到的本轮用量。
+	defer func() { res.usage = s.usageSnapshot() }()
 	// 1) initialize 握手（版本门）。
 	if _, err := s.request("initialize", initializeParams()); err != nil {
 		res.failure = ioFailure("io_failed", err.Error(), true)
@@ -546,6 +580,18 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		switch frame.Method {
 		case "thread/started", "thread/status/changed":
 			// thread 生命周期投影：无状态迁移，仅记录。
+		case "thread/tokenUsage/updated":
+			// 用量增量只认本 turn：每次通知的 last 即 thread 累计 total 的本次增量，
+			// 逐通知求和 = 本轮用量（per_run）；resume 重放归因旧 turn、turn 未就绪
+			// （turnId 未知/不匹配）的通知一律不计入。
+			if ev, ok := parseTokenUsageEvent(frame.Params); ok {
+				s.mu.Lock()
+				turnID := s.turnID
+				s.mu.Unlock()
+				if turnID != "" && ev.TurnID == turnID {
+					s.accumulateUsage(ev)
+				}
+			}
 		case "turn/started":
 			var n struct {
 				Turn struct {
@@ -694,7 +740,8 @@ func (s *execStream) handleServerRequest(frame *rpcFrame) {
 // turn/completed > 流中断分类。审批拒绝等无意图中断映射 cancelled（旧实现
 // running→cancelling→cancelled 语义）。
 func composeResult(ex *runtime.ExecContext, ctx context.Context, in *pumpResult, waitErr error) runtime.ExecResult {
-	result := runtime.ExecResult{Session: in.session}
+	// 用量对任意终态都随行（已消费的 token 不因取消/失败而消失）。
+	result := runtime.ExecResult{Session: in.session, Usage: in.usage}
 	if ctx.Err() != nil {
 		// 进程被终止：按终态意图区分 cancelled/interrupted；
 		// 无意图（如服务关停）按 interrupted（保留 resume 时机）。

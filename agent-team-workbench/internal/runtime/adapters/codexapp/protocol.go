@@ -232,6 +232,72 @@ func isApprovalMethod(method string) bool {
 	}
 }
 
+// ── token 用量通知（thread/tokenUsage/updated）──────────────────────
+
+// tokenUsageEvent 用量通知中构成本轮增量的 last 快照（input/cached/output 三计数）。
+type tokenUsageEvent struct {
+	TurnID string
+	Input  int64
+	Cached int64
+	Output int64
+}
+
+// parseTokenUsageEvent 容错解析 token 用量通知 params：app-server v2 权威形状为
+// camelCase（tokenUsage.last.{inputTokens,cachedInputTokens,outputTokens}，证据见
+// notes/implemented/architecture/2026-08-24-codex-usage-telemetry.md）；core 协议
+// 形状为 snake_case（info.last_token_usage.input_tokens…）。同一 TokenUsageInfo
+// 的两种序列化都收：包裹键取 tokenUsage/token_usage/info（缺省视为 params 平铺），
+// 增量键取 last/last_token_usage。ok=false 表示无增量快照（不计入用量）。
+func parseTokenUsageEvent(raw json.RawMessage) (tokenUsageEvent, bool) {
+	var params map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &params) != nil {
+		return tokenUsageEvent{}, false
+	}
+	ev := tokenUsageEvent{TurnID: firstString(params, "turnId", "turn_id")}
+	usage := firstMap(params, "tokenUsage", "token_usage", "info")
+	if usage == nil {
+		usage = params
+	}
+	last := firstMap(usage, "last", "last_token_usage")
+	if last == nil {
+		return ev, false
+	}
+	ev.Input = firstInt(last, "inputTokens", "input_tokens")
+	ev.Cached = firstInt(last, "cachedInputTokens", "cached_input_tokens")
+	ev.Output = firstInt(last, "outputTokens", "output_tokens")
+	return ev, true
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s, _ := m[k].(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstMap(m map[string]any, keys ...string) map[string]any {
+	for _, k := range keys {
+		if v, ok := m[k].(map[string]any); ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func firstInt(m map[string]any, keys ...string) int64 {
+	for _, k := range keys {
+		switch v := m[k].(type) {
+		case float64:
+			return int64(v)
+		case int64:
+			return v
+		}
+	}
+	return 0
+}
+
 // ── JSONL 帧（Codex 省略 jsonrpc 字段；响应/请求/通知统一解析）────────
 
 type rpcFrame struct {
