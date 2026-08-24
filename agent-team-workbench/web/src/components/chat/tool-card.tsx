@@ -123,9 +123,11 @@ export function ToolRow({ msg }: { msg: ChatMessage }) {
       </button>
       {open &&
         (isDiff ? (
-          <div className="mx-1 mt-0.5 mb-1">
-            <DiffCard text={msg.detail} />
-          </div>
+          msg.detail ? (
+            <div className="mx-1 mt-0.5 mb-1">
+              <DiffCard text={msg.detail} />
+            </div>
+          ) : null
         ) : (
           <pre className="mx-1 mt-0.5 mb-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
             {msg.detail}

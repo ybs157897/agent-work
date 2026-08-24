@@ -298,7 +298,8 @@ function renderTranscript(messages: ChatMessage[]): ReactNode[] {
       continue;
     }
     if (msg.kind === 'thinking') {
-      const next = segments[i + 1]?.kind === 'single' ? segments[i + 1].item : undefined;
+      const lookahead = segments[i + 1];
+      const next = lookahead?.kind === 'single' ? lookahead.item : undefined;
       if (next?.kind === 'assistant' && next.runId === msg.runId) {
         nodes.push(
           <AssistantTurn
