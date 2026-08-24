@@ -237,10 +237,17 @@ export const resumeRun = (runId: string) =>
 export const listApprovals = (runId: string) =>
   apiFetch<{ items: ApprovalRequest[] }>(`/runs/${runId}/approvals`);
 
-export const resolveApproval = (approvalId: string, runId: string, decision: 'approved' | 'rejected', reason?: string) =>
+/** resolve 决议作用域：thread=本会话（work item）记住授权；workspace=整个工作区。 */
+export const resolveApproval = (
+  approvalId: string,
+  runId: string,
+  decision: 'approved' | 'rejected',
+  reason?: string,
+  scope: 'once' | 'thread' | 'workspace' = 'once',
+) =>
   apiFetch<ApprovalRequest>(`/runs/${runId}/approvals/${approvalId}/commands/resolve`, {
     method: 'POST',
-    body: { decision, reason: reason ?? '' },
+    body: { decision, reason: reason ?? '', scope },
   });
 
 export const listArtifacts = (runId: string) =>

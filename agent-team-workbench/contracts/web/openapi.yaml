@@ -467,8 +467,19 @@ paths:
               properties:
                 decision: { type: string, enum: [approved, rejected] }
                 reason: { type: string }
+                scope:
+                  type: string
+                  enum: [once, thread, workspace]
+                  default: once
+                  description: >-
+                    决议作用域。approved 且 scope=thread/workspace 时创建「总是允许」
+                    授权：后续同 workspace/agent/kind（thread 另要求同 work item）
+                    且摘要前缀命中的审批请求自动代答批准（activity 可追溯）。
+                    仅 command/file_change/permissions 支持（其余 kind 返回 422）；
+                    拒绝忽略 scope，缺省等价 once。
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Approval" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /runs/{run_id}/artifacts:
     parameters: [{ $ref: "#/components/parameters/RunId" }]

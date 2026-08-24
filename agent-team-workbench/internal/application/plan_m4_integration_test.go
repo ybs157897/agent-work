@@ -282,7 +282,7 @@ func TestPlanApprovalGuardrailManualDispatch(t *testing.T) {
 	}
 
 	// 批准 → 步骤执行（子任务 + run 落库）、批次继续 → finish → finished。
-	if _, err := svc.ResolveApproval(ctx, approvalID, true, "user_op", ""); err != nil {
+	if _, err := svc.ResolveApproval(ctx, approvalID, true, "user_op", "", domain.ApprovalScopeOnce); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := store.Plans().Get(ctx, plan.ID)
@@ -315,7 +315,7 @@ func TestPlanApprovalGuardrailManualDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvalID = pendingPlanApprovalID(t, ctx, store, wsID, plan2.ID)
-	if _, err := svc.ResolveApproval(ctx, approvalID, false, "user_op", "路线否决"); err != nil {
+	if _, err := svc.ResolveApproval(ctx, approvalID, false, "user_op", "路线否决", domain.ApprovalScopeOnce); err != nil {
 		t.Fatal(err)
 	}
 	fresh2, err := store.Plans().Get(ctx, plan2.ID)

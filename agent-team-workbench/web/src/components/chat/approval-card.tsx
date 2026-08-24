@@ -14,6 +14,35 @@ export interface ApprovalLine {
   at?: string;
 }
 
+/** 允许选项的三级授权（对照 codex 桌面端「本次允许/本会话总是允许/总是允许」）。 */
+export interface AllowChoice {
+  scope: 'once' | 'thread' | 'workspace';
+  label: string;
+  /** workspace 级全局授权：次级位置 + 警示样式（影响面超出本会话）。 */
+  danger: boolean;
+  toast: string;
+}
+
+/** allowChoices 渲染顺序：允许（本次）→ 本会话总是允许 → 工作区总是允许（警示）。 */
+export function allowChoices(): AllowChoice[] {
+  return [
+    { scope: 'once', label: '允许', danger: false, toast: '已允许' },
+    { scope: 'thread', label: '本会话总是允许', danger: false, toast: '已允许，本会话同类请求将自动批准' },
+    { scope: 'workspace', label: '总是允许（整个工作区）', danger: true, toast: '已允许，工作区内同类请求将自动批准' },
+  ];
+}
+
+/** 可授权 kind 闭集（对齐服务端 approval_grants CHECK 约束）。 */
+const GRANTABLE_KINDS = new Set(['command', 'file_change', 'permissions']);
+
+/** cardAllowChoices：非可授权 kind（tool/question 等）只保留「允许」，不展示会被
+ * 服务端 422 拒绝的授权选项。 */
+export function cardAllowChoices(kind: string): AllowChoice[] {
+  const choices = allowChoices();
+  if (GRANTABLE_KINDS.has(kind)) return choices;
+  return choices.filter((c) => c.scope === 'once');
+}
+
 /** 已决议审批的消息流完成态行（保留可见）；pending 无行，返回 null 走交互卡。 */
 export function resolvedApprovalLine(a: ApprovalRequest): ApprovalLine | null {
   const label = `${a.kind} · ${a.risk}`;
@@ -48,13 +77,18 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const decide = async (decision: 'approved' | 'rejected', why: string) => {
+  const decide = async (
+    decision: 'approved' | 'rejected',
+    why: string,
+    scope: 'once' | 'thread' | 'workspace' = 'once',
+    successToast?: string,
+  ) => {
     if (busy) return;
     setBusy(true);
     try {
-      await resolveApproval(approval.id, approval.run_id, decision, why);
+      await resolveApproval(approval.id, approval.run_id, decision, why, scope);
       await fetchApprovals(approval.run_id);
-      toast.success(decision === 'approved' ? '已批准' : '已拒绝');
+      toast.success(successToast ?? (decision === 'approved' ? '已允许' : '已拒绝'));
     } catch (err) {
       // 失败保持卡片原状（含已输入的理由），可重试。
       toast.error(err instanceof ApiError ? err.message : '操作失败');
@@ -104,14 +138,23 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
           </div>
         </div>
       ) : (
-        <div className="flex gap-2 mt-2">
-          <button
-            onClick={() => void decide('approved', '')}
-            disabled={busy}
-            className="text-caption rounded-button px-2 py-1 bg-status-success text-white disabled:opacity-50"
-          >
-            {busy ? '处理中' : '批准'}
-          </button>
+        <div className="flex flex-wrap gap-2 mt-2">
+          {cardAllowChoices(approval.kind).map((choice) => (
+            <button
+              key={choice.scope}
+              onClick={() => void decide('approved', '', choice.scope, choice.toast)}
+              disabled={busy}
+              className={
+                choice.scope === 'once'
+                  ? 'text-caption rounded-button px-2 py-1 bg-status-success text-white disabled:opacity-50'
+                  : choice.danger
+                    ? 'text-caption rounded-button px-2 py-1 border border-status-warning/60 text-status-warning disabled:opacity-50'
+                    : 'text-caption rounded-button px-2 py-1 border border-border-strong text-text-secondary hover:bg-surface-base transition-colors disabled:opacity-50'
+              }
+            >
+              {busy ? '处理中' : choice.label}
+            </button>
+          ))}
           <button
             onClick={() => setRejecting(true)}
             disabled={busy}

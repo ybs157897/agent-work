@@ -226,3 +226,50 @@ func TestEventNameWhitelistCoversRunPlanAndSessionCompaction(t *testing.T) {
 		}
 	}
 }
+
+// TestApprovalGrantMatches 授权 pattern 前缀语义：kind 相等是硬条件，pattern 空
+// 匹配同 kind 全部摘要，否则要求摘要前缀命中（无词边界）。
+func TestApprovalGrantMatches(t *testing.T) {
+	g := &ApprovalGrant{Kind: ApprovalKindCommand, Pattern: "Codex 请求执行命令：git push"}
+	if !g.Matches(ApprovalKindCommand, "Codex 请求执行命令：git push --force") {
+		t.Fatal("同 kind + 摘要前缀命中应匹配")
+	}
+	if g.Matches(ApprovalKindCommand, "Codex 请求执行命令：gitx") {
+		t.Fatal("前缀不命中不得匹配")
+	}
+	if g.Matches(ApprovalKindPermissions, "Codex 请求执行命令：git push") {
+		t.Fatal("kind 不同不得匹配")
+	}
+	if g.Matches(ApprovalKindFileChange, "任意摘要") {
+		t.Fatal("kind 不同时空 pattern 也不得匹配")
+	}
+	empty := &ApprovalGrant{Kind: ApprovalKindPermissions, Pattern: ""}
+	if !empty.Matches(ApprovalKindPermissions, "任意摘要") {
+		t.Fatal("空 pattern 匹配同 kind 全部")
+	}
+}
+
+// TestApprovalKindGrantableAndScope 可授权 kind 闭集（plan_dispatch/question 不得
+// 绕过人工）与 scope 枚举校验（空串非法——解析边界必须归一为 once）。
+func TestApprovalKindGrantableAndScope(t *testing.T) {
+	for _, kind := range []string{ApprovalKindCommand, ApprovalKindFileChange, ApprovalKindPermissions} {
+		if !ApprovalKindGrantable(kind) {
+			t.Fatalf("%s 应可授权", kind)
+		}
+	}
+	for _, kind := range []string{ApprovalKindPlanDispatch, "question", "tool", ""} {
+		if ApprovalKindGrantable(kind) {
+			t.Fatalf("%s 不得可授权", kind)
+		}
+	}
+	for _, s := range []ApprovalScope{ApprovalScopeOnce, ApprovalScopeThread, ApprovalScopeWorkspace} {
+		if !s.Valid() {
+			t.Fatalf("%s 应合法", s)
+		}
+	}
+	for _, s := range []ApprovalScope{"", "always", "session"} {
+		if s.Valid() {
+			t.Fatalf("%q 不得合法", s)
+		}
+	}
+}

@@ -704,11 +704,20 @@ func (s *Service) projectArtifactEvent(ctx context.Context, r *domain.ExecutionR
 	}
 }
 
-// RequestApproval：Run 进入 waiting_approval，等待幂等决定。
+// RequestApproval：Run 进入 waiting_approval，等待幂等决定。命中「总是允许」
+// 授权时代答：仍落 ApprovalRequest（否则决定投递早于 adapter 登记待决通道会被
+// 静默丢弃，且无人工兜底），事务提交后由 grant 路径异步自决议——UI 只会看到
+// 完成态行，不出现待批交互卡（设计取舍见
+// notes/implemented/architecture/2026-08-24-approval-granularity.md）。
 func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error) {
 	var approval *domain.ApprovalRequest
+	var grant *domain.ApprovalGrant
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		r, err := s.store.Runs().Get(ctx, runID)
+		if err != nil {
+			return err
+		}
+		grant, err = s.store.ApprovalGrants().Matching(ctx, r.WorkspaceID, r.AgentProfileID, r.WorkItemID, kind, summary)
 		if err != nil {
 			return err
 		}
@@ -742,14 +751,37 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 	if err == nil {
 		s.notifier.Notify(r.WorkspaceID)
 	}
+	if grant != nil {
+		s.autoResolveFromGrant(approval, grant)
+	}
 	return approval, nil
+}
+
+// autoResolveFromGrant 按授权代答批准。必须异步：进程内 adapter 在
+// RequestApproval 返回后才登记待决审批的消费通道，同步投递 ControlApproval
+// 会在登记前被丢弃；本调用与登记之间隔着一次完整决议事务（毫秒级）vs 回调
+// 返回后的直线代码（纳秒级）。失败不吞（日志留痕）且审批保持 pending 走人工
+// ——退化为无授权行为。WithoutCancel：发起方请求上下文关闭不阻断代答。
+func (s *Service) autoResolveFromGrant(a *domain.ApprovalRequest, g *domain.ApprovalGrant) {
+	go func() {
+		ctx := context.WithoutCancel(context.Background())
+		reason := fmt.Sprintf("已按授权自动批准 grant %s · %s · %s 作用域", g.ID, g.Kind, g.Scope)
+		if _, err := s.ResolveApproval(ctx, a.ID, true, "grant:"+g.ID, reason, domain.ApprovalScopeOnce); err != nil {
+			log.Printf("approval: run %s 审批 %s 按授权 %s 自动批准失败（保持人工待决）: %v",
+				a.RunID, a.ID, g.ID, err)
+		}
+	}()
 }
 
 // ResolveApproval 幂等决定；通过后 Run 回到 running（Adapter 继续执行）。
 // plan_dispatch 审批（M4 审批护栏，RunID 空）不走 run 迁移与 forwarder，由
 // resolvePlanDispatchApproval 续跑或收口 plan；副作用（分派、timer 唤醒）同
-// SubmitPlan 惯例推迟到事务提交后。
-func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approved bool, by, reason string) (*domain.ApprovalRequest, error) {
+// SubmitPlan 惯例推迟到事务提交后。scope≠once 且 approved 时同事务创建授权
+// （仅 command/file_change/permissions；拒绝永不建授权；幂等重放不重复建）。
+func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approved bool, by, reason string, scope domain.ApprovalScope) (*domain.ApprovalRequest, error) {
+	if !scope.Valid() {
+		return nil, fmt.Errorf("%w: 审批 scope %q 非法（once|thread|workspace）", domain.ErrValidation, string(scope))
+	}
 	decision := domain.ApprovalRejected
 	if approved {
 		decision = domain.ApprovalApproved
@@ -769,9 +801,14 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		if err != nil {
 			return err
 		}
+		// 授权只对工具审批开放：plan_dispatch（编排闸门）/question 等不得绕过人工。
+		if scope != domain.ApprovalScopeOnce && !domain.ApprovalKindGrantable(a.Kind) {
+			return fmt.Errorf("%w: kind %s 不支持授权（仅 command/file_change/permissions）",
+				domain.ErrValidation, a.Kind)
+		}
 		if a.Status == decision {
 			result = a
-			return nil // 幂等：重复相同决定直接返回
+			return nil // 幂等：重复相同决定直接返回（不重复建授权）
 		}
 		if err := a.Resolve(decision, by, reason, time.Now().UTC()); err != nil {
 			return err
@@ -819,12 +856,32 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 			map[string]any{"decision": string(decision), "resolved_by": by}); err != nil {
 			return err
 		}
+		// scope≠once 且 approved：同事务创建「总是允许」授权（pattern 锚定本次
+		// 摘要，前缀语义）。拒绝永不建授权；thread 锚定本 work item。
+		if approved && scope != domain.ApprovalScopeOnce {
+			g := &domain.ApprovalGrant{
+				ID: domain.NewID(domain.PrefixGrant), WorkspaceID: r.WorkspaceID,
+				AgentProfileID: r.AgentProfileID, Scope: scope, Kind: a.Kind,
+				Pattern: a.Summary, CreatedAt: time.Now().UTC(),
+			}
+			if scope == domain.ApprovalScopeThread {
+				g.WorkItemID = a.WorkItemID
+			}
+			if err := s.store.ApprovalGrants().Create(ctx, g); err != nil {
+				return err
+			}
+			s.audit(ctx, r.WorkspaceID, "approval.grant_created", g.ID,
+				map[string]any{"approval_id": a.ID, "scope": string(scope), "kind": g.Kind, "pattern": g.Pattern})
+		}
 		// 审批决定必须记录 approver、理由与范围（协议文档 §10.3）。
 		s.audit(ctx, r.WorkspaceID, "approval.resolved", a.ID,
 			map[string]any{"decision": string(decision), "approver": by, "reason": reason, "risk": a.Risk})
 		result = a
-		return s.activity(ctx, r.WorkspaceID, "approval.resolved",
-			fmt.Sprintf("审批 %s：%s", a.ID, decision))
+		msg := fmt.Sprintf("审批 %s：%s", a.ID, decision)
+		if reason != "" {
+			msg += "（" + reason + "）"
+		}
+		return s.activity(ctx, r.WorkspaceID, "approval.resolved", msg)
 	})
 	if err != nil {
 		return nil, err
