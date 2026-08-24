@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // RunStatus 状态机（协议文档 §4.3）。终态不可逆；重试总是创建新 Run。
 type RunStatus string
@@ -151,6 +154,57 @@ const (
 // approvals.run_id 非空约束）；RequestedBy={"kind":"plan","id":<planID>,"seq":<seq>}
 // 定位挂起步骤，审批解决回调据此续跑或收口 plan。
 const ApprovalKindPlanDispatch = "plan_dispatch"
+
+// 工具审批 kind 闭集（对齐 codex 官方审批请求三类）。仅这三类可建「总是允许」
+// 授权；plan_dispatch（编排闸门）与 question（ask_user）不得授权绕过人工。
+const (
+	ApprovalKindCommand     = "command"
+	ApprovalKindFileChange  = "file_change"
+	ApprovalKindPermissions = "permissions"
+)
+
+// ApprovalKindGrantable 报告该审批 kind 是否可建授权（scope≠once 决议）。
+func ApprovalKindGrantable(kind string) bool {
+	return kind == ApprovalKindCommand || kind == ApprovalKindFileChange ||
+		kind == ApprovalKindPermissions
+}
+
+// ApprovalScope 决议作用域：once 仅本次；thread 在同 work item 会话内记住授权；
+// workspace 工作区全局记住授权。
+type ApprovalScope string
+
+const (
+	ApprovalScopeOnce      ApprovalScope = "once"
+	ApprovalScopeThread    ApprovalScope = "thread"
+	ApprovalScopeWorkspace ApprovalScope = "workspace"
+)
+
+// Valid 报告 scope 是否在闭集内；空串非法（解析边界必须归一为 once）。
+func (s ApprovalScope) Valid() bool {
+	return s == ApprovalScopeOnce || s == ApprovalScopeThread || s == ApprovalScopeWorkspace
+}
+
+// ApprovalGrant：「总是允许」授权行（scope≠once 决议的落库形态）。thread 锚定
+// WorkItemID；workspace 作用域 WorkItemID 为空（全局）。授权永不跨 workspace/
+// agent 生效（两列是存储查询的硬条件）。
+type ApprovalGrant struct {
+	ID             string
+	WorkspaceID    string
+	AgentProfileID string
+	WorkItemID     string
+	Scope          ApprovalScope
+	Kind           string
+	Pattern        string
+	CreatedAt      time.Time
+}
+
+// Matches 报告该授权可否代答 kind/summary 的请求。作用域/工作区/agent 过滤由
+// 存储查询负责；这里只做 kind 相等与 pattern 前缀（pattern 空 = 匹配同 kind 全部）。
+// pattern 是被批准请求的摘要原文——application 层拿不到裸命令，前缀语义即
+// 「以同样摘要开头的同类请求」，无词边界。
+func (g *ApprovalGrant) Matches(kind, summary string) bool {
+	return g.Kind == kind && (g.Pattern == "" || strings.HasPrefix(summary, g.Pattern))
+}
 
 // ApprovalRequest：UI 只展示最小必要摘要；敏感参数走 sensitive_input_ref。
 type ApprovalRequest struct {

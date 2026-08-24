@@ -92,6 +92,7 @@ type Store struct {
 	caps       *CapsRepo
 	tasks      *TaskSessionRepo
 	wakeups    *WakeupRepo
+	grants     *ApprovalGrantRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -112,21 +113,23 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	s.caps = &CapsRepo{store: s}
 	s.tasks = &TaskSessionRepo{store: s}
 	s.wakeups = &WakeupRepo{store: s}
+	s.grants = &ApprovalGrantRepo{store: s}
 	return s
 }
 
-func (s *Store) Workspaces() application.WorkspaceRepo     { return s.workspaces }
-func (s *Store) Agents() application.AgentRepo             { return s.agents }
-func (s *Store) WorkItems() application.WorkItemRepo       { return s.workItems }
-func (s *Store) Plans() application.PlanRepo               { return s.plans }
-func (s *Store) Runs() application.RunRepo                 { return s.runs }
-func (s *Store) Events() application.EventRepo             { return s.events }
-func (s *Store) Idempotency() application.IdempotencyRepo  { return s.idem }
-func (s *Store) Bindings() application.RuntimeBindingRepo  { return s.bindings }
-func (s *Store) Runners() application.RunnerRepo           { return s.runners }
-func (s *Store) Audit() application.AuditRepo              { return s.audit }
-func (s *Store) Caps() application.CapabilitySnapshotRepo  { return s.caps }
-func (s *Store) TaskSessions() application.TaskSessionRepo { return s.tasks }
+func (s *Store) Workspaces() application.WorkspaceRepo         { return s.workspaces }
+func (s *Store) Agents() application.AgentRepo                 { return s.agents }
+func (s *Store) WorkItems() application.WorkItemRepo           { return s.workItems }
+func (s *Store) Plans() application.PlanRepo                   { return s.plans }
+func (s *Store) Runs() application.RunRepo                     { return s.runs }
+func (s *Store) Events() application.EventRepo                 { return s.events }
+func (s *Store) Idempotency() application.IdempotencyRepo      { return s.idem }
+func (s *Store) Bindings() application.RuntimeBindingRepo      { return s.bindings }
+func (s *Store) Runners() application.RunnerRepo               { return s.runners }
+func (s *Store) Audit() application.AuditRepo                  { return s.audit }
+func (s *Store) Caps() application.CapabilitySnapshotRepo      { return s.caps }
+func (s *Store) TaskSessions() application.TaskSessionRepo     { return s.tasks }
+func (s *Store) ApprovalGrants() application.ApprovalGrantRepo { return s.grants }
 
 // Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
 func (s *Store) Wakeups() scheduling.Store { return s.wakeups }

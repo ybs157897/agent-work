@@ -26,6 +26,7 @@ type Store interface {
 	Audit() AuditRepo
 	Caps() CapabilitySnapshotRepo
 	TaskSessions() TaskSessionRepo
+	ApprovalGrants() ApprovalGrantRepo
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store
@@ -104,6 +105,15 @@ type RunRepo interface {
 	CreateArtifact(ctx context.Context, art *domain.Artifact) error
 	ListArtifacts(ctx context.Context, runID string) ([]*domain.Artifact, error)
 	ActiveCount(ctx context.Context, workspaceID string) (int, error)
+}
+
+// ApprovalGrantRepo 「总是允许」授权存储（scope≠once 决议的落库形态）。
+type ApprovalGrantRepo interface {
+	Create(ctx context.Context, g *domain.ApprovalGrant) error
+	// Matching 返回可代答请求的授权：同 workspace/agent/kind，workspace 作用域或
+	// thread 作用域且锚定同一 work item，pattern 空或请求摘要前缀命中；多命中取
+	// 最新。无命中返回 (nil, nil)。
+	Matching(ctx context.Context, workspaceID, agentProfileID, workItemID, kind, summary string) (*domain.ApprovalGrant, error)
 }
 
 // EventRepo 负责 Canonical Event 持久化：stream_events + outbox 同事务写入，

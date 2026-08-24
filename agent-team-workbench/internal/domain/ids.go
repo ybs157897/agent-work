@@ -19,6 +19,7 @@ const (
 	PrefixPlan      = "plan_"
 	PrefixRun       = "run_"
 	PrefixApproval  = "approval_"
+	PrefixGrant     = "grant_"
 	PrefixArtifact  = "artifact_"
 	PrefixEvent     = "evt_"
 	PrefixRunner    = "runner_"
