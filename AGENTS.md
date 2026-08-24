@@ -19,6 +19,10 @@
 - 迁移：`go run ./cmd/migrate -dsn "sqlite://workbench.db"`；`migrations/` 与 `migrations/sqlite/` 双目录保持语义等价。
 - 提交前确认 repo-local git 身份已配置（本机无全局身份）。
 
+## 前端设计纪律
+
+改动 `agent-team-workbench/web/` 的视觉与交互前先读 `agent-team-workbench/web/DESIGN.md`（设计事实源）；颜色/间距/圆角只引用语义 token，禁止内联色值（`src/design-tokens.test.ts` 门禁）。
+
 ## 会话/运行时硬约束（防回归共识）
 
 - Run 状态机 13 态是唯一权威；ModuleRunner 是进程内唯一推进点；任何 Outcome 都必须能落终态（不许卡死）。
