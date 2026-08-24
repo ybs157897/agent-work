@@ -273,15 +273,16 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
   useEffect(() => {
     if (!workspace) return;
     listRuntimeBindings(workspace.id)
-      .then(({ items }) => setBindings(items))
+      .then(({ items }) => setBindings(items ?? []))
       .catch(() => setBindings([]));
     listModels()
-      .then(({ items }) => setModels(items))
+      .then(({ items }) => setModels(items ?? []))
       .catch(() => setModels([]));
     getDSHCatalog()
+      // Go nil 切片在线上是 null：一律归一为数组，下游 useMemo 按数组消费。
       .then((catalog) => {
-        setAgentPresets(catalog.agent_presets);
-        setPermissionPresets(catalog.permission_presets);
+        setAgentPresets(catalog.agent_presets ?? []);
+        setPermissionPresets(catalog.permission_presets ?? []);
       })
       .catch(() => {
         setAgentPresets([]);
@@ -602,7 +603,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
     if (!open || !workspace) return;
     listRuntimeBindings(workspace.id)
       .then(({ items }) => {
-        const available = items.filter((item) => isRealRuntime(item.runtime_label));
+        const available = (items ?? []).filter((item) => isRealRuntime(item.runtime_label));
         setBindings(available);
         setRuntimeLabel((current) =>
           available.some((item) => item.runtime_label === current)
@@ -714,7 +715,7 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
     let cancelled = false;
     listTaskSessions(agent.id)
       .then(({ items }) => {
-        if (!cancelled) setItems(items);
+        if (!cancelled) setItems(items ?? []);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -808,7 +809,7 @@ function WakeAgentModal({ open, onClose, agent }: { open: boolean; onClose: () =
     listWorkItems(workspace.id)
       .then(({ items }) => {
         if (cancelled) return;
-        const active = items.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+        const active = (items ?? []).filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
         setTasks(active);
         setTaskKey((cur) => (active.some((t) => t.id === cur) ? cur : active[0]?.id ?? ''));
       })
