@@ -65,7 +65,7 @@ components:
     #            agent_availability.changed / agent_presence.updated
     # WorkItem:  work_item.created / work_item.updated / work_item.moved /
     #            work_item.assigned / work_item.blocked / work_item.unblocked /
-    #            work_item.completed
+    #            work_item.completed / work_item.locked / work_item.lock_preempted
     # Run:       run.created / run.started / run.status_changed /
     #            run.progress_updated / run.plan_updated / run.completed /
     #            run.failed / run.cancelled / run.lost

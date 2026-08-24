@@ -37,11 +37,6 @@ interface RunsStore {
   applyEvent: (ev: CanonicalEvent) => boolean;
 }
 
-function appendTimeline(entries: TimelineEntry[] | undefined, entry: TimelineEntry): TimelineEntry[] {
-  const list = entries ? [...entries, entry] : [entry];
-  return list.length > TIMELINE_CAP ? list.slice(list.length - TIMELINE_CAP) : list;
-}
-
 function entryText(ev: CanonicalEvent): string | undefined {
   const v = ev.data?.text;
   return typeof v === 'string' ? v : undefined;
@@ -157,16 +152,18 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       set((s) => ({
         timelines: {
           ...s.timelines,
-          [runId]: appendTimeline(s.timelines[runId], {
-            event_id: ev.event_id,
-            stream_seq: ev.stream_seq,
-            run_seq: ev.run_seq,
-            type: ev.type,
-            occurred_at: ev.occurred_at,
-            role: entryRole(ev),
-            text: entryText(ev),
-            data: ev.data,
-          }),
+          [runId]: mergeTimeline(s.timelines[runId] ?? [], [
+            {
+              event_id: ev.event_id,
+              stream_seq: ev.stream_seq,
+              run_seq: ev.run_seq,
+              type: ev.type,
+              occurred_at: ev.occurred_at,
+              role: entryRole(ev),
+              text: entryText(ev),
+              data: ev.data,
+            },
+          ]),
         },
       }));
 

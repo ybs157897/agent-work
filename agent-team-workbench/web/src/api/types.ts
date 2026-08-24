@@ -120,6 +120,10 @@ export interface WorkItem {
   /** 父任务 id（M1 编排 dispatch 建子任务；omitempty，根任务缺省）。 */
   parent_id?: string;
   agent_profile_id?: string;
+  /** 执行锁属主 run id（F1；非空=任务正被该 run 执行，防双跑）。 */
+  locked_by_run_id?: string;
+  /** 获取执行锁的时间（F1；无锁时缺省）。 */
+  locked_at?: string;
   blocker?: Blocker;
   runs_count: number;
   latest_run_id?: string;
@@ -329,6 +333,8 @@ export const EVENT_NAMES = [
   'work_item.blocked',
   'work_item.unblocked',
   'work_item.completed',
+  'work_item.locked',
+  'work_item.lock_preempted',
   'plan.submitted',
   'plan.step_executed',
   'plan.waiting',
