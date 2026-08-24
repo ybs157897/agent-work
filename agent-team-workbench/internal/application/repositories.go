@@ -63,6 +63,8 @@ type WorkItemFilter struct {
 type WorkItemRepo interface {
 	Create(ctx context.Context, wi *domain.WorkItem) error
 	Get(ctx context.Context, id string) (*domain.WorkItem, error)
+	// GetByClientKey 按 (workspace, client_key) 查回既有实体（实体级幂等重放路径）。
+	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.WorkItem, error)
 	List(ctx context.Context, workspaceID string, f WorkItemFilter) ([]*domain.WorkItem, string, error)
 	Update(ctx context.Context, wi *domain.WorkItem, expectedVersion int) error
 	// ListByParent 按 created_at 升序返回直接子任务（子任务树遍历用）。
@@ -93,6 +95,8 @@ type PlanRepo interface {
 type RunRepo interface {
 	Create(ctx context.Context, r *domain.ExecutionRun) error
 	Get(ctx context.Context, id string) (*domain.ExecutionRun, error)
+	// GetByClientKey 按 (workspace, client_key) 查回既有 run（实体级幂等重放路径）。
+	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.ExecutionRun, error)
 	Update(ctx context.Context, r *domain.ExecutionRun, expectedVersion int) error
 	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.ExecutionRun, error)
 	ActiveByAgent(ctx context.Context, agentProfileID string) ([]*domain.ExecutionRun, error)
