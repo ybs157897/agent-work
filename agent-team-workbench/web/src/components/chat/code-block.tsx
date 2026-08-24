@@ -122,7 +122,7 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
 
   return (
     <div className="code-block my-2 overflow-hidden rounded-md bg-surface-sunken">
-      <div className="flex items-center justify-between gap-2 px-3 pt-1.5">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border-subtle/60 bg-surface-sunken/95 px-3 pt-1.5 pb-1 backdrop-blur-sm">
         <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-wider text-text-tertiary">
           {declared ?? current?.language ?? ''}
         </span>

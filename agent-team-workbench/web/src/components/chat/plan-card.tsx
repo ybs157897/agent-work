@@ -6,9 +6,18 @@ import type { ChatMessage, PlanStepView } from '../../stores/chat.store';
  * 同 run 新帧在 store 层已替换旧帧——这里只渲染最新快照。
  * completed 勾选灰化、in_progress 高亮、pending 普通。
  */
-export function PlanCard({ msg }: { msg: ChatMessage }) {
+export function PlanCard({ msg, compact = false }: { msg: ChatMessage; compact?: boolean }) {
   const steps = msg.steps ?? [];
   const done = steps.filter((s) => s.status === 'completed').length;
+  if (compact) {
+    return (
+      <ol className="chat-plan-list">
+        {steps.map((s, i) => (
+          <PlanRow key={`${i}-${s.step}`} step={s} />
+        ))}
+      </ol>
+    );
+  }
   return (
     <div className="chat-plan">
       <div className="chat-plan-head">

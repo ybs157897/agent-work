@@ -3,6 +3,8 @@
 // 直接消费；参考 DSH ui-tool 的 tool-call-model，输入换成我们的消息形态。
 
 import type { ChatMessage } from '../../stores/chat.store';
+import { tailTruncate } from '../../utils/output-truncate';
+import { toolActivityTitle } from '../../utils/tool-activity-copy';
 
 export type ToolFamily = 'bash' | 'read' | 'write' | 'edit' | 'search' | 'code' | 'others';
 
@@ -167,13 +169,15 @@ export function toolRowModel(msg: ChatMessage): ToolRowModel {
 
   const argsFirst = msg.argsSummary !== undefined && msg.argsSummary !== '' ? firstLine(msg.argsSummary) : '';
   const summary = argsFirst !== '' ? argsFirst : firstLine(stripToolPrefix(msg.text, msg.tool)).trim();
-  const output = msg.detail?.trim() || msg.liveOutput || null;
+  const rawOutput = msg.detail?.trim() || msg.liveOutput || null;
+  const output = rawOutput !== null ? tailTruncate(rawOutput).text : null;
+  const filePath = deriveFilePath(family, msg);
 
   return {
     family,
-    title: FAMILY_TITLES[family],
+    title: toolActivityTitle({ family, state, summary, filePath }),
     summary,
-    filePath: deriveFilePath(family, msg),
+    filePath,
     body: deriveBody(msg.args),
     output,
     errorSummary: state === 'error' && output !== null ? firstLine(output) : null,

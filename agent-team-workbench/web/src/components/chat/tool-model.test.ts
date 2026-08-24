@@ -192,9 +192,9 @@ describe('toolRowModel · body/output/errorSummary/filePath', () => {
     ).toBeUndefined();
   });
 
-  it('title 取 FAMILY_TITLES；family 与归类一致', () => {
-    const m = toolRowModel(msg({ key: 't', runId: 'r', kind: 'tool', at: '', tool: 'grep', text: 'x' }));
+  it('title 使用动宾三态文案；family 与归类一致', () => {
+    const m = toolRowModel(msg({ key: 't', runId: 'r', kind: 'tool', at: '', tool: 'grep', text: 'x', toolStatus: 'success' }));
     expect(m.family).toBe('search');
-    expect(m.title).toBe('Search');
+    expect(m.title).toBe('Searched');
   });
 });

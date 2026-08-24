@@ -1,18 +1,23 @@
-import { GitBranch, MessageSquare, Plus, SendHorizonal, X } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { GitBranch, MessageSquare, Plus, SendHorizonal, Square, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AssistantTurn } from '../components/chat/assistant-turn';
-import { ApprovalCard } from '../components/chat/approval-card';
-import { ActivityGroup, groupActivity } from '../components/chat/tool-card';
-import { MessageActions } from '../components/chat/message-actions';
-import { PlanCard } from '../components/chat/plan-card';
+import { TranscriptView } from '../components/chat/transcript-view';
+import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/async-state';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
-import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL } from '../stores/chat.store';
+import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { useRunsStore } from '../stores/runs.store';
-import { formatTime } from '../utils/format';
+import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
+import { deriveChatDock } from '../utils/derive-chat-dock';
+import {
+  buildTranscriptSegments,
+  injectPendingUsers,
+  supplementUserFromTimeline,
+} from '../utils/chronological-transcript';
+import { runHasVisibleOutput } from '../utils/run-timeline';
 
 /** 对话页：Agent 选择器 + 会话列表 + 气泡消息流 + 输入框（协议 §5.2/§5.3）。 */
 export default function ChatPage() {
@@ -159,6 +164,10 @@ function ConversationPane() {
   const removeQueued = useChatStore((s) => s.removeQueued);
   const drainQueue = useChatStore((s) => s.drainQueue);
   const forkConversation = useChatStore((s) => s.forkConversation);
+  const stopActiveRun = useChatStore((s) => s.stopActiveRun);
+  const stoppingRunId = useChatStore((s) => s.stoppingRunId);
+  const runAlerts = useChatStore((s) => s.runAlerts);
+  const pendingUsers = useChatStore((s) => s.pendingUsers);
   const agents = useAgentsStore((s) => s.agents);
 
   const timelines = useRunsStore((s) => s.timelines);
@@ -169,6 +178,9 @@ function ConversationPane() {
 
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const followStreamRef = useRef(true);
+  const approvalAnchorsRef = useRef<Record<string, string>>({});
+  const [approvalAnchors, setApprovalAnchors] = useState<Record<string, string>>({});
 
   const agent = agents.find((a) => a.id === agentId);
   const conversation = conversations.find((c) => c.id === conversationId);
@@ -199,17 +211,121 @@ function ConversationPane() {
     () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
     [latestRunId, timelines],
   );
-  const awaitingReply =
-    !!latestRun && ACTIVE.has(latestRun.status) && !messages.some((m) => m.kind === 'assistant' && m.runId === latestRunId);
-
-  // 最新 run 的全部审批：pending 渲染交互卡，已决议转完成态行留在流内。
+  const liveRunActive = isRunLive(latestRun?.status);
+  const displayMessages = useMemo(
+    () => hideLiveRunDrafts(messages, latestRunId, liveRunActive),
+    [messages, latestRunId, liveRunActive],
+  );
   const runApprovals = latestRunId ? (approvals[latestRunId] ?? []) : [];
+  const runStatuses = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const id of runIds) {
+      const status = runSnapshots[id]?.status;
+      if (status) map[id] = status;
+    }
+    return map;
+  }, [runIds, runSnapshots]);
+  const hasPendingApproval = runApprovals.some((a) => a.status === 'pending');
+  const transcriptMessages = useMemo(() => {
+    const supplemented = supplementUserFromTimeline(displayMessages, runIds, timelines);
+    return injectPendingUsers(supplemented, pendingUsers);
+  }, [displayMessages, runIds, timelines, pendingUsers]);
+  const baseSegments = useMemo(
+    () =>
+      buildTranscriptSegments(transcriptMessages, {
+        runStatuses,
+        liveRunId: latestRunId,
+        liveStream,
+        liveRunActive,
+        hasPendingApproval,
+        pendingUsers,
+        rawMessages: messages,
+      }),
+    [transcriptMessages, runStatuses, latestRunId, liveStream, liveRunActive, hasPendingApproval, pendingUsers, messages],
+  );
+
+  useEffect(() => {
+    setApprovalAnchors({});
+    approvalAnchorsRef.current = {};
+  }, [conversationId]);
+
+  // 审批出现时钉住 anchor：之后的新输出排在审批卡之后（对齐 kanna inline approval）。
+  useEffect(() => {
+    if (!baseSegments.length) return;
+    const lastKey = transcriptSegmentKey(baseSegments[baseSegments.length - 1]);
+    let changed = false;
+    const next = { ...approvalAnchorsRef.current };
+    for (const a of runApprovals) {
+      if (a.status === 'pending' && next[a.id] === undefined) {
+        next[a.id] = lastKey;
+        changed = true;
+      }
+    }
+    if (changed) {
+      approvalAnchorsRef.current = next;
+      setApprovalAnchors(next);
+    }
+  }, [runApprovals, baseSegments]);
+
+  const transcriptSegments = useMemo(
+    () => mergeApprovalSegments(baseSegments, runApprovals, approvalAnchors),
+    [baseSegments, runApprovals, approvalAnchors],
+  );
+  const dock = useMemo(
+    () => deriveChatDock(transcriptMessages, latestRunId, timelines),
+    [transcriptMessages, latestRunId, timelines],
+  );
+
+  // run.created 落 timeline 后清除 optimistic 用户行。
+  useEffect(() => {
+    const stale = Object.keys(pendingUsers).filter((runId) =>
+      messages.some((m) => m.runId === runId && m.kind === 'user'),
+    );
+    if (!stale.length) return;
+    useChatStore.setState((s) => {
+      const next = { ...s.pendingUsers };
+      for (const id of stale) delete next[id];
+      return { pendingUsers: next };
+    });
+  }, [messages, pendingUsers]);
+  const runInFlight = !!latestRun && ACTIVE.has(latestRun.status);
+  const latestTimeline = latestRunId ? timelines[latestRunId] ?? [] : [];
+  const hasVisibleOutput = useMemo(() => runHasVisibleOutput(latestTimeline), [latestTimeline]);
+  // 最新 run 的全部审批：pending 渲染交互卡，已决议转完成态行留在流内。
+  const latestRunAlert = latestRunId ? runAlerts[latestRunId] : undefined;
+
+  // 首响超时：活动 run 在 60s 内无任何可见输出（推理/正文/工具）则自动中断。
+  useEffect(() => {
+    if (!runInFlight || !latestRunId || hasVisibleOutput || stoppingRunId === latestRunId) {
+      return;
+    }
+    const runId = latestRunId;
+    const timer = window.setTimeout(() => {
+      const runsStore = useRunsStore.getState();
+      const run = runsStore.runs[runId];
+      if (!run || !ACTIVE.has(run.status)) return;
+      if (runHasVisibleOutput(runsStore.timelines[runId] ?? [])) return;
+      void stopActiveRun(runId, 'reply_timeout');
+    }, REPLY_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [runInFlight, latestRunId, hasVisibleOutput, stoppingRunId, stopActiveRun]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [messages.length, liveStream.reasoning.length, liveStream.answerDraft.length, runApprovals.length]);
+    const syncFollow = () => {
+      followStreamRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+    };
+    syncFollow();
+    el.addEventListener('scroll', syncFollow, { passive: true });
+    return () => el.removeEventListener('scroll', syncFollow);
+  }, [conversationId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !followStreamRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [transcriptSegments.length, liveStream.reasoning, liveStream.answerDraft, runApprovals.length]);
 
   // 自动续发：最新 run「进入」succeeded 且队列非空时出队首条开新轮。
   // 只在状态边沿触发一次：drain 失败后 sending 复位也不会原地重试风暴；
@@ -248,38 +364,55 @@ function ConversationPane() {
           </span>
         </div>
         {latestRun && (
-          <span className={`text-caption font-medium ${runStatusColor(latestRun.status)}`}>
-            {runStatusText(latestRun.status)}
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            {runInFlight && (
+              <button
+                type="button"
+                onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
+                disabled={!latestRunId || stoppingRunId === latestRunId}
+                className="flex items-center gap-1 rounded-button border border-border-strong px-2 py-1 text-caption font-medium text-text-secondary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Square className="h-3.5 w-3.5" />
+                {stoppingRunId === latestRunId ? '停止中…' : '停止'}
+              </button>
+            )}
+            <span className={`text-caption font-medium ${runStatusColor(latestRun.status)}`}>
+              {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
+            </span>
+          </div>
         )}
       </div>
 
       {/* 消息流 */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overscroll-contain px-comfortable py-base space-y-3 min-h-0"
+        className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-6 py-base min-h-0"
       >
-        {messages.length === 0 && (
-          <div className="text-center text-caption text-text-tertiary py-12">
+        {messages.length === 0 && transcriptSegments.length === 0 && (
+          <div className="chat-thread text-center text-caption text-text-tertiary py-12">
             输入第一条消息，为该 Agent 创建任务并开始运行
           </div>
         )}
-        {renderTranscript(messages, stoppedRuns, (key) => void forkConversation(key))}
-        {awaitingReply && (
-          <AssistantTurn
-            reasoning={liveStream.reasoning}
-            text={liveStream.answerDraft}
-            streaming
-            reasoningOnly={!liveStream.answerDraft && Boolean(liveStream.reasoning)}
+        <div className="chat-thread space-y-3 pb-2">
+          <TranscriptView
+            segments={transcriptSegments}
+            stoppedRuns={stoppedRuns}
+            onFork={(key) => void forkConversation(key)}
           />
+        </div>
+        {latestRunAlert && (
+          <div className="chat-thread py-0.5 text-center text-caption text-status-error">
+            ✕ {latestRunAlert.message}
+          </div>
         )}
-        {runApprovals.map((a) => (
-          <ApprovalCard key={a.id} approval={a} />
-        ))}
       </div>
 
-      {/* 输入框 */}
-      <div className="shrink-0 border-t border-border-subtle p-comfortable">
+      {/* 底部固定：计划 / 目标 + 输入 */}
+      <div className="shrink-0 border-t border-border-subtle bg-surface-base/95 backdrop-blur-sm">
+        <div className="chat-thread px-4 sm:px-6 pt-2">
+          <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
+        </div>
+        <div className="chat-thread px-4 sm:px-6 pb-comfortable">
         {/* 待发送队列：运行中入队的消息，本轮成功后自动续发；终态非成功时可手动继续 */}
         {queue.length > 0 && (
           <div className="mb-2 space-y-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-2">
@@ -343,94 +476,8 @@ function ConversationPane() {
             <span className="text-[11px] tabular-nums text-text-tertiary">{usageText}</span>
           </div>
         )}
+        </div>
       </div>
-    </div>
-  );
-}
-
-function renderTranscript(
-  messages: ChatMessage[],
-  stoppedRuns: ReadonlySet<string>,
-  onFork: (key: string) => void,
-): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const segments = groupActivity(messages);
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
-    if (seg.kind === 'activity') {
-      nodes.push(<ActivityGroup key={seg.items[0].key} items={seg.items} stoppedRuns={stoppedRuns} />);
-      continue;
-    }
-    const msg = seg.item;
-    if (msg.kind === 'user') {
-      nodes.push(<UserBubble key={msg.key} msg={msg} />);
-      continue;
-    }
-    if (msg.kind === 'thinking') {
-      const lookahead = segments[i + 1];
-      const next = lookahead?.kind === 'single' ? lookahead.item : undefined;
-      if (next?.kind === 'assistant' && next.runId === msg.runId) {
-        nodes.push(
-          <AssistantTurn
-            key={msg.runId}
-            reasoning={msg.text}
-            text={next.text}
-            at={next.at}
-            reasoningOnly={!next.text && Boolean(msg.text)}
-            // 分叉锚定随轮落定的 assistant 正文（合并分支用 next 的 key）；
-            // reasoningOnly 无正文的不给入口。
-            forkKey={next.text ? next.key : undefined}
-            onFork={next.text ? onFork : undefined}
-          />,
-        );
-        i += 1;
-        continue;
-      }
-      nodes.push(
-        <AssistantTurn
-          key={msg.key}
-          reasoning={msg.text}
-          reasoningOnly
-        />,
-      );
-      continue;
-    }
-    if (msg.kind === 'assistant') {
-      nodes.push(<AssistantTurn key={msg.key} text={msg.text} at={msg.at} forkKey={msg.key} onFork={onFork} />);
-      continue;
-    }
-    if (msg.kind === 'plan') {
-      nodes.push(<PlanCard key={msg.key} msg={msg} />);
-      continue;
-    }
-    nodes.push(<MetaLine key={msg.key} msg={msg} />);
-  }
-  return nodes;
-}
-
-function UserBubble({ msg }: { msg: ChatMessage }) {
-  return (
-    <div className="group flex justify-end py-1">
-      <div className="max-w-[min(525px,82%)] rounded-[22px] bg-[hsl(var(--color-brand-muted))] px-4 py-2.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
-        {msg.text}
-        <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
-      </div>
-    </div>
-  );
-}
-
-function MetaLine({ msg }: { msg: ChatMessage }) {
-  return (
-    <div className="py-0.5">
-      <div className={`text-center text-caption ${msg.kind === 'error' ? 'text-status-error' : 'text-text-tertiary'}`}>
-        {msg.kind === 'error' ? '✕ ' : ''}{msg.text}
-        <span className="ml-1 tabular-nums">{formatTime(msg.at)}</span>
-      </div>
-      {msg.detail && (
-        <pre className="mx-auto mt-1 max-h-48 w-full max-w-2xl overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-base px-3 py-2 text-left font-mono text-[11px] leading-4 text-text-secondary">
-          {msg.detail}
-        </pre>
-      )}
     </div>
   );
 }

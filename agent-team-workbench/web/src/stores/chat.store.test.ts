@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
+import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, hideLiveRunDrafts, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { useTasksStore } from './tasks.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -384,6 +384,42 @@ describe('buildMessages 会话元信息行', () => {
     };
     expect(buildMessages(['run_1'], timelines)).toHaveLength(0);
   });
+
+  it('run.recovery_started/failed 渲染重连系统/错误行', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.recovery_started', {}),
+        entry('run_1', 2, 'run.recovery_failed', {}),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['system', '正在重连…'],
+      ['error', '重连失败'],
+    ]);
+  });
+});
+
+describe('hideLiveRunDrafts', () => {
+  it('活跃 run 仅隐藏 tail 草稿，保留已定稿 assistant/thinking', () => {
+    const messages: ChatMessage[] = [
+      { key: 'u1', runId: 'run_a', kind: 'user', text: '你好', at: '' },
+      { key: 'run_a-thinking-tail', runId: 'run_a', kind: 'thinking', text: '想', at: '' },
+      { key: 'run_a-answer-tail', runId: 'run_a', kind: 'assistant', text: '草稿', at: '' },
+      { key: 'a-done', runId: 'run_a', kind: 'assistant', text: '已定稿', at: '' },
+      { key: 'think-done', runId: 'run_a', kind: 'thinking', text: '想完了', at: '' },
+      { key: 'run_b-thinking-tail', runId: 'run_b', kind: 'thinking', text: '旧轮', at: '' },
+      { key: 'a1', runId: 'run_b', kind: 'assistant', text: '已定稿', at: '' },
+    ];
+    expect(hideLiveRunDrafts(messages, 'run_a', true).map((m) => m.key)).toEqual([
+      'u1',
+      'a-done',
+      'think-done',
+      'run_b-thinking-tail',
+      'a1',
+    ]);
+    expect(hideLiveRunDrafts(messages, 'run_a', false)).toEqual(messages);
+  });
 });
 
 describe('aggregateRunStream', () => {
@@ -393,6 +429,15 @@ describe('aggregateRunStream', () => {
       entry('run_1', 2, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '收' } } }),
     ];
     expect(aggregateRunStream(entries)).toEqual({ reasoning: '想', answerDraft: '收' });
+  });
+
+  it('message.completed 之后仅聚合下一段 delta', () => {
+    const entries = [
+      entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第一段' } } }),
+      entry('run_1', 2, 'message.completed', { role: 'assistant', text: '第一段' }, 'assistant', '第一段'),
+      entry('run_1', 3, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第二段' } } }),
+    ];
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '第二段' });
   });
 
   it('extractDeltaChunk 解析 raw.chunk', () => {

@@ -1,5 +1,5 @@
+import { ChevronDown, ShieldAlert } from 'lucide-react';
 import { useState } from 'react';
-import { ShieldAlert } from 'lucide-react';
 import { ApiError } from '../../api/client';
 import { resolveApproval } from '../../api/endpoints';
 import type { ApprovalRequest } from '../../api/types';
@@ -26,9 +26,9 @@ export interface AllowChoice {
 /** allowChoices 渲染顺序：允许（本次）→ 本会话总是允许 → 工作区总是允许（警示）。 */
 export function allowChoices(): AllowChoice[] {
   return [
-    { scope: 'once', label: '允许', danger: false, toast: '已允许' },
+    { scope: 'once', label: '允许一次', danger: false, toast: '已允许' },
     { scope: 'thread', label: '本会话总是允许', danger: false, toast: '已允许，本会话同类请求将自动批准' },
-    { scope: 'workspace', label: '总是允许（整个工作区）', danger: true, toast: '已允许，工作区内同类请求将自动批准' },
+    { scope: 'workspace', label: '整个工作区总是允许', danger: true, toast: '已允许，工作区内同类请求将自动批准' },
   ];
 }
 
@@ -41,6 +41,48 @@ export function cardAllowChoices(kind: string): AllowChoice[] {
   const choices = allowChoices();
   if (GRANTABLE_KINDS.has(kind)) return choices;
   return choices.filter((c) => c.scope === 'once');
+}
+
+const KIND_LABEL: Record<string, string> = {
+  command: '终端命令',
+  file_change: '文件修改',
+  permissions: '权限变更',
+  tool: '工具调用',
+  question: '确认问题',
+};
+
+const RISK_LABEL: Record<string, string> = {
+  low: '低风险',
+  medium: '中风险',
+  high: '高风险',
+};
+
+/** 审批卡主标题（按 kind 人话化）。 */
+export function approvalHeadline(kind: string): string {
+  switch (kind) {
+    case 'command':
+      return '允许执行此命令？';
+    case 'file_change':
+      return '允许修改文件？';
+    case 'permissions':
+      return '允许变更权限？';
+    default:
+      return '需要你的批准';
+  }
+}
+
+/** 从 summary 提取可展示的命令/摘要正文。 */
+export function approvalDetailText(summary: string): string {
+  const trimmed = summary.trim();
+  const prefixes = [
+    /^Codex 请求执行命令:\s*/i,
+    /^请求执行命令:\s*/i,
+    /^Allow .* to run this command:\s*/i,
+  ];
+  for (const re of prefixes) {
+    if (re.test(trimmed)) return trimmed.replace(re, '').trim();
+  }
+  return trimmed;
 }
 
 /** 已决议审批的消息流完成态行（保留可见）；pending 无行，返回 null 走交互卡。 */
@@ -74,8 +116,16 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
 function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const fetchApprovals = useRunsStore((s) => s.fetchApprovals);
   const [rejecting, setRejecting] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const choices = cardAllowChoices(approval.kind);
+  const onceChoice = choices.find((c) => c.scope === 'once')!;
+  const memoryChoices = choices.filter((c) => c.scope !== 'once');
+  const detail = approvalDetailText(approval.summary);
+  const kindLabel = KIND_LABEL[approval.kind] ?? approval.kind;
+  const riskLabel = RISK_LABEL[approval.risk] ?? approval.risk;
 
   const decide = async (
     decision: 'approved' | 'rejected',
@@ -90,7 +140,6 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
       await fetchApprovals(approval.run_id);
       toast.success(successToast ?? (decision === 'approved' ? '已允许' : '已拒绝'));
     } catch (err) {
-      // 失败保持卡片原状（含已输入的理由），可重试。
       toast.error(err instanceof ApiError ? err.message : '操作失败');
     } finally {
       setBusy(false);
@@ -98,14 +147,23 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
   };
 
   return (
-    <div className="rounded-lg border border-status-warning/30 bg-status-warning/5 p-snug">
-      <div className="flex items-center gap-1.5 text-body font-medium text-text-primary">
-        <ShieldAlert className="w-4 h-4 text-status-warning" />
-        审批请求 · {approval.kind} · {approval.risk}
+    <div className="chat-approval-card" data-codex-approval-surface>
+      <div className="chat-approval-head">
+        <ShieldAlert className="h-4 w-4 shrink-0 text-status-warning" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-body font-semibold text-text-primary">{approvalHeadline(approval.kind)}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <span className="chat-approval-badge">{kindLabel}</span>
+            <span className="chat-approval-badge chat-approval-badge-risk">{riskLabel}</span>
+          </div>
+        </div>
       </div>
-      <p className="text-caption text-text-secondary mt-1">{approval.summary}</p>
+
+      <pre className="chat-approval-detail">{detail}</pre>
+
       {rejecting ? (
-        <div className="mt-2">
+        <div className="chat-approval-reject">
+          <label className="text-caption font-medium text-text-secondary">拒绝理由（可选）</label>
           <input
             autoFocus
             value={reason}
@@ -117,52 +175,82 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
               }
               if (e.key === 'Escape') setRejecting(false);
             }}
-            placeholder="拒绝原因（可选）"
-            className="w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30"
+            placeholder="说明拒绝原因…"
+            className="w-full rounded-lg border border-border-strong bg-surface-base px-3 py-2 text-body outline-none focus:ring-2 focus:ring-brand-primary/30"
           />
-          <div className="mt-2 flex gap-2">
+          <div className="chat-approval-actions">
             <button
+              type="button"
               onClick={() => void decide('rejected', reason.trim())}
               disabled={busy}
-              className="text-caption rounded-button px-2 py-1 border border-status-error/40 text-status-error disabled:opacity-50"
+              className="chat-approval-btn chat-approval-btn-danger"
             >
-              {busy ? '提交中' : '确认拒绝'}
+              {busy ? '提交中…' : '确认拒绝'}
             </button>
             <button
+              type="button"
               onClick={() => setRejecting(false)}
               disabled={busy}
-              className="text-caption rounded-button px-2 py-1 bg-transparent border border-border-strong text-text-secondary hover:bg-surface-base transition-colors disabled:opacity-50"
+              className="chat-approval-btn chat-approval-btn-ghost"
             >
               取消
             </button>
           </div>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-2 mt-2">
-          {cardAllowChoices(approval.kind).map((choice) => (
+        <>
+          <div className="chat-approval-actions chat-approval-actions-primary">
             <button
-              key={choice.scope}
-              onClick={() => void decide('approved', '', choice.scope, choice.toast)}
+              type="button"
+              onClick={() => void decide('approved', '', onceChoice.scope, onceChoice.toast)}
               disabled={busy}
-              className={
-                choice.scope === 'once'
-                  ? 'text-caption rounded-button px-2 py-1 bg-status-success text-white disabled:opacity-50'
-                  : choice.danger
-                    ? 'text-caption rounded-button px-2 py-1 border border-status-warning/60 text-status-warning disabled:opacity-50'
-                    : 'text-caption rounded-button px-2 py-1 border border-border-strong text-text-secondary hover:bg-surface-base transition-colors disabled:opacity-50'
-              }
+              className="chat-approval-btn chat-approval-btn-primary"
             >
-              {busy ? '处理中' : choice.label}
+              {busy ? '处理中…' : onceChoice.label}
             </button>
-          ))}
-          <button
-            onClick={() => setRejecting(true)}
-            disabled={busy}
-            className="text-caption rounded-button px-2 py-1 border border-status-error/40 text-status-error disabled:opacity-50"
-          >
-            拒绝
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setRejecting(true)}
+              disabled={busy}
+              className="chat-approval-btn chat-approval-btn-danger-outline"
+            >
+              拒绝
+            </button>
+          </div>
+
+          {memoryChoices.length > 0 && (
+            <div className="chat-approval-memory">
+              <button
+                type="button"
+                className="chat-approval-memory-toggle"
+                onClick={() => setShowMore((v) => !v)}
+                aria-expanded={showMore}
+              >
+                <span>记住选择，不再询问</span>
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+              </button>
+              {showMore && (
+                <div className="chat-approval-memory-options">
+                  {memoryChoices.map((choice) => (
+                    <button
+                      key={choice.scope}
+                      type="button"
+                      onClick={() => void decide('approved', '', choice.scope, choice.toast)}
+                      disabled={busy}
+                      className={
+                        choice.danger
+                          ? 'chat-approval-btn chat-approval-btn-warning-outline w-full'
+                          : 'chat-approval-btn chat-approval-btn-ghost w-full'
+                      }
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

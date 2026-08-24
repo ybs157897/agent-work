@@ -1,11 +1,15 @@
 import { create } from 'zustand';
+import { ApiError } from '../api/client';
 import {
   createRun,
   createWorkItem,
+  interruptRun,
   listWorkItemRuns,
   listWorkItems,
 } from '../api/endpoints';
 import type { ExecutionRun, WorkItem } from '../api/types';
+import { chatErrorMessage, logChatError, type ChatErrorCode } from '../utils/chat-errors';
+import { formatRunFailureMessage } from '../utils/format-run-failure';
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { createRequestGuard } from './request-guard';
 import { useTasksStore } from './tasks.store';
@@ -46,6 +50,10 @@ export interface ChatMessage {
   exitCode?: number;
   /** tool.progress 流式输出的累计文本（运行中实时展示；completed 后被 detail 取代）。 */
   liveOutput?: string;
+  /** message.completed 的 item_type（Codex：plan | agentMessage 等）。 */
+  itemType?: string;
+  /** 会话运维元信息（session.decision / compacted）：不在对话正文展示。 */
+  sessionMeta?: boolean;
 }
 
 export interface RunStreamParts {
@@ -145,11 +153,38 @@ export function parsePlanSteps(data?: Record<string, unknown>): PlanStepView[] |
   return steps.length ? steps : null;
 }
 
-/** 聚合单个 run 时间线中的推理与回复草稿（用于实时展示）。 */
+/**
+ * 活跃 run 的流式 tail 由 appendLiveTail 渲染；仅隐藏 buildMessages 尾缓冲，避免与 live tail 双份。
+ * 已定稿 thinking / assistant 保留时间线位置（多阶段 run：工具段之间的正文不再消失）。
+ */
+export function hideLiveRunDrafts(
+  messages: ChatMessage[],
+  runId: string | undefined,
+  live: boolean,
+): ChatMessage[] {
+  if (!live || !runId) return messages;
+  return messages.filter((m) => {
+    if (m.runId !== runId) return true;
+    if (m.key.endsWith('-thinking-tail') || m.key.endsWith('-answer-tail')) return false;
+    return true;
+  });
+}
+
+/** run 是否仍在执行（含 waiting_approval / reconnecting）。 */
+export function isRunLive(status: string | undefined): boolean {
+  return status !== undefined && ACTIVE.has(status);
+}
+
+/** 聚合单个 run 时间线中的推理与回复草稿（message.completed 之后重置，仅保留当前段流式内容）。 */
 export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
   let reasoning = '';
   let answerDraft = '';
   for (const e of entries) {
+    if (e.type === 'message.completed') {
+      reasoning = '';
+      answerDraft = '';
+      continue;
+    }
     if (e.type !== 'message.delta') continue;
     const chunk = extractDeltaChunk(e.data);
     if (!chunk?.text) continue;
@@ -214,12 +249,12 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           const tier = typeof e.data?.tier === 'string' ? e.data.tier : '';
           const reason = typeof e.data?.reason === 'string' ? e.data.reason : '';
           const text = sessionLine({ tier, reason });
-          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at });
+          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at, sessionMeta: true });
           break;
         }
         case 'session.compacted': {
           const text = sessionLine({ tier: 'compacted' });
-          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at });
+          if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at, sessionMeta: true });
           break;
         }
         case 'message.delta': {
@@ -248,7 +283,8 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           }
           answerBuf = '';
           if (e.text) {
-            out.push({ key: e.event_id, runId, kind: 'assistant', text: e.text, at: e.occurred_at });
+            const itemType = typeof e.data?.item_type === 'string' ? e.data.item_type : undefined;
+            out.push({ key: e.event_id, runId, kind: 'assistant', text: e.text, at: e.occurred_at, itemType });
           }
           break;
         case 'tool.started': {
@@ -360,11 +396,35 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'run.failed': {
-          const msg = typeof e.data?.message === 'string' ? e.data.message : '运行失败';
-          const code = typeof e.data?.code === 'string' ? e.data.code : '';
-          out.push({ key: e.event_id, runId, kind: 'error', text: `${code ? code + ': ' : ''}${msg}`, at: e.occurred_at });
+          const msg = typeof e.data?.message === 'string' ? e.data.message : undefined;
+          const code = typeof e.data?.code === 'string' ? e.data.code : undefined;
+          out.push({
+            key: e.event_id,
+            runId,
+            kind: 'error',
+            text: formatRunFailureMessage(code, msg),
+            at: e.occurred_at,
+          });
           break;
         }
+        case 'run.recovery_started':
+          out.push({
+            key: e.event_id,
+            runId,
+            kind: 'system',
+            text: '正在重连…',
+            at: e.occurred_at,
+          });
+          break;
+        case 'run.recovery_failed':
+          out.push({
+            key: e.event_id,
+            runId,
+            kind: 'error',
+            text: '重连失败',
+            at: e.occurred_at,
+          });
+          break;
       }
     }
     if (reasoningBuf) {
@@ -450,6 +510,13 @@ export function currentRunSnapshot(
   return local ? (snapshots[local.id] ?? local) : undefined;
 }
 
+/** 对话页 run 级提示（超时/手动停止等），key 为 runId。 */
+export interface RunAlert {
+  code: ChatErrorCode;
+  message: string;
+  at: string;
+}
+
 interface ChatStore {
   agentId: string | null;
   conversationId: string | null;
@@ -464,6 +531,12 @@ interface ChatStore {
    * 每条携 clientKey（入队时生成）：drain 重试时作 run 的实体级幂等键，防重复建轮。
    */
   queue: QueuedMessage[];
+  /** 活动 run 停止请求进行中（防连点）。 */
+  stoppingRunId: string | null;
+  /** 前端触发的 run 级错误提示（超时/停止），按 runId 索引。 */
+  runAlerts: Record<string, RunAlert>;
+  /** createRun 已返回但 timeline 尚无 run.created 时的用户文案（runId → instruction）。 */
+  pendingUsers: Record<string, string>;
 
   selectAgent: (id: string | null) => void;
   openConversation: (workItemId: string | null) => void;
@@ -474,6 +547,8 @@ interface ChatStore {
   removeQueued: (index: number) => void;
   /** 出队首条开新轮（自动续发与手动「继续发送」共用；复用 sending 闸防重）。 */
   drainQueue: () => Promise<void>;
+  /** 中断活动 run（对话页「停止」/首响超时）。 */
+  stopActiveRun: (runId: string, code: Exclude<ChatErrorCode, 'stop_failed'>) => Promise<void>;
   /** 从指定消息分叉新会话：上下文包写入新 work item 的 description，首发时注入。 */
   forkConversation: (atMessageKey: string) => Promise<void>;
 }
@@ -496,6 +571,9 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       input: { instruction },
       ...(clientKey ? { client_key: clientKey } : {}),
     });
+    set((s) => ({
+      pendingUsers: { ...s.pendingUsers, [resp.run_id]: text.trim() },
+    }));
     // 先刷新 run 列表再订阅，避免时间线已加载但 runIds 仍为空导致消息不渲染。
     await get().refreshRuns();
     useRunsStore.getState().watchRun(resp.run_id);
@@ -511,14 +589,17 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     runs: [],
     sending: false,
     queue: [],
+    stoppingRunId: null,
+    runAlerts: {},
+    pendingUsers: {},
 
     selectAgent: (id) => {
-      set({ agentId: id, conversationId: null, runs: [], queue: [] });
+      set({ agentId: id, conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
       void get().refreshConversations();
     },
 
     openConversation: (workItemId) => {
-      set({ conversationId: workItemId, runs: [], queue: [] });
+      set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
       void get().refreshRuns();
     },
 
@@ -615,6 +696,36 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         toast.error(err instanceof Error ? err.message : '发送失败');
       } finally {
         set({ sending: false });
+      }
+    },
+
+    stopActiveRun: async (runId, code) => {
+      if (get().stoppingRunId === runId) return;
+      logChatError(code, { runId, conversationId: get().conversationId });
+      set({ stoppingRunId: runId });
+      const message = chatErrorMessage(code);
+      try {
+        await interruptRun(runId);
+        set((s) => ({
+          runAlerts: {
+            ...s.runAlerts,
+            [runId]: { code, message, at: new Date().toISOString() },
+          },
+        }));
+        if (code === 'user_stopped') toast.info(message);
+        else toast.error(message);
+        await useRunsStore.getState().fetchRun(runId);
+        await get().refreshConversations();
+      } catch (err) {
+        logChatError('stop_failed', {
+          runId,
+          conversationId: get().conversationId,
+          cause: err instanceof Error ? err.message : String(err),
+          apiCode: err instanceof ApiError ? err.code : undefined,
+        });
+        toast.error(chatErrorMessage('stop_failed'));
+      } finally {
+        set((s) => (s.stoppingRunId === runId ? { stoppingRunId: null } : {}));
       }
     },
 

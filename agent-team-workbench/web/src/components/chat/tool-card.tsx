@@ -1,6 +1,9 @@
 import { ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
 import { createElement, useState, type ReactNode } from 'react';
 import { toolDuration, type ChatMessage } from '../../stores/chat.store';
+import { activityWorkedFor } from '../../utils/activity-worked-for';
+import type { ReasoningSlot } from '../../utils/transcript-layout';
+import { ReasoningProcessPanel } from './reasoning-activity-row';
 import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
 import { DisclosureRow } from './blocks/DisclosureRow';
 import { StateDot } from './blocks/StateDot';
@@ -85,28 +88,58 @@ export function groupWorkedFor(items: ChatMessage[]): string | null {
  */
 export function ActivityGroup({
   items,
+  reasoning,
+  assistantAt,
   stoppedRuns,
+  defaultCollapsed = false,
+  suppressDiff = false,
 }: {
   items: ChatMessage[];
+  reasoning?: ReasoningSlot;
+  /** assistant 落定时间，用于组级 worked-for 上界 */
+  assistantAt?: string;
   stoppedRuns?: ReadonlySet<string>;
+  /** run 终态且无 running 工具时默认折叠 */
+  defaultCollapsed?: boolean;
+  /** turn 级 diff 汇总存在时隐藏工具行内 diff */
+  suppressDiff?: boolean;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const running = items.some((m) => m.toolStatus === 'running' && !stoppedRuns?.has(m.runId));
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const running =
+    Boolean(reasoning?.streaming) ||
+    items.some((m) => m.toolStatus === 'running' && !stoppedRuns?.has(m.runId));
   const open = !collapsed || running;
-  const workedFor = groupWorkedFor(items);
+  const workedFor = activityWorkedFor(items, reasoning, assistantAt);
+
+  const headLabel = running
+    ? '工作中…'
+    : workedFor
+      ? `已工作 ${workedFor}`
+      : '已完成';
+
   return (
     <div className="chat-activity">
-      <button className="chat-activity-head" onClick={() => setCollapsed((v) => !v)}>
+      <button type="button" className="chat-activity-head" onClick={() => setCollapsed((v) => !v)} aria-expanded={open}>
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
-        <span className="font-medium">活动</span>
-        <span className="text-text-tertiary">{items.length} 次调用</span>
-        {running && <span className="text-status-info">进行中</span>}
-        {workedFor && <span className="ml-auto tabular-nums text-text-tertiary">{workedFor}</span>}
+        <span className="min-w-0 flex-1 truncate font-medium text-text-secondary">{headLabel}</span>
       </button>
       {open && (
         <div className="chat-activity-body">
+          {reasoning && (
+            <ReasoningProcessPanel
+              key={reasoning.key}
+              panelKey={reasoning.key}
+              text={reasoning.text}
+              streaming={reasoning.streaming}
+            />
+          )}
           {items.map((m) => (
-            <ToolRow key={m.key} msg={m} stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'} />
+            <ToolRow
+              key={m.key}
+              msg={m}
+              stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
+              suppressDiff={suppressDiff}
+            />
           ))}
         </div>
       )}
@@ -115,11 +148,18 @@ export function ActivityGroup({
 }
 
 /** 展开体卡片分派：按工具族 + 输出形态选终端/diff/read/search 卡，均不适用时落 IN/OUT 通用卡。 */
-function ExpandedBody({ model, state }: { model: ToolRowModel; state: ToolRowState }) {
+function ExpandedBody({
+  model,
+  state,
+  suppressDiff = false,
+}: {
+  model: ToolRowModel;
+  state: ToolRowState;
+  suppressDiff?: boolean;
+}) {
   const output = model.output;
   switch (model.family) {
     case 'bash':
-      // 终端卡恒定存在（running 时只画 prompt 行）；命令取摘要，输出含 ANSI 上色。
       return (
         <TerminalBlock
           className={css.cardBody}
@@ -131,6 +171,7 @@ function ExpandedBody({ model, state }: { model: ToolRowModel; state: ToolRowSta
       );
     case 'write':
     case 'edit': {
+      if (suppressDiff) break;
       const detail = output !== null ? stripControlChars(output) : '';
       if (detail !== '' && looksLikeUnifiedDiff(detail)) {
         return (
@@ -237,7 +278,15 @@ function leadingFor(state: ToolRowState, icon: ReactNode): ReactNode {
  * 同效），展开体按族分派终端/diff/read/search/IN-OUT 卡。错误行折叠摘要直接是
  * 失败首行红字；中断 run 的挂起行按 stopped（琥珀点、无扫光）展示。
  */
-export function ToolRow({ msg, stopped = false }: { msg: ChatMessage; stopped?: boolean }) {
+export function ToolRow({
+  msg,
+  stopped = false,
+  suppressDiff = false,
+}: {
+  msg: ChatMessage;
+  stopped?: boolean;
+  suppressDiff?: boolean;
+}) {
   const model = toolRowModel(msg);
   const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
   const [expanded, setExpanded] = useState(false);
@@ -249,7 +298,8 @@ export function ToolRow({ msg, stopped = false }: { msg: ChatMessage; stopped?: 
   const hasIoBody = (!singleFile && model.body !== null) || model.output !== null;
   const hasCard =
     model.family === 'bash' ||
-    ((model.family === 'write' || model.family === 'edit') &&
+    (!suppressDiff &&
+      (model.family === 'write' || model.family === 'edit') &&
       model.output !== null &&
       looksLikeUnifiedDiff(stripControlChars(model.output))) ||
     (model.family === 'read' && state !== 'running' && model.output !== null) ||
@@ -288,7 +338,7 @@ export function ToolRow({ msg, stopped = false }: { msg: ChatMessage; stopped?: 
         }
       >
         <div className={css.bodyWrap}>
-          <ExpandedBody model={model} state={state} />
+          <ExpandedBody model={model} state={state} suppressDiff={suppressDiff} />
         </div>
       </DisclosureRow>
     </div>

@@ -473,6 +473,59 @@
   @apply text-brand-primary no-underline hover:underline;
 }
 
+/* Codex 对齐：居中限宽（加宽以利用大屏空间） */
+.chat-thread {
+  --thread-content-max-width: min(56rem, 100%);
+  width: 100%;
+  max-width: var(--thread-content-max-width);
+  margin-inline: auto;
+}
+
+.chat-turn {
+  @apply flex w-full flex-col gap-3;
+}
+
+/* thinking-placeholder shimmer（正文/计划之后的等待态） */
+.chat-thinking-sweep {
+  position: relative;
+}
+
+.chat-thinking-sweep-inner {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, hsl(var(--color-text-tertiary)) 40%, transparent) 50%,
+    transparent 100%
+  );
+  animation: chat-reasoning-sweep 2.6s ease-out infinite;
+}
+
+.chat-thinking-shimmer {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--color-text-tertiary)) 0%,
+    color-mix(in srgb, hsl(var(--color-text-secondary)) 80%, transparent) 50%,
+    hsl(var(--color-text-tertiary)) 100%
+  );
+  background-size: 200% 100%;
+  animation: chat-thinking-shimmer 2s ease-in-out infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes chat-thinking-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
 .chat-reasoning-toggle {
   position: relative;
 }
@@ -587,7 +640,24 @@
 }
 
 .chat-activity-body {
-  @apply space-y-0.5 border-t border-border-subtle p-1;
+  @apply space-y-2 border-t border-border-subtle p-2;
+}
+
+/* ---- Chat 思考过程面板（Codex reasoning 灰底卡） ---- */
+.chat-reasoning-panel {
+  @apply relative overflow-hidden rounded-lg border border-border-subtle bg-surface-sunken/80;
+}
+
+.chat-reasoning-panel-head {
+  @apply flex w-full items-center gap-2 px-3 py-2 text-left text-caption transition-colors hover:bg-surface-sunken;
+}
+
+.chat-reasoning-panel-body {
+  @apply relative h-52 overflow-y-auto overscroll-y-contain border-t border-border-subtle px-3 py-2.5;
+}
+
+.chat-reasoning-panel-body[hidden] {
+  display: none;
 }
 
 /* ---- Chat diff 卡（diff-card.tsx：行底色对接 status tokens，对齐 codex Q6） ---- */
@@ -666,6 +736,88 @@
   grid-column: 1 / -1;
 }
 
+/* ---- Chat 审批卡（approval-card.tsx，对齐 codex Q7） ---- */
+.chat-approval-card {
+  @apply overflow-hidden rounded-xl border border-status-warning/25 bg-surface-raised shadow-sm;
+  container-type: inline-size;
+  container-name: approval-card;
+}
+
+.chat-approval-head {
+  @apply flex items-start gap-2.5 border-b border-border-subtle/80 bg-status-warning/5 px-4 py-3;
+}
+
+.chat-approval-badge {
+  @apply inline-flex rounded-full border border-border-subtle bg-surface-base px-2 py-0.5 text-[11px] text-text-secondary;
+}
+
+.chat-approval-badge-risk {
+  @apply border-status-warning/30 bg-status-warning/10 text-status-warning;
+}
+
+.chat-approval-detail {
+  @apply mx-4 mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2 font-mono text-[12px] leading-5 text-text-primary;
+}
+
+.chat-approval-actions {
+  @apply flex flex-wrap items-center gap-2 px-4 py-3;
+}
+
+.chat-approval-actions-primary {
+  @apply border-t border-border-subtle/60 bg-surface-base/40;
+}
+
+.chat-approval-reject {
+  @apply space-y-2 border-t border-border-subtle/60 px-4 py-3;
+}
+
+.chat-approval-btn {
+  @apply inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 text-caption font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+.chat-approval-btn-primary {
+  @apply bg-status-success text-white hover:bg-status-success/90;
+}
+
+.chat-approval-btn-danger {
+  @apply bg-status-error text-white hover:bg-status-error/90;
+}
+
+.chat-approval-btn-danger-outline {
+  @apply border border-status-error/35 bg-surface-base text-status-error hover:bg-status-error/5;
+}
+
+.chat-approval-btn-warning-outline {
+  @apply border border-status-warning/40 bg-surface-base text-status-warning hover:bg-status-warning/5;
+}
+
+.chat-approval-btn-ghost {
+  @apply border border-border-strong bg-surface-base text-text-secondary hover:bg-surface-sunken;
+}
+
+.chat-approval-memory {
+  @apply border-t border-border-subtle/60 px-4 pb-3;
+}
+
+.chat-approval-memory-toggle {
+  @apply flex w-full items-center justify-between gap-2 py-2 text-left text-caption text-text-tertiary transition-colors hover:text-text-secondary;
+}
+
+.chat-approval-memory-options {
+  @apply space-y-1.5 pb-1;
+}
+
+@container approval-card (max-width: 28rem) {
+  .chat-approval-actions-primary {
+    @apply flex-col items-stretch;
+  }
+
+  .chat-approval-btn-primary,
+  .chat-approval-btn-danger-outline {
+    @apply w-full;
+  }
+}
+
 /* ---- Chat 计划复选清单卡（plan-card.tsx，对齐 codex Q10） ---- */
 .chat-plan {
   @apply rounded-lg border border-border-subtle bg-surface-raised/70 px-snug py-tight;
@@ -693,6 +845,27 @@
 
 .chat-plan-box-active {
   @apply border-status-info ring-1 ring-status-info/40;
+}
+
+/* 底部固定 dock：计划 / 目标（输入框上方） */
+.chat-bottom-dock {
+  @apply w-full;
+}
+
+.chat-dock-panel {
+  @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised/90 shadow-sm;
+}
+
+.chat-dock-head {
+  @apply flex w-full items-center gap-2 px-3 py-2 text-left text-caption text-text-secondary transition-colors hover:bg-surface-base/60;
+}
+
+.chat-dock-head-static {
+  @apply cursor-default hover:bg-transparent;
+}
+
+.chat-dock-body {
+  @apply max-h-40 overflow-y-auto border-t border-border-subtle px-3 py-2;
 }
 
 /* ---- Chat 代码块（code-block.tsx：github 主题的 token 色保留，容器外观交给组件 utilities） ---- */
