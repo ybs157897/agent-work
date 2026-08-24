@@ -41,17 +41,21 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 	setProcGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, err
 	}
 	pgid := processGroupID(cmd)
