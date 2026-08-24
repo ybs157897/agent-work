@@ -42,10 +42,12 @@ type AgentPolicy struct {
 const ApprovalPolicyManual = "manual"
 
 // ModelRef 模型选择；Ref 引用 models/ 注册表条目，非空字段再覆盖条目的 provider/model。
+// ReasoningEffort 为 Codex reasoning 等级（minimal|low|medium|high|xhigh）；空则 adapter 用 medium。
 type ModelRef struct {
-	Ref      string `json:"ref,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Ref             string `json:"ref,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // AgentProfile 持久角色配置（PM/Architect/UI/Developer/Reviewer），与 Runtime Session 解耦。

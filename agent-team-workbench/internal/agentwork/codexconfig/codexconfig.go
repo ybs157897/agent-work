@@ -22,6 +22,7 @@ func Apply(home string, spec orchestrator.ModelSpec) error {
 		Provider: spec.Provider, API: spec.API, Model: spec.Model,
 		BaseURL: spec.BaseURL, APIKeyEnv: spec.APIKeyEnv,
 		ContextWindow: spec.ContextWindow, MaxTokens: spec.MaxTokens,
+		ReasoningEffort: spec.ReasoningEffort,
 	})
 }
 
@@ -32,8 +33,19 @@ func ApplySnapshot(home string, snap runtime.ModelSnapshot) error {
 		Provider: snap.Provider, API: snap.API, Model: snap.Model,
 		BaseURL: snap.BaseURL, APIKeyEnv: snap.APIKeyEnv,
 		ContextWindow: snap.ContextWindow, MaxTokens: snap.MaxTokens,
+		ReasoningEffort: snap.ReasoningEffort,
 	}
 	return apply(home, spec)
+}
+
+// EffectiveReasoningEffort 归一化 Codex reasoning 等级；未知/空回退 medium。
+func EffectiveReasoningEffort(effort string) string {
+	switch strings.TrimSpace(strings.ToLower(effort)) {
+	case "minimal", "low", "medium", "high", "xhigh":
+		return strings.TrimSpace(strings.ToLower(effort))
+	default:
+		return "medium"
+	}
 }
 
 func apply(home string, spec orchestrator.ModelSpec) error {
@@ -50,8 +62,9 @@ func apply(home string, spec orchestrator.ModelSpec) error {
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
+	effort := EffectiveReasoningEffort(spec.ReasoningEffort)
 	if provider == "" || provider == "codex" || provider == "openai" {
-		content := fmt.Sprintf("model = %q\n", model)
+		content := fmt.Sprintf("model = %q\nmodel_reasoning_effort = %q\n", model, effort)
 		return os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o644)
 	}
 
@@ -76,13 +89,14 @@ func apply(home string, spec orchestrator.ModelSpec) error {
 	content := fmt.Sprintf(`model = %q
 model_provider = %q
 web_search = "disabled"
+model_reasoning_effort = %q
 
 [model_providers.%s]
 name = %q
 base_url = %q
 env_key = %q
 wire_api = "responses"
-`, model, providerKey, providerKey, name, baseURL, envKey)
+`, model, providerKey, effort, providerKey, name, baseURL, envKey)
 
 	return os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o644)
 }

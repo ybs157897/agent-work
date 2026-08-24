@@ -152,6 +152,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		done: make(chan error, 1),
 		// 模型注册表快照（orchestrator 写入 run.Input）：per-run 覆盖 thread/start.model。
 		model:           runtime.ModelSnapshotOf(ex.Run).Model,
+		reasoningEffort: codexconfig.EffectiveReasoningEffort(runtime.ModelSnapshotOf(ex.Run).ReasoningEffort),
 		systemPrompt:    runtime.SystemPromptOf(ex.Run),
 		policy:          policy,
 		resumeThreadID:  runtime.SessionIDFromRef(ex.Session.Ref, "codex"),
@@ -197,10 +198,11 @@ type execStream struct {
 	stdin io.WriteCloser
 	done  chan error // cmd.Wait 结果（单次）
 
-	model          string // 编排快照的 per-run 模型覆盖（空回退 cfg.Model；plan 模式可经 model/list 补齐）
-	systemPrompt   string
-	policy         runtime.PolicySnapshot
-	resumeThreadID string
+	model           string // 编排快照的 per-run 模型覆盖（空回退 cfg.Model；plan 模式可经 model/list 补齐）
+	reasoningEffort string
+	systemPrompt    string
+	policy          runtime.PolicySnapshot
+	resumeThreadID  string
 
 	mu                  sync.Mutex
 	nextID              int64
@@ -563,6 +565,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				turnParams := map[string]any{
 					"threadId": r.Thread.ID,
 					"input":    []map[string]any{{"type": "text", "text": s.ex.Instruction}},
+					"effort":   s.reasoningEffort,
 				}
 				if mode := codexCollaborationMode(s.policy, s.module.cfg, s.model, s.systemPrompt); mode != nil {
 					turnParams["collaborationMode"] = mode

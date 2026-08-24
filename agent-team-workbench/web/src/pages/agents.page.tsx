@@ -49,6 +49,21 @@ const ROLE_OPTIONS = [
 
 const ROLE_LABEL: Record<string, string> = Object.fromEntries(ROLE_OPTIONS.map((r) => [r.value, r.label]));
 
+const REASONING_EFFORT_OPTIONS = [
+  { value: 'minimal', label: '最低' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中（默认）' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '极高' },
+] as const;
+
+type ReasoningEffort = (typeof REASONING_EFFORT_OPTIONS)[number]['value'];
+
+function normalizeReasoningEffort(value?: string): ReasoningEffort {
+  const v = (value ?? 'medium').trim().toLowerCase();
+  return REASONING_EFFORT_OPTIONS.some((o) => o.value === v) ? (v as ReasoningEffort) : 'medium';
+}
+
 const DEFAULT_RUNTIME = 'dsh_local';
 const DEFAULT_DSH_MODEL_REF = 'deepseek-v4-flash';
 const DEFAULT_AGENT_PRESET = 'standard';
@@ -236,6 +251,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
   const [modelRef, setModelRef] = useState(agent.model_override?.ref ?? '');
   const [provider, setProvider] = useState(agent.model_override?.provider ?? '');
   const [model, setModel] = useState(agent.model_override?.model ?? '');
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(
+    normalizeReasoningEffort(agent.model_override?.reasoning_effort),
+  );
   const [preferred, setPreferred] = useState(agent.runtime_preference?.preferred ?? '');
   const [mode, setMode] = useState<'default' | 'plan'>(agent.runtime_preference?.mode ?? 'default');
   const [agentPreset, setAgentPreset] = useState(agent.runtime_preference?.agent_preset ?? DEFAULT_AGENT_PRESET);
@@ -259,6 +277,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
     setModelRef(agent.model_override?.ref ?? '');
     setProvider(agent.model_override?.provider ?? '');
     setModel(agent.model_override?.model ?? '');
+    setReasoningEffort(normalizeReasoningEffort(agent.model_override?.reasoning_effort));
     setPreferred(normalizePreferred(agent.runtime_preference?.preferred));
     setMode(agent.runtime_preference?.mode ?? 'default');
     setAgentPreset(agent.runtime_preference?.agent_preset ?? DEFAULT_AGENT_PRESET);
@@ -376,7 +395,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           mode,
           ...(dshRuntime ? { agent_preset: agentPreset } : {}),
         },
-        model_override: modelRef ? { ref: modelRef } : { provider, model },
+        model_override: modelRef
+          ? { ref: modelRef, reasoning_effort: codexRuntime ? reasoningEffort : undefined }
+          : { provider, model, reasoning_effort: codexRuntime ? reasoningEffort : undefined },
         policy,
         expected_version: agent.version,
       });
@@ -455,7 +476,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 ))}
               </select>
             </label>
-            <label className="xl:col-span-4">
+            <label className="xl:col-span-3">
               <span className={configLabelCls}>模型</span>
               <select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls}>
                 <option value="">自定义（手动填写）</option>
@@ -469,7 +490,24 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 ) : null}
               </select>
             </label>
-            <label className="xl:col-span-3">
+            {codexRuntime ? (
+              <label className="xl:col-span-2">
+                <span className={configLabelCls}>思考等级</span>
+                <select
+                  value={reasoningEffort}
+                  onChange={(e) => setReasoningEffort(e.target.value as ReasoningEffort)}
+                  className={configInputCls}
+                >
+                  {REASONING_EFFORT_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-caption text-text-tertiary">写入 Codex config.toml 与 turn/start.effort。</p>
+              </label>
+            ) : null}
+            <label className={codexRuntime ? 'xl:col-span-2' : 'xl:col-span-3'}>
               <span className={configLabelCls}>Runtime</span>
               <select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls}>
                 {realBindings.map((b) => (

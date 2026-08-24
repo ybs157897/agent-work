@@ -68,11 +68,13 @@ func BuildInput(instruction string, acceptanceCriteria []string, requirements ma
 			"permission_preset": agent.Policy.PermissionPreset,
 		}
 	}
-	if agent.ModelOverride.Ref != "" || agent.ModelOverride.Provider != "" || agent.ModelOverride.Model != "" {
+	if agent.ModelOverride.Ref != "" || agent.ModelOverride.Provider != "" || agent.ModelOverride.Model != "" ||
+		agent.ModelOverride.ReasoningEffort != "" {
 		input["model"] = map[string]string{
-			"ref":      agent.ModelOverride.Ref,
-			"provider": agent.ModelOverride.Provider,
-			"model":    agent.ModelOverride.Model,
+			"ref":              agent.ModelOverride.Ref,
+			"provider":         agent.ModelOverride.Provider,
+			"model":            agent.ModelOverride.Model,
+			"reasoning_effort": agent.ModelOverride.ReasoningEffort,
 		}
 	}
 	return input
@@ -150,16 +152,17 @@ func ConfigDigest(input map[string]any) string {
 // ModelSpec 是一次 Run 的有效模型快照（固化进 run.Input["model"]，adapter 各自映射原生参数）。
 // 词汇对齐 pi-ai provider profile：provider 路由 + api 线协议 + base_url/api_key_env + 模型目录参数。
 type ModelSpec struct {
-	Ref           string `json:"ref,omitempty"`
-	ProviderID    string `json:"provider_id,omitempty"`
-	ProviderLabel string `json:"provider_label,omitempty"`
-	Provider      string `json:"provider,omitempty"`
-	API           string `json:"api,omitempty"` // openai-completions | openai-responses | anthropic-messages
-	Model         string `json:"model,omitempty"`
-	BaseURL       string `json:"base_url,omitempty"`    // OpenAI 兼容端点（DSH cordis baseURL）
-	APIKeyEnv     string `json:"api_key_env,omitempty"` // 凭据环境变量名（引用，非密钥）
-	ContextWindow int    `json:"context_window,omitempty"`
-	MaxTokens     int    `json:"max_tokens,omitempty"`
+	Ref             string `json:"ref,omitempty"`
+	ProviderID      string `json:"provider_id,omitempty"`
+	ProviderLabel   string `json:"provider_label,omitempty"`
+	Provider        string `json:"provider,omitempty"`
+	API             string `json:"api,omitempty"` // openai-completions | openai-responses | anthropic-messages
+	Model           string `json:"model,omitempty"`
+	BaseURL         string `json:"base_url,omitempty"`    // OpenAI 兼容端点（DSH cordis baseURL）
+	APIKeyEnv       string `json:"api_key_env,omitempty"` // 凭据环境变量名（引用，非密钥）
+	ContextWindow   int    `json:"context_window,omitempty"`
+	MaxTokens       int    `json:"max_tokens,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ModelResolver 按 ref 查 models/ 注册表；未命中返回 false。由装配层注入（orchestrator 保持纯函数）。
@@ -186,6 +189,9 @@ func EffectiveModel(agent *domain.AgentProfile, binding *domain.RuntimeBinding, 
 	}
 	if agent.ModelOverride.Model != "" {
 		spec.Model = agent.ModelOverride.Model
+	}
+	if agent.ModelOverride.ReasoningEffort != "" {
+		spec.ReasoningEffort = agent.ModelOverride.ReasoningEffort
 	}
 	return spec
 }

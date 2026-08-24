@@ -8,16 +8,17 @@ import "github.com/ybs/agent-team-workbench/internal/domain"
 //   - kimi/claude-code：model 透传 CLI flag；凭据由 CLI 自身配置管理（继承进程环境）
 //   - codex-appserver：model 透传 thread/start.model
 type ModelSnapshot struct {
-	Ref           string
-	ProviderID    string
-	ProviderLabel string
-	Provider      string
-	API           string // 线协议：openai-completions | openai-responses | anthropic-messages
-	Model         string
-	BaseURL       string
-	APIKeyEnv     string
-	ContextWindow int
-	MaxTokens     int
+	Ref             string
+	ProviderID      string
+	ProviderLabel   string
+	Provider        string
+	API             string // 线协议：openai-completions | openai-responses | anthropic-messages
+	Model           string
+	BaseURL         string
+	APIKeyEnv       string
+	ContextWindow   int
+	MaxTokens       int
+	ReasoningEffort string
 }
 
 // ModelSnapshotOf 从 run.Input 读模型快照；无快照返回零值（adapter 回退自身默认配置）。
@@ -40,6 +41,7 @@ func ModelSnapshotOf(run *domain.ExecutionRun) ModelSnapshot {
 	snap.APIKeyEnv, _ = raw["api_key_env"].(string)
 	snap.ContextWindow = intOf(raw["context_window"])
 	snap.MaxTokens = intOf(raw["max_tokens"])
+	snap.ReasoningEffort, _ = raw["reasoning_effort"].(string)
 	return snap
 }
 

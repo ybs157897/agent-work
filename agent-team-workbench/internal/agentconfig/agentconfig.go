@@ -29,9 +29,10 @@ type FileConfig struct {
 		AgentPreset string   `yaml:"agent_preset,omitempty"`
 	} `yaml:"runtime,omitempty"`
 	Model struct {
-		Ref      string `yaml:"ref,omitempty"` // 引用 models/ 注册表条目
-		Provider string `yaml:"provider,omitempty"`
-		Model    string `yaml:"model,omitempty"`
+		Ref             string `yaml:"ref,omitempty"` // 引用 models/ 注册表条目
+		Provider        string `yaml:"provider,omitempty"`
+		Model           string `yaml:"model,omitempty"`
+		ReasoningEffort string `yaml:"reasoning_effort,omitempty"` // Codex：minimal|low|medium|high|xhigh
 	} `yaml:"model,omitempty"`
 	Permissions struct {
 		Tools          []string `yaml:"tools,omitempty"`
@@ -44,6 +45,7 @@ type FileConfig struct {
 
 var validApprovalPolicy = map[string]bool{"": true, "auto": true, "approve_high_risk": true, "manual": true}
 var validSandbox = map[string]bool{"": true, "read-only": true, "workspace-write": true, "danger-full-access": true}
+var validReasoningEffort = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
 
 // ToProfile 把文件配置映射到领域对象的可配置字段（不含 availability/presence 等运行态）。
 func (c *FileConfig) ToProfile(a *domain.AgentProfile) {
@@ -57,7 +59,10 @@ func (c *FileConfig) ToProfile(a *domain.AgentProfile) {
 		Preferred: c.Runtime.Preferred, Fallbacks: c.Runtime.Fallbacks,
 		Mode: c.Runtime.Mode, AgentPreset: c.Runtime.AgentPreset,
 	}
-	a.ModelOverride = domain.ModelRef{Ref: c.Model.Ref, Provider: c.Model.Provider, Model: c.Model.Model}
+	a.ModelOverride = domain.ModelRef{
+		Ref: c.Model.Ref, Provider: c.Model.Provider, Model: c.Model.Model,
+		ReasoningEffort: c.Model.ReasoningEffort,
+	}
 	a.Policy = domain.AgentPolicy{
 		Tools: c.Permissions.Tools, ApprovalPolicy: c.Permissions.ApprovalPolicy,
 		Sandbox: c.Permissions.Sandbox, PermissionPreset: c.Permissions.Preset,
@@ -81,6 +86,7 @@ func FromProfile(a *domain.AgentProfile) *FileConfig {
 	c.Model.Ref = a.ModelOverride.Ref
 	c.Model.Provider = a.ModelOverride.Provider
 	c.Model.Model = a.ModelOverride.Model
+	c.Model.ReasoningEffort = a.ModelOverride.ReasoningEffort
 	c.Permissions.Preset = a.Policy.PermissionPreset
 	c.Permissions.Tools = a.Policy.Tools
 	c.Permissions.ApprovalPolicy = a.Policy.ApprovalPolicy
@@ -140,6 +146,9 @@ func loadOne(dir, slug string) (*FileConfig, error) {
 	}
 	if p := strings.TrimSpace(cfg.Permissions.Preset); p != "" && !dshcatalog.ValidPermissionPreset(p) {
 		return nil, fmt.Errorf("%w: %s: permissions.preset 必须是 read-only|workspace-write|danger-full-access", domain.ErrValidation, yamlPath)
+	}
+	if effort := strings.TrimSpace(strings.ToLower(cfg.Model.ReasoningEffort)); !validReasoningEffort[effort] {
+		return nil, fmt.Errorf("%w: %s: model.reasoning_effort 必须是 minimal|low|medium|high|xhigh", domain.ErrValidation, yamlPath)
 	}
 	if prompt, err := os.ReadFile(filepath.Join(dir, "prompt.md")); err == nil {
 		cfg.Prompt = string(prompt)

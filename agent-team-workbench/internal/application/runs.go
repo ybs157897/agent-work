@@ -236,6 +236,9 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if spec.MaxTokens > 0 {
 		modelSnapshot["max_tokens"] = spec.MaxTokens
 	}
+	if spec.ReasoningEffort != "" {
+		modelSnapshot["reasoning_effort"] = spec.ReasoningEffort
+	}
 	r.Input["model"] = modelSnapshot
 	r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
 	r.Input["policy"] = orchestrator.PolicySnapshot(agent)

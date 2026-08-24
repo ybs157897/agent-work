@@ -152,3 +152,11 @@ func TestEffectiveModelRegistryRef(t *testing.T) {
 		t.Fatalf("ref 未命中应回退 binding: %+v", spec)
 	}
 }
+
+func TestEffectiveModelReasoningEffort(t *testing.T) {
+	agent := &domain.AgentProfile{ModelOverride: domain.ModelRef{Ref: "ox-alpha", ReasoningEffort: "high"}}
+	spec := EffectiveModel(agent, nil, nil)
+	if spec.ReasoningEffort != "high" {
+		t.Fatalf("reasoning effort = %q", spec.ReasoningEffort)
+	}
+}

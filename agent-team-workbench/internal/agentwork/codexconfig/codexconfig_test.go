@@ -28,6 +28,7 @@ func TestApplyRegistryProviderWritesConfig(t *testing.T) {
 		`model = "deepseek-v4-flash"`,
 		`model_provider = "atw-prov-deepseek-official"`,
 		`web_search = "disabled"`,
+		`model_reasoning_effort = "medium"`,
 		`base_url = "https://api.deepseek.com/v1"`,
 		`env_key = "DEEPSEEK_API_KEY"`,
 		`wire_api = "responses"`,
@@ -45,6 +46,36 @@ func TestApplyRequiresAPIKeyEnvForRegistryProvider(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "api_key_env") {
 		t.Fatalf("expected api_key_env error, got %v", err)
+	}
+}
+
+func TestApplyUsesAgentReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	if err := Apply(home, orchestrator.ModelSpec{
+		Ref: "ox-alpha", ProviderID: "prov-openrouter", Provider: "openrouter",
+		Model: "ox-alpha", APIKeyEnv: "OPENROUTER_API_KEY",
+		BaseURL: "https://openrouter.ai/api/v1", ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `model_reasoning_effort = "high"`) {
+		t.Fatalf("expected high effort:\n%s", got)
+	}
+}
+
+func TestEffectiveReasoningEffort(t *testing.T) {
+	if got := EffectiveReasoningEffort(""); got != "medium" {
+		t.Fatalf("empty = %q", got)
+	}
+	if got := EffectiveReasoningEffort("HIGH"); got != "high" {
+		t.Fatalf("normalize = %q", got)
+	}
+	if got := EffectiveReasoningEffort("nope"); got != "medium" {
+		t.Fatalf("unknown = %q", got)
 	}
 }
 

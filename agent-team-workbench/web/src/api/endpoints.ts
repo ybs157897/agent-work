@@ -273,7 +273,7 @@ export interface PatchAgentInput {
   skills?: string[];
   instructions?: string;
   runtime_preference?: { preferred?: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
-  model_override?: { ref?: string; provider?: string; model?: string };
+  model_override?: { ref?: string; provider?: string; model?: string; reasoning_effort?: string };
   policy?: AgentPolicy;
   expected_version: number;
 }
