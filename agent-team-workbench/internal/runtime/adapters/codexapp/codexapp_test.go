@@ -3,6 +3,7 @@ package codexapp
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -365,6 +366,10 @@ func TestExecuteHappyPath(t *testing.T) {
 		started.data["args_summary"] != "echo hi" {
 		t.Fatalf("tool.started 契约漂移: %+v", started.data)
 	}
+	// commandExecution 无 arguments 键：args 不携带（见 TestCodexArgsJSON）。
+	if _, has := started.data["args"]; has {
+		t.Fatalf("commandExecution 不应携带 args: %+v", started.data)
+	}
 	toolDone, ok := r.cb.findEvent(domain.EventToolCompleted)
 	if !ok || toolDone.data["call_id"] != "it_1" || toolDone.data["output"] != "hi" {
 		t.Fatalf("tool.completed 契约漂移: %+v", toolDone.data)
@@ -385,6 +390,44 @@ func TestExecuteHappyPath(t *testing.T) {
 	r.cb.mu.Unlock()
 	if !spawned || pid <= 0 || pgid <= 0 {
 		t.Fatalf("OnSpawn 未正确上报: spawned=%v pid=%d pgid=%d", spawned, pid, pgid)
+	}
+}
+
+// codexArgsJSON（item/started 的 args 键）：item.arguments 原文透传，仅
+// JSON 对象/数组携带；键序保持原文（重新 marshal 会按字母重排，此用例防
+// 回归）；缺失/null/字符串形态不带键；超 maxToolArgs 截断。
+func TestCodexArgsJSON(t *testing.T) {
+	frame := func(item string) json.RawMessage {
+		return []byte(`{"threadId":"th_1","turnId":"turn_1","item":` + item + `}`)
+	}
+	long := `{"data":"` + strings.Repeat("y", 2200) + `"}`
+	cases := []struct {
+		name string
+		item string
+		want string
+	}{
+		{"对象参数原文透传（键序不重排）",
+			`{"id":"it_1","type":"mcpToolCall","server":"srv","tool":"search","arguments":{"query":"hi","limit":10}}`,
+			`{"query":"hi","limit":10}`},
+		{"数组参数",
+			`{"id":"it_2","type":"dynamicToolCall","tool":"multi","arguments":[1,"two"]}`,
+			`[1,"two"]`},
+		{"超 2000 截断（字符串层，不保证仍是合法 JSON）",
+			`{"id":"it_3","type":"mcpToolCall","server":"srv","tool":"big","arguments":` + long + `}`,
+			long[:maxToolArgs]},
+		{"无 arguments 键（commandExecution）",
+			`{"id":"it_4","type":"commandExecution","command":"echo hi"}`, ""},
+		{"arguments 为 null",
+			`{"id":"it_5","type":"mcpToolCall","server":"srv","tool":"t","arguments":null}`, ""},
+		{"arguments 为字符串（非对象/数组）",
+			`{"id":"it_6","type":"dynamicToolCall","tool":"t","arguments":"plain"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexArgsJSON(frame(tc.item)); got != tc.want {
+				t.Fatalf("codexArgsJSON = %q，期望 %q", got, tc.want)
+			}
+		})
 	}
 }
 

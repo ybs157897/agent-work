@@ -506,11 +506,14 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 			emitUsageProgress(ex, state)
 		}
 	case "tool/call":
-		// canonical 契约：{tool, call_id, args_summary?}（notes:
+		// canonical 契约：{tool, call_id, args_summary?, args?}（notes:
 		// tool-event-canonical-contract）。arguments 为模型原始 JSON 字符串。
 		payload := map[string]any{"tool": data["name"], "call_id": data["callId"]}
 		if s := dshArgsSummary(data["arguments"]); s != "" {
 			payload["args_summary"] = s
+		}
+		if a := dshArgsJSON(data["arguments"]); a != "" {
+			payload["args"] = a
 		}
 		ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool/result":
@@ -705,6 +708,7 @@ func extractText(data map[string]any) string {
 // run_events 持久化 + SSE 的消费面不允许无界透传原始工具 IO。
 const (
 	maxToolArgsSummary = 200
+	maxToolArgs        = 2000
 	maxToolOutput      = 2000
 )
 
@@ -725,6 +729,27 @@ func dshArgsSummary(args any) string {
 		}
 	}
 	return truncate(s, maxToolArgsSummary)
+}
+
+// dshArgsJSON 完整入参的紧凑 JSON 文本（截断 ≤maxToolArgs），供前端工具行
+// IN/OUT 展开卡；与 dshArgsSummary 同源（tool/call.arguments 的模型原始
+// JSON 字符串），仅非空且为 JSON 对象/数组时携带，原文透传不重新 marshal；
+// 截断发生在字符串层，不保证截断后仍是合法 JSON（前端只展示，不解析）。
+func dshArgsJSON(args any) string {
+	s, _ := args.(string)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var v any
+	if json.Unmarshal([]byte(s), &v) != nil {
+		return ""
+	}
+	switch v.(type) {
+	case map[string]any, []any:
+		return truncate(s, maxToolArgs)
+	}
+	return ""
 }
 
 // dshToolResult 从 tool/result 帧提取折叠三元组：callId（tool-result 块的

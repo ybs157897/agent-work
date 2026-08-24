@@ -637,6 +637,9 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				if s := item.argsSummary(); s != "" {
 					payload["args_summary"] = s
 				}
+				if a := codexArgsJSON(frame.Params); a != "" {
+					payload["args"] = a
+				}
 				s.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 			} else if item.Type == "agentMessage" || item.Type == "plan" {
 				s.resetAnswerState()
@@ -739,6 +742,42 @@ func compactedPayload(raw json.RawMessage) map[string]any {
 		data["turnId"] = n.TurnID
 	}
 	return data
+}
+
+// maxToolArgs tool.started args 全文截断上限（与 kimiapp/dsh 的 canonical 契约
+// 一致：args_summary ≤200 只是一行摘要，args 供前端 IN/OUT 展开卡还原完整入参）。
+const maxToolArgs = 2000
+
+// codexArgsJSON 工具完整入参的紧凑 JSON 文本（截断 ≤maxToolArgs）：仅
+// item.arguments 为 JSON 对象/数组时携带（commandExecution 只有纯文本 command
+// 无 arguments 键，不携带）。从帧原文取 RawMessage 直接透传，不重新 marshal
+// 已 map 化的 item 以保键序；截断发生在字符串层，不保证截断后仍是合法 JSON
+// （前端只展示，不解析）。
+func codexArgsJSON(raw json.RawMessage) string {
+	var envelope struct {
+		Item struct {
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(envelope.Item.Arguments))
+	if s == "" {
+		return ""
+	}
+	var v any
+	if json.Unmarshal(envelope.Item.Arguments, &v) != nil {
+		return ""
+	}
+	switch v.(type) {
+	case map[string]any, []any:
+		if len(s) > maxToolArgs {
+			s = s[:maxToolArgs]
+		}
+		return s
+	}
+	return ""
 }
 
 // handleServerRequest 处理三类官方审批请求；决定经 Controls（ControlApproval）

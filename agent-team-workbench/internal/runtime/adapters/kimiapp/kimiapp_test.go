@@ -594,6 +594,65 @@ func TestForeignTurnEventsDropped(t *testing.T) {
 	}
 }
 
+// tool.started 的 args 键（canonical 契约）：完整入参的紧凑 JSON 原文
+// （≤maxToolArgs 截断），供前端 IN/OUT 展开卡还原参数；空参数或非对象/
+// 数组形态不带键（args_summary 一行摘要无法还原完整入参）。
+func TestToolStartedArgsPayload(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 1, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_obj", "name": "shell",
+				"args": map[string]any{"cmd": "ls", "workdir": "/tmp"},
+			}, 2, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_long", "name": "shell",
+				"args": map[string]any{"data": strings.Repeat("y", 2200)},
+			}, 3, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_empty", "name": "shell",
+			}, 4, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_str", "name": "shell", "args": "grep foo",
+			}, 5, false))
+			f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 6, false))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	cb.mu.Lock()
+	byID := map[string]recordedEvent{}
+	for _, e := range cb.events {
+		if e.kind == domain.EventToolStarted {
+			id, _ := e.data["call_id"].(string)
+			byID[id] = e
+		}
+	}
+	cb.mu.Unlock()
+	if len(byID) != 4 {
+		t.Fatalf("tool.started 期望 4 帧，得到 %d: %+v", len(byID), byID)
+	}
+	// 正例：对象参数完整原文（帧线格式即紧凑 JSON）。
+	if got := byID["tc_obj"].data["args"]; got != `{"cmd":"ls","workdir":"/tmp"}` {
+		t.Fatalf("args 应为完整入参原文: %v", got)
+	}
+	// 边界：超 maxToolArgs 截断（字符串层，不保证截断后仍是合法 JSON）。
+	if got, _ := byID["tc_long"].data["args"].(string); len(got) != 2000 {
+		t.Fatalf("args 应截断到 2000，得到 %d", len(got))
+	}
+	// 边界：空参数与非对象/数组形态不带键。
+	for _, id := range []string{"tc_empty", "tc_str"} {
+		if _, has := byID[id].data["args"]; has {
+			t.Fatalf("%s 不应携带 args 键: %+v", id, byID[id].data)
+		}
+	}
+}
+
 // 防回归：persona/plan 语义只能靠 prompt 文本注入（kap 无 system_prompt 应用
 // 通道、prompt.plan_mode 不应用）——fresh 会话首 prompt 带 persona，plan 模式
 // 每个 prompt 带指令；resume 轮不重注 persona（会话上下文已含首轮注入）。
