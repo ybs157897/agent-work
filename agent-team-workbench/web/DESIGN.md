@@ -77,6 +77,7 @@ components:
     primary: "bg {colors.brand.primary}; text {colors.text.inverse}; hover {colors.brand.accent}; active scale 0.98"
     secondary: "border {colors.border.strong}; bg {colors.surface.raised}; text {colors.text.secondary}; hover bg {colors.surface.base} + text {colors.text.primary}; active scale 0.98"
     ghost: "border {colors.brand.primary}/30; text {colors.brand.primary}; hover bg {colors.brand.primary}/5; active scale 0.98"
+    sizes: "sm = padding {spacing.snug} × {spacing.micro}; md = padding {spacing.base} × {spacing.tight}; 字号固定 {typography.body}，不随尺寸变"
   card:
     base: "bg {colors.surface.raised}; rounded {rounded.card}; border 1px {colors.border.subtle}; shadow {shadows.level-1}"
     padded: "card + padding {spacing.comfortable}"
