@@ -420,7 +420,7 @@ func (s *Server) handleResolveApproval(w http.ResponseWriter, r *http.Request) {
 		if req.Decision != "approved" && req.Decision != "rejected" {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid decision", "decision 必须是 approved 或 rejected")
 		}
-		a, err := s.svc.ResolveApproval(r.Context(), approvalID, req.Decision == "approved", "user_demo", req.Reason)
+		a, err := s.svc.ResolveApproval(r.Context(), approvalID, req.Decision == "approved", "user_demo", req.Reason, domain.ApprovalScopeOnce)
 		if err != nil {
 			return problemBytes(err)
 		}

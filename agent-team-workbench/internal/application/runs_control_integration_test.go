@@ -492,10 +492,10 @@ func TestResolveApprovalForwardsOnlyOnChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ResolveApproval(ctx, approval.ID, true, "user_demo", "ok"); err != nil {
+	if _, err := svc.ResolveApproval(ctx, approval.ID, true, "user_demo", "ok", domain.ApprovalScopeOnce); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ResolveApproval(ctx, approval.ID, true, "user_demo", "ok"); err != nil {
+	if _, err := svc.ResolveApproval(ctx, approval.ID, true, "user_demo", "ok", domain.ApprovalScopeOnce); err != nil {
 		t.Fatalf("幂等重放应成功: %v", err)
 	}
 	if forwards != 1 {
