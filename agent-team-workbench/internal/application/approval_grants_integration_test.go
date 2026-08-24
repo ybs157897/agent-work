@@ -36,6 +36,20 @@ func awaitApprovalStatus(t *testing.T, store *sqlstore.Store, approvalID string,
 // runAtRunning 创建 run 并迁移到 running（waiting_approval 只从 running 进入）。
 func runAtRunning(t *testing.T, ctx context.Context, svc *application.Service, wi *domain.WorkItem, instruction string) *domain.ExecutionRun {
 	t.Helper()
+	// F1 执行锁防双跑：同任务存在非终态 run（running/waiting_approval 持锁）时，
+	// 新 run 会在起跑点被拒落 failed(work_item_locked)。夹具先收敛旧轮到终态
+	//（failed 释放锁）再开新轮，对齐「一个任务至多一个活跃 run」的新不变量。
+	runs, err := svc.RunsByWorkItem(ctx, wi.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prev := range runs {
+		if !prev.Status.IsTerminal() {
+			if err := svc.RecordRunStatus(ctx, prev.ID, domain.RunFailed, nil); err != nil {
+				t.Fatalf("收敛旧 run %s 失败: %v", prev.ID, err)
+			}
+		}
+	}
 	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
 		AgentProfileID: wi.AgentProfileID, Instruction: instruction,
 	})

@@ -17,6 +17,11 @@ import (
 // 认领 = 指派 + 复用 enqueueAssignmentWake（agent 开 wake_on_assignment 时
 // 自动唤起认领者）。幂等：同 agent 重复认领返回现状不报错（不重复唤醒）。
 // 已被他人认领 / 非 todo → ErrStateConflict。
+//
+// F1 执行锁与认领正交：带锁任务必为 in_progress（建 run 即推进状态），天然
+// 不满足 claim 前置；死属主锁的抢占发生在下一个 run 进 running 的获取点
+// （acquireTaskLock），claim 不做 in_progress → todo 的自动重置——状态回流
+// 留给既有的人工/编排路径。
 func (s *Service) ClaimWorkItem(ctx context.Context, workItemID, agentID string, expectedVersion int) (*domain.WorkItem, error) {
 	var (
 		wi      *domain.WorkItem

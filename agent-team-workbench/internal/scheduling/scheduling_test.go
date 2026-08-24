@@ -815,3 +815,49 @@ var (
 	_ Store      = (*fakeStore)(nil)
 	_ RunStarter = (*fakeRunStarter)(nil)
 )
+
+// ---- F1 执行锁兜底回收 ----
+
+type fakeLockReleaser struct {
+	calls    []time.Time // 每次收到的 olderThan 参数
+	released int
+}
+
+func (f *fakeLockReleaser) ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error) {
+	f.calls = append(f.calls, olderThan)
+	return f.released, nil
+}
+
+// TestTickSweepsStaleLocksLowFrequency 防回归：执行锁回收低频挂在调度 tick 上
+// （首个 tick 即扫一次，之后每 staleLockSweepInterval 一次；olderThan=now-staleLockAge）。
+func TestTickSweepsStaleLocksLowFrequency(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(testAgent(false, 0))
+	releaser := &fakeLockReleaser{released: 1}
+	s := newTestScheduler(store, &fakeRunStarter{})
+	s.StaleLocks = releaser
+
+	s.Tick(ctx, testNow)                    // 首 tick 即扫
+	s.Tick(ctx, testNow.Add(time.Minute))   // 间隔内不重复扫
+	s.Tick(ctx, testNow.Add(2*time.Minute)) // 仍在间隔内
+	s.Tick(ctx, testNow.Add(6*time.Minute)) // 超过间隔再扫一次
+
+	if len(releaser.calls) != 2 {
+		t.Fatalf("低频扫描应命中 2 次, 实际 %d", len(releaser.calls))
+	}
+	for i, base := range []time.Time{testNow, testNow.Add(6 * time.Minute)} {
+		if want := base.Add(-staleLockAge); !releaser.calls[i].Equal(want) {
+			t.Fatalf("olderThan 应为 now-%s: calls[%d]=%s want=%s", staleLockAge, i, releaser.calls[i], want)
+		}
+	}
+}
+
+// TestTickSkipsSweepWithoutReleaser 端口未接线（nil）时 tick 不受影响。
+func TestTickSkipsSweepWithoutReleaser(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(testAgent(false, 0))
+	s := newTestScheduler(store, &fakeRunStarter{})
+	s.Tick(ctx, testNow) // 不 panic、不报错即可
+}
+
+var _ StaleLockReleaser = (*fakeLockReleaser)(nil)

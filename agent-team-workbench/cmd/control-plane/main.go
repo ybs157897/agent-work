@@ -301,7 +301,9 @@ func run() error {
 		RunStarter:   svc,
 		Interval:     wakeupTick,
 		ForwardInput: svc.InputForwarder,
-		Logger:       log.Default(),
+		// F1 执行锁兜底回收：低频扫死属主（终态 run）残留锁。
+		StaleLocks: store.WorkItems(),
+		Logger:     log.Default(),
 	}
 	go scheduler.Start(ctx)
 	log.Printf("wakeup 调度循环已启动（tick %s，心跳缺省 %ds）", wakeupTick, domain.DefaultHeartbeatIntervalSec)

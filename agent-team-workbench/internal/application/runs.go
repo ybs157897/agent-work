@@ -504,6 +504,19 @@ func (s *Service) ControlRun(ctx context.Context, runID string, action string) (
 func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRun, to domain.RunStatus, data map[string]any) error {
 	expected := r.Version
 	from := r.Status
+	// F1 任务锁：run 首次进 running（queued/starting → running）先裁决任务执行锁，
+	// 防同一任务双跑。被活跃锁拒绝时不留半态——本 run 直接落 failed(work_item_locked)
+	// 终态，保证任何推进尝试都有终态归宿（红线：任何 Outcome 必须能落终态）。
+	if to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
+		if err := s.acquireTaskLock(ctx, r); err != nil {
+			if !errors.Is(err, ErrWorkItemLocked) {
+				return err
+			}
+			return s.transitionRunLocked(ctx, r, domain.RunFailed, map[string]any{
+				"code": "work_item_locked", "message": err.Error(), "retryable": true,
+			})
+		}
+	}
 	if err := r.Transition(to, time.Now().UTC()); err != nil {
 		return err
 	}
@@ -545,6 +558,13 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		&RunEventRecord{RunID: r.ID, EventType: evType, Payload: data},
 		map[string]any{"from": string(from), "status": string(to)}); err != nil {
 		return err
+	}
+	// F1 任务锁：run 落终态时释放其持有的任务执行锁（同事务；属主已被抢占/回收
+	// 时不误伤他人的锁）。
+	if to.IsTerminal() {
+		if err := s.releaseTaskLock(ctx, r); err != nil {
+			return err
+		}
 	}
 	if to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunStarted,
