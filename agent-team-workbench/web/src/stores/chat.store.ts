@@ -42,6 +42,13 @@ export function extractDeltaChunk(data?: Record<string, unknown>): { type?: stri
   };
 }
 
+/** 从 tool.completed/failed 载荷提取 exit_code（仅有限数值，其余形态忽略）。 */
+export function extractExitCode(data?: Record<string, unknown>): number | undefined {
+  const v = data?.exit_code;
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return undefined;
+}
+
 /** 聚合单个 run 时间线中的推理与回复草稿（用于实时展示）。 */
 export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
   let reasoning = '';
@@ -120,6 +127,10 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         case 'tool.completed':
         case 'tool.failed': {
           const output = typeof e.data?.output === 'string' ? e.data.output.trim() : '';
+          const exitCode = extractExitCode(e.data);
+          const exitSuffix = exitCode === undefined ? '' : ` · exit ${exitCode}`;
+          // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）。
+          const failedExit = exitCode !== undefined && exitCode !== 0;
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
           const key = callId ? `${runId}-tool-${callId}` : '';
           const idx = key ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
@@ -128,7 +139,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               key: key || e.event_id,
               runId,
               kind: 'error',
-              text: idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败',
+              text: (idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败') + exitSuffix,
               detail: output || undefined,
               at: e.occurred_at,
             };
@@ -136,11 +147,24 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             else out.push(failed);
             break;
           }
-          if (!output) break; // 无输出的完成不刷屏
+          if (!output && exitCode === undefined) break; // 无输出且无退出码的完成不刷屏
           if (idx >= 0) {
-            out[idx] = { ...out[idx], detail: output, at: e.occurred_at };
+            out[idx] = {
+              ...out[idx],
+              kind: failedExit ? 'error' : out[idx].kind,
+              text: out[idx].text + exitSuffix,
+              detail: output || undefined,
+              at: e.occurred_at,
+            };
           } else {
-            out.push({ key: e.event_id, runId, kind: 'tool', text: '工具输出', detail: output, at: e.occurred_at });
+            out.push({
+              key: e.event_id,
+              runId,
+              kind: failedExit ? 'error' : 'tool',
+              text: '工具输出' + exitSuffix,
+              detail: output || undefined,
+              at: e.occurred_at,
+            });
           }
           break;
         }

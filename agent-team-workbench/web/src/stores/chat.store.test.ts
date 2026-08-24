@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, useChatStore } from './chat.store';
+import { aggregateRunStream, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, useChatStore } from './chat.store';
 import type { TimelineEntry } from './runs.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
@@ -74,6 +74,27 @@ describe('buildMessages', () => {
     ]);
   });
 
+  it('exit_code 追加 · exit {n}；非零转 error 行（红色），零保持 tool，无输出也展示', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'tool.started', { tool: 'shell', call_id: 'c1', args_summary: 'ls' }),
+        entry('run_1', 2, 'tool.completed', { call_id: 'c1', output: 'a.go', exit_code: 0 }),
+        entry('run_1', 3, 'tool.started', { tool: 'shell', call_id: 'c2', args_summary: 'npm i' }),
+        entry('run_1', 4, 'tool.completed', { call_id: 'c2', output: 'err', exit_code: 134 }),
+        entry('run_1', 5, 'tool.started', { tool: 'shell', call_id: 'c3', args_summary: 'false' }),
+        entry('run_1', 6, 'tool.completed', { call_id: 'c3', exit_code: 1 }), // 无输出但非零：不吞
+        entry('run_1', 7, 'tool.failed', { call_id: 'c4', output: 'killed', exit_code: 137 }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text, m.detail ?? ''])).toEqual([
+      ['tool', '调用工具 shell：ls · exit 0', 'a.go'],
+      ['error', '调用工具 shell：npm i · exit 134', 'err'],
+      ['error', '调用工具 shell：false · exit 1', ''],
+      ['error', '工具调用失败 · exit 137', 'killed'],
+    ]);
+  });
+
   it('跨多个 run 按顺序拼接（串行轮次）', () => {
     const timelines = {
       run_1: [entry('run_1', 1, 'run.created', { instruction: '第一轮' })],
@@ -134,6 +155,17 @@ describe('aggregateRunStream', () => {
       type: 'reasoning-delta',
       text: 'x',
     });
+  });
+});
+
+describe('extractExitCode', () => {
+  it('仅认有限数值，其余形态忽略', () => {
+    expect(extractExitCode({ exit_code: 3 })).toBe(3);
+    expect(extractExitCode({ exit_code: 0 })).toBe(0);
+    expect(extractExitCode({ exit_code: '3' })).toBeUndefined();
+    expect(extractExitCode({ exit_code: null })).toBeUndefined();
+    expect(extractExitCode({})).toBeUndefined();
+    expect(extractExitCode(undefined)).toBeUndefined();
   });
 });
 

@@ -407,7 +407,9 @@ func (g *Gateway) pump(ex *runtime.ExecContext, client *wireClient, sub *muxSub,
 				if frame.Reason != "" {
 					summary += ": " + frame.Reason
 				}
-				engineID := cb.RequestApproval("tool", frame.ToolName, summary)
+				// risk 固定 "high"（与 kimiapp/codexapp 一致）：dsh 网关不提供
+				// 风险分级，工具审批一律按 high 走人工确认。
+				engineID := cb.RequestApproval("tool", "high", summary)
 				if engineID == "" {
 					// 发起失败：立即拒绝，防 harness 工具悬挂。
 					_ = client.respond(context.WithoutCancel(ex.Ctx), frame.rpcID, map[string]any{
@@ -493,14 +495,25 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 			state.usageMsgCached += num(u["cacheReadTokens"])
 		}
 	case "tool/call":
-		ex.Callbacks.OnEvent(domain.EventToolStarted, map[string]any{
-			"tool": data["name"], "call_id": data["callId"],
-		})
+		// canonical 契约：{tool, call_id, args_summary?}（notes:
+		// tool-event-canonical-contract）。arguments 为模型原始 JSON 字符串。
+		payload := map[string]any{"tool": data["name"], "call_id": data["callId"]}
+		if s := dshArgsSummary(data["arguments"]); s != "" {
+			payload["args_summary"] = s
+		}
+		ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool/result":
-		if d, _ := data["isError"].(bool); d {
-			ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"raw": data})
+		// canonical 契约：{call_id, output?}。callId/isError/输出均在
+		// message.content[0] 的 tool-result 块内（顶层无平铺字段）。
+		callID, output, isError := dshToolResult(data)
+		payload := map[string]any{"call_id": callID}
+		if output != "" {
+			payload["output"] = output
+		}
+		if isError {
+			ex.Callbacks.OnEvent(domain.EventToolFailed, payload)
 		} else {
-			ex.Callbacks.OnEvent(domain.EventToolCompleted, map[string]any{"raw": data})
+			ex.Callbacks.OnEvent(domain.EventToolCompleted, payload)
 		}
 	case "turn/end":
 		// 只对本轮收尾：resume 时在途旧 turn 的 turn/end 先于本轮 turn/start
@@ -675,6 +688,71 @@ func extractText(data map[string]any) string {
 		}
 	}
 	return sb.String()
+}
+
+// 工具事件载荷截断上限（canonical 契约，与 kimiapp/codexapp 一致）：
+// run_events 持久化 + SSE 的消费面不允许无界透传原始工具 IO。
+const (
+	maxToolArgsSummary = 200
+	maxToolOutput      = 2000
+)
+
+// dshArgsSummary 从 tool/call.arguments（模型原始 JSON 字符串）提取一行输入
+// 摘要：命令/路径类参数优先，其次原串截断（≤maxToolArgsSummary）。
+func dshArgsSummary(args any) string {
+	s, _ := args.(string)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(s), &m) == nil {
+		for _, key := range []string{"command", "cmd", "path", "file_path", "query", "url"} {
+			if v, _ := m[key].(string); strings.TrimSpace(v) != "" {
+				return truncate(v, maxToolArgsSummary)
+			}
+		}
+	}
+	return truncate(s, maxToolArgsSummary)
+}
+
+// dshToolResult 从 tool/result 帧提取折叠三元组：callId（tool-result 块的
+// toolCallId，回退 message.source.callId）、isError（块标记）、输出文本
+// （块 content 内 text 块拼接，截断 ≤maxToolOutput；无文本块则省略）。
+func dshToolResult(data map[string]any) (callID, output string, isError bool) {
+	msg, _ := data["message"].(map[string]any)
+	if msg == nil {
+		return "", "", false
+	}
+	blocks, _ := msg["content"].([]any)
+	var sb strings.Builder
+	for _, b := range blocks {
+		block, ok := b.(map[string]any)
+		if !ok {
+			continue
+		}
+		if callID == "" {
+			if id, _ := block["toolCallId"].(string); id != "" {
+				callID = id
+			}
+		}
+		if e, _ := block["isError"].(bool); e {
+			isError = true
+		}
+		parts, _ := block["content"].([]any)
+		for _, p := range parts {
+			if t, ok := p.(map[string]any); ok && t["type"] == "text" {
+				if text, _ := t["text"].(string); text != "" {
+					sb.WriteString(text)
+				}
+			}
+		}
+	}
+	if callID == "" {
+		src, _ := msg["source"].(map[string]any)
+		callID, _ = src["callId"].(string)
+	}
+	return callID, truncate(sb.String(), maxToolOutput), isError
 }
 
 func num(v any) int64 {
