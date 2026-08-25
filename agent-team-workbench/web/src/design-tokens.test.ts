@@ -28,7 +28,7 @@ const FUNCTIONAL_COLOR = /\b(?:rgba?|hsla?)\((?!var\(--color-)/g;
  *（含 identity-* 身份色阶）；类名违规拦不住字面量正则，单独钉一道。
  */
 const NON_SEMANTIC_CLASS =
-  /\b(?:text-white|(?:bg|text|border|ring|from|to)-(?:sky|cyan|teal|emerald|blue|amber|slate|rose|red|green|yellow|orange|purple|indigo|violet|pink)-\d)/g;
+  /\b(?:text-white|bg-white|(?:bg|text|border|ring|from|to)-(?:sky|cyan|teal|emerald|blue|amber|slate|rose|red|green|yellow|orange|purple|indigo|violet|pink)-\d)/g;
 
 /** 本门禁自身：检测正则与注释示例会命中规则，排除扫描。 */
 const SELF_FILE = 'src/design-tokens.test.ts';
