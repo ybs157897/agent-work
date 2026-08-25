@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ApiError } from '../api/client';
 import { createModel, deleteModel, getProviderCredential, listModels, putProviderCredential, updateModel } from '../api/endpoints';
 import type { ModelEntry } from '../api/types';
+import { Drawer } from '../components/drawer';
 import { Modal } from '../components/modal';
 import { Button, FieldError, Select, Skeleton } from '../components/ui';
 import {
@@ -863,43 +864,45 @@ function AddModelModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={`添加模型 · ${group.label}`} width={480}>
-      <div className="space-y-base">
-        <label className="block">
-          <span className="text-body text-text-secondary">注册表 ref（可留空）</span>
-          <input
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            placeholder="留空则根据 API 模型名自动生成"
-            className={`${inputCls} font-mono`}
-          />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">API 模型名</span>
-          <input value={modelName} onChange={(e) => setModelName(e.target.value)} className={`${inputCls} font-mono`} />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">显示名（可选）</span>
-          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={inputCls} />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">上下文窗口（可选）</span>
-          <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" className={`${inputCls} font-mono`} />
-        </label>
-        <div className="flex justify-end gap-snug">
-          <button onClick={onClose} className="border border-border-strong rounded-button px-base py-tight text-text-secondary">
-            取消
-          </button>
-          <button
-            onClick={() => void submit()}
-            disabled={!modelName.trim() || saving}
-            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
-          >
-            {saving ? '添加中…' : '添加'}
-          </button>
+    <Drawer open onClose={onClose} title={`添加模型 · ${group.label}`} width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
+          <label className="block">
+            <span className="text-body text-text-secondary">注册表 ref（可留空）</span>
+            <input
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              placeholder="留空则根据 API 模型名自动生成"
+              className={`${inputCls} font-mono`}
+            />
+          </label>
+          <label className="block">
+            <span className="text-body text-text-secondary">API 模型名</span>
+            <input value={modelName} onChange={(e) => setModelName(e.target.value)} className={`${inputCls} font-mono`} />
+          </label>
+          <label className="block">
+            <span className="text-body text-text-secondary">显示名（可选）</span>
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={inputCls} />
+          </label>
+          <label className="block">
+            <span className="text-body text-text-secondary">上下文窗口（可选）</span>
+            <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} inputMode="numeric" className={`${inputCls} font-mono`} />
+          </label>
+          <div className="flex justify-end gap-snug">
+            <button onClick={onClose} className="border border-border-strong rounded-button px-base py-tight text-text-secondary">
+              取消
+            </button>
+            <button
+              onClick={() => void submit()}
+              disabled={!modelName.trim() || saving}
+              className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
+            >
+              {saving ? '添加中…' : '添加'}
+            </button>
+          </div>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -942,43 +945,45 @@ function EditModelModal({
   };
 
   return (
-    <Modal open onClose={onClose} title={`编辑模型 · ${entry.id}`} width={480}>
-      <div className="space-y-base">
-        <label className="block">
-          <span className="text-body text-text-secondary">显示名</span>
-          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={inputCls} />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">API 模型名</span>
-          <input value={modelName} onChange={(e) => setModelName(e.target.value)} className={`${inputCls} font-mono`} />
-        </label>
-        <div className="grid grid-cols-2 gap-snug">
+    <Drawer open onClose={onClose} title={`编辑模型 · ${entry.id}`} width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
           <label className="block">
-            <span className="text-body text-text-secondary">context_window</span>
-            <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} className={`${inputCls} font-mono`} />
+            <span className="text-body text-text-secondary">显示名</span>
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} className={inputCls} />
           </label>
           <label className="block">
-            <span className="text-body text-text-secondary">max_tokens</span>
-            <input value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} className={`${inputCls} font-mono`} />
+            <span className="text-body text-text-secondary">API 模型名</span>
+            <input value={modelName} onChange={(e) => setModelName(e.target.value)} className={`${inputCls} font-mono`} />
           </label>
-        </div>
-        <label className="block">
-          <span className="text-body text-text-secondary">备注</span>
-          <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={`${inputCls} resize-y`} />
-        </label>
-        <div className="flex justify-end gap-snug">
-          <button onClick={onClose} className="border border-border-strong rounded-button px-base py-tight text-text-secondary">
-            取消
-          </button>
-          <button
-            onClick={() => void submit()}
-            disabled={!displayName.trim() || !modelName.trim() || saving}
-            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+          <div className="grid grid-cols-2 gap-snug">
+            <label className="block">
+              <span className="text-body text-text-secondary">context_window</span>
+              <input value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} className={`${inputCls} font-mono`} />
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">max_tokens</span>
+              <input value={maxTokens} onChange={(e) => setMaxTokens(e.target.value)} className={`${inputCls} font-mono`} />
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-body text-text-secondary">备注</span>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className={`${inputCls} resize-y`} />
+          </label>
+          <div className="flex justify-end gap-snug">
+            <button onClick={onClose} className="border border-border-strong rounded-button px-base py-tight text-text-secondary">
+              取消
+            </button>
+            <button
+              onClick={() => void submit()}
+              disabled={!displayName.trim() || !modelName.trim() || saving}
+              className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          </div>
         </div>
       </div>
-    </Modal>
+    </Drawer>
   );
 }
