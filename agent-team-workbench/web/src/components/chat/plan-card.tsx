@@ -52,7 +52,7 @@ function PlanRow({ step }: { step: PlanStepView }) {
       <li className="chat-plan-row font-medium text-text-primary">
         <span className="chat-plan-box chat-plan-box-active" aria-hidden />
         <span className="min-w-0 flex-1">{step.step}</span>
-        <span className="shrink-0 text-[11px] text-status-info">进行中</span>
+        <span className="shrink-0 text-caption text-status-info">进行中</span>
       </li>
     );
   }

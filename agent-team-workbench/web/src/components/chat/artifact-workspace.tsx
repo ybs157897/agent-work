@@ -45,7 +45,7 @@ export function ArtifactWorkspace({ artifacts, onClose }: { artifacts: Artifact[
               <ArtifactMimeIcon mime={a.mime} />
               <span className="text-body text-text-primary truncate">{artifactBasename(a.logical_path)}</span>
             </div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-tertiary">
+            <div className="mt-0.5 flex items-center gap-1.5 text-caption text-text-tertiary">
               <span className="tabular-nums">{formatBytes(a.size)}</span>
               <span aria-hidden>·</span>
               <span className="tabular-nums">{formatTime(a.created_at)}</span>

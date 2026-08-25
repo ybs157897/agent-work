@@ -363,7 +363,14 @@ function ConversationPane() {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
     void send(text);
+  };
+
+  /** 输入框随内容增高，封顶 160px 后内部滚动。 */
+  const autoGrow = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
   const applyPrompt = (text: string) => {
@@ -492,7 +499,10 @@ function ConversationPane() {
           <textarea
             ref={textareaRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              autoGrow(e.currentTarget);
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -524,7 +534,7 @@ function ConversationPane() {
         </div>
         {usageText && (
           <div className="mt-1 flex justify-end">
-            <span className="text-[11px] tabular-nums text-text-tertiary">{usageText}</span>
+            <span className="text-caption tabular-nums text-text-tertiary">{usageText}</span>
           </div>
         )}
         </div>

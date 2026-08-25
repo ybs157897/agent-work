@@ -49,7 +49,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
             <div className="font-display text-body font-semibold text-text-on-sidebar-active leading-tight truncate">
               Agent Team
             </div>
-            <div className="text-[11px] text-text-on-sidebar/70 leading-tight">Workbench</div>
+            <div className="text-caption text-text-on-sidebar/70 leading-tight">Workbench</div>
           </div>
         </div>
 

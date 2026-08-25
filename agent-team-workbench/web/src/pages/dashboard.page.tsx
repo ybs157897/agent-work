@@ -1,5 +1,6 @@
 import { AlertCircle, Bot, CheckCircle2, Circle, Inbox, Zap, type LucideIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+
 import { Avatar } from '../components/avatar';
 import { Loading } from '../components/async-state';
 import { PresenceDot, presenceText } from '../components/status';
@@ -66,9 +67,12 @@ export default function DashboardPage() {
                 (t) => t.agent_profile_id === agent.id && t.status === 'in_progress',
               );
               return (
-                <div
+                <button
+                  type="button"
                   key={agent.id}
-                  className="flex items-center gap-snug p-snug rounded-lg border border-border-subtle bg-surface-base/60 hover:bg-surface-base hover:border-border-strong transition-colors min-w-0"
+                  onClick={() => navigate(`/chat?agent=${agent.id}`)}
+                  title={`与 ${agent.name} 对话`}
+                  className="w-full text-left cursor-pointer flex items-center gap-snug p-snug rounded-lg border border-border-subtle bg-surface-base/60 hover:bg-surface-base hover:border-border-strong transition-colors min-w-0"
                 >
                   <Avatar name={agent.name} url={agent.avatar} size={40} />
                   <div className="min-w-0 flex-1">
@@ -83,7 +87,7 @@ export default function DashboardPage() {
                       </span>
                     </div>
                   </div>
-                </div>
+                </button>
               );
             })}
             {agents.length === 0 && (

@@ -40,7 +40,7 @@ export function MessageActions({
 
   const clock =
     at === undefined ? null : (
-      <span className="text-[11px] tabular-nums text-text-tertiary">{formatTime(at)}</span>
+      <span className="text-caption tabular-nums text-text-tertiary">{formatTime(at)}</span>
     );
 
   return (

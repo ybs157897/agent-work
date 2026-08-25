@@ -38,10 +38,10 @@ export function ArtifactShelf({ artifacts, onOpen }: { artifacts: Artifact[]; on
             <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">
               {artifactBasename(a.logical_path)}
             </span>
-            <span className="shrink-0 text-[11px] tabular-nums text-text-tertiary">{formatBytes(a.size)}</span>
+            <span className="shrink-0 text-caption tabular-nums text-text-tertiary">{formatBytes(a.size)}</span>
           </div>
         ))}
-        {hidden > 0 && <div className="text-[11px] text-text-tertiary">还有 {hidden} 项…</div>}
+        {hidden > 0 && <div className="text-caption text-text-tertiary">还有 {hidden} 项…</div>}
       </div>
     </div>
   );

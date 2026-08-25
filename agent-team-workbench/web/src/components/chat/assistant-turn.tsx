@@ -30,7 +30,7 @@ export function AssistantTurn({
         <div className="mb-1 flex items-center gap-1.5">
           <Avatar name={name} url={agentAvatar} size={20} />
           <span className="text-caption font-semibold text-text-secondary">{name}</span>
-          {at && <span className="text-[11px] tabular-nums text-text-tertiary">{formatTime(at)}</span>}
+          {at && <span className="text-caption tabular-nums text-text-tertiary">{formatTime(at)}</span>}
         </div>
         {text ? (
           <div className={streaming ? 'chat-streaming' : undefined}>
