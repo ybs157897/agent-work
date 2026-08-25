@@ -9,7 +9,7 @@ import {
   probeRuntimeBinding,
 } from '../api/endpoints';
 import type { ProbeResult, RuntimeBinding } from '../api/types';
-import { Modal } from '../components/modal';
+import { Drawer } from '../components/drawer';
 import { Button, Card, EmptyState, Input, Skeleton } from '../components/ui';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -279,8 +279,9 @@ function WorkspaceEditModal({ open, onClose }: { open: boolean; onClose: () => v
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="编辑 Workspace">
-      <div className="space-y-base">
+    <Drawer open={open} onClose={onClose} title="编辑 Workspace" width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
         <label className="block">
           <span className="text-body text-text-secondary">名称</span>
           <Input value={name} onChange={(e) => setName(e.target.value)} />
@@ -300,7 +301,8 @@ function WorkspaceEditModal({ open, onClose }: { open: boolean; onClose: () => v
           </Button>
         </div>
       </div>
-    </Modal>
+      </div>
+    </Drawer>
   );
 }
 
@@ -360,8 +362,9 @@ function BindingEditModal({
   const valid = isNew ? label.trim() !== '' && adapterId.trim() !== '' : true;
 
   return (
-    <Modal open onClose={onClose} title={isNew ? '添加 Runtime 绑定' : `编辑绑定 ${binding.runtime_label}`}>
-      <div className="space-y-base">
+    <Drawer open onClose={onClose} title={isNew ? '添加 Runtime 绑定' : `编辑绑定 ${binding.runtime_label}`} width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
         {isNew && (
           <div className="grid grid-cols-2 gap-snug">
             <label className="block">
@@ -410,7 +413,8 @@ function BindingEditModal({
           </Button>
         </div>
       </div>
-    </Modal>
+      </div>
+    </Drawer>
   );
 }
 
