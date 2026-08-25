@@ -6,6 +6,7 @@ import { acceptWorkItem, unblockWorkItem } from '../api/endpoints';
 import type { Priority, WorkItem, WorkItemStatus } from '../api/types';
 import { Avatar } from '../components/avatar';
 import { PriorityBadge } from '../components/priority-badge';
+import { KanbanSkeleton, ListSkeleton } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { useTasksStore, type ViewMode } from '../stores/tasks.store';
 import { toast } from '../stores/toast.store';
@@ -29,6 +30,7 @@ const COLUMNS: { id: WorkItemStatus; title: string }[] = [
 /** 任务看板：四列 + 看板/列表切换 + 筛选 + 拖拽移动（协议 §4.2 状态机）。 */
 export default function TasksPage() {
   const items = useTasksStore((s) => s.items);
+  const loaded = useTasksStore((s) => s.loaded);
   const filter = useTasksStore((s) => s.filter);
   const setFilter = useTasksStore((s) => s.setFilter);
   const viewMode = useTasksStore((s) => s.viewMode);
@@ -115,9 +117,9 @@ export default function TasksPage() {
   const childCounts = useMemo(() => childCountByParent(items), [items]);
 
   return (
-    <div className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
+    <main className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
       {/* Header */}
-      <div className="flex items-center justify-between mb-stack-md shrink-0">
+      <header className="flex items-center justify-between mb-stack-md shrink-0">
         <div className="flex items-center gap-comfortable">
           <h2 className="text-h2 text-text-primary tracking-tight">任务看板</h2>
           <div className="flex bg-surface-base rounded-button p-1 border border-border-subtle">
@@ -125,7 +127,7 @@ export default function TasksPage() {
               onClick={() => switchView('kanban')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-body font-medium transition-colors ${
                 viewMode === 'kanban'
-                  ? 'bg-white shadow-sm text-text-primary'
+                  ? 'bg-surface-raised shadow-sm text-text-primary'
                   : 'text-text-secondary hover:text-text-primary'
               }`}
             >
@@ -136,7 +138,7 @@ export default function TasksPage() {
               onClick={() => switchView('list')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-body font-medium transition-colors ${
                 viewMode === 'list'
-                  ? 'bg-white shadow-sm text-text-primary'
+                  ? 'bg-surface-raised shadow-sm text-text-primary'
                   : 'text-text-secondary hover:text-text-primary'
               }`}
             >
@@ -166,11 +168,13 @@ export default function TasksPage() {
             onChange={(v) => setFilter({ ...filter, assignee: v || undefined })}
           />
         </div>
-      </div>
+      </header>
 
       {/* 看板 / 列表 */}
-      <div className="flex-1 min-h-0 overflow-x-auto pb-6">
-        {viewMode === 'kanban' ? (
+      <section aria-label="任务看板" className="flex-1 min-h-0 overflow-x-auto pb-6">
+        {!loaded ? (
+          viewMode === 'kanban' ? <KanbanSkeleton /> : <ListSkeleton />
+        ) : viewMode === 'kanban' ? (
           <div className="flex gap-4 h-full">
             {columns.map((col) => (
               <KanbanColumn
@@ -236,7 +240,7 @@ export default function TasksPage() {
             </div>
           </div>
         )}
-      </div>
+      </section>
 
       <TaskDetail
         taskId={selectedTaskId}
@@ -250,7 +254,7 @@ export default function TasksPage() {
         onClose={() => setCreateFor(null)}
       />
       <BlockTaskModal task={blocking} onClose={() => setBlocking(null)} />
-    </div>
+    </main>
   );
 }
 
@@ -349,6 +353,11 @@ function KanbanColumn({
             onOpen={() => onOpen(task.id)}
           />
         ))}
+        {tasks.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border-strong/60 px-3 py-6 text-center text-caption text-text-tertiary">
+            暂无任务，拖拽卡片到此或点 + 创建
+          </div>
+        )}
       </div>
     </div>
   );
@@ -402,7 +411,7 @@ function TaskCard({
         <div className="mb-3">
           <span
             title="run 成功待评审或评估通过，等待人工验收"
-            className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+            className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
           >
             待验收
           </span>
@@ -415,7 +424,7 @@ function TaskCard({
           {task.locked_by_run_id && (
             <span
               title={`执行锁：run ${task.locked_by_run_id}（防止同任务双跑）`}
-              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-surface-base text-text-secondary border border-border-subtle"
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-surface-base text-text-secondary border border-border-subtle"
             >
               <Lock className="w-3 h-3" />
             </span>
@@ -423,7 +432,7 @@ function TaskCard({
           {task.parent_id && (
             <span
               title="编排派生的子任务"
-              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
             >
               子任务
             </span>
@@ -431,7 +440,7 @@ function TaskCard({
           {childCount > 0 && (
             <span
               title={`${childCount} 个直接子任务`}
-              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm text-[10px] font-medium bg-surface-base text-text-secondary border border-border-subtle tabular-nums"
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-surface-base text-text-secondary border border-border-subtle tabular-nums"
             >
               <GitBranch className="w-3 h-3" />
               {childCount}
@@ -461,7 +470,7 @@ function AssigneeTag({
           className="rounded-full border border-dashed border-border-strong flex items-center justify-center bg-surface-base"
           style={{ width: size, height: size }}
         >
-          <span className="text-[10px] text-text-tertiary">?</span>
+          <span className="text-[11px] text-text-tertiary">?</span>
         </div>
         <span className="text-xs text-text-tertiary">无 Agent</span>
       </div>

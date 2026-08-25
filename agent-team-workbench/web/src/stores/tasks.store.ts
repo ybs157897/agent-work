@@ -14,6 +14,8 @@ export interface TaskFilter {
 
 interface TasksStore {
   items: WorkItem[];
+  /** 首屏是否已加载（看板骨架屏依据）。 */
+  loaded: boolean;
   filter: TaskFilter;
   viewMode: ViewMode;
   selectedTaskId: string | null;
@@ -34,11 +36,12 @@ const refreshGuard = createRequestGuard();
 
 export const useTasksStore = create<TasksStore>()((set, get) => ({
   items: [],
+  loaded: false,
   filter: {},
   viewMode: 'kanban',
   selectedTaskId: null,
 
-  hydrate: (items) => set({ items }),
+  hydrate: (items) => set({ items, loaded: true }),
 
   refresh: async () => {
     const wsId = useWorkspaceStore.getState().workspace?.id;
@@ -47,7 +50,7 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
     const isStale = refreshGuard.begin();
     const { items } = await listWorkItems(wsId, { ...filter });
     if (isStale()) return; // 期间已发出更新的 refresh（如筛选已变）：丢弃旧响应
-    set({ items });
+    set({ items, loaded: true });
   },
 
   setFilter: (filter) => {

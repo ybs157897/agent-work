@@ -4,6 +4,7 @@ export type { ButtonProps, ButtonSize, ButtonVariant } from './button';
 export { Card, cardClassName, cardPresetClasses } from './card';
 export type { CardProps } from './card';
 export { Input, Select, Textarea, inputFieldClasses } from './input';
+export { KanbanSkeleton, ListSkeleton, Skeleton } from './skeleton';
 export { Field } from './field';
 export type { FieldProps } from './field';
 export { StatusPill, statusPillClasses } from './status-pill';
