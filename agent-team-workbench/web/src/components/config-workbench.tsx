@@ -7,7 +7,7 @@ export const configInputCls =
   'w-full rounded-input border border-border-strong bg-surface-raised px-snug py-2.5 text-body text-text-primary outline-none transition-shadow placeholder:text-text-tertiary/70 focus:border-brand-primary/50 focus:ring-2 focus:ring-brand-primary/20 disabled:opacity-50 disabled:cursor-not-allowed';
 
 export function ConfigPage({ children }: { children: ReactNode }) {
-  return <div className="config-page">{children}</div>;
+  return <main className="config-page">{children}</main>;
 }
 
 export function ConfigPageHeader({
@@ -85,7 +85,7 @@ export function ConfigSidebarItem({
 }
 
 export function ConfigMain({ children }: { children: ReactNode }) {
-  return <div className="config-main">{children}</div>;
+  return <section className="config-main">{children}</section>;
 }
 
 export function ConfigEmptyState({

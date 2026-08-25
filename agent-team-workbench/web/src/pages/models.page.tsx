@@ -4,6 +4,7 @@ import { ApiError } from '../api/client';
 import { createModel, deleteModel, getProviderCredential, listModels, putProviderCredential, updateModel } from '../api/endpoints';
 import type { ModelEntry } from '../api/types';
 import { Modal } from '../components/modal';
+import { Button, Select, Skeleton } from '../components/ui';
 import {
   ConfigAvatar,
   ConfigEmptyState,
@@ -146,10 +147,10 @@ export default function ModelsPage() {
         title="模型设置"
         subtitle="管理自定义模型供应商；配置完成后可在对话与 Agent 中按 ref 选用"
         actions={
-          <button type="button" onClick={load} disabled={refreshing} className="btn-secondary">
+          <Button onClick={load} disabled={refreshing}>
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             刷新
-          </button>
+          </Button>
         }
       />
 
@@ -172,7 +173,11 @@ export default function ModelsPage() {
           }
         >
           {models === null ? (
-            <p className="text-caption text-text-tertiary px-2 py-3">加载中…</p>
+            <div className="space-y-1 p-2">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-3/4" />
+            </div>
           ) : providers.length === 0 && !isAddingProvider ? (
             <p className="text-caption text-text-tertiary px-2 py-3">暂无供应商，点击下方添加</p>
           ) : (
@@ -357,13 +362,13 @@ function AddProviderPanel({
           </label>
           <label className="block">
             <span className={configLabelCls}>API 格式</span>
-            <select value={api} onChange={(e) => setApi(e.target.value as ModelEntry['api'])} className={inputCls}>
+            <Select value={api} onChange={(e) => setApi(e.target.value as ModelEntry['api'])}>
               {API_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </ConfigSection>
 
@@ -570,13 +575,13 @@ function ProviderPanel({
           </label>
           <label className="block">
             <span className={configLabelCls}>API 格式</span>
-            <select value={api} onChange={(e) => setApi(e.target.value as ModelEntry['api'])} className={inputCls}>
+            <Select value={api} onChange={(e) => setApi(e.target.value as ModelEntry['api'])}>
               {API_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         </ConfigSection>
 
