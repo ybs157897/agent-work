@@ -96,6 +96,10 @@ components:
     error-text: "FieldError：role=alert；text {typography.caption} {colors.status.error}；顶替 hint 位置（不并存）"
     copy: "主动语态、说清事实与怎么改、不用感叹号（如「Base URL 需以 http:// 或 https:// 开头」）"
     success-state: "不做——没有错误即正常，不额外给绿色对勾"
+  toast:
+    base: "右下固定栈（w-320 gap-2）；rounded {rounded.card}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; shadow {shadows.level-3}；图标取状态色（error {colors.status.error} / success {colors.status.success} / info {colors.brand.primary}）"
+    behavior: "自动消失（error 6s、其余 3.5s）+ 显式关闭；最多同屏 5 条；只承载通知，破坏性操作一律走模态确认（见 Don'ts），不设 undo/action 槽（无消费场景）"
+    a11y-motion: "容器 role=region aria-label=通知；error 卡 role=alert、其余 role=status；进出场 150ms easeOut + layout 平滑堆叠，reduced-motion 归零"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
   user-bubble:
