@@ -36,3 +36,14 @@ M1 把六个页面迁上 ui/ 组件后，M2 收四类契约欠账：遗留 CSS �
 - 校验错误不再只走 toast：可客户端判定的规则（Base URL 协议前缀）内联
   报错并拦截保存；服务端错误仍走 toast（不重复表达）。
 - `async-state.Loading` 已删，通用 spinner 无组件可用——新加载态只能选骨架。
+
+## 后续（同日，蜂群两刀）
+
+- **审批按钮族已立项并落地**（11c52c1）：ui/Button 增 success/danger/
+  danger-outline/warning-outline 四档状态变体（色值逐字取自遗留类），审批卡
+  六处换装，`.chat-approval-btn*` 成建制删。第 7 条「单独立项」已兑现；
+  status-usage 约束写入 DESIGN.md（状态档只许审批/破坏性语境）。
+- **Toast 契约补齐**（a8e3754）：role=region/alert/status + 150ms 进出场
+  （reduced-motion 归零）+ store 防回归测试；仍不设 undo/action 槽。
+- M3 候选：modal→slide-over 逐件评估（13 处已盘点：删模型/删供应商两处
+  破坏确认按纪律留模态，其余创建/编辑表单是 drawer 候选）。
