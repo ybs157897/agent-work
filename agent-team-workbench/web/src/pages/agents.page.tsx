@@ -33,6 +33,7 @@ import {
   configLabelCls,
 } from '../components/config-workbench';
 import { Modal } from '../components/modal';
+import { Drawer } from '../components/drawer';
 import { PresenceDot, presenceText } from '../components/status';
 import { Toggle } from '../components/toggle';
 import { Button, Select } from '../components/ui';
@@ -666,8 +667,9 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="添加 Agent" width={480}>
-      <div className="space-y-base">
+    <Drawer open={open} onClose={onClose} title="添加 Agent" width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
         <label className="block">
           <span className={configLabelCls}>名称</span>
           <input
@@ -725,7 +727,8 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
           </Button>
         </div>
       </div>
-    </Modal>
+      </div>
+    </Drawer>
   );
 }
 
@@ -768,55 +771,57 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
   };
 
   return (
-    <Modal open={open} onClose={onClose} title={`${agent.name} 的会话锚点`} width={640}>
-      {items === null ? (
-        <p className="text-caption text-text-tertiary py-comfortable text-center">加载中…</p>
-      ) : items.length === 0 ? (
-        <p className="text-caption text-text-tertiary py-comfortable text-center">
-          暂无活跃会话锚点（重置后的墓碑不展示）
-        </p>
-      ) : (
-        <div className="space-y-snug max-h-[50vh] overflow-y-auto">
-          {items.map((s) => (
-            <div
-              key={s.id}
-              className="flex items-center gap-snug rounded-lg border border-border-subtle px-3 py-2"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 text-caption">
-                  <span className="font-mono text-text-primary truncate" title={s.task_key}>
-                    {s.task_key}
-                  </span>
-                  <span className="shrink-0 rounded bg-surface-base px-1.5 py-0.5 text-text-tertiary">
-                    {s.adapter_id}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-caption text-text-tertiary">
-                  <span className="font-mono truncate max-w-[220px]" title={s.session_ref ?? ''}>
-                    {sessionDisplayName(s)}
-                  </span>
-                  <span>{s.runs_count} 轮</span>
-                  <span>{formatTokenCount(s.input_tokens_cum)} tokens</span>
-                  <span>{new Date(s.updated_at).toLocaleString()}</span>
-                </div>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void onReset(s)}
-                disabled={resetting === s.id}
-                className="shrink-0 text-caption"
+    <Drawer open={open} onClose={onClose} title={`${agent.name} 的会话锚点`} width={560}>
+      <div className="p-comfortable">
+        {items === null ? (
+          <p className="text-caption text-text-tertiary py-comfortable text-center">加载中…</p>
+        ) : items.length === 0 ? (
+          <p className="text-caption text-text-tertiary py-comfortable text-center">
+            暂无活跃会话锚点（重置后的墓碑不展示）
+          </p>
+        ) : (
+          <div className="space-y-snug max-h-[50vh] overflow-y-auto">
+            {items.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center gap-snug rounded-lg border border-border-subtle px-3 py-2"
               >
-                {resetting === s.id ? '重置中…' : '重置'}
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-      <p className="mt-comfortable text-caption text-text-tertiary">
-        重置写入墓碑：下一轮对话将开启全新会话（触发轮换/失忆排查时使用）。
-      </p>
-    </Modal>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-caption">
+                    <span className="font-mono text-text-primary truncate" title={s.task_key}>
+                      {s.task_key}
+                    </span>
+                    <span className="shrink-0 rounded bg-surface-base px-1.5 py-0.5 text-text-tertiary">
+                      {s.adapter_id}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-caption text-text-tertiary">
+                    <span className="font-mono truncate max-w-[220px]" title={s.session_ref ?? ''}>
+                      {sessionDisplayName(s)}
+                    </span>
+                    <span>{s.runs_count} 轮</span>
+                    <span>{formatTokenCount(s.input_tokens_cum)} tokens</span>
+                    <span>{new Date(s.updated_at).toLocaleString()}</span>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void onReset(s)}
+                  disabled={resetting === s.id}
+                  className="shrink-0 text-caption"
+                >
+                  {resetting === s.id ? '重置中…' : '重置'}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="mt-comfortable text-caption text-text-tertiary">
+          重置写入墓碑：下一轮对话将开启全新会话（触发轮换/失忆排查时使用）。
+        </p>
+      </div>
+    </Drawer>
   );
 }
 
