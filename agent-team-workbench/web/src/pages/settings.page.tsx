@@ -10,6 +10,7 @@ import {
 } from '../api/endpoints';
 import type { ProbeResult, RuntimeBinding } from '../api/types';
 import { Modal } from '../components/modal';
+import { Button, Card, EmptyState, Input, Skeleton } from '../components/ui';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { formatDateTime } from '../utils/format';
@@ -24,19 +25,18 @@ export default function SettingsPage() {
   const [editingWs, setEditingWs] = useState(false);
 
   return (
-    <div className="layout-safe space-y-stack-md py-comfortable">
-      <h2 className="text-h2 text-text-primary tracking-tight">设置</h2>
+    <main className="page-shell">
+      <header className="page-header">
+        <h2 className="page-title">设置</h2>
+      </header>
 
-      <section className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-comfortable">
+      <Card padded>
         <div className="flex items-center justify-between mb-comfortable">
           <h3 className="text-h3 text-text-primary">Workspace</h3>
-          <button
-            onClick={() => setEditingWs(true)}
-            className="flex items-center gap-1 text-caption border border-border-strong text-text-secondary rounded-button px-2 py-1 hover:bg-surface-base transition-colors"
-          >
+          <Button size="sm" onClick={() => setEditingWs(true)}>
             <Pencil className="w-3.5 h-3.5" />
             编辑
-          </button>
+          </Button>
         </div>
         <dl className="grid grid-cols-2 gap-base max-w-xl text-body">
           <Field label="名称" value={workspace?.name} />
@@ -44,11 +44,11 @@ export default function SettingsPage() {
           <Field label="ID" value={workspace?.id} mono />
           <Field label="版本" value={workspace ? String(workspace.version) : undefined} />
         </dl>
-      </section>
+      </Card>
 
       {workspace && <WorkspaceEditModal open={editingWs} onClose={() => setEditingWs(false)} />}
 
-      <section className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-comfortable">
+      <Card padded>
         <h3 className="text-h3 text-text-primary mb-comfortable">系统健康</h3>
         <div className="grid grid-cols-2 gap-base max-w-xl text-body">
           <div>
@@ -76,11 +76,11 @@ export default function SettingsPage() {
             </span>
           </div>
         </div>
-      </section>
+      </Card>
 
       <RuntimeBindingsSection workspaceId={workspace?.id} />
 
-      <section className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-comfortable">
+      <Card padded>
         <h3 className="text-h3 text-text-primary mb-comfortable">当前用户</h3>
         <dl className="grid grid-cols-2 gap-base max-w-xl text-body">
           <Field label="用户" value={me?.name} />
@@ -88,8 +88,8 @@ export default function SettingsPage() {
           <Field label="用户 ID" value={me?.user_id} mono />
           <Field label="会话时间" value={formatDateTime(new Date().toISOString())} />
         </dl>
-      </section>
-    </div>
+      </Card>
+    </main>
   );
 }
 
@@ -123,31 +123,38 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
   };
 
   return (
-    <section className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-comfortable">
+    <Card padded>
       <div className="flex items-center justify-between mb-comfortable">
         <h3 className="text-h3 text-text-primary">Runtime 绑定</h3>
         <div className="flex items-center gap-2">
-          <button
-            onClick={load}
-            className="flex items-center gap-1.5 bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight text-body font-medium hover:bg-surface-base transition-colors"
-          >
+          <Button onClick={load}>
             <RefreshCw className="w-4 h-4" />
             刷新
-          </button>
-          <button
-            onClick={() => setEditing('new')}
-            className="flex items-center gap-1.5 bg-transparent border border-brand-primary text-brand-primary rounded-button px-base py-tight text-body font-medium transition-colors hover:bg-brand-primary/5"
-          >
+          </Button>
+          <Button variant="ghost" onClick={() => setEditing('new')}>
             <Plus className="w-4 h-4" />
             添加绑定
-          </button>
+          </Button>
         </div>
       </div>
 
       {bindings === null ? (
-        <p className="text-body text-text-tertiary">加载中…</p>
+        <div className="space-y-3">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-full" />
+        </div>
       ) : bindings.length === 0 ? (
-        <p className="text-body text-text-secondary">暂无 Runtime 绑定。</p>
+        <EmptyState
+          icon={<Radar className="w-5 h-5" />}
+          title="暂无 Runtime 绑定"
+          description="添加一个绑定以接入真实 Runtime 适配器"
+          action={
+            <Button variant="ghost" size="sm" onClick={() => setEditing('new')}>
+              <Plus className="w-3.5 h-3.5" />
+              添加绑定
+            </Button>
+          }
+        />
       ) : (
         <div className="space-y-3">
           {bindings.map((b) => {
@@ -172,21 +179,14 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
                     >
                       {b.status}
                     </span>
-                    <button
-                      onClick={() => setEditing(b)}
-                      className="flex items-center gap-1 text-caption border border-border-strong text-text-secondary rounded-button px-2 py-1 hover:bg-surface-base transition-colors"
-                    >
+                    <Button size="sm" onClick={() => setEditing(b)}>
                       <Pencil className="w-3.5 h-3.5" />
                       编辑
-                    </button>
-                    <button
-                      onClick={() => void probe(b.id)}
-                      disabled={probing !== null}
-                      className="flex items-center gap-1 text-caption border border-brand-primary text-brand-primary rounded-button px-2 py-1 hover:bg-brand-primary/5 transition-colors disabled:opacity-50"
-                    >
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => void probe(b.id)} disabled={probing !== null}>
                       <Radar className="w-3.5 h-3.5" />
                       {probing === b.id ? '探测中…' : 'Probe'}
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <div className="text-caption text-text-secondary mb-2">
@@ -235,7 +235,7 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
           }}
         />
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -278,34 +278,26 @@ function WorkspaceEditModal({ open, onClose }: { open: boolean; onClose: () => v
     }
   };
 
-  const inputCls =
-    'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
-
   return (
     <Modal open={open} onClose={onClose} title="编辑 Workspace">
       <div className="space-y-base">
         <label className="block">
           <span className="text-body text-text-secondary">名称</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className="block">
           <span className="text-body text-text-secondary">时区</span>
-          <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder="UTC / Asia/Shanghai" className={inputCls} />
+          <Input
+            value={timezone}
+            onChange={(e) => setTimezone(e.target.value)}
+            placeholder="UTC / Asia/Shanghai"
+          />
         </label>
         <div className="flex justify-end gap-snug pt-tight">
-          <button
-            onClick={onClose}
-            className="bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight font-medium hover:bg-surface-base transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={() => void save()}
-            disabled={!name.trim() || saving}
-            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
-          >
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="primary" onClick={() => void save()} disabled={!name.trim() || saving}>
             {saving ? '保存中…' : '保存'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>
@@ -331,9 +323,6 @@ function BindingEditModal({
   const [model, setModel] = useState(binding?.model ?? '');
   const [credentialRef, setCredentialRef] = useState(binding?.credential_ref ?? '');
   const [saving, setSaving] = useState(false);
-
-  const inputCls =
-    'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
 
   const submit = async () => {
     setSaving(true);
@@ -377,42 +366,48 @@ function BindingEditModal({
           <div className="grid grid-cols-2 gap-snug">
             <label className="block">
               <span className="text-body text-text-secondary">Runtime 标签</span>
-              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="dsh_local" className={`${inputCls} font-mono`} />
+              <Input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="dsh_local"
+                className="font-mono"
+              />
             </label>
             <label className="block">
               <span className="text-body text-text-secondary">Adapter ID</span>
-              <input value={adapterId} onChange={(e) => setAdapterId(e.target.value)} placeholder="dsh / kimi / codex-appserver" className={`${inputCls} font-mono`} />
+              <Input
+                value={adapterId}
+                onChange={(e) => setAdapterId(e.target.value)}
+                placeholder="dsh / kimi / codex-appserver"
+                className="font-mono"
+              />
             </label>
           </div>
         )}
         <div className="grid grid-cols-2 gap-snug">
           <label className="block">
             <span className="text-body text-text-secondary">Provider</span>
-            <input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="deepseek" className={inputCls} />
+            <Input value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="deepseek" />
           </label>
           <label className="block">
             <span className="text-body text-text-secondary">默认模型</span>
-            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-v4-flash" className={inputCls} />
+            <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-v4-flash" />
           </label>
         </div>
         <label className="block">
           <span className="text-body text-text-secondary">凭据引用（credential_ref，如 env://DEEPSEEK_API_KEY）</span>
-          <input value={credentialRef} onChange={(e) => setCredentialRef(e.target.value)} placeholder="env://DEEPSEEK_API_KEY" className={`${inputCls} font-mono`} />
+          <Input
+            value={credentialRef}
+            onChange={(e) => setCredentialRef(e.target.value)}
+            placeholder="env://DEEPSEEK_API_KEY"
+            className="font-mono"
+          />
         </label>
         <div className="flex justify-end gap-snug pt-tight">
-          <button
-            onClick={onClose}
-            className="bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight font-medium hover:bg-surface-base transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={() => void submit()}
-            disabled={!valid || saving}
-            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
-          >
+          <Button onClick={onClose}>取消</Button>
+          <Button variant="primary" onClick={() => void submit()} disabled={!valid || saving}>
             {saving ? '保存中…' : isNew ? '创建' : '保存'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>
