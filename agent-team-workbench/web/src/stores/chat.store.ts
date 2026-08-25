@@ -480,10 +480,11 @@ export function conversationLabel(
 ): string {
   const run = item.latest_run_id ? runs[item.latest_run_id] : undefined;
   if (run) {
+    // waiting_approval 先于 ACTIVE：它在 ACTIVE 集合里，但"需要你"必须盖过"在跑"
+    if (run.status === 'waiting_approval') return '待审批';
     if (ACTIVE.has(run.status)) return '思考中…';
     if (run.status === 'succeeded') return '已回复';
     if (run.status === 'failed') return '失败';
-    if (run.status === 'waiting_approval') return '待审批';
   }
   if (item.phase === 'review') return '已回复';
   if (item.status === 'completed') return '已完成';
