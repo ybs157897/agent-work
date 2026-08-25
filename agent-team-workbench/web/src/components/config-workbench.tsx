@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { Button } from './ui';
 
 /** 配置工作台共享样式（对齐 ui-stack 8px 网格与设计 token） */
 export const configLabelCls = 'block text-caption font-medium text-text-secondary mb-1.5';
@@ -163,20 +164,21 @@ export function ConfigFooter({
     <div className="config-footer">
       <div className="config-footer-inner">
         {onCancel ? (
-          <button type="button" onClick={onCancel} className="btn-secondary">
+          <Button type="button" onClick={onCancel}>
             取消
-          </button>
+          </Button>
         ) : (
           <span />
         )}
-        <button
+        <Button
           type="button"
+          variant="primary"
           onClick={onSave}
           disabled={saving || saveDisabled}
-          className="btn-primary min-w-[88px]"
+          className="min-w-[88px]"
         >
           {saving ? '保存中…' : saveLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );

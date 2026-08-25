@@ -1,4 +1,5 @@
 import { AlertCircle, Loader2 } from 'lucide-react';
+import { Button } from './ui';
 
 export function Loading({ label = '加载中…' }: { label?: string }) {
   return (
@@ -19,9 +20,9 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       </div>
       <p className="text-body-lg text-text-primary font-medium">{message}</p>
       {onRetry && (
-        <button onClick={onRetry} className="btn-primary">
+        <Button variant="primary" onClick={onRetry}>
           重试
-        </button>
+        </Button>
       )}
     </div>
   );

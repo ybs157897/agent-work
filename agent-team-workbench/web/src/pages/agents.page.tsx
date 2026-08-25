@@ -35,7 +35,7 @@ import {
 import { Modal } from '../components/modal';
 import { PresenceDot, presenceText } from '../components/status';
 import { Toggle } from '../components/toggle';
-import { Select } from '../components/ui';
+import { Button, Select } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -174,19 +174,14 @@ export default function AgentsPage() {
         subtitle="提示词、模型、执行模式与权限统一配置；由 Runtime Adapter 映射到 DSH、Codex、Kimi、Claude"
         actions={
           <>
-            <button
-              type="button"
-              onClick={() => void reloadConfigs()}
-              disabled={reloading}
-              className="btn-secondary"
-            >
+            <Button type="button" onClick={() => void reloadConfigs()} disabled={reloading}>
               <RefreshCw className={`w-4 h-4 ${reloading ? 'animate-spin' : ''}`} />
               重载配置
-            </button>
-            <button type="button" onClick={() => setAddOpen(true)} className="btn-primary">
+            </Button>
+            <Button type="button" variant="primary" onClick={() => setAddOpen(true)}>
               <Plus className="w-4 h-4" />
               添加 Agent
-            </button>
+            </Button>
           </>
         }
       />
@@ -431,33 +426,23 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           <div className="flex items-center gap-3 shrink-0">
             <span className="text-caption text-text-secondary">启用</span>
             <Toggle checked={enabled} onChange={onToggle} disabled={toggling} />
-            <button
-              type="button"
-              onClick={() => setSessionsOpen(true)}
-              className="btn-secondary py-2"
-              title="查看/重置该 Agent 的跨 Run 会话锚点"
-            >
+            <Button type="button" onClick={() => setSessionsOpen(true)} title="查看/重置该 Agent 的跨 Run 会话锚点">
               <History className="w-4 h-4" />
               会话
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={() => setWakeOpen(true)}
               disabled={!enabled}
-              className="btn-secondary py-2"
               title={enabled ? '手动触发一次心跳唤醒（on_demand）' : '调度已停用，无法唤醒'}
             >
               <BellRing className="w-4 h-4" />
               唤醒
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate(`/chat?agent=${agent.id}`)}
-              className="btn-secondary py-2"
-            >
+            </Button>
+            <Button type="button" onClick={() => navigate(`/chat?agent=${agent.id}`)}>
               <MessageSquare className="w-4 h-4" />
               对话
-            </button>
+            </Button>
           </div>
         </ConfigToolbar>
 
@@ -727,17 +712,17 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
           </p>
         </label>
         <div className="flex justify-end gap-snug pt-tight">
-          <button type="button" onClick={onClose} className="btn-secondary">
+          <Button type="button" onClick={onClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="primary"
             onClick={() => void submit()}
             disabled={!name.trim() || !runtimeLabel || submitting}
-            className="btn-primary"
           >
             {submitting ? '创建中…' : '创建'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>
@@ -815,14 +800,15 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
                   <span>{new Date(s.updated_at).toLocaleString()}</span>
                 </div>
               </div>
-              <button
+              <Button
                 type="button"
+                size="sm"
                 onClick={() => void onReset(s)}
                 disabled={resetting === s.id}
-                className="btn-secondary shrink-0 py-1.5 text-caption"
+                className="shrink-0 text-caption"
               >
                 {resetting === s.id ? '重置中…' : '重置'}
-              </button>
+              </Button>
             </div>
           ))}
         </div>
@@ -903,17 +889,17 @@ function WakeAgentModal({ open, onClose, agent }: { open: boolean; onClose: () =
           若该 Agent 未开启「手动唤醒（wake_on_demand）」，服务端将返回 422；若目标任务已有活跃 Run，本次唤醒会被合并并转发指令。
         </p>
         <div className="flex justify-end gap-snug pt-tight">
-          <button type="button" onClick={onClose} className="btn-secondary">
+          <Button type="button" onClick={onClose}>
             取消
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="primary"
             onClick={() => void submit()}
             disabled={!taskKey || submitting}
-            className="btn-primary"
           >
             {submitting ? '入队中…' : '唤醒'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

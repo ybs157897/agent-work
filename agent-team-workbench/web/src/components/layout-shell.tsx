@@ -1,6 +1,7 @@
 import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, ScrollText, Settings } from 'lucide-react';
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { StatusPill } from './ui';
 import { useWorkspaceStore } from '../stores/workspace.store';
 
 const NAV_ITEMS = [
@@ -83,10 +84,10 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
             <span className="text-text-tertiary/60">/</span>
             <span className="text-text-primary font-semibold">{breadcrumb}</span>
           </div>
-          <div className="status-pill" title="SSE 实时事件连接状态">
-            <div className={`w-2 h-2 rounded-full ${SSE_DOT[sseStatus]}`} />
+          <StatusPill title="SSE 实时事件连接状态">
+            <span className={`w-2 h-2 rounded-full ${SSE_DOT[sseStatus]}`} />
             <span>{SSE_LABEL[sseStatus]}</span>
-          </div>
+          </StatusPill>
         </header>
 
         <main

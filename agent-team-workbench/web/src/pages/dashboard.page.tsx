@@ -60,7 +60,7 @@ export default function DashboardPage() {
 
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-comfortable items-start">
         <Card padded className="xl:col-span-2">
-          <h2 className="ui-section-title">Agent 状态速览</h2>
+          <h2 className="text-h3 text-text-primary mb-comfortable">Agent 状态速览</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-snug">
             {agents.map((agent) => {
               const currentTask = workItems.find(
@@ -107,7 +107,7 @@ export default function DashboardPage() {
         </Card>
 
         <Card padded>
-          <h2 className="ui-section-title">任务进度快照</h2>
+          <h2 className="text-h3 text-text-primary mb-comfortable">任务进度快照</h2>
           <div className="space-y-2">
             <TaskStatRow label="待办" count={counts.todo} total={taskTotal} color="bg-text-tertiary" />
             <TaskStatRow label="进行中" count={counts.in_progress} total={taskTotal} color="bg-brand-accent" />
@@ -118,7 +118,7 @@ export default function DashboardPage() {
       </section>
 
       <Card padded>
-        <h2 className="ui-section-title">最近日志</h2>
+        <h2 className="text-h3 text-text-primary mb-comfortable">最近日志</h2>
         <div className="divide-y divide-border-subtle">
           {dashboard.recent_activities.map((log) => (
             <div
