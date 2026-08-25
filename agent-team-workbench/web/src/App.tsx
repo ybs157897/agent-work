@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect } from 'react';
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { Route, Routes, useLocation } from 'react-router-dom';
 import { ErrorState, Loading } from './components/async-state';
 import { LayoutShell } from './components/layout-shell';
 import { Toaster } from './components/toast';
@@ -9,6 +9,7 @@ import ChatPage from './pages/chat.page';
 import DashboardPage from './pages/dashboard.page';
 import LogsPage from './pages/logs.page';
 import ModelsPage from './pages/models.page';
+import NotFoundPage from './pages/not-found.page';
 import SettingsPage from './pages/settings.page';
 import TasksPage from './pages/tasks.page';
 import { bootstrap } from './stores/bootstrap';
@@ -70,7 +71,7 @@ function AnimatedRoutes() {
           <Route path="/models" element={<ModelsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </motion.div>
     </AnimatePresence>

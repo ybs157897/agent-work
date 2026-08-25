@@ -40,7 +40,14 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const isFullBleed = location.pathname === '/chat' || location.pathname === '/models' || location.pathname === '/agents';
 
   return (
-    <div className="flex h-screen w-full bg-surface-base overflow-hidden">
+    <div className="relative flex h-screen w-full bg-surface-base overflow-hidden">
+      {/* 键盘用户的跳转入口：平时视觉隐藏，聚焦时显现（DESIGN.md 无障碍条） */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-snug focus:top-snug focus:z-50 focus:rounded-button focus:border focus:border-border-strong focus:bg-surface-raised focus:px-base focus:py-tight focus:text-body focus:text-text-primary focus:shadow-level-2"
+      >
+        跳到主要内容
+      </a>
       <aside className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border flex flex-col z-20">
         <div className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-sidebar-border">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-accent flex items-center justify-center text-text-inverse font-bold text-sm shadow-md shadow-brand-primary/25">
@@ -91,7 +98,9 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main
-          className={`flex-1 min-h-0 relative isolate mesh-bg ${
+          id="main-content"
+          tabIndex={-1}
+          className={`flex-1 min-h-0 relative isolate mesh-bg focus:outline-none ${
             isFullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
           }`}
         >

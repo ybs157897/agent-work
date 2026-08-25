@@ -214,6 +214,12 @@ components:
 
 桌面控件高度 ≥32px；44×44 触控目标仅在移动端立项后适用。对话页代码块与表格横向滚动、不折行。
 
+## Accessibility
+
+- **skip-to-content**：shell 首个可聚焦元素是跳转链接（`sr-only`，聚焦时以卡片样式显现在左上），目标 `#main-content`（`<main>`，`tabindex=-1`）。
+- **未知路由 = 404 页**（`not-found.page`）：不静默重定向；一个 primary 返回入口，文案主动语态、无感叹号。
+- **校验错误**：控件 `aria-invalid` + 错误文案 `role=alert`（见 frontmatter `validation`）。
+
 ## Iteration Guide
 
 1. 一次只改一个组件/一个页面；改动引用其 frontmatter token key。
