@@ -1,6 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import type { WorkItem } from '../api/types';
 import { conversationStatusDotClass, suggestedPrompts } from './chat-session-visuals';
 import { conversationLabel } from '../stores/chat.store';
+
+/** conversationLabel 只读 latest_run_id/phase/status，但签名要完整 WorkItem。 */
+const workItem = (over: Partial<WorkItem> = {}): WorkItem => ({
+  id: 'wi_test',
+  workspace_id: 'ws_test',
+  title: 'test',
+  description: '',
+  status: 'in_progress',
+  priority: 'medium',
+  due_date: null,
+  runs_count: 1,
+  version: 1,
+  created_at: '2026-08-25T00:00:00Z',
+  updated_at: '2026-08-25T00:00:00Z',
+  ...over,
+});
 
 describe('conversationStatusDotClass', () => {
   const item = (latestRunId?: string) => ({ latest_run_id: latestRunId });
@@ -34,7 +51,7 @@ describe('conversationStatusDotClass', () => {
 
 describe('conversationLabel 防回归', () => {
   it('waiting_approval 显示「待审批」而非「思考中…」（判定顺序先于 ACTIVE）', () => {
-    const item = { latest_run_id: 'r', phase: 'execution', status: 'in_progress' };
+    const item = workItem({ latest_run_id: 'r', phase: 'execution' });
     expect(conversationLabel(item, { r: { status: 'waiting_approval' } })).toBe('待审批');
     expect(conversationLabel(item, { r: { status: 'running' } })).toBe('思考中…');
     expect(conversationLabel(item, { r: { status: 'succeeded' } })).toBe('已回复');

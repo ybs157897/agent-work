@@ -113,6 +113,6 @@ describe('deriveProposedPlan', () => {
 
 describe('deriveChatDock', () => {
   it('returns empty dock when nothing active', () => {
-    expect(deriveChatDock([user('hi')], [], 'r1')).toEqual({});
+    expect(deriveChatDock([user('hi')], 'r1', {})).toEqual({});
   });
 });
