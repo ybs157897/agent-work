@@ -4,9 +4,8 @@ import {
   buildEditModelPayload,
   generateProviderId,
   groupByProvider,
-  groupModels,
   isProviderDeleteConfirmed,
-  modelCategory,
+  isValidBaseUrl,
   modelDeleteHint,
   resolveModelRefId,
   slugifyModelRef,
@@ -61,23 +60,22 @@ describe('groupByProvider', () => {
   });
 });
 
-describe('legacy model grouping', () => {
-  it('groups multiple models under their explicit category', () => {
-    const groups = groupModels([
-      model('kimi-k2', 'moonshot', { category: 'Kimi', provider_id: 'prov-kimi' }),
-      model('kimi-k2-thinking', 'moonshot', { category: 'Kimi', provider_id: 'prov-kimi' }),
-      model('gpt-5', 'openai', { category: 'OpenCode Go', provider_id: 'prov-openai' }),
-    ]);
-
-    expect(groups).toEqual([
-      ['Kimi', expect.arrayContaining([expect.objectContaining({ id: 'kimi-k2' })])],
-      ['OpenCode Go', [expect.objectContaining({ id: 'gpt-5' })]],
-    ]);
+describe('isValidBaseUrl', () => {
+  it('留空合法（走供应商默认端点）', () => {
+    expect(isValidBaseUrl('')).toBe(true);
+    expect(isValidBaseUrl('   ')).toBe(true);
   });
 
-  it('falls back to a friendly provider category for legacy entries', () => {
-    expect(modelCategory(model('legacy-kimi', 'moonshot', { provider_id: 'prov-kimi' }))).toBe('Kimi');
-    expect(modelCategory(model('custom-model', 'private-gateway', { provider_id: 'prov-x' }))).toBe('private-gateway');
+  it('http(s) 前缀合法，大小写不敏感', () => {
+    expect(isValidBaseUrl('https://api.example.com/v1')).toBe(true);
+    expect(isValidBaseUrl('http://localhost:8000')).toBe(true);
+    expect(isValidBaseUrl('HTTPS://api.example.com')).toBe(true);
+  });
+
+  it('缺协议前缀或非 http 协议一律非法', () => {
+    expect(isValidBaseUrl('api.example.com/v1')).toBe(false);
+    expect(isValidBaseUrl('ftp://files.example.com')).toBe(false);
+    expect(isValidBaseUrl('wss://rt.example.com')).toBe(false);
   });
 });
 

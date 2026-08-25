@@ -31,6 +31,25 @@ describe('Input / Textarea / Select', () => {
     expect(inner.props.className).not.toContain('mt-micro');
   });
 
+  it('invalid 控件切到 error 描边并带 aria-invalid，中性描边不残留', () => {
+    const input = Input({ invalid: true });
+    expect(input.props['aria-invalid']).toBe(true);
+    expect(input.props.className).toContain('border-status-error/60');
+    expect(input.props.className).toContain('focus:ring-status-error/20');
+    expect(input.props.className).not.toContain('border-border-strong');
+
+    const wrapper = Select({ invalid: true });
+    const inner = wrapper.props.children[0];
+    expect(inner.props['aria-invalid']).toBe(true);
+    expect(inner.props.className).toContain('border-status-error/60');
+  });
+
+  it('默认（无 invalid）走中性描边，不设 aria-invalid', () => {
+    const input = Input({});
+    expect(input.props['aria-invalid']).toBeUndefined();
+    expect(input.props.className).toContain('border-border-strong');
+  });
+
   it('元素标签正确且原生 props 原样透传，className 追加在预设后', () => {
     const input = Input({ placeholder: '名称', disabled: true, className: 'extra' });
     expect(input.type).toBe('input');

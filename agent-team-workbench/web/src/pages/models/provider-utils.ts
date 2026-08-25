@@ -122,6 +122,12 @@ export function formatContextBadge(tokens?: number): string | null {
   return String(tokens);
 }
 
+/** Base URL 留空合法（走供应商默认端点）；填写则必须是 http(s) URL。 */
+export function isValidBaseUrl(value: string): boolean {
+  const url = value.trim();
+  return url === '' || /^https?:\/\//i.test(url);
+}
+
 /** 删除供应商时需输入的确认文案（与 label 精确匹配）。 */
 export function providerDeleteConfirmLabel(label: string): string {
   return label.trim();
@@ -139,17 +145,3 @@ export function modelDeleteHint(modelCountInProvider: number): string | null {
   return '已绑定此 ref 的 Agent 在下次运行前需改选其他模型。';
 }
 
-/** @deprecated 保留给旧测试。 */
-export function modelCategory(model: ModelEntry) {
-  return model.category?.trim() || PROVIDER_LABELS[model.provider.toLowerCase()] || model.provider || '其他';
-}
-
-/** @deprecated 保留给旧测试。 */
-export function groupModels(models: ModelEntry[]) {
-  const groups = new Map<string, ModelEntry[]>();
-  for (const model of models) {
-    const category = modelCategory(model);
-    groups.set(category, [...(groups.get(category) ?? []), model]);
-  }
-  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
-}

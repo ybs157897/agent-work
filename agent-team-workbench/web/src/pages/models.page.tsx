@@ -4,7 +4,7 @@ import { ApiError } from '../api/client';
 import { createModel, deleteModel, getProviderCredential, listModels, putProviderCredential, updateModel } from '../api/endpoints';
 import type { ModelEntry } from '../api/types';
 import { Modal } from '../components/modal';
-import { Button, Select, Skeleton } from '../components/ui';
+import { Button, FieldError, Select, Skeleton } from '../components/ui';
 import {
   ConfigAvatar,
   ConfigEmptyState,
@@ -20,6 +20,7 @@ import {
   ConfigSplit,
   ConfigToolbar,
   configInputCls,
+  configInputInvalidCls,
   configLabelCls,
 } from '../components/config-workbench';
 import { toast } from '../stores/toast.store';
@@ -29,6 +30,7 @@ import {
   generateProviderId,
   groupByProvider,
   isProviderDeleteConfirmed,
+  isValidBaseUrl,
   modelDeleteHint,
   resolveModelRefId,
   type ModelProviderGroup,
@@ -60,6 +62,7 @@ const API_OPTIONS = [
 ] as const;
 
 const inputCls = configInputCls;
+const inputInvalidCls = configInputInvalidCls;
 
 type DraftModel = {
   key: string;
@@ -282,7 +285,8 @@ function AddProviderPanel({
   };
 
   const validModels = draftModels.filter((m) => m.model.trim());
-  const canSubmit = label.trim() && validModels.length > 0;
+  const baseURLError = isValidBaseUrl(baseURL) ? '' : 'Base URL 需以 http:// 或 https:// 开头';
+  const canSubmit = label.trim() && validModels.length > 0 && !baseURLError;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -338,8 +342,10 @@ function AddProviderPanel({
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
               placeholder="https://api.example.com/v1"
-              className={`${inputCls} font-mono`}
+              aria-invalid={!!baseURLError || undefined}
+              className={`${baseURLError ? inputInvalidCls : inputCls} font-mono`}
             />
+            {baseURLError ? <FieldError>{baseURLError}</FieldError> : null}
           </label>
           <label className="block">
             <span className={configLabelCls}>API Key</span>
@@ -526,6 +532,7 @@ function ProviderPanel({
     baseURL !== group.base_url ||
     (api ?? '') !== (group.api ?? '') ||
     apiKey !== savedApiKey;
+  const baseURLError = isValidBaseUrl(baseURL) ? '' : 'Base URL 需以 http:// 或 https:// 开头';
 
   return (
     <ConfigPanel>
@@ -550,8 +557,10 @@ function ProviderPanel({
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
               placeholder="https://api.example.com/v1"
-              className={`${inputCls} font-mono`}
+              aria-invalid={!!baseURLError || undefined}
+              className={`${baseURLError ? inputInvalidCls : inputCls} font-mono`}
             />
+            {baseURLError ? <FieldError>{baseURLError}</FieldError> : null}
           </label>
           <label className="block">
             <span className={configLabelCls}>API Key</span>
@@ -663,7 +672,7 @@ function ProviderPanel({
         <ConfigFooter
           onSave={() => void saveProvider()}
           saving={saving}
-          saveDisabled={!label.trim()}
+          saveDisabled={!label.trim() || !!baseURLError}
           saveLabel="保存配置"
         />
       ) : null}
@@ -973,5 +982,3 @@ function EditModelModal({
     </Modal>
   );
 }
-
-export { groupByProvider, groupModels, modelCategory } from './models/provider-utils';

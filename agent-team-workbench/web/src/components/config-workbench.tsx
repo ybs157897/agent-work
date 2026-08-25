@@ -1,11 +1,15 @@
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Button } from './ui';
+import { Button, fieldChromeInvalid, fieldChromeNeutral } from './ui';
 
 /** 配置工作台共享样式（对齐 ui-stack 8px 网格与设计 token） */
 export const configLabelCls = 'block text-caption font-medium text-text-secondary mb-1.5';
-export const configInputCls =
-  'w-full rounded-input border border-border-strong bg-surface-raised px-snug py-2.5 text-body text-text-primary outline-none transition-shadow placeholder:text-text-tertiary/70 focus:border-brand-primary/50 focus:ring-2 focus:ring-brand-primary/20 disabled:opacity-50 disabled:cursor-not-allowed';
+
+// 校验态 chrome 与 ui/Input 同源（DESIGN.md 校验条）；配置页输入更高（py-2.5），其余同规格。
+const configInputBaseCls =
+  'w-full rounded-input border bg-surface-raised px-snug py-2.5 text-body text-text-primary outline-none transition-shadow placeholder:text-text-tertiary/70 focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed';
+export const configInputCls = `${configInputBaseCls} ${fieldChromeNeutral}`;
+export const configInputInvalidCls = `${configInputBaseCls} ${fieldChromeInvalid}`;
 
 export function ConfigPage({ children }: { children: ReactNode }) {
   return <main className="config-page">{children}</main>;

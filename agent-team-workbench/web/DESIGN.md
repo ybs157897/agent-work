@@ -86,6 +86,11 @@ components:
     base: "rounded {rounded.control}; border 1px {colors.border.strong}; bg {colors.surface.raised}; padding {spacing.snug} × {spacing.tight}; text {typography.body}; focus border {colors.brand.primary}/40 + ring-2 {colors.brand.primary}/20"
   select:
     base: "与 input 同系 + appearance-none 去 OS 默认箭头；自定义 chevron（{colors.text.tertiary} 16px 右 12px 垂直居中，pointer-events-none）；padding-right 32px 让位箭头；新代码禁止裸用原生 select"
+  validation:
+    invalid-control: "input/select 错误态 = border 1px {colors.status.error}/60 + focus border {colors.status.error} + ring-2 {colors.status.error}/20；控件带 aria-invalid；由控件 invalid 属性承担，不手写类"
+    error-text: "FieldError：role=alert；text {typography.caption} {colors.status.error}；顶替 hint 位置（不并存）"
+    copy: "主动语态、说清事实与怎么改、不用感叹号（如「Base URL 需以 http:// 或 https:// 开头」）"
+    success-state: "不做——没有错误即正常，不额外给绿色对勾"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
   user-bubble:
@@ -205,7 +210,7 @@ components:
 
 ## Responsive Behavior
 
-**Desktop-first（≥1024px 为支持目标）**。`page-shell` 页面（总览/任务等）在 640/1024 断点有真实收折：留白 48/40/32px、网格降列、`page-header` 纵排、≥1440px 限宽封顶。**对话页与配置工作台的分栏（shell 220px + 会话/配置列 + 工作区）不收折，<1024px 不支持**（见 Known Gaps 第 8 条）——不要为这些分栏写移动端样式，本文档也不再承诺其断点行为。
+**Desktop-first（≥1024px 为支持目标）**。`page-shell` 页面（总览/任务等）在 640/1024 断点有真实收折：留白 48/40/32px、网格降列、`page-header` 纵排、≥1440px 限宽封顶。**对话页与配置工作台的分栏（shell 220px + 会话/配置列 + 工作区）不收折，<1024px 不支持**（见 Known Gaps 第 7 条）——不要为这些分栏写移动端样式，本文档也不再承诺其断点行为。
 
 桌面控件高度 ≥32px；44×44 触控目标仅在移动端立项后适用。对话页代码块与表格横向滚动、不折行。
 
@@ -224,9 +229,8 @@ components:
 
 1. **暗色模式**：只有单浅色主题；不要写 `dark:` 变体。
 2. **动画时长体系**：对话子系统以外的动效时长未定义（现有 150/200ms 过渡是既成事实，不是体系）。
-3. **表单校验态**：输入框错误/成功样式未定义（`ui/field` 的 error 槽位是占位约定，视觉规格待补）。
-4. **空态插画体系**：空态只用图标 + 文案，不引入插画。
-5. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
-6. **`surface.warm` 的用法**：预留锚点，无现网消费场景。
-7. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
-8. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。
+3. **空态插画体系**：空态只用图标 + 文案，不引入插画。
+4. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
+5. **`surface.warm` 的用法**：预留锚点，无现网消费场景。
+6. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
+7. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。

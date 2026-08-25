@@ -1,11 +1,19 @@
 import type { ReactNode } from 'react';
 import { cx } from './cx';
 
-// 校验态视觉规格是 DESIGN.md 的 Known Gap：这里只做占位约定——error 出现时顶替 hint，
-// 不给输入框本身发明错误样式。
+// 校验态契约（DESIGN.md 校验条）：错误文案顶替 hint；输入框侧错误描边由控件的 invalid 属性承担。
 const FIELD_LABEL_CLASSES = 'block text-caption text-text-secondary';
 const FIELD_HINT_CLASSES = 'mt-micro block text-caption text-text-tertiary';
 const FIELD_ERROR_CLASSES = 'mt-micro block text-status-error text-caption';
+
+/** 校验错误文案（主动语态、说清怎么改、不用感叹号）；与控件的 invalid 态配对出现。 */
+export function FieldError({ children }: { children: ReactNode }) {
+  return (
+    <span role="alert" className={FIELD_ERROR_CLASSES}>
+      {children}
+    </span>
+  );
+}
 
 export type FieldProps = {
   label: string;
@@ -21,11 +29,7 @@ export function Field({ label, hint, error, children, className }: FieldProps) {
     <label className={cx('block', className)}>
       <span className={FIELD_LABEL_CLASSES}>{label}</span>
       {children}
-      {error ? (
-        <span role="alert" className={FIELD_ERROR_CLASSES}>
-          {error}
-        </span>
-      ) : null}
+      {error ? <FieldError>{error}</FieldError> : null}
       {!error && hint ? <span className={FIELD_HINT_CLASSES}>{hint}</span> : null}
     </label>
   );
