@@ -75,7 +75,7 @@ export function BlockTaskModal({ task, onClose }: { task: WorkItem | null; onClo
           <button
             onClick={submit}
             disabled={!message.trim() || submitting}
-            className="bg-status-error text-white rounded-button px-base py-tight font-medium transition-all duration-150 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-status-error text-text-inverse rounded-button px-base py-tight font-medium transition-all duration-150 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? '提交中…' : '标记阻塞'}
           </button>

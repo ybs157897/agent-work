@@ -302,7 +302,7 @@ function WorkspaceEditModal({ open, onClose }: { open: boolean; onClose: () => v
           <button
             onClick={() => void save()}
             disabled={!name.trim() || saving}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? '保存中…' : '保存'}
           </button>
@@ -409,7 +409,7 @@ function BindingEditModal({
           <button
             onClick={() => void submit()}
             disabled={!valid || saving}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? '保存中…' : isNew ? '创建' : '保存'}
           </button>

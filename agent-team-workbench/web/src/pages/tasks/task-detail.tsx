@@ -339,7 +339,7 @@ export function TaskDetail({
                       <>
                         <button
                           onClick={() => void onTransition(task, 'completed')}
-                          className="bg-status-success text-white rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
+                          className="bg-status-success text-text-inverse rounded-button px-base py-tight text-body font-medium transition-all hover:opacity-90 active:scale-[0.98]"
                         >
                           验收通过
                         </button>
@@ -356,7 +356,7 @@ export function TaskDetail({
                 {task.status === 'blocked' && (
                   <button
                     onClick={() => void onTransition(task, 'in_progress')}
-                    className="bg-brand-primary text-white rounded-button px-base py-tight text-body font-medium transition-all hover:bg-brand-accent active:scale-[0.98]"
+                    className="bg-brand-primary text-text-inverse rounded-button px-base py-tight text-body font-medium transition-all hover:bg-brand-accent active:scale-[0.98]"
                   >
                     解除阻塞
                   </button>
@@ -587,7 +587,7 @@ function TaskEditModal({
           <button
             onClick={() => void save()}
             disabled={!title.trim() || saving}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50"
           >
             {saving ? '保存中…' : '保存'}
           </button>

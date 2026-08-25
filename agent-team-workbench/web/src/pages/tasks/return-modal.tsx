@@ -71,7 +71,7 @@ export function ReturnTaskModal({ task, onClose }: { task: WorkItem | null; onCl
           <button
             onClick={() => void submit()}
             disabled={submitting}
-            className="bg-status-warning text-white rounded-button px-base py-tight font-medium transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-status-warning text-text-inverse rounded-button px-base py-tight font-medium transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? '提交中…' : '打回重做'}
           </button>

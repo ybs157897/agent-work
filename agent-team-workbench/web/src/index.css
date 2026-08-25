@@ -35,6 +35,16 @@
     --color-status-info: 199 89% 48%;
     --color-status-standby: 215 10% 65%;
 
+    /* 身份色阶：仅头像/归属标记（DESIGN.md Identity 条），值冻结自原 avatar 调色板 */
+    --color-identity-1: 199 89% 48%;
+    --color-identity-2: 192 91% 36%;
+    --color-identity-3: 173 80% 34%;
+    --color-identity-4: 160 84% 39%;
+    --color-identity-5: 217 91% 60%;
+    --color-identity-6: 38 92% 50%;
+    --color-identity-7: 215 16% 47%;
+    --color-identity-8: 351 95% 71%;
+
     --layout-safe-width: 1440px;
   }
 
@@ -776,11 +786,11 @@
 }
 
 .chat-approval-btn-primary {
-  @apply bg-status-success text-white hover:bg-status-success/90;
+  @apply bg-status-success text-text-inverse hover:bg-status-success/90;
 }
 
 .chat-approval-btn-danger {
-  @apply bg-status-error text-white hover:bg-status-error/90;
+  @apply bg-status-error text-text-inverse hover:bg-status-error/90;
 }
 
 .chat-approval-btn-danger-outline {
@@ -840,7 +850,7 @@
 }
 
 .chat-plan-box-done {
-  @apply flex items-center justify-center border-status-success bg-status-success text-white;
+  @apply flex items-center justify-center border-status-success bg-status-success text-text-inverse;
 }
 
 .chat-plan-box-active {

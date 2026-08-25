@@ -23,6 +23,13 @@ const HEX_COLOR = /#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/g;
  */
 const FUNCTIONAL_COLOR = /\b(?:rgba?|hsla?)\((?!var\(--color-)/g;
 
+/**
+ * 非语义类名：text-white 与 Tailwind 默认调色板色类。颜色必须走语义 token
+ *（含 identity-* 身份色阶）；类名违规拦不住字面量正则，单独钉一道。
+ */
+const NON_SEMANTIC_CLASS =
+  /\b(?:text-white|(?:bg|text|border|ring|from|to)-(?:sky|cyan|teal|emerald|blue|amber|slate|rose|red|green|yellow|orange|purple|indigo|violet|pink)-\d)/g;
+
 /** 本门禁自身：检测正则与注释示例会命中规则，排除扫描。 */
 const SELF_FILE = 'src/design-tokens.test.ts';
 
@@ -63,6 +70,7 @@ function collectViolations(): Violation[] {
       const hits = [
         ...(skipFunctional ? [] : text.match(FUNCTIONAL_COLOR) ?? []),
         ...(text.match(HEX_COLOR) ?? []),
+        ...(text.match(NON_SEMANTIC_CLASS) ?? []),
       ];
       if (hits.length > 0) {
         violations.push({
@@ -87,11 +95,13 @@ describe('设计 token 纪律门禁', () => {
     }
   });
 
-  it('src 源码不出现内联色值', () => {
+  it('src 源码不出现内联色值与非语义类名（text-white/默认调色板）', () => {
     const violations = collectViolations();
     expect(
       violations,
-      `发现内联色值，请改引用 DESIGN.md 的语义 token:\n${violations.map((v) => `${v.file}:${v.line}: ${v.snippet}`).join('\n')}`,
+      `发现内联色值或非语义类名，请改引用 DESIGN.md 的语义 token（头像用 identity-*）:\n${violations
+        .map((v) => `${v.file}:${v.line}: ${v.snippet}`)
+        .join('\n')}`,
     ).toEqual([]);
   });
 });

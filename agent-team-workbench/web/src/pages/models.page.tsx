@@ -725,7 +725,7 @@ function DeleteModelModal({
             type="button"
             onClick={() => void submit()}
             disabled={busy}
-            className="rounded-button px-base py-tight font-medium text-white bg-status-error hover:bg-status-error/90 disabled:opacity-50"
+            className="rounded-button px-base py-tight font-medium text-text-inverse bg-status-error hover:bg-status-error/90 disabled:opacity-50"
           >
             {busy ? '删除中…' : '确认删除'}
           </button>
@@ -800,7 +800,7 @@ function DeleteProviderModal({
             type="button"
             onClick={() => void submit()}
             disabled={!canDelete || busy}
-            className="rounded-button px-base py-tight font-medium text-white bg-status-error hover:bg-status-error/90 disabled:opacity-50"
+            className="rounded-button px-base py-tight font-medium text-text-inverse bg-status-error hover:bg-status-error/90 disabled:opacity-50"
           >
             {busy ? '删除中…' : '确认删除'}
           </button>
@@ -879,7 +879,7 @@ function AddModelModal({
           <button
             onClick={() => void submit()}
             disabled={!modelName.trim() || saving}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium disabled:opacity-50"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
           >
             {saving ? '添加中…' : '添加'}
           </button>
@@ -959,7 +959,7 @@ function EditModelModal({
           <button
             onClick={() => void submit()}
             disabled={!displayName.trim() || !modelName.trim() || saving}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium disabled:opacity-50"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium disabled:opacity-50"
           >
             {saving ? '保存中…' : '保存'}
           </button>

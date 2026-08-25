@@ -178,7 +178,7 @@ export function RunPanel({ task }: { task: WorkItem }) {
             <button
               disabled={busy !== null}
               onClick={() => void onResolve(a.id, a.run_id, 'approved')}
-              className="text-caption bg-status-success text-white rounded-button px-2 py-1 disabled:opacity-50"
+              className="text-caption bg-status-success text-text-inverse rounded-button px-2 py-1 disabled:opacity-50"
             >
               批准
             </button>
@@ -250,7 +250,7 @@ export function RunPanel({ task }: { task: WorkItem }) {
             <button
               onClick={() => void startRun()}
               disabled={!instruction.trim() || busy !== null}
-              className="bg-brand-primary text-white rounded-button px-base py-tight text-body font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+              className="bg-brand-primary text-text-inverse rounded-button px-base py-tight text-body font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busy === 'start' ? '受理中…' : '启动运行'}
             </button>

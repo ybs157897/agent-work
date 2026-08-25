@@ -42,7 +42,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen w-full bg-surface-base overflow-hidden">
       <aside className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border flex flex-col z-20">
         <div className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-sidebar-border">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-accent flex items-center justify-center text-white font-bold text-sm shadow-md shadow-brand-primary/25">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-accent flex items-center justify-center text-text-inverse font-bold text-sm shadow-md shadow-brand-primary/25">
             A
           </div>
           <div className="min-w-0">

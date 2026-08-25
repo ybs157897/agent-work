@@ -139,7 +139,7 @@ export function CreateTaskModal({
           <button
             onClick={submit}
             disabled={!title.trim() || submitting}
-            className="bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all duration-150 hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all duration-150 hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? '创建中…' : '创建'}
           </button>
