@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createWorkItem } from '../../api/endpoints';
 import type { Priority, WorkItem, WorkItemStatus } from '../../api/types';
-import { Modal } from '../../components/modal';
+import { Drawer } from '../../components/drawer';
 import { useAgentsStore } from '../../stores/agents.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
@@ -76,8 +76,9 @@ export function CreateTaskModal({
     'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
 
   return (
-    <Modal open={open} onClose={onClose} title={`创建任务 · 初始状态：${STATUS_LABEL[initialStatus] ?? initialStatus}`} width={480}>
-      <div className="space-y-base">
+    <Drawer open={open} onClose={onClose} title={`创建任务 · 初始状态：${STATUS_LABEL[initialStatus] ?? initialStatus}`} width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
         <label className="block">
           <span className="text-body text-text-secondary">标题</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} placeholder="任务标题" />
@@ -145,6 +146,7 @@ export function CreateTaskModal({
           </button>
         </div>
       </div>
-    </Modal>
+      </div>
+    </Drawer>
   );
 }

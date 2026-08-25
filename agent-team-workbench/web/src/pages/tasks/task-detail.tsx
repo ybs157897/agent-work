@@ -5,7 +5,6 @@ import { ApiError } from '../../api/client';
 import { assignWorkItem, getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
 import type { Plan, PlanStep, Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Drawer } from '../../components/drawer';
-import { Modal } from '../../components/modal';
 import { PriorityBadge } from '../../components/priority-badge';
 import { useAgentsStore } from '../../stores/agents.store';
 import { usePlansStore } from '../../stores/plans.store';
@@ -552,8 +551,9 @@ function TaskEditModal({
   };
 
   return (
-    <Modal open onClose={onClose} title="编辑任务">
-      <div className="space-y-base">
+    <Drawer open onClose={onClose} title="编辑任务" width={480}>
+      <div className="p-comfortable">
+        <div className="space-y-base">
         <label className="block">
           <span className="text-body text-text-secondary">标题</span>
           <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} />
@@ -593,6 +593,7 @@ function TaskEditModal({
           </button>
         </div>
       </div>
-    </Modal>
+      </div>
+    </Drawer>
   );
 }
