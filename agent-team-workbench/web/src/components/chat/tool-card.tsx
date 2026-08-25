@@ -11,7 +11,7 @@ import { TerminalBlock } from './blocks/TerminalBlock';
 import { ReadBlock } from './blocks/ReadBlock';
 import { SearchBlock } from './blocks/SearchBlock';
 import { cx } from './blocks/cx';
-import { toolRowModel, classifyTool, type ToolRowModel, type ToolRowState } from './tool-model';
+import { toolRowModel, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
 import { readBlockFromOutput } from './read-model';
 import { parseGrepOutput, parsePathList } from './search-parse';
 import css from './tool-row.module.css';
@@ -147,7 +147,85 @@ export function ActivityGroup({
   );
 }
 
-/** 展开体卡片分派：按工具族 + 输出形态选终端/diff/read/search 卡，均不适用时落 IN/OUT 通用卡。 */
+/**
+ * 工具族展开体渲染器注册表：族 → 专用渲染函数，返回 null 表示不适用、
+ * 落通用 IN/OUT 卡。新增族的专用渲染只需在此加一条注册，分派逻辑不动。
+ */
+type FamilyBodyRenderer = (
+  model: ToolRowModel,
+  state: ToolRowState,
+  ctx: { suppressDiff: boolean },
+) => ReactNode | null;
+
+/** write/edit 共用：输出是 unified diff 时渲染 diff 卡，否则落通用卡。 */
+const renderDiffBody: FamilyBodyRenderer = (model, _state, ctx) => {
+  if (ctx.suppressDiff) return null;
+  const detail = model.output !== null ? stripControlChars(model.output) : '';
+  if (detail !== '' && looksLikeUnifiedDiff(detail)) {
+    return (
+      <div className={css.cardBody}>
+        <DiffCard text={model.output ?? ''} />
+      </div>
+    );
+  }
+  return null;
+};
+
+/** bash/code 共用：命令 + 输出 + 退出码的终端语义卡。 */
+const renderTerminalBody: FamilyBodyRenderer = (model, state) => (
+  <TerminalBlock
+    className={css.cardBody}
+    command={model.summary}
+    output={model.output ?? undefined}
+    exitCode={model.exitCode}
+    running={state === 'running'}
+  />
+);
+
+const TOOL_BODY_RENDERERS: Partial<Record<ToolFamily, FamilyBodyRenderer>> = {
+  bash: renderTerminalBody,
+  code: renderTerminalBody,
+  write: renderDiffBody,
+  edit: renderDiffBody,
+  read: (model, state) => {
+    if (state !== 'running' && model.output !== null) {
+      const read = readBlockFromOutput(model.output, model.filePath);
+      if (read !== null) return <ReadBlock {...read} className={css.cardBody} />;
+    }
+    return null;
+  },
+  search: (model) => {
+    if (model.output !== null) {
+      const grep = parseGrepOutput(model.output);
+      if (grep !== null) {
+        return (
+          <SearchBlock
+            kind="matches"
+            className={css.cardBody}
+            files={grep.files}
+            truncated={grep.truncated}
+            total={grep.files.reduce((n, f) => n + f.matches.length, 0)}
+          />
+        );
+      }
+      const paths = parsePathList(model.output);
+      if (paths !== null) {
+        return (
+          <SearchBlock
+            kind="paths"
+            className={css.cardBody}
+            paths={paths}
+            truncated={model.output.length >= 1900}
+            total={paths.length}
+          />
+        );
+      }
+    }
+    return null;
+  },
+};
+
+/** 展开体卡片分派：注册表命中则用族专用渲染器，未命中/不适用落 IN/OUT 通用卡。 */
 function ExpandedBody({
   model,
   state,
@@ -158,69 +236,9 @@ function ExpandedBody({
   suppressDiff?: boolean;
 }) {
   const output = model.output;
-  switch (model.family) {
-    case 'bash':
-      return (
-        <TerminalBlock
-          className={css.cardBody}
-          command={model.summary}
-          output={output ?? undefined}
-          exitCode={model.exitCode}
-          running={state === 'running'}
-        />
-      );
-    case 'write':
-    case 'edit': {
-      if (suppressDiff) break;
-      const detail = output !== null ? stripControlChars(output) : '';
-      if (detail !== '' && looksLikeUnifiedDiff(detail)) {
-        return (
-          <div className={css.cardBody}>
-            <DiffCard text={output ?? ''} />
-          </div>
-        );
-      }
-      break;
-    }
-    case 'read': {
-      if (state !== 'running' && output !== null) {
-        const read = readBlockFromOutput(output, model.filePath);
-        if (read !== null) return <ReadBlock {...read} className={css.cardBody} />;
-      }
-      break;
-    }
-    case 'search': {
-      if (output !== null) {
-        const grep = parseGrepOutput(output);
-        if (grep !== null) {
-          return (
-            <SearchBlock
-              kind="matches"
-              className={css.cardBody}
-              files={grep.files}
-              truncated={grep.truncated}
-              total={grep.files.reduce((n, f) => n + f.matches.length, 0)}
-            />
-          );
-        }
-        const paths = parsePathList(output);
-        if (paths !== null) {
-          return (
-            <SearchBlock
-              kind="paths"
-              className={css.cardBody}
-              paths={paths}
-              truncated={output.length >= 1900}
-              total={paths.length}
-            />
-          );
-        }
-      }
-      break;
-    }
-    default:
-      break;
-  }
+  const specialized = TOOL_BODY_RENDERERS[model.family]?.(model, state, { suppressDiff });
+  if (specialized !== undefined && specialized !== null) return <>{specialized}</>;
+
   // 通用 IN/OUT 卡：单文件工具不暴露 IN（路径已是摘要；对齐 DSH single-file 取舍）。
   const singleFile = model.filePath !== undefined;
   const body = singleFile ? null : model.body;
