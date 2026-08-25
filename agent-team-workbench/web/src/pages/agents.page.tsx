@@ -35,6 +35,7 @@ import {
 import { Modal } from '../components/modal';
 import { PresenceDot, presenceText } from '../components/status';
 import { Toggle } from '../components/toggle';
+import { Select } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -468,17 +469,17 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
             </label>
             <label className="xl:col-span-2">
               <span className={configLabelCls}>角色</span>
-              <select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
+              <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label className="xl:col-span-3">
               <span className={configLabelCls}>模型</span>
-              <select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls}>
+              <Select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls}>
                 <option value="">自定义（手动填写）</option>
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -488,12 +489,12 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 {modelRef && !selectedModel ? (
                   <option value={modelRef}>{modelRef}（注册表条目已缺失）</option>
                 ) : null}
-              </select>
+              </Select>
             </label>
             {codexRuntime ? (
               <label className="xl:col-span-2">
                 <span className={configLabelCls}>思考等级</span>
-                <select
+                <Select
                   value={reasoningEffort}
                   onChange={(e) => setReasoningEffort(e.target.value as ReasoningEffort)}
                   className={configInputCls}
@@ -503,13 +504,13 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                       {o.label}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <p className="mt-1 text-caption text-text-tertiary">写入 Codex config.toml 与 turn/start.effort。</p>
               </label>
             ) : null}
             <label className={codexRuntime ? 'xl:col-span-2' : 'xl:col-span-3'}>
               <span className={configLabelCls}>Runtime</span>
-              <select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls}>
+              <Select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls}>
                 {realBindings.map((b) => (
                   <option key={b.id} value={b.runtime_label}>
                     {runtimeDisplayLabel(b.runtime_label)}
@@ -518,7 +519,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 {preferred && !realBindings.some((b) => b.runtime_label === preferred) ? (
                   <option value={preferred}>{runtimeDisplayLabel(preferred)}</option>
                 ) : null}
-              </select>
+              </Select>
               {codexRuntime ? (
                 <p className="mt-1 text-caption text-text-tertiary">保存时把模型页配置写入 .agent-work/codex/config.toml，由 Codex harness 执行。</p>
               ) : null}
@@ -553,15 +554,15 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             <label>
               <span className={configLabelCls}>执行模式</span>
-              <select value={mode} onChange={(e) => setMode(e.target.value as 'default' | 'plan')} className={configInputCls}>
+              <Select value={mode} onChange={(e) => setMode(e.target.value as 'default' | 'plan')} className={configInputCls}>
                 <option value="default">默认执行</option>
                 <option value="plan">Plan（只分析与规划）</option>
-              </select>
+              </Select>
               <p className="mt-1 text-caption text-text-tertiary">Codex/Kimi/Claude 使用原生模式；DSH 以只读沙箱翻译。</p>
             </label>
             <label>
               <span className={configLabelCls}>权限</span>
-              <select
+              <Select
                 value={permissionPreset}
                 onChange={(e) => setPermissionPreset(e.target.value)}
                 className={configInputCls}
@@ -573,7 +574,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 {permissionPreset && !permissionPresets.some((p) => p.id === permissionPreset) ? (
                   <option value={permissionPreset}>{permissionPreset}（未知预设）</option>
                 ) : null}
-              </select>
+              </Select>
               {selectedPermissionPreset?.description ? (
                 <p className="mt-1 text-caption text-text-tertiary">{selectedPermissionPreset.description}</p>
               ) : null}
@@ -581,7 +582,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
             {dshRuntime ? (
               <label>
                 <span className={configLabelCls}>DSH Agent Preset</span>
-                <select
+                <Select
                   value={agentPreset}
                   onChange={(e) => setAgentPreset(e.target.value)}
                   className={configInputCls}
@@ -596,7 +597,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                   {agentPreset && !agentPresets.some((p) => p.id === agentPreset) ? (
                     <option value={agentPreset}>{agentPreset}（未在目录中发现）</option>
                   ) : null}
-                </select>
+                </Select>
                 {selectedAgentPreset?.description ? (
                   <p className="mt-1 text-caption text-text-tertiary">{selectedAgentPreset.description}</p>
                 ) : null}
@@ -693,13 +694,13 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         </label>
         <label className="block">
           <span className={configLabelCls}>角色</span>
-          <select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
+          <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
             {ROLE_OPTIONS.map((r) => (
               <option key={r.value} value={r.value}>
                 {r.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="block">
           <span className={configLabelCls}>描述</span>
@@ -712,13 +713,13 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         </label>
         <label className="block">
           <span className={configLabelCls}>底层 Runtime</span>
-          <select value={runtimeLabel} onChange={(e) => setRuntimeLabel(e.target.value)} className={configInputCls}>
+          <Select value={runtimeLabel} onChange={(e) => setRuntimeLabel(e.target.value)} className={configInputCls}>
             {bindings.map((binding) => (
               <option key={binding.id} value={binding.runtime_label}>
                 {runtimeDisplayLabel(binding.runtime_label)}
               </option>
             ))}
-          </select>
+          </Select>
           <p className="mt-1 text-caption text-text-tertiary">
             {runtimeLabel === 'codex_local'
               ? '使用本机 Codex app-server、Codex 登录态和线程历史。'
@@ -879,14 +880,14 @@ function WakeAgentModal({ open, onClose, agent }: { open: boolean; onClose: () =
       <div className="space-y-base">
         <label className="block">
           <span className={configLabelCls}>锚定任务</span>
-          <select value={taskKey} onChange={(e) => setTaskKey(e.target.value)} className={configInputCls}>
+          <Select value={taskKey} onChange={(e) => setTaskKey(e.target.value)} className={configInputCls}>
             {tasks.length === 0 ? <option value="">（无未完成的工作项）</option> : null}
             {tasks.map((t) => (
               <option key={t.id} value={t.id}>
                 {t.title || t.id}（{t.status}）
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="block">
           <span className={configLabelCls}>本轮指令（可选）</span>

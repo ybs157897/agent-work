@@ -84,6 +84,8 @@ components:
     interactive: "card + cursor-pointer; hover -translate-y-0.5 + shadow {shadows.level-2} + border {colors.border.strong}; duration-200 ease-out"
   input:
     base: "rounded {rounded.control}; border 1px {colors.border.strong}; bg {colors.surface.raised}; padding {spacing.snug} × {spacing.tight}; text {typography.body}; focus border {colors.brand.primary}/40 + ring-2 {colors.brand.primary}/20"
+  select:
+    base: "与 input 同系 + appearance-none 去 OS 默认箭头；自定义 chevron（{colors.text.tertiary} 16px 右 12px 垂直居中，pointer-events-none）；padding-right 32px 让位箭头；新代码禁止裸用原生 select"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
   user-bubble:
