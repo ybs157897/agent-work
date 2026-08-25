@@ -229,3 +229,42 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 | 5 | 会话列表状态点（思考中脉冲/已回复绿/失败红/待审批黄） | 运行可见性 | `chat.page.tsx` + 纯函数 helper + 单测 |
 
 活动/消息分离（工具活动组折叠）已有实现（ActivityGroup，终态自动收拢），本刀不动；生成式 UI（A2UI）列为 LATER，待审批/表单类交互密度上升后再评估。
+
+---
+
+## 7. 工作区与工具渲染器注册表（2026-08-25 并入实施）
+
+输入：知乎《从 Chat UI 到 Agent UI》第三/五/八章对照审计。
+
+### 7.1 Artifact 工作区（第三/八章，真缺口）
+
+审计结论：**数据链路 100% 就绪，呈现层为零**——后端有 `GET /runs/{id}/artifacts`
+端点、`artifact.created/updated` 事件白名单、outbox 投影；前端 `runs.store`
+已有 `artifacts` 状态、`fetchArtifacts`（watchRun 自动触发）与事件驱动刷新，
+但没有任何组件渲染它们。
+
+落地：
+
+- **`ArtifactShelf`（聊天区摘要卡）**：会话出现成果时，composer 上方显示
+  「已生成 N 个成果」摘要（图标 + 文件名 + 大小，超 4 项折叠）+「打开工作区」入口。
+  对齐文章「聊天区负责说明，工作区负责承载」。
+- **`ArtifactWorkspace`（右侧面板）**：会话区右缘 320px 面板，列出本会话全部
+  成果（文件名/大小/时间/草稿·已接受状态），页头提供开关。
+- **Known Gap**：后端只暴露成果元数据（logical_path/mime/size/sha256），
+  **无内容端点**——面板是清单不是预览器；内容预览待后端补内容面后再做，
+  不在本刀臆造。
+
+### 7.2 工具渲染器注册表（第五章，形式化 + 补条目）
+
+审计结论：注册表**实质已存在**——`classifyTool`（精确表 + 正则兜底）是注册键
+解析，`ExpandedBody` 按族分派 TerminalBlock/ReadBlock/SearchBlock/DiffCard，
+未命中落通用 IN/OUT 卡；两层展示（默认业务语义标题、展开技术详情）由
+`toolActivityTitle` + 展开体承担。
+
+本刀两件事：
+
+1. **显式化**：`ExpandedBody` 的隐式 switch 重构为显式 `TOOL_BODY_RENDERERS`
+   注册表（族 → 渲染函数，返回 null 落通用卡），行为逐字等价，扩展从
+   「改 switch」变成「加一条注册」。
+2. **补 `code` 族**：run_code/python 等代码执行族此前落通用 IN/OUT，
+   注册进 TerminalBlock（命令 + 输出 + 退出码语义更贴切）。
