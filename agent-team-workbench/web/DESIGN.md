@@ -23,7 +23,7 @@ colors:
   text:
     primary: "var(--color-text-primary)"       # hsl(222 24% 12%)，正文与标题
     secondary: "var(--color-text-secondary)"   # hsl(215 14% 38%)，次要信息
-    tertiary: "var(--color-text-tertiary)"     # hsl(215 10% 52%)，辅助/时间戳（= text-muted）
+    tertiary: "var(--color-text-tertiary)"     # hsl(215 10% 45%)，辅助/时间戳（= text-muted）；45% 亮度是浅底 AA 对比度下限，不得再调浅
     inverse: "var(--color-text-inverse)"       # 白，品牌色底上的文字
     on-sidebar: "var(--color-text-on-sidebar)"            # hsl(215 16% 72%)
     on-sidebar-active: "var(--color-text-on-sidebar-active)"  # 白
@@ -127,6 +127,7 @@ components:
 2. **Surface**：四种表面——`base`（画布）→ `raised`（卡片）→ `sunken`（凹陷区分组）→ `sidebar`（深色框架）。`warm` 是预留暖调锚点，当前无消费场景，不要为它发明用法。
 3. **Text**：三级递减（primary → secondary → tertiary）+ `inverse`（品牌底上）+ 侧边栏两级。
 4. **Status**：success / warning / error / info / standby。状态色**只用于表达状态**（运行态、校验、告警），不做装饰。`info` 与 `brand.primary` 同值是刻意的——"信息"与"品牌"在语义上同源。
+5. **Identity**：`identity-1..8` 身份色阶，**只用于头像/归属标记**，不进入强调色与状态色语义（不参与按钮/边框/状态表达）。值冻结为原 avatar 调色板的 token 化版本，新增 hue 需先改本文件。
 
 ## Typography
 
@@ -144,7 +145,7 @@ components:
 
 - 标题族（display/h1–h3）用 `font-display`（Outfit）+ `tracking-tight`；正文一律落 `font-zh` 中文栈——**不要给中文正文指定 Outfit/Inter**。
 - 强调用字号升级，不用字重堆叠（正文不加粗到 700 来强调，升到 body-lg 或 h3）。
-- 小于 12px 的文字禁止出现（表格/代码除外，最小 11px 且仅限 diff/mono 场景）。
+- 小于 12px 的文字禁止出现（例外：diff/mono 场景与 diff 增删计数徽章，最小 11px）。
 
 ## Layout
 
@@ -200,14 +201,9 @@ components:
 
 ## Responsive Behavior
 
-| 断点 | 行为 |
-|---|---|
-| <640px | `layout-safe` 两侧留白 32px；`page-header` 纵排 |
-| 640–1023px | 留白 40px；网格列数收缩 |
-| ≥1024px | 留白 48px；配置工作台双栏完全展开 |
-| ≥1440px | 内容限宽封顶（`--layout-safe-width`） |
+**Desktop-first（≥1024px 为支持目标）**。`page-shell` 页面（总览/任务等）在 640/1024 断点有真实收折：留白 48/40/32px、网格降列、`page-header` 纵排、≥1440px 限宽封顶。**对话页与配置工作台的分栏（shell 220px + 会话/配置列 + 工作区）不收折，<1024px 不支持**（见 Known Gaps 第 8 条）——不要为这些分栏写移动端样式，本文档也不再承诺其断点行为。
 
-触控目标最小 44×44px（移动端）；桌面控件高度 ≥32px。对话页代码块与表格横向滚动、不折行。
+桌面控件高度 ≥32px；44×44 触控目标仅在移动端立项后适用。对话页代码块与表格横向滚动、不折行。
 
 ## Iteration Guide
 
@@ -229,3 +225,4 @@ components:
 5. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
 6. **`surface.warm` 的用法**：预留锚点，无现网消费场景。
 7. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
+8. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。
