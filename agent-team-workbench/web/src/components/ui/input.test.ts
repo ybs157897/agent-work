@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Input, Select, Textarea, inputFieldClasses } from './input';
 
 describe('inputFieldClasses', () => {
-  it('对应 .input-field 的关键类：strong 描边 / raised 底 / body 字号 / 焦点环', () => {
+  it('输入控件关键类：strong 描边 / raised 底 / body 字号 / 焦点环', () => {
     expect(inputFieldClasses).toContain('rounded-input');
     expect(inputFieldClasses).toContain('border-border-strong');
     expect(inputFieldClasses).toContain('bg-surface-raised');
@@ -16,7 +16,7 @@ describe('inputFieldClasses', () => {
 });
 
 describe('Input / Textarea / Select', () => {
-  it('Input/Textarea 共用 .input-field 样式；Select 同系但去 OS 箭头', () => {
+  it('Input/Textarea 共用输入样式；Select 同系但去 OS 箭头', () => {
     expect(Input({}).props.className).toBe(inputFieldClasses);
     expect(Textarea({}).props.className).toBe(inputFieldClasses);
 

@@ -1,7 +1,7 @@
 import type { HTMLAttributes } from 'react';
 import { cx } from './cx';
 
-/** 三个预设逐字对应 index.css 遗留类 .ui-card / .ui-card-padded / .ui-card-interactive。 */
+/** Card 三预设：plain / padded / interactive（DESIGN.md 卡片契约的唯一实现）。 */
 export const cardPresetClasses = {
   plain: 'bg-surface-raised rounded-card border border-border-subtle shadow-card',
   padded: 'bg-surface-raised rounded-card border border-border-subtle shadow-card p-comfortable',
@@ -19,7 +19,7 @@ export type CardProps = HTMLAttributes<HTMLDivElement> & {
   interactive?: boolean;
 };
 
-/** interactive 预设自带 p-comfortable（遗留类语义），与 padded 同开时不重复叠加。 */
+/** interactive 预设自带 p-comfortable，与 padded 同开时不重复叠加。 */
 export function Card({ padded, interactive, className, ...props }: CardProps) {
   return <div {...props} className={cx(cardClassName({ padded, interactive }), className)} />;
 }

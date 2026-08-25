@@ -2,7 +2,7 @@ import { ChevronDown } from 'lucide-react';
 import type { InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
 import { cx } from './cx';
 
-/** 逐字对应 index.css 遗留类 .input-field（mt-1 → 语义等价 mt-micro）。 */
+/** 输入控件契约（DESIGN.md 表单条）：strong 描边 / raised 底 / body 字号 / 品牌焦点环。 */
 const fieldBodyClasses =
   'w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none transition-shadow focus:border-brand-primary/40 focus:ring-2 focus:ring-brand-primary/20';
 
@@ -17,7 +17,7 @@ export function Textarea({ className, ...props }: TextareaHTMLAttributes<HTMLTex
 }
 
 /**
- * 下拉选择：外观与 input-field 同系，但 appearance-none 去掉 OS 默认箭头，
+ * 下拉选择：外观与 Input 同系，但 appearance-none 去掉 OS 默认箭头，
  * 换自定义 chevron（DESIGN.md select 条）。布局类（className）挂外层容器。
  */
 export function Select({ className, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {

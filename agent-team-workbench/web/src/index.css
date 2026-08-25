@@ -85,53 +85,6 @@
     @apply text-body text-text-secondary max-w-2xl;
   }
 
-  .ui-card {
-    @apply bg-surface-raised rounded-card border border-border-subtle shadow-card;
-  }
-
-  .ui-card-padded {
-    @apply ui-card p-comfortable;
-  }
-
-  .ui-card-interactive {
-    @apply ui-card p-comfortable cursor-pointer transition-all duration-200 ease-out;
-    @apply hover:-translate-y-0.5 hover:shadow-level-2 hover:border-border-strong;
-  }
-
-  .ui-section-title {
-    @apply text-h3 text-text-primary mb-comfortable;
-  }
-
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-button px-base py-tight text-body font-medium transition-all duration-150;
-    @apply focus-visible:ring-2 focus-visible:ring-brand-primary/40 focus-visible:ring-offset-2;
-    @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
-  }
-
-  .btn-primary {
-    @apply btn bg-brand-primary text-text-inverse shadow-sm;
-    @apply hover:bg-brand-accent active:scale-[0.98];
-  }
-
-  .btn-secondary {
-    @apply btn border border-border-strong bg-surface-raised text-text-secondary;
-    @apply hover:bg-surface-base hover:text-text-primary active:scale-[0.98];
-  }
-
-  .btn-ghost {
-    @apply btn border border-brand-primary/30 bg-transparent text-brand-primary;
-    @apply hover:bg-brand-primary/5 active:scale-[0.98];
-  }
-
-  .status-pill {
-    @apply inline-flex items-center gap-2 rounded-full border border-border-subtle bg-surface-raised px-3 py-1 text-caption text-text-secondary;
-  }
-
-  .input-field {
-    @apply mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none;
-    @apply transition-shadow focus:border-brand-primary/40 focus:ring-2 focus:ring-brand-primary/20;
-  }
-
   .mesh-bg {
     background-image:
       radial-gradient(ellipse 80% 50% at 50% -20%, hsl(var(--color-brand-primary) / 0.08), transparent),

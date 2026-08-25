@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Card, cardClassName, cardPresetClasses } from './card';
 
 describe('cardClassName', () => {
-  it('plain 预设 = .ui-card 基础外观（raised 底 + card 圆角 + subtle 描边 + level-1 阴影）', () => {
+  it('plain 预设 = 卡片基础外观（raised 底 + card 圆角 + subtle 描边 + level-1 阴影）', () => {
     const cls = cardPresetClasses.plain;
     expect(cls).toContain('bg-surface-raised');
     expect(cls).toContain('rounded-card');
