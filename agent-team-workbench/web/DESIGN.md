@@ -94,6 +94,10 @@ components:
     base: "rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; text {typography.caption} {colors.text.secondary}; hover border {colors.brand.primary}/35 + text {colors.brand.primary}"
   session-dot:
     base: "会话状态点 6px 圆：执行中 {colors.brand.accent} + pulse；成功 {colors.status.success}；失败 {colors.status.error}；待审批 {colors.status.warning}；其余 {colors.status.standby}"
+  artifact-shelf:
+    base: "聊天区成果摘要卡：rounded {rounded.control}; border 1px {colors.border.subtle}; bg {colors.surface.raised}；头行「已生成 N 个成果」+ 品牌色「打开工作区」入口；内容行 = mime 图标 + 文件名 + 字节数；超 4 项折叠"
+  workspace-panel:
+    base: "右侧工作区 320px：border-left 1px {colors.border.subtle}; bg {colors.surface.raised}；成果行 = 图标 + 文件名 + 字节·时间·状态（草稿 {colors.status.warning} / 已接受 {colors.status.success}）；空态走 EmptyState。只承载元数据清单，不做内容预览（后端无内容端点，见 Known Gaps）"
   sidebar-nav:
     item: "text {colors.text.on-sidebar}; hover bg {colors.sidebar.hover}"
     item-active: "text {colors.text.on-sidebar-active}; bg {colors.sidebar.hover}"
@@ -224,3 +228,4 @@ components:
 4. **空态插画体系**：空态只用图标 + 文案，不引入插画。
 5. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
 6. **`surface.warm` 的用法**：预留锚点，无现网消费场景。
+7. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。

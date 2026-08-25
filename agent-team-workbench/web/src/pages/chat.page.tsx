@@ -1,8 +1,10 @@
-import { GitBranch, MessageSquare, Plus, SendHorizonal, Square, X } from 'lucide-react';
+import { GitBranch, MessageSquare, PanelRight, Plus, SendHorizonal, Square, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
+import { ArtifactShelf } from '../components/chat/artifact-shelf';
+import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
 import { Avatar } from '../components/avatar';
 import { Button, EmptyState } from '../components/ui';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
@@ -183,6 +185,7 @@ function ConversationPane() {
   const approvals = useRunsStore((s) => s.approvals);
 
   const [draft, setDraft] = useState('');
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const followStreamRef = useRef(true);
@@ -192,6 +195,12 @@ function ConversationPane() {
   const agent = agents.find((a) => a.id === agentId);
   const conversation = conversations.find((c) => c.id === conversationId);
   const runIds = useMemo(() => runs.map((r) => r.id), [runs]);
+  // 本会话全部成果（watchRun 已按 run 拉取，artifact 事件驱动刷新）。
+  const artifactsByRun = useRunsStore((s) => s.artifacts);
+  const conversationArtifacts = useMemo(
+    () => runIds.flatMap((id) => artifactsByRun[id] ?? []),
+    [runIds, artifactsByRun],
+  );
   const latestRunId = runIds[runIds.length - 1];
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
 
@@ -363,7 +372,8 @@ function ConversationPane() {
   };
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
       {/* 头部 */}
       <div className="h-[52px] shrink-0 px-comfortable flex items-center justify-between border-b border-border-subtle">
         <div className="flex items-center gap-2 min-w-0">
@@ -375,13 +385,24 @@ function ConversationPane() {
             {conversation ? conversation.title : '新对话'}
           </span>
         </div>
-        {latestRun && (
-          <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          {conversationArtifacts.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setWorkspaceOpen((v) => !v)}
+              title={workspaceOpen ? '关闭工作区' : '打开工作区'}
+              aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
+              className="p-1 rounded hover:bg-surface-base text-text-tertiary hover:text-text-primary transition-colors"
+            >
+              <PanelRight className="h-4 w-4" />
+            </button>
+          )}
+          {latestRun && (
             <span className={`text-caption font-medium ${runStatusColor(latestRun.status)}`}>
               {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
             </span>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* 消息流 */}
@@ -423,8 +444,13 @@ function ConversationPane() {
         )}
       </div>
 
-      {/* 底部固定：计划 / 目标 + 输入 */}
+      {/* 底部固定：成果摘要 + 计划 / 目标 + 输入 */}
       <div className="shrink-0 border-t border-border-subtle bg-surface-base/95 backdrop-blur-sm">
+        {conversationArtifacts.length > 0 && (
+          <div className="chat-thread px-4 sm:px-6 pt-2">
+            <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
+          </div>
+        )}
         <div className="chat-thread px-4 sm:px-6 pt-2">
           <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
         </div>
@@ -503,6 +529,10 @@ function ConversationPane() {
         )}
         </div>
       </div>
+      </div>
+      {workspaceOpen && (
+        <ArtifactWorkspace artifacts={conversationArtifacts} onClose={() => setWorkspaceOpen(false)} />
+      )}
     </div>
   );
 }
