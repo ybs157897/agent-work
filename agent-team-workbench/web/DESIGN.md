@@ -100,6 +100,11 @@ components:
     base: "右下固定栈（w-320 gap-2）；rounded {rounded.card}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; shadow {shadows.level-3}；图标取状态色（error {colors.status.error} / success {colors.status.success} / info {colors.brand.primary}）"
     behavior: "自动消失（error 6s、其余 3.5s）+ 显式关闭；最多同屏 5 条；只承载通知，破坏性操作一律走模态确认（见 Don'ts），不设 undo/action 槽（无消费场景）"
     a11y-motion: "容器 role=region aria-label=通知；error 卡 role=alert、其余 role=status；进出场 150ms easeOut + layout 平滑堆叠，reduced-motion 归零"
+  drawer:
+    base: "右侧滑入（spring 250/25）；rounded-l-2xl；bg {colors.surface.raised}; shadow {shadows.level-4}; border-l 1px {colors.border.subtle}；portal 到 body；Escape 与遮罩点击关闭"
+    titled: "表单容器形态：头行 h3 + 关闭钮（同 modal 头行规格）+ 可滚动 body；创建/编辑表单用它，宽度 480 起"
+    untitled: "自由内容形态：绝对定位关闭钮，内容 pr-8 避让（任务详情沿用）"
+    scope: "破坏性确认（删除/危险操作）一律 Modal，不进 drawer（见 Don'ts）"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
   user-bubble:
