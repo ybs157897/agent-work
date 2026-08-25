@@ -4,11 +4,12 @@ import { useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { Avatar } from '../components/avatar';
-import { EmptyState } from '../components/async-state';
+import { Button, EmptyState } from '../components/ui';
 import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL } from '../stores/chat.store';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
+import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { deriveChatDock } from '../utils/derive-chat-dock';
@@ -97,12 +98,12 @@ export default function ChatPage() {
       {/* 右侧对话区 */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {agentId ? <ConversationPane /> : (
-          <div className="flex-1 flex items-center justify-center text-text-tertiary">
-            <div className="text-center space-y-2">
-              <MessageSquare className="w-8 h-8 mx-auto text-text-tertiary" />
-              <p className="text-body">选择一个 Agent 开始对话</p>
-              <p className="text-caption">对话即任务：每条消息创建一个执行 Run，全程可追踪</p>
-            </div>
+          <div className="flex-1 flex items-center justify-center">
+            <EmptyState
+              icon={<MessageSquare className="w-5 h-5" />}
+              title="选择一个 Agent 开始对话"
+              description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+            />
           </div>
         )}
       </div>
@@ -142,12 +143,17 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
               )}
               <span className="truncate">{c.title}</span>
             </div>
-            <div className="text-caption text-text-tertiary">
+            <div className="flex items-center gap-1.5 text-caption text-text-tertiary">
+              <span
+                className={`h-1.5 w-1.5 rounded-full shrink-0 ${conversationStatusDotClass(c, runSnapshots)}`}
+              />
               {c.runs_count} 轮 · {conversationLabel(c, runSnapshots)}
             </div>
           </button>
         ))}
-        {conversations.length === 0 && <EmptyState label="暂无会话，点 + 开始" />}
+        {conversations.length === 0 && (
+          <EmptyState title="暂无会话" description="点右上角 + 开始新对话" className="py-6" />
+        )}
       </div>
     </div>
   );
@@ -178,6 +184,7 @@ function ConversationPane() {
 
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const followStreamRef = useRef(true);
   const approvalAnchorsRef = useRef<Record<string, string>>({});
   const [approvalAnchors, setApprovalAnchors] = useState<Record<string, string>>({});
@@ -350,6 +357,11 @@ function ConversationPane() {
     void send(text);
   };
 
+  const applyPrompt = (text: string) => {
+    setDraft(text);
+    textareaRef.current?.focus();
+  };
+
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {/* 头部 */}
@@ -365,17 +377,6 @@ function ConversationPane() {
         </div>
         {latestRun && (
           <div className="flex items-center gap-2 shrink-0">
-            {runInFlight && (
-              <button
-                type="button"
-                onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
-                disabled={!latestRunId || stoppingRunId === latestRunId}
-                className="flex items-center gap-1 rounded-button border border-border-strong px-2 py-1 text-caption font-medium text-text-secondary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Square className="h-3.5 w-3.5" />
-                {stoppingRunId === latestRunId ? '停止中…' : '停止'}
-              </button>
-            )}
             <span className={`text-caption font-medium ${runStatusColor(latestRun.status)}`}>
               {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
             </span>
@@ -389,8 +390,22 @@ function ConversationPane() {
         className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-6 py-base min-h-0"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
-          <div className="chat-thread text-center text-caption text-text-tertiary py-12">
-            输入第一条消息，为该 Agent 创建任务并开始运行
+          <div className="chat-thread py-12">
+            <p className="text-center text-caption text-text-tertiary">
+              输入第一条消息，为 {agent?.name ?? 'Agent'} 创建任务并开始运行；或从建议开始：
+            </p>
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              {suggestedPrompts(agent?.role).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => applyPrompt(p)}
+                  className="rounded-full border border-border-subtle bg-surface-raised px-3 py-1.5 text-caption text-text-secondary transition-colors hover:border-brand-primary/35 hover:text-brand-primary"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         <div className="chat-thread space-y-3 pb-2">
@@ -398,6 +413,7 @@ function ConversationPane() {
             segments={transcriptSegments}
             stoppedRuns={stoppedRuns}
             onFork={(key) => void forkConversation(key)}
+            agent={agent ? { name: agent.name, avatar: agent.avatar } : undefined}
           />
         </div>
         {latestRunAlert && (
@@ -448,6 +464,7 @@ function ConversationPane() {
         )}
         <div className="flex items-end gap-2">
           <textarea
+            ref={textareaRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -462,14 +479,22 @@ function ConversationPane() {
               : '输入消息，Enter 发送，Shift+Enter 换行'}
             className="flex-1 rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 resize-none"
           />
-          <button
-            onClick={doSend}
-            disabled={!draft.trim() || sending}
-            className="flex items-center gap-1.5 bg-brand-primary text-white rounded-button px-base py-tight font-medium transition-all duration-150 hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
+          {runInFlight && (
+            <button
+              type="button"
+              onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
+              disabled={!latestRunId || stoppingRunId === latestRunId}
+              title="停止当前运行"
+              className="flex items-center gap-1.5 rounded-button border border-border-strong px-base py-tight text-body font-medium text-text-secondary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Square className="w-4 h-4" />
+              {stoppingRunId === latestRunId ? '停止中' : '停止'}
+            </button>
+          )}
+          <Button variant="primary" onClick={doSend} disabled={!draft.trim() || sending}>
             <SendHorizonal className="w-4 h-4" />
             {sending ? '发送中' : '发送'}
-          </button>
+          </Button>
         </div>
         {usageText && (
           <div className="mt-1 flex justify-end">

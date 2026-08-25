@@ -86,6 +86,14 @@ components:
     base: "rounded {rounded.control}; border 1px {colors.border.strong}; bg {colors.surface.raised}; padding {spacing.snug} × {spacing.tight}; text {typography.body}; focus border {colors.brand.primary}/40 + ring-2 {colors.brand.primary}/20"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
+  user-bubble:
+    base: "右对齐胶囊气泡（rounded {rounded.pill} 级）；bg {colors.brand.primary}/7%；border 1px {colors.brand.primary}/20%；text {typography.body} {colors.text.primary}——用户侧唯一允许的品牌浅底用法"
+  turn-header:
+    base: "助手回合头：20px 头像 + 名字 {typography.caption} 600 {colors.text.secondary} + 时间 tabular-nums {colors.text.tertiary}"
+  prompt-chip:
+    base: "rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; text {typography.caption} {colors.text.secondary}; hover border {colors.brand.primary}/35 + text {colors.brand.primary}"
+  session-dot:
+    base: "会话状态点 6px 圆：执行中 {colors.brand.accent} + pulse；成功 {colors.status.success}；失败 {colors.status.error}；待审批 {colors.status.warning}；其余 {colors.status.standby}"
   sidebar-nav:
     item: "text {colors.text.on-sidebar}; hover bg {colors.sidebar.hover}"
     item-active: "text {colors.text.on-sidebar-active}; bg {colors.sidebar.hover}"

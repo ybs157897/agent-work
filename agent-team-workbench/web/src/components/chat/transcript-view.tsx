@@ -14,15 +14,24 @@ export function TranscriptView({
   segments,
   stoppedRuns,
   onFork,
+  agent,
 }: {
   segments: TranscriptSegment[];
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
+  /** 当前会话归属的 Agent（助手回合头展示身份）。 */
+  agent?: { name: string; avatar?: string };
 }) {
   return (
     <>
       {segments.map((seg) => (
-        <TranscriptSegmentView key={transcriptSegmentKey(seg)} seg={seg} stoppedRuns={stoppedRuns} onFork={onFork} />
+        <TranscriptSegmentView
+          key={transcriptSegmentKey(seg)}
+          seg={seg}
+          stoppedRuns={stoppedRuns}
+          onFork={onFork}
+          agent={agent}
+        />
       ))}
     </>
   );
@@ -32,10 +41,12 @@ function TranscriptSegmentView({
   seg,
   stoppedRuns,
   onFork,
+  agent,
 }: {
   seg: TranscriptSegment;
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
+  agent?: { name: string; avatar?: string };
 }) {
   switch (seg.kind) {
     case 'user':
@@ -48,6 +59,8 @@ function TranscriptSegmentView({
           streaming={seg.streaming}
           forkKey={seg.msg.key}
           onFork={onFork}
+          agentName={agent?.name}
+          agentAvatar={agent?.avatar}
         />
       );
     case 'thinking':
@@ -82,7 +95,7 @@ function TranscriptSegmentView({
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
     <div className="group flex justify-end py-1">
-      <div className="w-max max-w-full min-w-0 rounded-3xl border border-border-subtle/80 bg-surface-raised/70 px-3 py-1.5 text-base leading-6 text-text-primary backdrop-blur-sm whitespace-pre-wrap break-words">
+      <div className="w-max max-w-full min-w-0 rounded-3xl border border-brand-primary/20 bg-brand-primary/[0.07] px-3 py-1.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
         {msg.text}
         <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
       </div>
