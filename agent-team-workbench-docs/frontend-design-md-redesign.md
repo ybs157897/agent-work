@@ -207,3 +207,25 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 | executor 绕过 DESIGN.md 自创样式 | `design-tokens.test.ts` 硬门禁 + 子任务模板的文件边界 |
 | DESIGN.md 与 tailwind.config 漂移 | token 真相源仍是 `index.css`/`tailwind.config.js`，DESIGN.md frontmatter 只引用不重造；发现漂移以代码为准修 DESIGN.md |
 | 豁免面扩张（越来越多人往豁免清单塞文件） | 豁免清单被测死且要求注明理由；新增豁免必须在 PR/notes 留痕 |
+
+---
+
+## 6. 对话页体验精修（2026-08-25 并入实施）
+
+输入：知乎开放平台 CLI 站内调研（官方 `zhihu-cli` search）。三条公认结论并入本刀：
+
+1. **运行可见性**（AG-UI 实践："没有运行中可见性的会话，用户放弃率是有实时进度面板的 3 倍"）——执行过程要有视觉存在感，不能渲染成事后文档。
+2. **Chat UI ≠ Agent UI**（dd-y）：Agent UI 围绕 Run/Step/ToolCall/Approval/Artifact 组织，用户关心"正在做什么/为什么没完/要不要我确认"。我们的协议层对象一一对应，缺的是呈现。
+3. **结构化信息优于纯文本**（Google Research 生成式 UI 实验：83% 偏好率）——远期方向：A2UI/生成式卡片，本刀不实施。
+
+### 本刀落地清单（全部在 DESIGN.md token 体系内）
+
+| # | 项 | 对应洞察 | 改动面 |
+|---|---|---|---|
+| 1 | 助手回合头：头像 + 角色名 + 时间 | 运行可见性（回合归属一目了然） | `assistant-turn.tsx` / `transcript-view.tsx` |
+| 2 | 用户气泡品牌浅底表面 | 表面节奏（白底气泡不可见） | `transcript-view.tsx` UserBubble |
+| 3 | 空会话脚手架：按角色建议首条提示词 chips | 首次成功路径 | `chat.page.tsx` + `utils/chat-session-visuals.ts` |
+| 4 | Composer：运行中停止按钮入坞、发送按钮换 ui/Button（顺手消灭 `text-white` 非语义类） | 控制权可见 | `chat.page.tsx` |
+| 5 | 会话列表状态点（思考中脉冲/已回复绿/失败红/待审批黄） | 运行可见性 | `chat.page.tsx` + 纯函数 helper + 单测 |
+
+活动/消息分离（工具活动组折叠）已有实现（ActivityGroup，终态自动收拢），本刀不动；生成式 UI（A2UI）列为 LATER，待审批/表单类交互密度上升后再评估。
