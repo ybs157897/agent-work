@@ -175,7 +175,7 @@ components:
 
 - `.btn-*` / `.ui-card*` / `.input-field` / `.status-pill`：迁移中的遗留组件类。**新代码禁止使用**，用 `ui/` 组件替代；引用归零后删除。
 - `.page-shell` / `.page-header` / `.config-*`：**布局语言**，保留使用。
-- `.chat-*`：**对话渲染子系统**，规格以 `../../agent-team-workbench-docs/references/codex-desktop-markdown-tags-inventory.md` 为准，本文件不重复定义；改它之前先读该文档。
+- `.chat-*`：**对话渲染子系统**，渲染清单与逐件样式规格以 `../../agent-team-workbench-docs/chat-rendering-spec.md` 为准（Markdown 格局的逆向来源见 `references/codex-desktop-markdown-tags-inventory.md`），本文件不重复定义；改它之前先读规格文档。
 
 `ui/` 组件的变体契约见 frontmatter `components:`；新增变体必须同时更新 frontmatter（变体作为独立条目）。
 
