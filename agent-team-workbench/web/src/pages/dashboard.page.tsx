@@ -2,9 +2,8 @@ import { AlertCircle, Bot, CheckCircle2, Circle, Inbox, Zap, type LucideIcon } f
 import { useNavigate } from 'react-router-dom';
 
 import { Avatar } from '../components/avatar';
-import { Loading } from '../components/async-state';
 import { PresenceDot, presenceText } from '../components/status';
-import { Button, Card, EmptyState } from '../components/ui';
+import { Button, Card, DashboardSkeleton, EmptyState } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { useDashboardStore } from '../stores/dashboard.store';
 import { useTasksStore } from '../stores/tasks.store';
@@ -19,7 +18,7 @@ export default function DashboardPage() {
   const workItems = useTasksStore((s) => s.items);
   const navigate = useNavigate();
 
-  if (!dashboard) return <Loading />;
+  if (!dashboard) return <DashboardSkeleton />;
 
   const counts = dashboard.board_counts;
   const taskTotal = counts.todo + counts.in_progress + counts.completed + counts.blocked;

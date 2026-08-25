@@ -1,16 +1,5 @@
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
 import { Button } from './ui';
-
-export function Loading({ label = '加载中…' }: { label?: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-3 py-20">
-      <div className="w-10 h-10 rounded-full border-2 border-brand-primary/20 border-t-brand-primary flex items-center justify-center">
-        <Loader2 className="w-5 h-5 animate-spin text-brand-primary" />
-      </div>
-      <span className="text-body text-text-secondary">{label}</span>
-    </div>
-  );
-}
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (

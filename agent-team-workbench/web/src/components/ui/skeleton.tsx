@@ -36,13 +36,60 @@ export function KanbanSkeleton() {
   );
 }
 
-/** 列表加载骨架：匹配列表行形态。 */
-export function ListSkeleton() {
+/** 列表加载骨架：匹配列表行形态。padded=false 用于已带内边距的卡片容器。 */
+export function ListSkeleton({ padded = true }: { padded?: boolean }) {
   return (
-    <div className="space-y-2 p-comfortable" role="status" aria-label="任务加载中">
+    <div className={cx('space-y-2', padded && 'p-comfortable')} role="status" aria-label="列表加载中">
       {[0, 1, 2, 3, 4, 5].map((row) => (
         <Skeleton key={row} className="h-10 w-full" />
       ))}
+    </div>
+  );
+}
+
+/** 总览加载骨架：hero 卡 + 三统计卡 + 双栏内容卡 + 日志卡，匹配真实布局形态。 */
+export function DashboardSkeleton() {
+  return (
+    <div className="page-shell" role="status" aria-label="总览加载中">
+      <Skeleton className="h-28 w-full rounded-card" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-comfortable">
+        {[0, 1, 2].map((i) => (
+          <Skeleton key={i} className="h-24 rounded-card" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-comfortable items-start">
+        <Skeleton className="h-64 rounded-card xl:col-span-2" />
+        <Skeleton className="h-64 rounded-card" />
+      </div>
+      <Skeleton className="h-40 rounded-card" />
+    </div>
+  );
+}
+
+/** 应用启动骨架：侧栏 + 顶栏 + 内容区轮廓，匹配 shell 布局形态。 */
+export function AppShellSkeleton() {
+  const sidebarBlock = 'animate-pulse rounded-md bg-sidebar-hover motion-reduce:animate-none';
+  return (
+    <div className="flex h-screen w-full bg-surface-base overflow-hidden" role="status" aria-label="正在连接控制平面">
+      <div className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border p-4 space-y-3">
+        <div className={`${sidebarBlock} h-8 w-8`} />
+        {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+          <div key={i} className={`${sidebarBlock} h-9 w-full`} />
+        ))}
+      </div>
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="h-14 shrink-0 border-b border-border-subtle bg-surface-raised/80 px-6 flex items-center">
+          <Skeleton delayMs={0} className="h-4 w-40" />
+        </div>
+        <div className="flex-1 p-comfortable space-y-comfortable">
+          <Skeleton delayMs={0} className="h-28 w-full rounded-card" />
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-comfortable">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} delayMs={0} className="h-24 rounded-card" />
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

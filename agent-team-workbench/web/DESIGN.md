@@ -102,7 +102,7 @@ components:
   session-dot:
     base: "会话状态点 6px 圆：执行中 {colors.brand.accent} + pulse；成功 {colors.status.success}；失败 {colors.status.error}；待审批 {colors.status.warning}；其余 {colors.status.standby}"
   skeleton:
-    base: "animate-pulse 底 {colors.surface.sunken}；**300ms 后才显现**（快响应不闪烁）；reduced-motion 降静态色块；形状必须匹配目标布局（看板列/列表行），禁用通用 spinner"
+    base: "animate-pulse 底 {colors.surface.sunken}；**300ms 后才显现**（快响应不闪烁；启动壳例外 delayMs=0，空白启动屏更糟）；reduced-motion 降静态色块；形状必须匹配目标布局（看板列/列表行/总览卡群/启动壳），禁用通用 spinner"
   artifact-shelf:
     base: "聊天区成果摘要卡：rounded {rounded.control}; border 1px {colors.border.subtle}; bg {colors.surface.raised}；头行「已生成 N 个成果」+ 品牌色「打开工作区」入口；内容行 = mime 图标 + 文件名 + 字节数；超 4 项折叠"
   workspace-panel:

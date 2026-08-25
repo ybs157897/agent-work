@@ -1,7 +1,6 @@
 import { AlertCircle, CheckCircle2, Circle, RefreshCw } from 'lucide-react';
 import { useEffect } from 'react';
-import { Loading } from '../components/async-state';
-import { Button, Card, EmptyState } from '../components/ui';
+import { Button, Card, EmptyState, ListSkeleton } from '../components/ui';
 import { useLogsStore } from '../stores/logs.store';
 import { formatDateTime } from '../utils/format';
 
@@ -28,7 +27,7 @@ export default function LogsPage() {
       <section>
         <Card padded>
           {!loaded ? (
-            <Loading />
+            <ListSkeleton padded={false} />
           ) : items.length === 0 ? (
             <EmptyState
               icon={<Circle className="w-5 h-5" />}

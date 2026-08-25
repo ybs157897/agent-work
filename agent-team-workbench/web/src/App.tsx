@@ -1,7 +1,8 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { useEffect } from 'react';
 import { Route, Routes, useLocation } from 'react-router-dom';
-import { ErrorState, Loading } from './components/async-state';
+import { ErrorState } from './components/async-state';
+import { AppShellSkeleton } from './components/ui';
 import { LayoutShell } from './components/layout-shell';
 import { Toaster } from './components/toast';
 import AgentsPage from './pages/agents.page';
@@ -31,11 +32,7 @@ export default function App() {
     );
   }
   if (phase !== 'ready') {
-    return (
-      <div className="h-screen flex items-center justify-center bg-surface-base">
-        <Loading label="正在连接控制平面…" />
-      </div>
-    );
+    return <AppShellSkeleton />;
   }
 
   return (
