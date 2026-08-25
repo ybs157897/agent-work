@@ -734,30 +734,6 @@
   @apply space-y-2 border-t border-border-subtle/60 px-4 py-3;
 }
 
-.chat-approval-btn {
-  @apply inline-flex min-h-9 items-center justify-center rounded-lg px-3.5 text-caption font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
-}
-
-.chat-approval-btn-primary {
-  @apply bg-status-success text-text-inverse hover:bg-status-success/90;
-}
-
-.chat-approval-btn-danger {
-  @apply bg-status-error text-text-inverse hover:bg-status-error/90;
-}
-
-.chat-approval-btn-danger-outline {
-  @apply border border-status-error/35 bg-surface-base text-status-error hover:bg-status-error/5;
-}
-
-.chat-approval-btn-warning-outline {
-  @apply border border-status-warning/40 bg-surface-base text-status-warning hover:bg-status-warning/5;
-}
-
-.chat-approval-btn-ghost {
-  @apply border border-border-strong bg-surface-base text-text-secondary hover:bg-surface-sunken;
-}
-
 .chat-approval-memory {
   @apply border-t border-border-subtle/60 px-4 pb-3;
 }
@@ -774,9 +750,7 @@
   .chat-approval-actions-primary {
     @apply flex-col items-stretch;
   }
-
-  .chat-approval-btn-primary,
-  .chat-approval-btn-danger-outline {
+  .chat-approval-actions-primary > * {
     @apply w-full;
   }
 }

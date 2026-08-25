@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes } from 'react';
 import { cx } from './cx';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'success' | 'danger' | 'danger-outline' | 'warning-outline';
 export type ButtonSize = 'sm' | 'md';
 
 /**
@@ -22,6 +22,12 @@ export const buttonVariantClasses: Record<ButtonVariant, string> = {
     'border border-border-strong bg-surface-raised text-text-secondary hover:bg-surface-base hover:text-text-primary active:scale-[0.98]',
   ghost:
     'border border-brand-primary/30 bg-transparent text-brand-primary hover:bg-brand-primary/5 active:scale-[0.98]',
+  success: 'bg-status-success text-text-inverse hover:bg-status-success/90 active:scale-[0.98]',
+  danger: 'bg-status-error text-text-inverse hover:bg-status-error/90 active:scale-[0.98]',
+  'danger-outline':
+    'border border-status-error/35 bg-surface-base text-status-error hover:bg-status-error/5 active:scale-[0.98]',
+  'warning-outline':
+    'border border-status-warning/40 bg-surface-base text-status-warning hover:bg-status-warning/5 active:scale-[0.98]',
 };
 
 export function buttonClassName(variant: ButtonVariant, size: ButtonSize): string {

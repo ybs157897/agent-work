@@ -77,7 +77,12 @@ components:
     primary: "bg {colors.brand.primary}; text {colors.text.inverse}; hover {colors.brand.accent}; active scale 0.98"
     secondary: "border {colors.border.strong}; bg {colors.surface.raised}; text {colors.text.secondary}; hover bg {colors.surface.base} + text {colors.text.primary}; active scale 0.98"
     ghost: "border {colors.brand.primary}/30; text {colors.brand.primary}; hover bg {colors.brand.primary}/5; active scale 0.98"
+    success: "bg {colors.status.success}; text {colors.text.inverse}; hover {colors.status.success}/90; active scale 0.98 — 批准语义"
+    danger: "bg {colors.status.error}; text {colors.text.inverse}; hover {colors.status.error}/90; active scale 0.98 — 破坏语义"
+    danger-outline: "border {colors.status.error}/35; bg {colors.surface.base}; text {colors.status.error}; hover {colors.status.error}/5; active scale 0.98 — 破坏轮廓"
+    warning-outline: "border {colors.status.warning}/40; bg {colors.surface.base}; text {colors.status.warning}; hover {colors.status.warning}/5; active scale 0.98 — 风险确认轮廓"
     sizes: "sm = padding {spacing.snug} × {spacing.micro}; md = padding {spacing.base} × {spacing.tight}; 字号固定 {typography.body}，不随尺寸变"
+    status-usage: "状态档（success/danger/danger-outline/warning-outline）只允许出现在审批/破坏性语境，禁止当普通强调色用"
   card:
     base: "bg {colors.surface.raised}; rounded {rounded.card}; border 1px {colors.border.subtle}; shadow {shadows.level-1}"
     padded: "card + padding {spacing.comfortable}"

@@ -14,7 +14,7 @@ const BASE_MARKERS = [
 
 describe('buttonClassName', () => {
   it('任意变体都带 .btn 基类与四态（hover/active/focus-visible/disabled）', () => {
-    for (const variant of ['primary', 'secondary', 'ghost'] as const) {
+    for (const variant of ['primary', 'secondary', 'ghost', 'success', 'danger', 'danger-outline', 'warning-outline'] as const) {
       const cls = buttonClassName(variant, 'md');
       for (const marker of BASE_MARKERS) expect(cls).toContain(marker);
       expect(cls).toContain('focus-visible:ring-2');
@@ -55,6 +55,36 @@ describe('buttonClassName', () => {
     expect(cls).toContain('bg-transparent');
     expect(cls).toContain('text-brand-primary');
     expect(cls).toContain('hover:bg-brand-primary/5');
+  });
+
+  it('success：批准语义，成功绿底 + 反白，悬停 90% 加深', () => {
+    const cls = buttonVariantClasses.success;
+    expect(cls).toContain('bg-status-success');
+    expect(cls).toContain('text-text-inverse');
+    expect(cls).toContain('hover:bg-status-success/90');
+  });
+
+  it('danger：破坏语义，错误红底 + 反白，悬停 90% 加深', () => {
+    const cls = buttonVariantClasses.danger;
+    expect(cls).toContain('bg-status-error');
+    expect(cls).toContain('text-text-inverse');
+    expect(cls).toContain('hover:bg-status-error/90');
+  });
+
+  it('danger-outline：破坏轮廓，浅底 + 红色描边文字，悬停红底 5%', () => {
+    const cls = buttonVariantClasses['danger-outline'];
+    expect(cls).toContain('border-status-error/35');
+    expect(cls).toContain('bg-surface-base');
+    expect(cls).toContain('text-status-error');
+    expect(cls).toContain('hover:bg-status-error/5');
+  });
+
+  it('warning-outline：风险确认轮廓，浅底 + 橙色描边文字，悬停橙底 5%', () => {
+    const cls = buttonVariantClasses['warning-outline'];
+    expect(cls).toContain('border-status-warning/40');
+    expect(cls).toContain('bg-surface-base');
+    expect(cls).toContain('text-status-warning');
+    expect(cls).toContain('hover:bg-status-warning/5');
   });
 
   it('尺寸档各自独占 padding，不产生同属性工具类冲突', () => {

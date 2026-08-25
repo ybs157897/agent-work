@@ -6,6 +6,7 @@ import type { ApprovalRequest } from '../../api/types';
 import { useRunsStore } from '../../stores/runs.store';
 import { toast } from '../../stores/toast.store';
 import { formatTime } from '../../utils/format';
+import { Button } from '../ui';
 
 export interface ApprovalLine {
   text: string;
@@ -179,43 +180,43 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
             className="w-full rounded-lg border border-border-strong bg-surface-base px-3 py-2 text-body outline-none focus:ring-2 focus:ring-brand-primary/30"
           />
           <div className="chat-approval-actions">
-            <button
+            <Button
+              variant="danger"
               type="button"
               onClick={() => void decide('rejected', reason.trim())}
               disabled={busy}
-              className="chat-approval-btn chat-approval-btn-danger"
             >
               {busy ? '提交中…' : '确认拒绝'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
               type="button"
               onClick={() => setRejecting(false)}
               disabled={busy}
-              className="chat-approval-btn chat-approval-btn-ghost"
             >
               取消
-            </button>
+            </Button>
           </div>
         </div>
       ) : (
         <>
           <div className="chat-approval-actions chat-approval-actions-primary">
-            <button
+            <Button
+              variant="success"
               type="button"
               onClick={() => void decide('approved', '', onceChoice.scope, onceChoice.toast)}
               disabled={busy}
-              className="chat-approval-btn chat-approval-btn-primary"
             >
               {busy ? '处理中…' : onceChoice.label}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="danger-outline"
               type="button"
               onClick={() => setRejecting(true)}
               disabled={busy}
-              className="chat-approval-btn chat-approval-btn-danger-outline"
             >
               拒绝
-            </button>
+            </Button>
           </div>
 
           {memoryChoices.length > 0 && (
@@ -232,19 +233,16 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
               {showMore && (
                 <div className="chat-approval-memory-options">
                   {memoryChoices.map((choice) => (
-                    <button
+                    <Button
                       key={choice.scope}
+                      variant={choice.danger ? 'warning-outline' : 'secondary'}
+                      className="w-full"
                       type="button"
                       onClick={() => void decide('approved', '', choice.scope, choice.toast)}
                       disabled={busy}
-                      className={
-                        choice.danger
-                          ? 'chat-approval-btn chat-approval-btn-warning-outline w-full'
-                          : 'chat-approval-btn chat-approval-btn-ghost w-full'
-                      }
                     >
                       {choice.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               )}
