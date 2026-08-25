@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Circle, RefreshCw } from 'lucide-react';
 import { useEffect } from 'react';
-import { EmptyState, Loading } from '../components/async-state';
+import { Loading } from '../components/async-state';
+import { Button, Card, EmptyState } from '../components/ui';
 import { useLogsStore } from '../stores/logs.store';
 import { formatDateTime } from '../utils/format';
 
@@ -15,44 +16,47 @@ export default function LogsPage() {
   }, [refresh]);
 
   return (
-    <div className="layout-safe space-y-stack-md py-comfortable">
-      <div className="flex items-center justify-between">
-        <h2 className="text-h2 text-text-primary tracking-tight">日志</h2>
-        <button
-          onClick={() => void refresh()}
-          className="flex items-center gap-1.5 bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight text-body font-medium hover:bg-surface-raised transition-colors"
-        >
+    <main className="page-shell">
+      <header className="page-header">
+        <h2 className="page-title">日志</h2>
+        <Button onClick={() => void refresh()}>
           <RefreshCw className="w-4 h-4" />
           刷新
-        </button>
-      </div>
+        </Button>
+      </header>
 
-      <div className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-comfortable">
-        {!loaded ? (
-          <Loading />
-        ) : items.length === 0 ? (
-          <EmptyState label="暂无活动记录" />
-        ) : (
-          <div className="space-y-1">
-            {items.map((log) => (
-              <div
-                key={log.id}
-                className="flex items-center gap-comfortable p-snug hover:bg-surface-base rounded-md transition-colors"
-              >
-                <span className="text-caption text-text-tertiary tabular-nums shrink-0 w-36">
-                  {formatDateTime(log.occurred_at)}
-                </span>
-                <div className="flex items-center gap-2 shrink-0 w-44">
-                  <KindIcon kind={log.kind} />
-                  <span className="font-medium text-body text-text-primary truncate">{log.kind}</span>
+      <section>
+        <Card padded>
+          {!loaded ? (
+            <Loading />
+          ) : items.length === 0 ? (
+            <EmptyState
+              icon={<Circle className="w-5 h-5" />}
+              title="暂无活动记录"
+              description="任务创建、运行推进与审批动态会实时出现在这里"
+            />
+          ) : (
+            <div className="space-y-1">
+              {items.map((log) => (
+                <div
+                  key={log.id}
+                  className="flex items-center gap-comfortable p-snug hover:bg-surface-base rounded-md transition-colors"
+                >
+                  <span className="text-caption text-text-tertiary tabular-nums shrink-0 w-36">
+                    {formatDateTime(log.occurred_at)}
+                  </span>
+                  <div className="flex items-center gap-2 shrink-0 w-44">
+                    <KindIcon kind={log.kind} />
+                    <span className="font-medium text-body text-text-primary truncate">{log.kind}</span>
+                  </div>
+                  <span className="text-body text-text-secondary truncate flex-1">{log.message}</span>
                 </div>
-                <span className="text-body text-text-secondary truncate flex-1">{log.message}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+              ))}
+            </div>
+          )}
+        </Card>
+      </section>
+    </main>
   );
 }
 
