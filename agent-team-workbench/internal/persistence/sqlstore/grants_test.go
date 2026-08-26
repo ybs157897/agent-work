@@ -3,19 +3,19 @@ package sqlstore_test
 import (
 	"context"
 	"database/sql"
-	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/migtest"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 )
 
-// openGrantsTestDB 临时文件 sqlite + 全量迁移（照 wakeups_test 的搭建方式）。
+// openGrantsTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现 migrations/sqlite，
+// 新增迁移免同步清单；等价性由 cmd/migrate 的守卫测试兜底）。
 func openGrantsTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 	t.Helper()
 	db, err := sql.Open("sqlite",
@@ -25,29 +25,8 @@ func openGrantsTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	_, current, _, _ := runtime.Caller(0)
-	migrationDir := filepath.Join(filepath.Dir(current), "..", "..", "..", "migrations", "sqlite")
-	for _, name := range []string{
-		"0001_init.sql",
-		"0002_runtime_binding_model_config.sql",
-		"0003_agent_config.sql",
-		"0004_task_sessions.sql",
-		"0005_wakeup.sql",
-		"0006_plans.sql",
-		"0007_task_sessions_parent.sql",
-		"0008_plan_source_run_unique.sql",
-		"0009_plan_consult_knowledge.sql",
-		"0010_plan_join_guardrails.sql",
-		"0011_activity_work_item.sql",
-		"0012_approval_grants.sql", "0013_entity_client_keys.sql", "0014_task_execution_lock.sql",
-	} {
-		body, err := os.ReadFile(filepath.Join(migrationDir, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(string(body)); err != nil {
-			t.Fatalf("migration %s: %v", name, err)
-		}
+	if err := migtest.ApplyAll(db); err != nil {
+		t.Fatal(err)
 	}
 	return db, sqlstore.New(db, sqlstore.SQLiteDialect())
 }
