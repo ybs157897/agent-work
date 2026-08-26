@@ -1,115 +1,136 @@
-/* 工具摘要行（移植 DSH ui-tool ToolRow）：24px 单行 —
-   [16 前导槽] 6px [标题] 8px [2x2 圆点] 8px [摘要 FILL 截断]。
-   运行中行扫光（row::after），错误行摘要是失败首行红字。 */
-
 .root {
   display: flex;
   flex-direction: column;
 }
 
-.row {
-  position: relative; /* 扫光层的定位锚 */
-  overflow: hidden;
+.activityBody {
+  min-width: 0;
+}
+
+.strip {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 0;
+  scrollbar-width: thin;
+}
+
+.stripRow {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  gap: 2px;
+}
+
+.detailsToggle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border: 0;
   border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--color-text-tertiary));
+  cursor: pointer;
 }
 
-/* 运行中扫光：固定宽度的掠光带（页面底色 60%）从左外扫到右外，
-   ease-out + 10% 收尾停顿让每轮扫掠有节拍。 */
-.root[data-state='running'] .row::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 300px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, hsl(var(--color-surface-base)) 60%, transparent) 55%,
-    transparent 100%
-  );
-  animation: chat-tool-row-sweep 2.6s ease-out infinite;
-  pointer-events: none;
+.detailsToggle:hover:not(:disabled) { background: hsl(var(--color-surface-sunken)); }
+.detailsToggle:disabled { cursor: default; opacity: 0.4; }
+.detailsToggle:focus-visible { outline: 2px solid hsl(var(--color-brand-primary)); outline-offset: 2px; }
+.detailsToggle :global(svg) { width: 16px; height: 16px; }
+
+.details {
+  min-width: 0;
+  max-height: min(50vh, 22rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 4px;
 }
 
-@keyframes chat-tool-row-sweep {
-  0% { left: -300px; }
-  90%, 100% { left: 100%; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  width: 100%;
+  min-width: 8.25rem;
+  max-width: 14rem;
+  height: 28px;
+  gap: 2px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--color-text-secondary));
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color 140ms ease;
 }
+
+.chip:hover { background: hsl(var(--color-surface-sunken)); }
+.chip[data-selected] { background: hsl(var(--color-surface-sunken)); color: hsl(var(--color-text-primary)); }
+
+.chip:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary));
+  outline-offset: 2px;
+}
+
+.index {
+  flex: none;
+  color: hsl(var(--color-text-tertiary));
+  font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.icon,
+.status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon :global(svg),
+.status :global(svg) {
+  width: 14px;
+  height: 14px;
+}
+
+.okIcon { color: hsl(var(--color-status-success)); }
+.errorIcon { color: hsl(var(--color-status-error)); }
+.runningIcon { color: hsl(var(--color-brand-primary)); animation: tool-chip-spin 1.2s linear infinite; }
+
+@keyframes tool-chip-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .root[data-state='running'] .row::after {
-    animation: none;
-  }
-}
-
-.leading {
-  flex-shrink: 0;
-}
-
-.chevron {
-  color: hsl(var(--color-text-tertiary));
-}
-
-.title {
-  font-weight: 400;
-}
-
-.sep {
-  flex: none;
-  width: 2px;
-  height: 2px;
-  border-radius: 1px;
-  margin: 0 8px;
-  background: hsl(var(--color-text-tertiary));
-}
-
-.summary {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  line-height: 24px;
-  color: hsl(var(--color-text-tertiary));
+  .runningIcon { animation: none; }
+  .chip { transition: none; }
 }
 
 /* 尾随摘要片段（耗时徽章）：不参与摘要省略，窄行时摘要先被截。 */
+.title {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 auto;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .summarySuffix {
   flex: none;
   margin-left: 4px;
   white-space: nowrap;
   font-size: 11px;
-  line-height: 24px;
+  line-height: 20px;
   color: hsl(var(--color-text-tertiary));
 }
 
-/* 完成结果的朱砂小印：只在稳定 OUT 出现时落印一次，避免流式 token 逐帧闪动。 */
-.successSeal {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  margin-left: 6px;
-  border: 1px solid color-mix(in srgb, hsl(var(--color-status-success)) 48%, transparent);
-  border-radius: 999px;
-  color: hsl(var(--color-status-success));
-  background: color-mix(in srgb, hsl(var(--color-status-success)) 10%, transparent);
-}
-
-/* 错误行的折叠摘要：失败首行用错误色。 */
-.errorSummary {
-  color: hsl(var(--color-status-error));
-}
-
-/* 展开体容器（row 的兄弟节点：内部点击不触发展开切换）。 */
-.bodyWrap {
-  display: flex;
-  flex-direction: column;
-}
 
 /* 通用 IN/OUT 展开卡：凹陷底 + 细边 + 12px 圆角；每个 section 独立限高滚动，
    长输入不会掩埋短输出（反之亦然）。 */

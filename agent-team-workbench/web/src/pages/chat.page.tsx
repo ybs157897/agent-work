@@ -453,7 +453,6 @@ function ConversationPane() {
             stoppedRuns={stoppedRuns}
             onFork={(key) => void forkConversation(key)}
             agent={agent ? { name: agent.name, avatar: agent.avatar } : undefined}
-            scrollContainerRef={scrollRef}
           />
         </div>
         {latestRunAlert && (

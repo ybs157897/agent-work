@@ -168,7 +168,7 @@ function DockProposedPlan({ text }: { text: string }) {
           meta="Plan 模式"
         />
       )}
-      body={<div className="chat-markdown text-caption"><MarkdownBody text={text} /></div>}
+      body={<div className="chat-prose"><MarkdownBody text={text} /></div>}
     />
   );
 }

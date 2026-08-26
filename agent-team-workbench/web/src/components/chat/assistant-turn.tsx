@@ -1,11 +1,8 @@
 import { MarkdownBody } from './markdown-body';
 import { MessageActions } from './message-actions';
-import { Avatar } from '../avatar';
 import { formatTime } from '../../utils/format';
-import { TracingBeam } from '../aceternity/tracing-beam';
-import type { RefObject } from 'react';
 
-/** Agent 一轮回复：回合头（头像+名字+时间）+ 正文 Markdown（reasoning 已迁入活动组）。 */
+/** Agent 一轮回复：角色标签、正文与消息操作（reasoning 已迁入活动组）。 */
 export function AssistantTurn({
   text = '',
   at,
@@ -13,8 +10,6 @@ export function AssistantTurn({
   forkKey,
   onFork,
   agentName,
-  agentAvatar,
-  scrollContainerRef,
 }: {
   text?: string;
   at?: string;
@@ -22,40 +17,34 @@ export function AssistantTurn({
   forkKey?: string;
   onFork?: (key: string) => void;
   agentName?: string;
-  agentAvatar?: string;
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   if (!text && !streaming) return null;
 
   const name = agentName ?? 'Agent';
   return (
-    <div className="group flex justify-start py-1">
+    <article className="group flex justify-start py-3" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
-        <div className="mb-1 flex items-center gap-1.5">
-          <Avatar name={name} url={agentAvatar} size={20} />
-          <span className="text-caption font-semibold text-text-secondary">{name}</span>
-          {at && <span className="text-caption tabular-nums text-text-tertiary">{formatTime(at)}</span>}
+        <div className="chat-role-label">
+          <span className="chat-role-dot" aria-hidden />
+          <span>{name}</span>
+          {at && <span className="chat-msg-time">{formatTime(at)}</span>}
         </div>
         {text ? (
           <div key={streaming ? 'streaming' : 'settled'} className={streaming ? 'chat-streaming' : undefined}>
-            {streaming ? (
-              <div className="chat-markdown"><MarkdownBody text={text} streaming /></div>
-            ) : (
-              <TracingBeam className="chat-transcript-beam" scrollContainerRef={scrollContainerRef}>
-                <div className="chat-markdown"><MarkdownBody text={text} /></div>
-              </TracingBeam>
-            )}
+            <div className="chat-prose">
+              <MarkdownBody text={text} streaming={streaming} />
+              {streaming && <span className="chat-stream-caret" aria-hidden />}
+            </div>
           </div>
         ) : null}
         {at && !streaming && text ? (
           <MessageActions
             text={text}
-            side="left"
             className="mt-2"
             onFork={forkKey && onFork ? () => onFork(forkKey) : undefined}
           />
         ) : null}
       </div>
-    </div>
+    </article>
   );
 }

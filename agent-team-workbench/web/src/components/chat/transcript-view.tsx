@@ -9,22 +9,18 @@ import { ApprovalCard } from './approval-card';
 import type { TranscriptSegment } from '../../utils/chronological-transcript';
 import { transcriptSegmentKey } from '../../utils/approval-transcript';
 import { formatTime } from '../../utils/format';
-import type { RefObject } from 'react';
 
 export function TranscriptView({
   segments,
   stoppedRuns,
   onFork,
   agent,
-  scrollContainerRef,
 }: {
   segments: TranscriptSegment[];
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
   /** 当前会话归属的 Agent（助手回合头展示身份）。 */
   agent?: { name: string; avatar?: string };
-  /** 聊天拥有独立滚动视口，供 Aceternity TracingBeam 正确计算进度。 */
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
     <>
@@ -35,7 +31,6 @@ export function TranscriptView({
           stoppedRuns={stoppedRuns}
           onFork={onFork}
           agent={agent}
-          scrollContainerRef={scrollContainerRef}
         />
       ))}
     </>
@@ -47,13 +42,11 @@ function TranscriptSegmentView({
   stoppedRuns,
   onFork,
   agent,
-  scrollContainerRef,
 }: {
   seg: TranscriptSegment;
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
   agent?: { name: string; avatar?: string };
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   switch (seg.kind) {
     case 'user':
@@ -67,8 +60,6 @@ function TranscriptSegmentView({
           forkKey={seg.msg.key}
           onFork={onFork}
           agentName={agent?.name}
-          agentAvatar={agent?.avatar}
-          scrollContainerRef={scrollContainerRef}
         />
       );
     case 'thinking':
@@ -102,12 +93,17 @@ function TranscriptSegmentView({
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <div className="group flex flex-col items-end py-1">
-      <div className="w-max max-w-full min-w-0 rounded-3xl border border-brand-primary/20 bg-brand-primary/[0.07] px-3 py-1.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
+    <article className="group py-3" aria-label="你的消息">
+      <div className="chat-role-label">
+        <span className="chat-role-dot chat-role-dot-user" aria-hidden />
+        <span>你</span>
+        {msg.at && <span className="chat-msg-time">{formatTime(msg.at)}</span>}
+      </div>
+      <div className="chat-user-card whitespace-pre-wrap break-words">
         {msg.text}
       </div>
-      <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
-    </div>
+      <MessageActions text={msg.text} className="mt-1" />
+    </article>
   );
 }
 

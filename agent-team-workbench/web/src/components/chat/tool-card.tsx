@@ -1,18 +1,14 @@
-import { Check, ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
+import { Check, CircleX, ChevronDown, ChevronRight, FilePen, FileText, LoaderCircle, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
 import { createElement, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { toolDuration, type ChatMessage } from '../../stores/chat.store';
-import { activityWorkedFor } from '../../utils/activity-worked-for';
-import type { ReasoningSlot } from '../../utils/transcript-layout';
-import { ReasoningProcessPanel } from './reasoning-activity-row';
 import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
-import { DisclosureRow } from './blocks/DisclosureRow';
 import { StateDot } from './blocks/StateDot';
 import { TerminalBlock } from './blocks/TerminalBlock';
 import { ReadBlock } from './blocks/ReadBlock';
 import { SearchBlock } from './blocks/SearchBlock';
 import { cx } from './blocks/cx';
-import { toolRowModel, toolRowTitleForState, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
+import { FAMILY_TITLES, toolRowModel, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
 import { readBlockFromOutput } from './read-model';
 import { parseGrepOutput, parsePathList } from './search-parse';
 import css from './tool-row.module.css';
@@ -39,6 +35,17 @@ export function toolIcon(tool?: string): LucideIcon {
     default:
       return Wrench;
   }
+}
+
+/** ToolCallStrip 标题：工具名转为可扫描的人类标题，缺失时回退到工具族标题。 */
+export function humanizeToolName(tool: string | undefined, family?: ToolFamily): string {
+  const raw = tool?.trim();
+  if (!raw) return FAMILY_TITLES[family ?? 'others'];
+  return raw
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
 }
 
 /** 活动段：同 run 连续工具行折叠为 activity 组，其余消息原样透传（保持时间线顺序）。 */
@@ -72,84 +79,82 @@ export function groupActivity(messages: ChatMessage[]): ActivitySegment[] {
   return segments;
 }
 
-/** 组级 worked-for：组内最早 started 到最晚 completed（occurred_at 为 RFC3339 UTC，字符串可比）。 */
-export function groupWorkedFor(items: ChatMessage[]): string | null {
-  const starts = items.flatMap((m) => (m.startedAt ? [m.startedAt] : []));
-  const ends = items.flatMap((m) => (m.completedAt ? [m.completedAt] : []));
-  if (!starts.length || !ends.length) return null;
-  const earliest = starts.reduce((a, b) => (a <= b ? a : b));
-  const latest = ends.reduce((a, b) => (a >= b ? a : b));
-  return toolDuration(earliest, latest);
+/** ToolCallStrip 的稳定语义模型，供渲染和纯函数测试共享。 */
+export function toolChipModel(msg: ChatMessage, stopped = false) {
+  const model = toolRowModel(msg);
+  const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
+  return {
+    title: humanizeToolName(msg.tool, model.family),
+    state,
+    duration: toolDuration(msg.startedAt, msg.completedAt),
+  } as const;
 }
 
 /**
- * 同 run 工具行的可折叠「活动」组：组头 worked-for 计时；有进行中工具时强制展开
- * （完成后可由用户折叠）。collapsed 是本地 state——刷新回默认展开。
- * stoppedRuns：已终态但未成功（中断/取消/丢失/失败）的 run 集，组内仍 running 的行按中断态展示。
+ * 同 run 工具调用按 LeAgent 的横向 chip 轨展示；单选 chip 后在轨道下方展开本地专用详情体。
+ * stoppedRuns 把终态 run 遗留的 running 帧投影为中断态，避免继续显示运行动画。
  */
 export function ActivityGroup({
   items,
-  reasoning,
-  assistantAt,
   stoppedRuns,
   defaultCollapsed = false,
   suppressDiff = false,
 }: {
   items: ChatMessage[];
-  reasoning?: ReasoningSlot;
-  /** assistant 落定时间，用于组级 worked-for 上界 */
-  assistantAt?: string;
   stoppedRuns?: ReadonlySet<string>;
   /** run 终态且无 running 工具时默认折叠 */
   defaultCollapsed?: boolean;
   /** turn 级 diff 汇总存在时隐藏工具行内 diff */
   suppressDiff?: boolean;
 }) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [panelExpanded, setPanelExpanded] = useState(!defaultCollapsed);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const reduceMotion = useReducedMotion();
-  const running =
-    Boolean(reasoning?.streaming) ||
-    items.some((m) => m.toolStatus === 'running' && !stoppedRuns?.has(m.runId));
-  const open = !collapsed || running;
-  const workedFor = activityWorkedFor(items, reasoning, assistantAt);
-
-  const headLabel = running
-    ? '工作中…'
-    : workedFor
-      ? `已工作 ${workedFor}`
-      : '已完成';
+  const selected = selectedKey ? items.find((item) => item.key === selectedKey) : undefined;
+  const selectedStopped = selected ? stoppedRuns?.has(selected.runId) && selected.toolStatus === 'running' : false;
+  const selectedModel = selected ? toolRowModel(selected) : undefined;
+  const selectedState = selected ? toolChipModel(selected, selectedStopped).state : undefined;
+  const showDetails = Boolean(panelExpanded && selectedModel && selectedState);
 
   return (
-    <div className="chat-activity">
-      <button type="button" className="chat-activity-head" onClick={() => setCollapsed((v) => !v)} aria-expanded={open}>
-        {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
-        <span className="min-w-0 flex-1 truncate font-medium text-text-secondary">{headLabel}</span>
-      </button>
-      <AnimatePresence initial={false} mode="sync">
-        {open && (
+    <div className={css.activityBody}>
+      <div className={css.stripRow}>
+        <button
+          type="button"
+          className={css.detailsToggle}
+          disabled={!selected}
+          onClick={() => setPanelExpanded((value) => !value)}
+          aria-expanded={showDetails}
+          aria-label="切换工具详情"
+        >
+          {showDetails ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}
+        </button>
+        <div className={css.strip} role="list" aria-label="工具调用">
+          {items.map((m, index) => (
+            <ToolRow
+              key={m.key}
+              msg={m}
+              index={index + 1}
+              stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
+              selected={selectedKey === m.key}
+              onToggle={() => {
+                setSelectedKey((key) => key === m.key ? null : m.key);
+                setPanelExpanded(true);
+              }}
+            />
+          ))}
+        </div>
+      </div>
+      <AnimatePresence initial={false}>
+        {showDetails && selectedModel && selectedState && (
           <motion.div
-            className="chat-activity-body"
+            className={css.details}
             initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
             animate={{ opacity: 1, height: 'auto', y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
             transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
           >
-            {reasoning && (
-              <ReasoningProcessPanel
-                key={reasoning.key}
-                panelKey={reasoning.key}
-                text={reasoning.text}
-                streaming={reasoning.streaming}
-              />
-            )}
-            {items.map((m) => (
-              <ToolRow
-                key={m.key}
-                msg={m}
-                stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
-                suppressDiff={suppressDiff}
-              />
-            ))}
+            <ExpandedBody model={selectedModel} state={selectedState} suppressDiff={suppressDiff} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -288,106 +293,39 @@ function stateStatus(state: ToolRowState): string | null {
   }
 }
 
-/** 前导槽：error/stopped 换成状态点（红/琥珀），running 保持图标（行扫光承载进行中信号）。 */
-function leadingFor(state: ToolRowState, icon: ReactNode): ReactNode {
-  switch (state) {
-    case 'error':
-      return <StateDot state="error" />;
-    case 'stopped':
-      return <StateDot state="warning" />;
-    default:
-      return icon;
-  }
-}
-
-/**
- * 单次工具调用的摘要行（DSH ToolRow chrome）：16px 前导槽（图标/状态点，悬停换
- * chevron 预览）+ 族标题 + 圆点 + 截断摘要 + 耗时徽章；整行点击展开（Enter/Space
- * 同效），展开体按族分派终端/diff/read/search/IN-OUT 卡。错误行折叠摘要直接是
- * 失败首行红字；中断 run 的挂起行按 stopped（琥珀点、无扫光）展示。
- */
+/** ToolCallStrip 中的单次调用 chip；详情由 ActivityGroup 在 strip 外统一渲染。 */
 export function ToolRow({
   msg,
+  index,
   stopped = false,
-  suppressDiff = false,
+  selected = false,
+  onToggle,
 }: {
   msg: ChatMessage;
+  index?: number;
   stopped?: boolean;
-  suppressDiff?: boolean;
+  selected?: boolean;
+  onToggle?: () => void;
 }) {
-  const model = toolRowModel(msg);
-  const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
-  const [expanded, setExpanded] = useState(false);
-  const reduceMotion = useReducedMotion();
-  const duration = toolDuration(msg.startedAt, msg.completedAt);
+  const chip = toolChipModel(msg, stopped);
+  const state = chip.state;
+  const duration = chip.duration;
   // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
   const icon = createElement(toolIcon(msg.tool), { className: 'h-3.5 w-3.5' });
   // 卡片存在性判定与 ExpandedBody 的分派保持一致（行能否展开取决于有无任何展开体）。
-  const singleFile = model.filePath !== undefined;
-  const hasIoBody = (!singleFile && model.body !== null) || model.output !== null;
-  const hasCard =
-    model.family === 'bash' ||
-    (!suppressDiff &&
-      (model.family === 'write' || model.family === 'edit') &&
-      model.output !== null &&
-      looksLikeUnifiedDiff(stripControlChars(model.output))) ||
-    (model.family === 'read' && state !== 'running' && model.output !== null) ||
-    (model.family === 'search' && model.output !== null);
-  const expandable = hasCard || hasIoBody;
-  const open = expanded && expandable;
-  const failureLine = state === 'error' ? model.errorSummary : null;
-  const summaryText = failureLine ?? model.summary;
   const status = stateStatus(state);
-  const title = toolRowTitleForState(model, state);
-
+  const title = chip.title;
+  const statusIcon = state === 'running' ? <LoaderCircle className={css.runningIcon} aria-hidden /> : state === 'error' ? <CircleX className={css.errorIcon} aria-hidden /> : state === 'stopped' ? <StateDot state="warning" /> : <Check className={css.okIcon} aria-hidden />;
   return (
-    <div className={css.root} data-tool={msg.tool} data-state={state}>
+    <div className={css.root} data-tool={msg.tool} data-state={state} role="listitem">
       {status !== null && <span className={css.visuallyHidden}>{status}</span>}
-      <DisclosureRow
-        rowClassName={css.row}
-        leadingClassName={css.leading}
-        titleClassName={css.title}
-        chevronClassName={css.chevron}
-        icon={leadingFor(state, icon)}
-        title={title}
-        open={open}
-        expandable={expandable}
-        expandOnRowClick
-        keepContentWhenOpen
-        onToggle={() => setExpanded((v) => !v)}
-        collapsedContent={
-          summaryText !== '' || duration !== null ? (
-            <>
-              {summaryText !== '' && <span className={css.sep} aria-hidden />}
-              {summaryText !== '' && (
-                <span className={cx(css.summary, failureLine !== null && css.errorSummary)}>{summaryText}</span>
-              )}
-              {duration !== null && <span className={css.summarySuffix}>{duration}</span>}
-              {state === 'ok' && model.output !== null && (
-                <motion.span
-                  className={css.successSeal}
-                  initial={reduceMotion ? false : { opacity: 0, scale: 0.7, rotate: -8 }}
-                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
-                  transition={reduceMotion ? { duration: 0 } : { duration: 0.34, ease: [0.16, 1, 0.3, 1] }}
-                  aria-label="已完成"
-                >
-                  <Check className="h-3 w-3" aria-hidden />
-                </motion.span>
-              )}
-            </>
-          ) : undefined
-        }
-      >
-        <motion.div
-          className={css.bodyWrap}
-          initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
-          animate={{ opacity: 1, height: 'auto', y: 0 }}
-          transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
-          data-result-reveal={state === 'ok' ? 'true' : undefined}
-        >
-          <ExpandedBody model={model} state={state} suppressDiff={suppressDiff} />
-        </motion.div>
-      </DisclosureRow>
+      <button type="button" className={css.chip} data-selected={selected || undefined} onClick={onToggle} aria-expanded={selected} aria-pressed={selected} title={title}>
+        <span className={css.index}>{index ?? 1}</span>
+        <span className={css.icon}>{icon}</span>
+        <span className={css.title}>{title}</span>
+        {duration !== null && <span className={css.summarySuffix}>{duration}</span>}
+        <span className={css.status}>{statusIcon}</span>
+      </button>
     </div>
   );
 }

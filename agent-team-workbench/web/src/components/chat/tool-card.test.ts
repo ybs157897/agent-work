@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FilePen, FileText, Plug, Search, Terminal, Wrench } from 'lucide-react';
 import type { ChatMessage } from '../../stores/chat.store';
-import { groupActivity, groupWorkedFor, toolIcon } from './tool-card';
+import { groupActivity, humanizeToolName, toolChipModel, toolIcon } from './tool-card';
 
 const msg = (over: Partial<ChatMessage> & Pick<ChatMessage, 'key' | 'runId' | 'kind' | 'text' | 'at'>): ChatMessage => over;
 
@@ -24,6 +24,21 @@ describe('toolIcon', () => {
     expect(toolIcon('')).toBe(Wrench);
     expect(toolIcon(undefined)).toBe(Wrench);
     expect(toolIcon('spread_output')).toBe(Wrench);
+  });
+});
+
+describe('humanizeToolName', () => {
+  it('把工具 snake_case 转成标题，缺失名称回退工具族', () => {
+    expect(humanizeToolName('web_search', 'search')).toBe('Web Search');
+    expect(humanizeToolName('', 'bash')).toBe('Bash');
+  });
+});
+
+describe('toolChipModel', () => {
+  it('keeps the human title and terminal state stable for a chip', () => {
+    const message = msg({ key: 'chip', runId: 'r1', kind: 'tool', at: '', tool: 'bash', toolStatus: 'failed', text: '调用工具 bash：pnpm test' });
+    expect(toolChipModel(message)).toMatchObject({ title: 'Bash', state: 'error' });
+    expect(toolChipModel({ ...message, toolStatus: 'running' }, true).state).toBe('stopped');
   });
 });
 
@@ -50,23 +65,5 @@ describe('groupActivity', () => {
     ];
     const segs = groupActivity(messages);
     expect(segs.map((s) => s.kind)).toEqual(['activity', 'activity', 'single']);
-  });
-});
-
-describe('groupWorkedFor', () => {
-  it('组内最早 started 到最晚 completed（跨行取并集）', () => {
-    const items = [
-      msg({ key: 't1', runId: 'r1', kind: 'tool', text: 'a', at: '', startedAt: '2026-08-22T00:00:00Z', completedAt: '2026-08-22T00:00:02Z' }),
-      msg({ key: 't2', runId: 'r1', kind: 'tool', text: 'b', at: '', startedAt: '2026-08-22T00:00:01Z', completedAt: '2026-08-22T00:00:05Z' }),
-    ];
-    expect(groupWorkedFor(items)).toBe('5s');
-  });
-
-  it('缺 started 或 completed（纯进行中/孤儿行）返回 null', () => {
-    expect(
-      groupWorkedFor([msg({ key: 't1', runId: 'r1', kind: 'tool', text: 'a', at: '', startedAt: '2026-08-22T00:00:00Z' })]),
-    ).toBeNull();
-    expect(groupWorkedFor([msg({ key: 't2', runId: 'r1', kind: 'tool', text: 'b', at: '', completedAt: '2026-08-22T00:00:05Z' })])).toBeNull();
-    expect(groupWorkedFor([])).toBeNull();
   });
 });
