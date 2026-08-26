@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CodeBlock, copyText, languageFromClassName, nodeText } from './code-block';
+import { CodeBlock, codeFilename, copyText, downloadCode, languageFromClassName, nodeText } from './code-block';
 
 describe('CodeBlock 模块（node 环境无 DOM）', () => {
   it('import 不炸且组件可取用（highlight.js 懒加载不在 import 期触发）', () => {
@@ -80,5 +80,26 @@ describe('copyText', () => {
   it('clipboard 缺席且无 document（node 原生）→ false，不抛', async () => {
     vi.stubGlobal('navigator', {});
     await expect(copyText('hello')).resolves.toBe(false);
+  });
+});
+
+describe('code download metadata', () => {
+  it('uses a useful extension for known languages and text fallback', () => {
+    expect(codeFilename('typescript')).toBe('code.ts');
+    expect(codeFilename('C++')).toBe('code.cpp');
+    expect(codeFilename(null)).toBe('code.txt');
+    expect(codeFilename('unknown language')).toBe('code.unknownlanguage');
+  });
+
+  it('sets the language-derived download filename', () => {
+    const click = vi.fn();
+    const anchor = { href: '', download: '', click };
+    const createElement = vi.fn(() => anchor);
+    vi.stubGlobal('document', { createElement });
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() });
+    downloadCode('const answer = 42;', 'javascript');
+    expect(anchor.download).toBe('code.js');
+    expect(click).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
   });
 });

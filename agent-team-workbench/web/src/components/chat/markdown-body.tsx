@@ -1,82 +1,295 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { nodeText, CodeBlock } from './code-block';
-import { MarkdownErrorBoundary } from './error-boundary';
-import { TableCard } from './table-card';
-import { InkReveal } from '../ink/ink-reveal';
-import { TextGenerateEffect } from '../aceternity/text-generate-effect';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import { CodeBlock, languageFromClassName } from "./code-block";
+import { MarkdownErrorBoundary } from "./error-boundary";
+import { MermaidDiagram } from "./mermaid-diagram";
+import { TableCard } from "./table-card";
 
-/** 汉字脚本检测：命中中日韩使用的汉字；谚文/假名不属于 Script=Han，不在此规则内。 */
-const HAN_SCRIPT = /\p{Script=Han}/u;
+const STREAMING_PARSE_INTERVAL_MS = 100;
 
-/** 段落是否含汉字：命中时 p 打 data-markdown-han-text，配合 index.css 的 CJK 连续段距规则。 */
-export function hasHanText(text: string): boolean {
-  return HAN_SCRIPT.test(text);
+export function useThrottledMarkdown(text: string, streaming: boolean): string {
+  const [value, setValue] = useState(text);
+  const latest = useRef(text);
+  const lastFlush = useRef(0);
+  const timer = useRef<number | null>(null);
+  useEffect(() => {
+    latest.current = text;
+    if (!streaming) {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = null;
+      setValue(text);
+      return;
+    }
+    const elapsed = Date.now() - lastFlush.current;
+    const flush = () => {
+      lastFlush.current = Date.now();
+      timer.current = null;
+      setValue(latest.current);
+    };
+    if (elapsed >= STREAMING_PARSE_INTERVAL_MS) flush();
+    else if (timer.current === null)
+      timer.current = window.setTimeout(
+        flush,
+        STREAMING_PARSE_INTERVAL_MS - elapsed,
+      );
+  }, [text, streaming]);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  return streaming ? value : text;
 }
 
-/** Streaming markdown is intentionally static; settled output gets one-shot semantic reveals. */
-export function shouldAnimateMarkdown(streaming: boolean): boolean {
-  return !streaming;
+export function stripThinkTags(text: string): string {
+  return /<think>/i.test(text)
+    ? text.replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^\n+/, "")
+    : text;
 }
 
-/** Agent 正文 Markdown：逐标签格局对齐 Codex 桌面端（样式见 index.css 的 .chat-markdown 区）。 */
-export function MarkdownBody({ text, streaming = false }: { text: string; streaming?: boolean }) {
-  if (!text.trim()) return null;
-  const reveal = shouldAnimateMarkdown(streaming);
+export const CALLOUT_TITLES: Record<string, string> = {
+  note: "Note",
+  info: "Info",
+  tip: "Tip",
+  success: "Success",
+  warning: "Warning",
+  caution: "Caution",
+  danger: "Danger",
+  important: "Important",
+};
+export function normalizeCalloutType(raw: string): string {
+  const type = raw.toLowerCase();
+  return type in CALLOUT_TITLES ? type : "note";
+}
+export function isSafeMarkdownImageSource(source: string | undefined): boolean {
+  const value = source?.trim() ?? "";
+  if (!value || /^(?:(?:javascript|vbscript|file):|data:(?!image\/))/i.test(value))
+    return false;
+  return true;
+}
+function classNames(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value.filter((item): item is string => typeof item === "string");
+  return typeof value === "string" ? value.split(/\s+/).filter(Boolean) : [];
+}
+export type MdNode = {
+  type: string;
+  value?: string;
+  children?: MdNode[];
+  data?: { hName?: string; hProperties?: Record<string, unknown> };
+};
+function calloutNode(type: string, body: MdNode[]): MdNode {
+  return {
+    type: "blockquote",
+    data: {
+      hName: "div",
+      hProperties: { className: ["chat-callout", `chat-callout-${type}`] },
+    },
+    children: [
+      {
+        type: "paragraph",
+        data: {
+          hName: "div",
+          hProperties: { className: ["chat-callout-title"] },
+        },
+        children: [{ type: "text", value: CALLOUT_TITLES[type] }],
+      },
+      ...body,
+    ],
+  };
+}
+
+export function remarkCallouts() {
+  return (tree: MdNode) => {
+    if (!tree.children) return;
+    const output: MdNode[] = [];
+    for (let i = 0; i < tree.children.length; i += 1) {
+      const node = tree.children[i]!;
+      const first =
+        node.type === "blockquote"
+          ? node.children?.[0]?.children?.[0]
+          : node.children?.[0];
+      const firstValue = first?.type === "text" ? (first.value ?? "") : "";
+      if (
+        node.type === "blockquote" &&
+        node.children?.[0]?.type === "paragraph"
+      ) {
+        const match = firstValue.match(/^\[!(\w+)\][ \t]*(?:\r?\n)?/);
+        if (match) {
+          first!.value = firstValue.slice(match[0].length);
+          if (!first!.value) node.children[0]!.children?.shift();
+          if (!node.children[0]!.children?.length) node.children.shift();
+          output.push(
+            calloutNode(normalizeCalloutType(match[1]!), node.children),
+          );
+          continue;
+        }
+      }
+      if (node.type === "paragraph" && firstValue) {
+        const open = firstValue.match(/^:::(\w+)[ \t]*(?:\r?\n)?/);
+        if (open) {
+          const type = normalizeCalloutType(open[1]!);
+          const last = node.children?.[node.children.length - 1];
+          if (
+            last?.type === "text" &&
+            /\r?\n?:::[ \t]*$/.test(last.value ?? "")
+          ) {
+            first!.value = firstValue.slice(open[0].length);
+            last.value = (last.value ?? "").replace(/\r?\n?:::[ \t]*$/, "");
+            output.push(calloutNode(type, [node]));
+            continue;
+          }
+          const close = tree.children.findIndex(
+            (candidate, index) =>
+              index > i &&
+              candidate.type === "paragraph" &&
+              candidate.children?.length === 1 &&
+              candidate.children[0]?.type === "text" &&
+              candidate.children[0].value?.trim() === ":::",
+          );
+          if (close !== -1) {
+            first!.value = firstValue.slice(open[0].length);
+            const body: MdNode[] = [];
+            const children = node.children ?? [];
+            if (children.some((child) => child.value)) body.push(node);
+            body.push(...tree.children.slice(i + 1, close));
+            output.push(calloutNode(type, body));
+            i = close;
+            continue;
+          }
+        }
+      }
+      output.push(node);
+    }
+    tree.children = output;
+  };
+}
+
+function extractCode(
+  nodes?: Array<{ value?: string; children?: unknown[] }>,
+): string {
   return (
-    <MarkdownErrorBoundary resetKey={text} fallback={<PlainTextFallback text={text} />}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noreferrer noopener" className="text-brand-primary hover:underline">
-              {children}
-            </a>
+    nodes
+      ?.map(
+        (node) =>
+          node.value ??
+          extractCode(
+            node.children as
+              | Array<{ value?: string; children?: unknown[] }>
+              | undefined,
           ),
-          p: ({ children }) => (
-            <InkReveal as="p" enabled={reveal} delay={0.03} data-markdown-han-text={hasHanText(nodeText(children)) ? '' : undefined}>{children}</InkReveal>
-          ),
-          h1: ({ children }) => <MarkdownHeading level="h1" children={children} streaming={streaming} />,
-          h2: ({ children }) => <MarkdownHeading level="h2" children={children} streaming={streaming} />,
-          h3: ({ children }) => <MarkdownHeading level="h3" children={children} streaming={streaming} />,
-          h4: ({ children }) => <MarkdownHeading level="h4" children={children} streaming={streaming} />,
-          h5: ({ children }) => <MarkdownHeading level="h5" children={children} streaming={streaming} />,
-          h6: ({ children }) => <MarkdownHeading level="h6" children={children} streaming={streaming} />,
-          ul: ({ children }) => <InkReveal as="ul" enabled={reveal} delay={0.05}>{children}</InkReveal>,
-          ol: ({ children }) => <InkReveal as="ol" enabled={reveal} delay={0.05}>{children}</InkReveal>,
-          li: ({ children }) => <InkReveal as="li" enabled={reveal} delay={0.07}>{children}</InkReveal>,
-          blockquote: ({ children }) => <InkReveal as="blockquote" enabled={reveal} delay={0.08}>{children}</InkReveal>,
-          // 行内/块级 code 的外观分别由 index.css（.chat-markdown :not(pre) > code）与 CodeBlock 接管；
-          // 只解构 className/children——react-markdown 以 passNode:true 注入的 node prop 不能泄到 DOM
-          code: ({ className, children }) => (
-            <code className={className}>{children}</code>
-          ),
-          table: ({ children }) => <InkReveal enabled={reveal} delay={0.1} className="my-3"><TableCard>{children}</TableCard></InkReveal>,
-          pre: ({ children }) => <InkReveal enabled={reveal} delay={0.1} className="my-3"><CodeBlock>{children}</CodeBlock></InkReveal>,
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </MarkdownErrorBoundary>
+      )
+      .join("") ?? ""
   );
 }
 
-function MarkdownHeading({ level, children, streaming }: { level: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'; children: React.ReactNode; streaming: boolean }) {
-  const plain = typeof children === 'string';
-  if (plain && !streaming) {
-    return <TextGenerateEffect as={level} words={children} filter duration={0.46} />;
-  }
-  return <InkReveal as={level} enabled={!streaming} delay={0.02}>{children}</InkReveal>;
-}
-
-/** 渲染崩溃兜底：保底可读的纯文本。 */
-function PlainTextFallback({ text }: { text: string }) {
+export function MarkdownBody({
+  text,
+  streaming = false,
+}: {
+  text: string;
+  streaming?: boolean;
+}) {
+  const parsedText = useThrottledMarkdown(stripThinkTags(text), streaming);
+  const remarkPlugins = useMemo(
+    () => [remarkGfm, remarkMath, remarkCallouts],
+    [],
+  );
+  const rehypePlugins = useMemo(
+    () => (streaming ? [] : [rehypeKatex]),
+    [streaming],
+  );
+  const components = useMemo(
+    () =>
+      ({
+        a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+          <a href={href} target="_blank" rel="noreferrer noopener">
+            {children}
+          </a>
+        ),
+        code: ({
+          className,
+          children,
+        }: {
+          className?: string;
+          children?: ReactNode;
+        }) => <code className={className}>{children}</code>,
+        pre: ({
+          children,
+          node,
+          ...rest
+        }: {
+          children?: ReactNode;
+          node?: {
+            children?: Array<{
+              tagName?: string;
+              properties?: Record<string, unknown>;
+              children?: Array<{ value?: string }>;
+            }>;
+          };
+          [key: string]: unknown;
+        }) => {
+          const code = node?.children?.[0];
+          if (code?.tagName === "code") {
+            const classes = classNames(code.properties?.className);
+            const language = languageFromClassName(classes.join(" "));
+            if (streaming) return <pre {...rest}>{children}</pre>;
+            if (language === "mermaid")
+              return (
+                <MermaidDiagram source={extractCode(code.children).trim()} />
+              );
+            return <CodeBlock>{children}</CodeBlock>;
+          }
+          return <pre {...rest}>{children}</pre>;
+        },
+        img: ({ src, alt }: { src?: string; alt?: string }) => {
+          const value = src?.trim() ?? "";
+          if (!isSafeMarkdownImageSource(value)) {
+            return (
+              <span className="chat-markdown-image-fallback">
+                图片不可用{alt?.trim() ? `：${alt.trim()}` : ""}
+              </span>
+            );
+          }
+          return <img src={value} alt={alt ?? ""} loading="lazy" />;
+        },
+        table: ({ children }: { children?: ReactNode }) => (
+          <TableCard>{children}</TableCard>
+        ),
+        input: ({
+          type,
+          checked,
+          node: _node,
+          ...props
+        }: {
+          type?: string;
+          checked?: boolean;
+          node?: unknown;
+          [key: string]: unknown;
+        }) => {
+          void _node;
+          return <input {...props} type={type} checked={checked} readOnly />;
+        },
+      }) as unknown as Components,
+    [streaming],
+  );
+  if (!text.trim()) return null;
   return (
-    <div>
-      <div className="text-caption text-text-tertiary">Markdown 渲染失败，已按纯文本展示</div>
-      <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-text-secondary">
-        {text}
-      </pre>
-    </div>
+    <MarkdownErrorBoundary
+      resetKey={text}
+      fallback={<pre className="whitespace-pre-wrap break-words">{text}</pre>}
+    >
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+        components={components}
+      >
+        {parsedText}
+      </ReactMarkdown>
+    </MarkdownErrorBoundary>
   );
 }
