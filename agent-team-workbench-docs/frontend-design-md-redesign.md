@@ -1,7 +1,7 @@
 # 前端架构与交互重设计方案 —— DESIGN.md 法典化与组件库重构
 
-日期：2026-08-24
-状态：M0 已实施（见 §5 提交清单），M1/M2 已陆续实施；水墨视觉基线见仓库根 `notes/implemented/feature/2026-08-26-ink-wash-visual-system.md`
+日期：2026-08-26
+状态：M0 已实施（见 §5 提交清单），M1/M2 已陆续实施（§1.3 §4 已更新为当前状态）；水墨视觉基线见仓库根 `notes/implemented/feature/2026-08-26-ink-wash-visual-system.md`
 输入：
 - VoltAgent/awesome-design-md 仓库调研（73 份 DESIGN.md，含 `design-md/claude/DESIGN.md`）
 - Anthropic 官方提示词工程教程（`anthropics/prompt-eng-interactive-tutorial`，补充来源）
@@ -9,7 +9,7 @@
 - 前端现状摸底（`agent-team-workbench/web/`）
 - 产品评审留痕 `agent-team-workbench/notes/product/2026-08-24-project-review.md`
 
-> 维护说明（2026-08-26）：本文保留 2026-08-24 前端法典化与组件迁移方案的历史上下文。本文早期章节中的冷蓝视觉描述是当时的基线；当前生效的视觉事实源是 `agent-team-workbench/web/DESIGN.md`，水墨化的取舍与边界见上方状态行链接的决策笔记。
+> 维护说明（2026-08-26）：本文保留 2026-08-24 前端法典化与组件迁移方案的历史上下文。本文早期章节中的冷蓝视觉描述是当时的基线；当前生效的视觉事实源是 `agent-team-workbench/web/DESIGN.md`，水墨化的取舍与边界见上方状态行链接的决策笔记。本文的"待办/规划"条目已按 2026-08-26 代码现状逐条核验（见 §3 §6 §7 §1.3）。
 
 ---
 
@@ -77,9 +77,9 @@ web/src/components/ui/          # 设计系统组件库（M0 建立）
 
 ### 1.3 迁移策略：三段式，删除优先（不留垫片）
 
-- **M0（本次）**：建 `ui/` 基座 + `dashboard` 页示范迁移。新旧并存期仅限迁移窗口。
-- **M1**：逐页迁移，顺序按收益/风险：`logs`（最小）→ `dashboard`（已完成）→ `tasks` → `settings` → `models` → `agents`（920 行最重，最后）。`chat` 页只迁外围（左栏/会话列表），**transcript 渲染区不动**（已对齐 Codex 规格，动它 = 视觉回归）。
-- **M2**：某类旧组件类（如 `.btn-primary`）引用归零即从 `index.css` 成建制删除；不做兼容别名。
+- **M0（已完成）**：建 `ui/` 基座 + `dashboard` 页示范迁移。新旧并存期仅限迁移窗口。
+- **M1（已局部实施）**：逐页迁移，顺序按收益/风险：`logs`（已迁）→ `dashboard`（已迁）→ `tasks`（部分迁：骨架屏） → `settings`（已迁） → `models`（部分迁：控件） → `agents`（部分迁：控件，920 行最重暂留）。`chat` 页只迁外围（左栏/会话列表），**transcript 渲染区不动**（已对齐 LeAgent 规格，动它 = 视觉回归）。
+- **M2（部分实施）**：pages 级别已全量使用 `ui/` 组件（所有页面均有 `from '../components/ui'` 导入），但旧组件类（`.btn*`、`.ui-card*`、`.input-field`、`.status-pill`）引用归零即删的清理尚未执行；`config-*` 与 `chat-*` 布局类族保留（它们是布局语言不是组件类）。首次成功路径引导接线（§3-1）、Toast Undo（§3-4）待做。
 
 ### 1.4 代码示例（M0 已实现，实际代码见 `web/src/components/ui/`）
 
@@ -160,8 +160,8 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 |---|---|---|---|---|
 | 1 | **首次成功路径**：dashboard 空态不再只报数字，给三步引导（注册模型 → 配置智能体 → 创建任务），每步直达对应页面 | 评审原话"缺首次成功路径向导" | `ui/empty-state` + dashboard 迁移（M0 组件就绪，接线在 M2） | M2 |
 | 2 | **信息密度降级**：统计卡只保留需要人做决定的数字，其余进二级；卡片高度节奏不均等（对齐 `confirmed-ia.json`） | 评审"信息密度接近上限" | dashboard 迁移示范（M0 局部体现） | M1 |
-| 3 | **骨架屏 > 300ms 才显示**，替代首屏白等 | `ui-design-brain` components.md | `async-state.tsx` 增加延迟阈值 | M1 |
-| 4 | **破坏性操作带 Undo**：打回（return）、取消任务的 toast 附撤销入口 | `ui-design-brain`：Toast 4–6s + Undo | `toast.store` + `return-modal` | M2 |
+| 3 | **骨架屏 > 300ms 才显示**，替代首屏白等 | `ui-design-brain` components.md | `ui/skeleton`（`delayMs=300` 默认值，`AppShellSkeleton` 启动壳例外 `delayMs=0`） | M1 已实施 |
+| 4 | **破坏性操作带 Undo**：打回（return）、取消任务的 toast 附撤销入口 | `ui-design-brain`：Toast 4–6s + Undo | `toast.store` + `return-modal` | M2 待做 |
 | 5 | **五态巡检**：375/428/768/1280/1536 五档截图巡检（`responsive-testing` 技能）；`config-split` 双栏在 <768 折为抽屉 | `using-ui-stack` 触控目标 ≥44px | 每页迁移的验收动作 | M1 随页 |
 | 6 | **空态文案**：任务/日志空态按 `writing-copy` 技能重写（说清楚"为什么空 + 下一步做什么"） | 评审 + 技能库 | 随页迁移 | M1 |
 | 7 | **暗色模式**：不做（Known Gap）。token 已是语义化 CSS 变量，未来扩展成本低，但现在不为不存在的主题付维护税 | 单主题现状 + 删除优先 | `web/DESIGN.md` Known Gaps | 暂缓 |
@@ -183,20 +183,18 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 
 验证门禁（证据匹配表面）：`pnpm tsc --noEmit && pnpm test && pnpm lint`；dashboard 改动需浏览器目检（`visual-qa-testing` 技能）。
 
-### M1——逐页迁移（蜂群并行方案）
+### M1——逐页迁移（已局部实施）
 
 拆分原则：一页一 executor，文件边界互斥；共享文件（`index.css` 旧类删除）留到 M2 由主导者集中执行。
 
-1. `logs`（63 行，热身）
-2. `tasks`（476 行 + 详情/弹窗子模块，最大收益：看板卡 → `Card`，状态徽标 → `StatusPill`）
-3. `settings`（429 行）→ `models`（972 行）→ `agents`（920 行，配置工作台 `config-*` 类族保留为布局语言，只迁控件）
+已迁移页：`logs`、`dashboard`、`settings`（完整使用 `ui/` 组件）。部分迁移：`tasks`（骨架屏）、`models`/`agents`（控件级）。`chat` 页只迁外围（停止按钮/空态引导），transcript 渲染区不动。
 
 每页验收：类型/测试/lint + 五档视口截图巡检 + 交付说明。
 
-### M2——清场与体验补强
+### M2——清场与体验补强（待做）
 
 1. 旧组件类引用归零即删（`.btn*`、`.ui-card*`、`.status-pill`、`.input-field`）；`config-*` 与 `chat-*` 布局类族保留（它们是布局语言不是组件类）。
-2. 首次成功路径引导接线（§3-1）；Toast Undo（§3-4）；骨架屏延迟阈值（§3-3）。
+2. 首次成功路径引导接线（§3-1）；Toast Undo（§3-4）；骨架屏延迟阈值（§3-3，已实现）。
 3. 全量视觉巡检 + `notes/` 收尾留痕。
 
 ---
@@ -220,15 +218,15 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 2. **Chat UI ≠ Agent UI**（dd-y）：Agent UI 围绕 Run/Step/ToolCall/Approval/Artifact 组织，用户关心"正在做什么/为什么没完/要不要我确认"。我们的协议层对象一一对应，缺的是呈现。
 3. **结构化信息优于纯文本**（Google Research 生成式 UI 实验：83% 偏好率）——远期方向：A2UI/生成式卡片，本刀不实施。
 
-### 本刀落地清单（全部在 DESIGN.md token 体系内）
+### 本刀落地清单（全部已在 DESIGN.md token 体系内实施，代码位置附后）
 
-| # | 项 | 对应洞察 | 改动面 |
-|---|---|---|---|
-| 1 | 助手回合头：头像 + 角色名 + 时间 | 运行可见性（回合归属一目了然） | `assistant-turn.tsx` / `transcript-view.tsx` |
-| 2 | 用户气泡品牌浅底表面 | 表面节奏（白底气泡不可见） | `transcript-view.tsx` UserBubble |
-| 3 | 空会话脚手架：按角色建议首条提示词 chips | 首次成功路径 | `chat.page.tsx` + `utils/chat-session-visuals.ts` |
-| 4 | Composer：运行中停止按钮入坞、发送按钮换 ui/Button（顺手消灭 `text-white` 非语义类） | 控制权可见 | `chat.page.tsx` |
-| 5 | 会话列表状态点（思考中脉冲/已回复绿/失败红/待审批黄） | 运行可见性 | `chat.page.tsx` + 纯函数 helper + 单测 |
+| # | 项 | 对应洞察 | 改动面 | 实现证据 |
+|---|---|---|---|---|---|
+| 1 | 助手回合头：角色标签 + 角色名 + 时间 | 运行可见性（回合归属一目了然） | `assistant-turn.tsx` | 已实现：`chat-role-label`（6px brand 点 + 11px/600 名称 + 11px 时间，`assistant-turn.tsx` line 27–31） |
+| 2 | 用户气泡品牌浅底表面 | 表面节奏（白底气泡不可见） | `transcript-view.tsx` UserBubble | 已实现：`UserBubble`（`transcript-view.tsx` line 94–108，`chat-user-card` 12px 圆角、`surface-sunken/55` 底、`border-subtle/60` 边） |
+| 3 | 空会话脚手架：按角色建议首条提示词 chips | 首次成功路径 | `chat.page.tsx` + `utils/chat-session-visuals.ts` | 已实现：`chat.page.tsx` line 431–448 空态引导 + `suggestedPrompts()` 提示词 chips |
+| 4 | Composer：运行中停止按钮入坞、发送按钮换 ui/Button（顺手消灭 `text-white` 非语义类） | 控制权可见 | `chat.page.tsx` | 已实现：`chat.page.tsx` line 532 停止按钮 + `ui/Button` 使用 |
+| 5 | 会话列表状态点（思考中脉冲/已回复绿/失败红/待审批黄） | 运行可见性 | `chat.page.tsx` + `utils/chat-session-visuals.ts` + `blocks/StateDot` | 已实现：`conversationStatusDotClass()` 在 `chat.page.tsx` line 155 渲染状态点 + `StateDot` 组件（`StateDot.tsx`）四态 |
 
 活动/消息分离（工具活动组折叠）已有实现（ActivityGroup，终态自动收拢），本刀不动；生成式 UI（A2UI）列为 LATER，待审批/表单类交互密度上升后再评估。
 
@@ -263,10 +261,11 @@ export function Button({ variant = 'secondary', size = 'md', className, ...rest 
 未命中落通用 IN/OUT 卡；两层展示（默认业务语义标题、展开技术详情）由
 `toolActivityTitle` + 展开体承担。
 
-本刀两件事：
+本刀两件事（均已实施）：
 
 1. **显式化**：`ExpandedBody` 的隐式 switch 重构为显式 `TOOL_BODY_RENDERERS`
    注册表（族 → 渲染函数，返回 null 落通用卡），行为逐字等价，扩展从
-   「改 switch」变成「加一条注册」。
+   「改 switch」变成「加一条注册」。已在 `tool-card.tsx` line 200 实现。
 2. **补 `code` 族**：run_code/python 等代码执行族此前落通用 IN/OUT，
-   注册进 TerminalBlock（命令 + 输出 + 退出码语义更贴切）。
+   注册进 TerminalBlock（命令 + 输出 + 退出码语义更贴切）。已在 `tool-model.ts` 的
+   `classifyTool` 中实现（`run_code`/`python`/`execute_code`/`run_python_repl` → `'code'`）。

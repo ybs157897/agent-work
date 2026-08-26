@@ -15,7 +15,7 @@
 
 ---
 
-## 1. 段层（TranscriptSegment，8 种）
+## 1. 段层（TranscriptSegment，8 种 + meta-detail 为 meta 子变体）
 
 | 段 | 触发 | 容器/表面 | 排版 | 动效 | 实现 |
 |---|---|---|---|---|---|
@@ -23,10 +23,10 @@
 | assistant | 助手文本 | 通栏 `article`；角色标签下接无容器 `.chat-prose` 正文 | 角色标签：6px brand 点 + 11px/600 Agent 名 + 时间；正文 15px/1.75 | 流式：100ms Markdown 节流 + 2px caret；落定后静态 | assistant-turn.tsx |
 | thinking | reasoning 事件 | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `h-52` 纵滚 `px-3 py-2.5` | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
-| meta-detail | meta 附详情 | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx |
-| activity | 同 run 连续工具行 | LeAgent 式横向 `ToolCallStrip`；chip 点击后在轨道下展开详情 | chip 28px 高，编号/图标/单行工具名/耗时/状态 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
+| meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
+| activity | 同 run 连续工具行 | LeAgent 式横向 `ActivityGroup`；chip 点击后在轨道下展开详情 | chip 28px 高，编号/图标/单行工具名/耗时/状态 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
-| turn-diff | 回合聚合 diff | 同 diff 卡（见 §6） | — | — | turn-diff-card.tsx |
+| turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
 
 段间距：`.chat-thread space-y-3`（12px）；正文限宽 `min(72ch, 100%)` 居中。
@@ -54,7 +54,7 @@
 | Mermaid | `mermaid` fenced code | 动态加载、落定后渲染；失败回落源码而非丢内容 |
 | 图片 | 标准 Markdown image | 最大宽度 100%、8px 圆角；无效 src 显示可读占位 |
 | details | 边框 + 凹面软底，summary 可聚焦/可展开 | 不开放危险 raw HTML；只消费解析器产生的安全节点 |
-| 崩溃兜底 | PlainTextFallback：`caption` 提示 + mono 13 纯文本块 | MarkdownErrorBoundary 按 resetKey 复位 |
+| 崩溃兜底 | MarkdownErrorBoundary 内联 fallback（`<pre>` mono 13 纯文本块，`resetKey` 复位） | 按 resetKey 清错误态重试 |
 
 ---
 
@@ -75,8 +75,8 @@
 ### 公共件（LeAgent 工具 chip + 本地专用详情体）
 | 件 | 规格 |
 |---|---|
-| ToolCallStrip | 28px 横向滚动轨；左侧 28px detail toggle；chip 间距 2px、无滚动条 |
-| ToolCallChip | 高 28px，宽 132–224px；序号 10px mono + 12px 工具图标 + 单行工具名 + 10px 耗时 + 状态图标；hover 凹面 40%，active 50% |
+| ActivityGroup | 28px 横向滚动轨；左侧 28px detail toggle；chip 间距 2px、无滚动条 |
+| ToolRow | 高 28px，宽 132–224px；序号 10px mono + 12px 工具图标 + 单行工具名 + 10px 耗时 + 状态图标；hover 凹面 40%，active 50% |
 | 状态 | pending/running=Loader；success=Check；error=Alert；stopped=中断图标；图标之外有读屏文本，运行动画遵循 reduced-motion |
 | 展开体 | 同一时间只展开一个 chip；复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
 
@@ -163,4 +163,4 @@
 1. **Source（来源引用）Part**：搜索类结果无引用出处部件；search 块已有 matches 数据，加引用行 + 段类型即可（下一候选）。
 2. **成果内容预览**：后端无 artifact 内容端点，工作区只做清单（DESIGN.md Known Gaps 第 7 条）。
 3. **artifact 内联段**：摘要卡是 M1 取舍；流内按 run 锚定的内联卡列 M2。
-4. **StateDot reduced-motion**：追逐动画未进 reduce 覆盖，补一条 CSS 即可。
+4. ~~**StateDot reduced-motion**：追逐动画未进 reduce 覆盖，补一条 CSS 即可。~~ **已实现**（`StateDot.module.css` line 58: `@media (prefers-reduced-motion: reduce)` 已覆盖，`animation: none; opacity: 0.6`）。
