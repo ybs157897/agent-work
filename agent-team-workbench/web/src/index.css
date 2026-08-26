@@ -753,12 +753,11 @@
   padding-block: 0.25em;
 }
 
-/* LeAgent 对齐：长文阅读列固定为 72ch。 */
+/* LeAgent 对齐改全宽（2026-08-27 用户定调「填充满」）：正文列不再钳 72ch，
+   与 composer/dock 共用同一容器，直接吃满对话区宽度。 */
 .chat-thread {
-  --thread-content-max-width: min(72ch, 100%);
   width: 100%;
-  max-width: var(--thread-content-max-width);
-  margin-inline: auto;
+  max-width: none;
 }
 
 .chat-turn {
