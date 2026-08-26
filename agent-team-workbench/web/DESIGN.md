@@ -65,6 +65,7 @@ rounded:
   control: "6px"     # 按钮、输入框、小徽章
   card: "8px"        # 卡片、浮层；纸张不使用肥厚大圆角
   container: "12px"  # 大容器、审批卡、dock 面板
+  code-panel: "16px" # LeAgent 正文 fenced code 专用外壳
   pill: "9999px"     # 状态胶囊（rounded-full）
 shadows:
   level-1: "墨褐色极淡投影 + 纸边 1px 高光"   # 卡片默认（= shadow-card）
@@ -107,10 +108,10 @@ components:
     scope: "破坏性确认（删除/危险操作）一律 Modal，不进 drawer（见 Don'ts）"
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
-  user-bubble:
-    base: "右对齐胶囊气泡（rounded {rounded.pill} 级）；bg {colors.brand.primary}/7%；border 1px {colors.brand.primary}/20%；text {typography.body} {colors.text.primary}——用户侧唯一允许的品牌浅底用法"
+  user-card:
+    base: "LeAgent 式通栏软底卡；rounded {rounded.container}; bg {colors.surface.sunken}/55%；border 1px {colors.border.subtle}/60%；padding 16px × 12px；正文 15px/1.75"
   turn-header:
-    base: "助手回合头：20px 头像 + 名字 {typography.caption} 600 {colors.text.secondary} + 时间 tabular-nums {colors.text.tertiary}"
+    base: "LeAgent 式角色标签：6px 角色点 + 11px/600 名称（uppercase、0.08em）+ 11px tabular-nums 时间；间距 6px、下距 8px"
   prompt-chip:
     base: "rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; text {typography.caption} {colors.text.secondary}; hover border {colors.brand.primary}/35 + text {colors.brand.primary}"
   session-dot:
@@ -129,12 +130,12 @@ components:
     config-split: "220–256px 左栏 + 流式主区（配置工作台专用布局语言）"
   aceternity:
     architecture: "Aceternity primitives → Ink wrappers → Workbench components → Pages"
-    allowed: "Sidebar / Bento Grid / Text Generate Effect / 完成态正文 Tracing Beam / hover-layout motion"
+    allowed: "Sidebar / Bento Grid / Text Generate Effect（非正文）/ hover-layout motion"
     banned-defaults: "霓虹、科技光束、强 3D、无限滚动与默认深色皮肤不得直接进入页面"
   motion:
     fast: "140ms"; normal: "220ms"; slow: "360ms"; atmospheric: "900ms"
     ratio: "80% 静态 / 15% UI motion / 5% 氛围动画"
-    transcript-intensity: "完成态正文 7/10：段级入场 + 标签错峰 + 水墨 Beam；流式正文维持 4/10，禁止按 token 重播"
+    transcript-intensity: "LeAgent 正文 3/10：完成态静态；流式 100ms 节流重排 + 末尾 caret；工具状态只做必要旋转/展开，禁止按 token 重播"
     ae-boundary: "AE/Lottie/WebM 只用于印章、墨迹、山雾等低频资产；实时交互由 Motion/CSS 驱动"
 ---
 
@@ -185,7 +186,7 @@ components:
 - **8px 网格**：一切间距是 4 的倍数；语义刻度见 frontmatter `spacing:`（micro 4 → macro 128）。
 - **页面容器**：`.page-shell` = `layout-safe` 限宽（最大 1440px，两侧留白按断点 48/40/32px）+ 纵向 `stack-md`（32px）节奏。
 - **配置工作台**（智能体/模型页）：左栏 220–256px + 流式主区，主区内容再限 `max-w-6xl`。
-- **对话页**：正文区限宽 `min(56rem, 100%)` 居中（Codex 对齐）。
+- **对话页**：正文区限宽 `min(72ch, 100%)` 居中（LeAgent 对齐）。
 
 ## Elevation & Depth
 
@@ -201,6 +202,7 @@ components:
 | 按钮、输入框、小控件 | 6px（control） |
 | 卡片、弹层内容 | 8px（card） |
 | 大容器（审批卡、dock 面板） | 12px（container） |
+| fenced code 面板 | 16px（code-panel） |
 | 状态胶囊、徽章 | pill |
 
 ## Components
@@ -209,7 +211,7 @@ components:
 
 - `.btn-*` / `.ui-card*` / `.input-field` / `.status-pill`：迁移中的遗留组件类。**新代码禁止使用**，用 `ui/` 组件替代；引用归零后删除。
 - `.page-shell` / `.page-header` / `.config-*`：**布局语言**，保留使用。
-- `.chat-*`：**对话渲染子系统**，渲染清单与逐件样式规格以 `../../agent-team-workbench-docs/chat-rendering-spec.md` 为准（Markdown 格局的逆向来源见 `references/codex-desktop-markdown-tags-inventory.md`），本文件不重复定义；改它之前先读规格文档。
+- `.chat-*`：**对话渲染子系统**，渲染清单与逐件样式规格以 `../../agent-team-workbench-docs/chat-rendering-spec.md` 为准（当前基线为 LeAgent `1f16badc`），本文件不重复定义；改它之前先读规格文档。
 
 `ui/` 组件的变体契约见 frontmatter `components:`；新增变体必须同时更新 frontmatter（变体作为独立条目）。
 
@@ -224,7 +226,7 @@ components:
 - Do：加载超过 300ms 才显示骨架屏/加载态，避免闪烁。
 - Do：Aceternity 组件先经 `components/ink/` 封装，再给业务页面消费。
 - Do：氛围动画只使用 transform/opacity，并在 reduced-motion 下变成静态终态。
-- Do：完成态正文按 Markdown 标签做一次性错峰显影；流式输出只保留 caret/sweep，不因 token 追加重播。
+- Do：正文采用 LeAgent 的静态阅读节奏；流式 Markdown 约 100ms 节流解析并只保留 caret，KaTeX、Mermaid 与代码高亮在落定后处理。
 
 **Don'ts**
 
@@ -236,7 +238,7 @@ components:
 - Don't：为暗色模式写任何样式（见 Known Gaps）。
 - Don't：直接复制 Aceternity 的霓虹、光束、黑底和强 3D 默认样式。
 - Don't：在滚动容器上叠实时噪声滤镜；纸纹只用静态压缩位图。
-- Don't：把 Tracing Beam 挂到 live activity/tool 组或按 token 变化的流式正文；这些 key/高度会持续变化。
+- Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具 chip 与正文必须保持同一套 LeAgent 视觉语法。
 
 ## Responsive Behavior
 
@@ -266,7 +268,7 @@ components:
 1. **暗色模式**：只有单浅色主题；不要写 `dark:` 变体。
 2. **AE 动效资产**：当前只冻结目录与消费边界；真实 Lottie/WebM 需有可审计源资产后逐件接入。
 3. **空态插画体系**：可用同一水墨资产族，但不得用不相关插画填空。
-4. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
+4. **对话渲染细节**：归 `agent-team-workbench-docs/chat-rendering-spec.md` 管，不在本文件范围。
 5. **水墨素材扩展**：新增素材必须与宣纸/山水同一笔触体系并做体积预算，禁止随页随机生成。
 6. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
 7. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。

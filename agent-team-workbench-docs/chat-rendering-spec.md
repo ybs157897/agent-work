@@ -1,16 +1,17 @@
 # 对话渲染清单与样式规格
 
-日期：2026-08-25
-状态：implemented（与代码逐条核对后落档）
+日期：2026-08-26
+状态：implemented（LeAgent 展示骨架已落地并通过浏览器验收）
 配套文档：
 - `web/DESIGN.md` —— 全局 token 与组件契约（事实源）；
-- `references/codex-desktop-markdown-tags-inventory.md` —— Markdown 格局的逆向来源；
+- `https://github.com/vixues/LeAgent/tree/1f16badc834abbd829d3cb7e9f8fcb5b2d57f443/frontend/src/components/chat` —— 消息骨架与 Markdown 交互基线（Apache-2.0）；
+- `references/codex-desktop-markdown-tags-inventory.md` —— 历史 Markdown 格局来源，不再是当前视觉基线；
 - `frontend-design-md-redesign.md` —— 重设计方案与路线。
 
 **真相源约定**：本文是渲染清单与视觉规格；数值生效值以
 `web/src/index.css`（`.chat-*` 区）、`web/src/components/chat/*.module.css`、
 `web/tailwind.config.js` 为准。文档与代码漂移时以代码为准修本文。
-几何来源：blocks 族移植自 DSH ui-tool 几何，颜色全部改走本项目语义 token。
+几何来源：消息、正文、Callout、代码面板与工具 chip 对齐 LeAgent；Terminal/Read/Search/Diff 内容体保留 DSH 几何。颜色全部改走本项目语义 token。
 
 ---
 
@@ -18,35 +19,41 @@
 
 | 段 | 触发 | 容器/表面 | 排版 | 动效 | 实现 |
 |---|---|---|---|---|---|
-| user | 用户消息 | 右对齐胶囊 `rounded-3xl`；边 `brand-primary/20`；底 `brand-primary/7%`（用户侧唯一品牌浅底消费点） | `text-base leading-6`（16/24）`text-primary`；`px-snug py-1.5` | 悬停操作条 opacity 0→100 | transcript-view.tsx |
-| assistant | 助手文本 | 无容器，通栏正文；回合头常显 | 头：20px 头像 + `caption` 600 `text-secondary` 名 + 11px `tabular-nums` `text-tertiary` 时间；正文 `.chat-markdown` 16/28 | 流式：末块光标 6px 品牌色 1s step-end 闪烁；新块 0.3s 淡入 | assistant-turn.tsx |
+| user | 用户消息 | 通栏 `article`；角色标签下接 `.chat-user-card`：12px 圆角、`surface-sunken/55`、`border-subtle/60`、12×16px | 角色标签：6px tertiary 点 + 11px/600「你」+ 时间；正文 15/1.75 | 悬停操作条 opacity 0.36→100 | transcript-view.tsx |
+| assistant | 助手文本 | 通栏 `article`；角色标签下接无容器 `.chat-prose` 正文 | 角色标签：6px brand 点 + 11px/600 Agent 名 + 时间；正文 15px/1.75 | 流式：100ms Markdown 节流 + 2px caret；落定后静态 | assistant-turn.tsx |
 | thinking | reasoning 事件 | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `h-52` 纵滚 `px-3 py-2.5` | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情 | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx |
-| activity | 同 run 连续工具行 | `.chat-activity`：`rounded-lg` 边 `border-subtle` 底 `surface-raised/70` | 头 `caption` `text-secondary`；体 `space-y-2` 顶分线 `p-2` | 终态自动收拢；头悬停 `surface-base` | tool-card.tsx |
+| activity | 同 run 连续工具行 | LeAgent 式横向 `ToolCallStrip`；chip 点击后在轨道下展开详情 | chip 28px 高，编号/图标/单行工具名/耗时/状态 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
 | turn-diff | 回合聚合 diff | 同 diff 卡（见 §6） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
 
-段间距：`.chat-thread space-y-3`（12px）；正文限宽 `min(56rem, 100%)` 居中。
+段间距：`.chat-thread space-y-3`（12px）；正文限宽 `min(72ch, 100%)` 居中。
 
 ---
 
-## 2. Markdown 正文元素层（assistant 段内）
+## 2. Markdown 正文元素层（assistant 段内，LeAgent 基线）
 
 | 元素 | 格局规格 | 备注 |
 |---|---|---|
-| 段落 | 16/28；段距 11px | 连续汉字段（`data-markdown-han-text`）段距 16px |
-| 标题 h1–h6 | 24/20/17/17/15/15px，600，行高 1.25；margin 20/10 | 首末子元素 margin 归零 |
-| 引用 | 透明底 + 左 4px 圆角竖条（`border-strong`，::after 定位） | 子段 margin 0 |
-| 无序列表 | 1.3125rem 缩进；三级子弹 disc→circle→square | 嵌套顶距 .5rem；相邻项 .5rem |
+| 段落 | 15px/1.75；顶层相邻块间距 .85em | 首末块边距归零 |
+| 标题 h1–h6 | 24/20/17.6/16/15/14px，600，行高 1.3，字距 -.011em；margin 1.5em/.5em | h1/h2 带 `border-subtle` 底线；标题 `text-wrap:balance` |
+| 引用 | 左 3px brand/50 色条 + `surface-sunken/55` 软底；右侧 8px 圆角；8×16px | 文字降到 secondary，子块间距 .6em |
+| 无序列表 | 1.5em 缩进；三级子弹 disc→circle→square，marker 用 tertiary | li 纵距 .2em；嵌套顶距 .25em |
 | 有序列表 | decimal，其余同无序 | — |
-| 任务清单 | 去子弹；grid 两列（checkbox + 内容） | checkbox 品牌色，13px 高下移 7px 对齐首行 |
-| 行内 code | pill 底 `surface-sunken` 6px 圆角 `px 1×6`，0.92em | 跨行不断壳（box-decoration-break: clone） |
+| 任务清单 | 去子弹并左移 1.25em；checkbox 与首行中线对齐 | checked 整项降到 tertiary |
+| 行内 code | `surface-sunken` + `border-subtle`，4px 圆角，1×5px，.875em | mono，不与 fenced code 混用 |
 | 代码块 | → CodeBlock（§3） | `:not(pre)` 排除 |
-| 表格 | → TableCard（§3） | 行线制：表头 600 + `border-strong` 底线，行 `border-subtle`；td 10px/th 8px 上下、24px 列距（末列 0）；13px |
-| 链接 | `brand-primary`，悬停下划线 | 新标签 + noreferrer noopener |
-| 分割线 hr | 默认 | 流式块级淡入覆盖 |
+| 表格 | → TableCard（§3） | 全宽 0.9em；表头凹面、uppercase；8×14px；偶数行凹面 35%，hover brand 5% |
+| 链接 | `brand-primary` 常驻下划线（40%），hover 加深 | 新标签 + noreferrer noopener |
+| 分割线 hr | `border-subtle` 1px；margin 1.6em | — |
+| 强调族 | strong=650；del=tertiary；mark=brand/18 软底；kbd=凹面+边框+底边 2px | sub/sup=.75em；abbr dotted underline |
+| Callout | `> [!TYPE]` 与 `:::type ... :::` | note/info/tip/success/warning/caution/danger/important；3px 语义色条、7% 软底、标题标记 |
+| 数学 | `remark-math` + KaTeX | 流式期显示原文，落定后排版；display math 横向滚动 |
+| Mermaid | `mermaid` fenced code | 动态加载、落定后渲染；失败回落源码而非丢内容 |
+| 图片 | 标准 Markdown image | 最大宽度 100%、8px 圆角；无效 src 显示可读占位 |
+| details | 边框 + 凹面软底，summary 可聚焦/可展开 | 不开放危险 raw HTML；只消费解析器产生的安全节点 |
 | 崩溃兜底 | PlainTextFallback：`caption` 提示 + mono 13 纯文本块 | MarkdownErrorBoundary 按 resetKey 复位 |
 
 ---
@@ -54,23 +61,24 @@
 ## 3. 代码 / 表格专用块
 
 ### CodeBlock（块级代码）
-- 高亮：highlight.js `lib/common` 懒加载；fence 语言声明优先，未注册/自动检测 relevance≤0/加载失败 → 纯文本降级；流式 120ms 防抖。
-- 外观：token 色保留 github 主题，容器底色/基色压回本卡令牌；语言标签 + 复制（clipboard→execCommand 双兜底，1.5s Check 反馈）+ 换行切换（WrapText）。
+- 高亮：highlight.js `lib/common` 懒加载；fence 语言声明优先，未注册/自动检测 relevance≤0/加载失败 → 纯文本降级；流式期跳过，落定后 120ms 防抖处理。
+- 外观：16px 圆角细边代码面板；36px toolbar；11px mono 小写语言标签；下载 + 复制（clipboard→execCommand 双兜底，2s Check 反馈）；内容 13px/1.6 横向滚动，不软换行。
 - 行内 code 与块级 code 外观分离（行内走 §2 pill）。
 
 ### TableCard（markdown 表格容器）
-- `div.chat-table-wrap`：`display:block` 横向滚动（GitHub 同款）；悬停浮现复制按钮；复制 = DOM 抽 TSV（空单元格保留占位，1s 反馈）。
+- `div.chat-table-wrap`：8px 圆角、`border-subtle` 细环、横向滚动；保留悬停复制 TSV（空单元格保留占位，1s 反馈），表格视觉按 §2 的 LeAgent 斑马表执行。
 
 ---
 
 ## 4. 工具块层（activity 组内）
 
-### 公共件
+### 公共件（LeAgent 工具 chip + 本地专用详情体）
 | 件 | 规格 |
 |---|---|
-| DisclosureRow 披露头 | 24px 行高；[16px 前导槽] 6px [标题 14/24 `text-secondary`]；悬停图标 100ms 交叉淡切（状态图标→chevron） |
-| StateDot 状态点 | 实心态：同色 10% 外晕 + 6/10 实心核；done=success / warning / error；running=3×3 像素追逐 1s 硬保持关键帧（info 色），相位差内联 delay |
-| 工具摘要行 | 24px 单行：[前导] [标题 400] [2×2 分隔点] [摘要 14/24 `text-tertiary` FILL 截断] [耗时徽章 11px 不截断]；错误摘要 `status-error`；运行中 300px 扫光 2.6s（页面底色 60%） |
+| ToolCallStrip | 28px 横向滚动轨；左侧 28px detail toggle；chip 间距 2px、无滚动条 |
+| ToolCallChip | 高 28px，宽 132–224px；序号 10px mono + 12px 工具图标 + 单行工具名 + 10px 耗时 + 状态图标；hover 凹面 40%，active 50% |
+| 状态 | pending/running=Loader；success=Check；error=Alert；stopped=中断图标；图标之外有读屏文本，运行动画遵循 reduced-motion |
+| 展开体 | 同一时间只展开一个 chip；复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
 
 ### 族专用渲染器（TOOL_BODY_RENDERERS 注册表）
 | 族 | 块 | 几何/表面 | 排版 | 状态 |
@@ -134,13 +142,12 @@
 
 | 动效 | 时长/曲线 | reduced-motion 覆盖 |
 |---|---|---|
-| 工具行/推理扫光 | 2.6s ease-out（10% 收尾停顿） | ✅ |
+| Markdown 解析节流 | 100ms | 不适用 |
 | thinking shimmer | 2s ease-in-out | ✅ |
-| 流式光标 | 1s step-end | ✅ |
-| 块级淡入 | 0.3s ease-out | ✅ |
+| 流式光标 | 2s ease-in-out | ✅ |
+| 角色/正文完成态 | 静态 | ✅ |
 | StateDot 追逐 | 1s 硬保持阶梯 | —（纯指示，未覆盖，已知缺口） |
 | status-pulse 会话点 | 2s ease-in-out | ✅（index.css） |
-| 披露头图标交叉 | 100ms ease | —（低于 150ms 阈值，可接受） |
 | 按钮/卡片过渡 | 150–200ms | 未全局覆盖（交互反馈类，可接受） |
 
 无障碍约定：
