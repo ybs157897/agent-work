@@ -21,7 +21,7 @@ import (
 )
 
 // fakeCLIScript 自包含假 CLI：argv 逐行落盘到 $KIMI_FAKE_ARGV_FILE，
-// 按 KIMI_FAKE_MODE 回放 stream-json 帧（ok/fail/quota/exit5/result_error/hang/big）。
+// 按 KIMI_FAKE_MODE 回放 stream-json 帧（ok/fail/quota/resume_missing/exit5/result_error/hang/big）。
 const fakeCLIScript = `#!/bin/sh
 printf '%s\n' "$@" > "$KIMI_FAKE_ARGV_FILE"
 mode="${KIMI_FAKE_MODE:-ok}"
@@ -33,6 +33,12 @@ case "$mode" in
   quota)
     echo "error: failed to run prompt: provider.quota_exceeded: 429 rate limit" >&2
     exit 0
+    ;;
+  resume_missing)
+    printf '{"role":"meta","type":"system.version","version":"0.38.0"}\n'
+    echo 'error: failed to run prompt: Session "sess_resume_9" not found.' >&2
+    echo 'See log: /tmp/kimi-home/logs/kimi-code.log' >&2
+    exit 1
     ;;
   exit5)
     printf '{"role":"meta","type":"system.version","version":"0.38.0"}\n'
@@ -466,6 +472,75 @@ func TestExecuteResultFrameError(t *testing.T) {
 	}
 	if !strings.Contains(res.Failure.Message, "upstream 503") {
 		t.Errorf("message 应携带 result 帧文本: %q", res.Failure.Message)
+	}
+}
+
+// 防回归（P0 硬约束：resume 探测失败永不静默降级）：kimi CLI 恢复失败且 stderr
+// 含会话不存在语义时必须报 session_unknown（不可重试）触发应用层 maybeSelfHeal
+// 清锚点自愈——绝不落 transient/io 让盲目重试在死锚点上原地打转。fixture 文案
+// 逐字取自 vendored kimi v0.38.0 对缺失会话的真实输出（exit 1 + 仅 system.version
+// 帧 + stderr error 行）。
+func TestExecuteResumeMissingSessionIsSessionUnknown(t *testing.T) {
+	f := newFakeCLI(t)
+	f.mode(t, "resume_missing")
+	a := newAdapter(t, f.bin)
+	res, cb := runExecute(t, a, newRun(nil), atwruntime.SessionState{Ref: "kimi://sess_resume_9"})
+	if res.Outcome != atwruntime.OutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", res.Outcome)
+	}
+	if res.Failure == nil || res.Failure.Family != atwruntime.FamilySessionUnknown || res.Failure.Retryable {
+		t.Fatalf("会话丢失必须 session_unknown 且不可重试: %+v", res.Failure)
+	}
+	if !strings.Contains(res.Failure.Message, `Session "sess_resume_9" not found`) {
+		t.Errorf("message 应携带 CLI 原文: %q", res.Failure.Message)
+	}
+	if !containsPair(f.argvLines(t), "-S", "sess_resume_9") {
+		t.Fatalf("应确为 resume 轮: %v", f.argvLines(t))
+	}
+	if len(cb.sessions) == 0 {
+		t.Errorf("meta 回退仍应上报 OnSession（锚点回收交应用层）")
+	}
+}
+
+// 负例：resume 轮的普通 provider 失败不误报 session_unknown——否则会无谓清掉
+// 活锚点触发全量 fresh 重放。
+func TestExecuteResumeFailureWithoutLossSemanticsStaysUpstream(t *testing.T) {
+	f := newFakeCLI(t)
+	f.mode(t, "fail")
+	a := newAdapter(t, f.bin)
+	res, _ := runExecute(t, a, newRun(nil), atwruntime.SessionState{Ref: "kimi://sess_resume_9"})
+	if res.Outcome != atwruntime.OutcomeFailed {
+		t.Fatalf("outcome = %s, want failed", res.Outcome)
+	}
+	if res.Failure == nil || res.Failure.Family != atwruntime.FamilyTransientUpstream || !res.Failure.Retryable {
+		t.Fatalf("非丢失类失败应保持 transient_upstream 可重试: %+v", res.Failure)
+	}
+}
+
+// turnFailure 分类表：引号夹 id / 直述两种丢失形态 → session_unknown 不可重试，
+// quota 与网络/provider 类保持原分类。
+func TestTurnFailureClassification(t *testing.T) {
+	cases := []struct {
+		name      string
+		message   string
+		code      string
+		want      atwruntime.ErrorFamily
+		retryable bool
+	}{
+		{"quoted_kimi_real_shape", `failed to run prompt: Session "sess_1" not found.`, "provider_error", atwruntime.FamilySessionUnknown, false},
+		{"plain_session_not_found", "session not found", "kimi_result_error", atwruntime.FamilySessionUnknown, false},
+		{"could_not_resume", "could not resume conversation", "provider_error", atwruntime.FamilySessionUnknown, false},
+		{"quota_kept", "provider.quota_exceeded: 429 rate limit", "provider_error", atwruntime.FamilyProviderQuota, true},
+		{"network_kept", "failed to run prompt: provider.auth_error: 403 forbidden", "provider_error", atwruntime.FamilyTransientUpstream, true},
+		{"method_not_found_not_misread", "method not found", "provider_error", atwruntime.FamilyTransientUpstream, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := turnFailure(tc.code, tc.message)
+			if f == nil || f.Code != tc.code || f.Family != tc.want || f.Retryable != tc.retryable {
+				t.Fatalf("failure = %+v, want code=%s family=%s retryable=%v", f, tc.code, tc.want, tc.retryable)
+			}
+		})
 	}
 }
 

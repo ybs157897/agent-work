@@ -5,7 +5,9 @@
 // 诊断与 provider 错误走 stderr（"error: failed to run prompt: ..."），捕获后 fail loud。
 // Execute 阻塞到本轮结束：spawn（进程组）→ stdout 流解析 → Callbacks
 // （canonical 事件 / OnSession / OnLog）→ 结构化 ExecResult。
-// resume 经 -S <session id>；取消为进程组级终止（process_scoped）。
+// resume 经 -S <session id>；恢复目标丢失（会话不存在）按 stderr 文案分类为
+// session_unknown（不可重试）交应用层自愈清锚点——永不静默降级 fresh，也绝不
+// 落 transient/io 让盲目重试原地打转；取消为进程组级终止（process_scoped）。
 // ACP JSON-RPC 面（new/load/resume/prompt/cancel）在 M4 按部署需要接入；
 // 能力声明以 Manifest 为准，禁止静默降级。
 package kimi
@@ -329,14 +331,45 @@ func terminalResult(ex *runtime.ExecContext, in terminalInputs) runtime.ExecResu
 	return result
 }
 
-// turnFailure provider 侧本轮错误：quota/429/rate limit → provider_quota，其余 → transient_upstream。
+// turnFailure provider 侧本轮错误分类：quota/429/rate limit → provider_quota；
+// 会话丢失（resume 目标已不存在）→ session_unknown 不可重试——死锚点盲目重试
+// 只会原地失败，交应用层自愈清锚点后用全量历史 fresh 重试；其余 → transient_upstream。
+// 丢失语义优先于 quota 判定（携带双语义的文本按不可重试处理）。
 func turnFailure(code, message string) *runtime.Failure {
 	low := strings.ToLower(message)
-	family := runtime.FamilyTransientUpstream
-	if strings.Contains(low, "quota") || strings.Contains(low, "429") || strings.Contains(low, "rate limit") {
+	family, retryable := runtime.FamilyTransientUpstream, true
+	switch {
+	case isSessionLostMessage(low):
+		family, retryable = runtime.FamilySessionUnknown, false
+	case strings.Contains(low, "quota") || strings.Contains(low, "429") || strings.Contains(low, "rate limit"):
 		family = runtime.FamilyProviderQuota
 	}
-	return &runtime.Failure{Family: family, Code: code, Message: truncateMessage(message), Retryable: true}
+	return &runtime.Failure{Family: family, Code: code, Message: truncateMessage(message), Retryable: retryable}
+}
+
+// isSessionLostMessage 判断失败文本是否表达 resume 目标丢失。不用裸 "not
+// found"——会误吞 "method not found"/"model not found" 等无关错误（同 codexapp
+// 注释纪律）。kimi v0.38.0 对缺失会话的实测 stderr 为引号夹 id 形态，直述串
+// 匹配不到：
+//
+//	error: failed to run prompt: Session "sess_x" not found.
+func isSessionLostMessage(message string) bool {
+	low := strings.ToLower(message)
+	if containsAny(low,
+		"session not found", "conversation not found", "no conversation found",
+		"unknown session", "no such session", "could not resume", "invalid session") {
+		return true
+	}
+	return strings.Contains(low, `session "`) && strings.Contains(low, `" not found`)
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func configFailure(code, message string) *runtime.Failure {
