@@ -1391,6 +1391,11 @@
   box-shadow: var(--tx-shadow-pop);
 }
 
+/* Agent 身份点是朱砂在正文里的唯一微剂量（品牌 DNA）；用户点保持灰。 */
+.tx-scope .chat-role-dot {
+  background: hsl(var(--tx-brand) / 0.85);
+}
+
 /* 代码语法五色板（克制的暗色高亮；全局 github 亮色主题在暗底失明，作用域内覆写） */
 .tx-scope {
   --tx-syntax-key: 199 70% 62%;  /* 关键字/标签：青 */

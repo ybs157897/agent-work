@@ -1,6 +1,8 @@
 import { useEffect, useId, useState } from "react";
 
-const MERMAID_THEME = "default";
+// 正文恒在 tx 暗色作用域内（见 notes tx-transcript-standalone-skin）：dark 主题
+// 避免亮色图表在墨底上成为白岛；最终适配若回水墨基线，此处同步改回 "default"。
+const MERMAID_THEME = "dark";
 const RENDER_DEBOUNCE_MS = 300;
 const svgCache = new Map<string, string>();
 
