@@ -20,14 +20,16 @@ describe('Input / Textarea / Select', () => {
     expect(Input({}).props.className).toBe(inputFieldClasses);
     expect(Textarea({}).props.className).toBe(inputFieldClasses);
 
-    // Select 外层是布局容器（span），内层 select 去默认箭头、让位 chevron
-    const wrapper = Select({});
+    // Select 外层只负责定位 chevron；className 必须落在真实 select 控件上
+    const wrapper = Select({ className: 'extra-control' });
     expect(wrapper.type).toBe('span');
     const inner = wrapper.props.children[0];
     expect(inner.type).toBe('select');
     expect(inner.props.className).toContain('rounded-input');
     expect(inner.props.className).toContain('appearance-none');
     expect(inner.props.className).toContain('pr-8');
+    expect(inner.props.className).toContain('extra-control');
+    expect(wrapper.props.className).not.toContain('extra-control');
     expect(inner.props.className).not.toContain('mt-micro');
   });
 
@@ -60,8 +62,9 @@ describe('Input / Textarea / Select', () => {
     expect(Textarea({ rows: 3 }).type).toBe('textarea');
     expect(Textarea({ rows: 3 }).props.rows).toBe(3);
 
-    const wrapper = Select({ 'aria-label': '模型' });
+    const wrapper = Select({ 'aria-label': '模型', wrapperClassName: 'layout-hook' });
     expect(wrapper.type).toBe('span');
     expect(wrapper.props.children[0].props['aria-label']).toBe('模型');
+    expect(wrapper.props.className).toContain('layout-hook');
   });
 });

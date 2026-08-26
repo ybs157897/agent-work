@@ -34,15 +34,28 @@ export function Textarea({ className, invalid, ...props }: TextareaHTMLAttribute
 
 /**
  * 下拉选择：外观与 Input 同系，但 appearance-none 去掉 OS 默认箭头，
- * 换自定义 chevron（DESIGN.md select 条）。布局类（className）挂外层容器。
+ * 换自定义 chevron（DESIGN.md select 条）。className 始终挂在真实 select
+ * 控件上，避免把输入框 chrome 同时绘制在包装层和控件层。
+ * 需要调整布局时使用 wrapperClassName，保持控件本身的一致对齐。
  */
-export function Select({ className, invalid, children, ...props }: SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean }) {
+export function Select({
+  className,
+  wrapperClassName,
+  invalid,
+  children,
+  ...props
+}: SelectHTMLAttributes<HTMLSelectElement> & { invalid?: boolean; wrapperClassName?: string }) {
   return (
-    <span className={cx('relative block mt-micro', className)}>
+    <span className={cx('relative block mt-micro', wrapperClassName)}>
       <select
         {...props}
         aria-invalid={invalid || undefined}
-        className={cx(fieldBodyClasses, invalid ? fieldChromeInvalid : fieldChromeNeutral, 'appearance-none pr-8 cursor-pointer')}
+        className={cx(
+          fieldBodyClasses,
+          invalid ? fieldChromeInvalid : fieldChromeNeutral,
+          'appearance-none pr-8 cursor-pointer',
+          className,
+        )}
       >
         {children}
       </select>

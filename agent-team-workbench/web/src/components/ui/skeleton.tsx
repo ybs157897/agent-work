@@ -70,8 +70,8 @@ export function DashboardSkeleton() {
 export function AppShellSkeleton() {
   const sidebarBlock = 'animate-pulse rounded-md bg-sidebar-hover motion-reduce:animate-none';
   return (
-    <div className="flex h-screen w-full bg-surface-base overflow-hidden" role="status" aria-label="正在连接控制平面">
-      <div className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border p-4 space-y-3">
+    <div className="flex h-dvh w-full overflow-hidden bg-surface-base" role="status" aria-label="正在连接控制平面">
+      <div className="h-full w-[72px] shrink-0 space-y-3 border-r border-sidebar-border bg-sidebar p-4">
         <div className={`${sidebarBlock} h-8 w-8`} />
         {[0, 1, 2, 3, 4, 5, 6].map((i) => (
           <div key={i} className={`${sidebarBlock} h-9 w-full`} />

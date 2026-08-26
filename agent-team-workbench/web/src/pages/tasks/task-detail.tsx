@@ -231,7 +231,7 @@ export function TaskDetail({
                 <div>
                   <span className="text-caption text-text-tertiary block">截止日</span>
                   <span className="text-text-primary tabular-nums">
-                    {task.due_date ? formatDueDate(task.due_date) : '—'}
+                    {task.due_date ? formatDueDate(task.due_date) : '未设置'}
                   </span>
                 </div>
                 <div>

@@ -1,12 +1,15 @@
+# Agent 配置文件（agents/<slug>/ 为真相源；Web 编辑会回写此文件）
 name: Pixel
 role: ui
 skills:
-  - 交互设计、视觉规范
+    - 交互设计、视觉规范
 runtime:
-  preferred: dsh_local
-  mode: default
-  agent_preset: standard
+    preferred: codex_local
+    mode: default
 model:
-  ref: deepseek-v4-flash
+    ref: ox-alpha
+    reasoning_effort: xhigh
 permissions:
-  preset: workspace-write
+    approval_policy: approve_high_risk
+    sandbox: workspace-write
+    preset: workspace-write

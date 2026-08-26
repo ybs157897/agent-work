@@ -2,7 +2,8 @@
 // ErrorBoundary 与 TableCard 是组件：本仓库 vitest 跑 node 环境（vite.config.ts
 // test.environment: 'node'）无 DOM/渲染器，不在此测组件行为。
 import { describe, expect, it } from 'vitest';
-import { hasHanText } from './markdown-body';
+import { hasHanText, shouldAnimateMarkdown } from './markdown-body';
+import { textGenerateTokens } from '../aceternity/text-generate-effect';
 import { tableToTsv } from './table-card';
 
 describe('hasHanText（\\p{Script=Han} 检测，CJK 段距规则的判定面）', () => {
@@ -24,6 +25,18 @@ describe('hasHanText（\\p{Script=Han} 检测，CJK 段距规则的判定面）'
     expect(hasHanText('café über')).toBe(false);
     expect(hasHanText('スパシーバ')).toBe(false);
     expect(hasHanText('한국어')).toBe(false);
+  });
+});
+
+describe('Markdown motion contract', () => {
+  it('只在完成态启用正文显现，流式状态保持静态以避免 token 抖动', () => {
+    expect(shouldAnimateMarkdown(true)).toBe(false);
+    expect(shouldAnimateMarkdown(false)).toBe(true);
+  });
+
+  it('中文标题按汉字分段，拉丁文本保持词组与空格', () => {
+    expect(textGenerateTokens('维护性风险')).toEqual(['维', '护', '性', '风', '险']);
+    expect(textGenerateTokens('Risk review')).toEqual(['Risk', ' ', 'review']);
   });
 });
 

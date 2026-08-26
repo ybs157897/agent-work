@@ -119,13 +119,21 @@ export default function TasksPage() {
   return (
     <main className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
       {/* Header */}
-      <header className="flex items-center justify-between mb-stack-md shrink-0">
-        <div className="flex items-center gap-comfortable">
-          <h2 className="text-h2 text-text-primary tracking-tight">任务看板</h2>
-          <div className="flex bg-surface-base rounded-button p-1 border border-border-subtle">
+      <header className="mb-snug flex items-center justify-between gap-comfortable shrink-0 border-b border-border-subtle pb-snug">
+        <div className="flex items-center gap-snug">
+          <div>
+            <p className="text-caption uppercase tracking-widest text-text-tertiary">案牍 · Work Items</p>
+            <h2 className="mt-1 font-display text-h2 text-text-primary tracking-tight">任务看板</h2>
+          </div>
+          <span className="hidden rounded-full border border-border-subtle bg-surface-raised px-2 py-0.5 text-caption text-text-secondary tabular-nums md:inline-flex">
+            {items.length} 项
+          </span>
+          <div className="flex bg-surface-base rounded-button p-1 border border-border-subtle" role="group" aria-label="任务视图">
             <button
+              type="button"
               onClick={() => switchView('kanban')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-body font-medium transition-colors ${
+              aria-pressed={viewMode === 'kanban'}
+              className={`flex items-center gap-1.5 rounded-sm px-snug py-tight text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${
                 viewMode === 'kanban'
                   ? 'bg-surface-raised shadow-sm text-text-primary'
                   : 'text-text-secondary hover:text-text-primary'
@@ -135,8 +143,10 @@ export default function TasksPage() {
               看板
             </button>
             <button
+              type="button"
               onClick={() => switchView('list')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-body font-medium transition-colors ${
+              aria-pressed={viewMode === 'list'}
+              className={`flex items-center gap-1.5 rounded-sm px-snug py-tight text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${
                 viewMode === 'list'
                   ? 'bg-surface-raised shadow-sm text-text-primary'
                   : 'text-text-secondary hover:text-text-primary'
@@ -149,7 +159,7 @@ export default function TasksPage() {
         </div>
 
         <div className="flex items-center gap-snug">
-          <span className="text-body text-text-secondary">筛选</span>
+          <span className="text-caption uppercase tracking-widest text-text-tertiary">筛选</span>
           <FilterSelect
             label="优先级"
             value={filter.priority ?? ''}
@@ -175,7 +185,7 @@ export default function TasksPage() {
         {!loaded ? (
           viewMode === 'kanban' ? <KanbanSkeleton /> : <ListSkeleton />
         ) : viewMode === 'kanban' ? (
-          <div className="flex gap-4 h-full">
+          <div className="flex h-full min-w-[1040px] gap-snug">
             {columns.map((col) => (
               <KanbanColumn
                 key={col.id}
@@ -193,22 +203,31 @@ export default function TasksPage() {
             ))}
           </div>
         ) : (
-          <div className="bg-surface-raised rounded-xl shadow-level-1 border border-border-subtle p-comfortable h-full overflow-y-auto">
-            <div className="space-y-stack-md">
+          <div className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-base h-full overflow-y-auto">
+            <div className="space-y-comfortable">
               {columns.map((col) => (
                 <div key={col.id}>
-                  <h3 className="font-semibold text-body-lg text-text-primary mb-4 flex items-center gap-2">
+                  <h3 className="font-display text-h3 text-text-primary mb-snug flex items-center gap-2">
                     {col.title}
                     <span className="text-text-tertiary text-body font-normal tabular-nums">
                       {col.tasks.length}
                     </span>
                   </h3>
-                  <div className="space-y-2">
+                  <div className="space-y-tight">
                     {sortTasksTree(col.tasks).map((entry) => (
                       <div
                         key={entry.item.id}
                         onClick={() => selectTask(entry.item.id)}
-                        className="flex items-center justify-between p-3 border border-border-subtle rounded-lg hover:bg-surface-base transition-colors cursor-pointer"
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            selectTask(entry.item.id);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`打开任务 ${entry.item.title}`}
+                        className="flex cursor-pointer items-center justify-between rounded-card border border-border-subtle p-snug transition-colors hover:bg-surface-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
                       >
                         <div className="flex items-center gap-4 min-w-0" style={{ paddingLeft: entry.depth * 24 }}>
                           {entry.depth > 0 && <GitBranch className="w-3.5 h-3.5 text-text-tertiary shrink-0" />}
@@ -225,7 +244,7 @@ export default function TasksPage() {
                         </div>
                         <div className="flex items-center gap-6">
                           <AssigneeTag agentId={entry.item.agent_profile_id} agents={agents} size={20} />
-                          <span className="text-xs text-text-tertiary tabular-nums w-12 text-right">
+                          <span className="text-caption text-text-tertiary tabular-nums w-12 text-right">
                             {formatDueDate(entry.item.due_date)}
                           </span>
                         </div>
@@ -270,12 +289,13 @@ function FilterSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative flex items-center gap-1 px-3 py-1.5 bg-surface-raised border border-border-subtle rounded-button text-body text-text-primary hover:bg-surface-base transition-colors cursor-pointer">
+    <label className="relative flex items-center gap-1 rounded-button border border-border-subtle bg-surface-raised px-snug py-tight text-body text-text-primary transition-colors hover:bg-surface-base cursor-pointer focus-within:ring-2 focus-within:ring-brand-primary/40">
       <span className={value ? '' : 'text-text-tertiary'}>
         {value ? options.find((o) => o.value === value)?.label ?? label : label}
       </span>
       <ChevronDown className="w-4 h-4 text-text-tertiary" />
       <select
+        aria-label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="absolute inset-0 opacity-0 cursor-pointer"
@@ -323,11 +343,11 @@ function KanbanColumn({
         const taskId = e.dataTransfer.getData('text/plain');
         if (taskId) onDropTask(taskId);
       }}
-      className={`flex-1 min-w-[240px] flex flex-col rounded-xl transition-colors ${
+      className={`flex-1 min-w-0 flex flex-col rounded-card transition-colors ${
         dragOver ? 'bg-brand-primary/5 ring-2 ring-brand-primary/40' : 'bg-surface-sunken'
       }`}
     >
-      <div className="p-4 flex items-center justify-between shrink-0">
+      <div className="flex items-center justify-between px-base py-snug shrink-0">
         <div className="flex items-center gap-2">
           <h3 className="font-semibold text-body-lg text-text-primary">{title}</h3>
           <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-surface-raised border border-border-subtle text-caption font-medium text-text-secondary tabular-nums">
@@ -335,15 +355,17 @@ function KanbanColumn({
           </span>
         </div>
         <button
+          type="button"
           onClick={onCreate}
+          aria-label={`在${title}列创建任务`}
           title="创建任务"
-          className="p-1 hover:bg-surface-base rounded text-text-tertiary hover:text-text-primary transition-colors"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-base hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
         >
           <Plus className="w-5 h-5" />
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-3">
+      <div className="flex-1 overflow-y-auto px-snug pb-snug space-y-snug">
         {tasks.map((task) => (
           <TaskCard
             key={task.id}
@@ -354,8 +376,9 @@ function KanbanColumn({
           />
         ))}
         {tasks.length === 0 && (
-          <div className="rounded-lg border border-dashed border-border-strong/60 px-3 py-6 text-center text-caption text-text-tertiary">
-            暂无任务，拖拽卡片到此或点 + 创建
+          <div className="rounded-card border border-dashed border-border-strong/60 px-snug py-comfortable text-center text-caption text-text-tertiary">
+            <p>此列暂无案牍</p>
+            <p className="mt-1">拖入任务，或使用右上角加号创建</p>
           </div>
         )}
       </div>
@@ -389,26 +412,35 @@ function TaskCard({
       draggable
       onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
       onClick={onOpen}
-      className={`rounded-lg p-3 shadow-card border border-border-subtle cursor-pointer transition-all duration-200 hover:-translate-y-[2px] hover:shadow-level-2 ${bgClass}`}
+      role="button"
+      tabIndex={0}
+      aria-label={`打开任务 ${task.title}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+      className={`rounded-card p-snug shadow-card border border-border-subtle cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-level-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${bgClass}`}
     >
       <h4
-        className={`font-medium text-sm text-text-primary mb-3 leading-snug ${
+        className={`font-medium text-body text-text-primary mb-snug leading-snug ${
           isCompleted ? 'line-through opacity-60' : ''
         }`}
       >
         {task.title}
       </h4>
 
-      <div className="mb-3">
+      <div className="mb-snug">
         <AssigneeTag agentId={task.agent_profile_id} agents={agents} size={20} />
       </div>
 
       {isBlocked && task.blocker && (
-        <div className="text-xs font-medium text-status-error mb-3">{task.blocker.message}</div>
+        <div className="text-caption font-medium text-status-error mb-snug">{task.blocker.message}</div>
       )}
 
       {isAwaitingAcceptance(task) && (
-        <div className="mb-3">
+        <div className="mb-snug">
           <span
             title="run 成功待评审或评估通过，等待人工验收"
             className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
@@ -447,7 +479,7 @@ function TaskCard({
             </span>
           )}
         </div>
-        <span className="text-xs text-text-tertiary tabular-nums">{formatDueDate(task.due_date)}</span>
+        <span className="text-caption text-text-tertiary tabular-nums">{formatDueDate(task.due_date)}</span>
       </div>
     </div>
   );

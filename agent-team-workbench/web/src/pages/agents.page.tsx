@@ -1,5 +1,5 @@
 import { BellRing, Bot, History, MessageSquare, Plus, RefreshCw } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import {
@@ -267,7 +267,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
 
   const enabled = agent.availability === 'enabled';
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setName(agent.name);
     setRole(agent.role);
     setInstructions(agent.instructions ?? '');
@@ -280,11 +280,11 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
     setAgentPreset(agent.runtime_preference?.agent_preset ?? DEFAULT_AGENT_PRESET);
     setPermissionPreset(agent.policy?.permission_preset ?? DEFAULT_PERMISSION_PRESET);
     setDescriptionText(agent.skills.join('，'));
-  };
+  }, [agent]);
 
   useEffect(() => {
     resetForm();
-  }, [agent]);
+  }, [resetForm]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -448,14 +448,14 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
         </ConfigToolbar>
 
         <ConfigSection title="基本信息">
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-4">
-            <label className="xl:col-span-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-x-5 gap-y-4">
+            <label className="min-w-0 xl:col-span-4">
               <span className={configLabelCls}>名称</span>
               <input value={name} onChange={(e) => setName(e.target.value)} className={configInputCls} />
             </label>
-            <label className="xl:col-span-2">
+            <label className="min-w-0 xl:col-span-3">
               <span className={configLabelCls}>角色</span>
-              <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
+              <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
@@ -463,9 +463,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 ))}
               </Select>
             </label>
-            <label className="xl:col-span-3">
+            <label className="min-w-0 xl:col-span-5">
               <span className={configLabelCls}>模型</span>
-              <Select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls}>
+              <Select value={modelRef} onChange={(e) => setModelRef(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
                 <option value="">自定义（手动填写）</option>
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -478,12 +478,13 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
               </Select>
             </label>
             {codexRuntime ? (
-              <label className="xl:col-span-2">
+              <label className="min-w-0 xl:col-span-4">
                 <span className={configLabelCls}>思考等级</span>
                 <Select
                   value={reasoningEffort}
                   onChange={(e) => setReasoningEffort(e.target.value as ReasoningEffort)}
                   className={configInputCls}
+                  wrapperClassName="mt-0"
                 >
                   {REASONING_EFFORT_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>
@@ -494,9 +495,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 <p className="mt-1 text-caption text-text-tertiary">写入 Codex config.toml 与 turn/start.effort。</p>
               </label>
             ) : null}
-            <label className={codexRuntime ? 'xl:col-span-2' : 'xl:col-span-3'}>
+            <label className="min-w-0 xl:col-span-8">
               <span className={configLabelCls}>Runtime</span>
-              <Select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls}>
+              <Select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
                 {realBindings.map((b) => (
                   <option key={b.id} value={b.runtime_label}>
                     {runtimeDisplayLabel(b.runtime_label)}
@@ -513,19 +514,19 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           </div>
 
           {!modelRef ? (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
-              <label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-4 pt-2">
+              <label className="min-w-0">
                 <span className={configLabelCls}>Provider 路由</span>
                 <input value={provider} onChange={(e) => setProvider(e.target.value)} className={configInputCls} />
               </label>
-              <label>
+              <label className="min-w-0">
                 <span className={configLabelCls}>API 模型名</span>
                 <input value={model} onChange={(e) => setModel(e.target.value)} className={configInputCls} />
               </label>
             </div>
           ) : null}
 
-          <label className="block pt-1">
+          <label className="block min-w-0 pt-2">
             <span className={configLabelCls}>描述</span>
             <input
               value={descriptionText}
@@ -540,7 +541,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             <label>
               <span className={configLabelCls}>执行模式</span>
-              <Select value={mode} onChange={(e) => setMode(e.target.value as 'default' | 'plan')} className={configInputCls}>
+              <Select value={mode} onChange={(e) => setMode(e.target.value as 'default' | 'plan')} className={configInputCls} wrapperClassName="mt-0">
                 <option value="default">默认执行</option>
                 <option value="plan">Plan（只分析与规划）</option>
               </Select>
@@ -552,6 +553,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                 value={permissionPreset}
                 onChange={(e) => setPermissionPreset(e.target.value)}
                 className={configInputCls}
+                wrapperClassName="mt-0"
                 disabled={permissionPresets.length === 0}
               >
                 {permissionPresets.map((p) => (
@@ -572,6 +574,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
                   value={agentPreset}
                   onChange={(e) => setAgentPreset(e.target.value)}
                   className={configInputCls}
+                  wrapperClassName="mt-0"
                   disabled={agentPresets.length === 0}
                 >
                   {agentPresets.map((p) => (
@@ -681,7 +684,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         </label>
         <label className="block">
           <span className={configLabelCls}>角色</span>
-          <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls}>
+          <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
             {ROLE_OPTIONS.map((r) => (
               <option key={r.value} value={r.value}>
                 {r.label}
@@ -700,7 +703,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         </label>
         <label className="block">
           <span className={configLabelCls}>底层 Runtime</span>
-          <Select value={runtimeLabel} onChange={(e) => setRuntimeLabel(e.target.value)} className={configInputCls}>
+          <Select value={runtimeLabel} onChange={(e) => setRuntimeLabel(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
             {bindings.map((binding) => (
               <option key={binding.id} value={binding.runtime_label}>
                 {runtimeDisplayLabel(binding.runtime_label)}
@@ -871,7 +874,7 @@ function WakeAgentModal({ open, onClose, agent }: { open: boolean; onClose: () =
       <div className="space-y-base">
         <label className="block">
           <span className={configLabelCls}>锚定任务</span>
-          <Select value={taskKey} onChange={(e) => setTaskKey(e.target.value)} className={configInputCls}>
+          <Select value={taskKey} onChange={(e) => setTaskKey(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
             {tasks.length === 0 ? <option value="">（无未完成的工作项）</option> : null}
             {tasks.map((t) => (
               <option key={t.id} value={t.id}>

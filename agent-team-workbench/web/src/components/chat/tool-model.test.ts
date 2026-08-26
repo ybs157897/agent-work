@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../../stores/chat.store';
-import { FAMILY_TITLES, classifyTool, firstLine, looksLikePath, toolRowModel } from './tool-model';
+import { FAMILY_TITLES, classifyTool, firstLine, looksLikePath, toolRowModel, toolRowTitleForState } from './tool-model';
 
 const msg = (over: Partial<ChatMessage> & Pick<ChatMessage, 'key' | 'runId' | 'kind' | 'text' | 'at'>): ChatMessage =>
   over;
@@ -196,5 +196,11 @@ describe('toolRowModel · body/output/errorSummary/filePath', () => {
     const m = toolRowModel(msg({ key: 't', runId: 'r', kind: 'tool', at: '', tool: 'grep', text: 'x', toolStatus: 'success' }));
     expect(m.family).toBe('search');
     expect(m.title).toBe('Searched');
+  });
+
+  it('终态 run 投影遗留 running 帧时，标题同步切换为 stopped 文案', () => {
+    const m = toolRowModel(msg({ key: 't', runId: 'r', kind: 'tool', at: '', tool: 'shell', text: '调用工具 shell：printf ok', toolStatus: 'running' }));
+    expect(m.title).toBe('Running printf ok');
+    expect(toolRowTitleForState(m, 'stopped')).toBe('Stopped command');
   });
 });

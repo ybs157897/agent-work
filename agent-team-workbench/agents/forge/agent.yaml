@@ -4,10 +4,12 @@ role: developer
 skills:
     - Go、React、测试
 runtime:
-    preferred: dsh_local
+    preferred: codex_local
     mode: default
-    agent_preset: standard
 model:
-    ref: deepseek-v4-flash
+    ref: ox-alpha
+    reasoning_effort: medium
 permissions:
+    approval_policy: approve_high_risk
+    sandbox: workspace-write
     preset: workspace-write

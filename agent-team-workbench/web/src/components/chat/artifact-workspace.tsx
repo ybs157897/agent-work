@@ -25,22 +25,22 @@ export function ArtifactMimeIcon({ mime, className }: { mime: string; className?
  */
 export function ArtifactWorkspace({ artifacts, onClose }: { artifacts: Artifact[]; onClose: () => void }) {
   return (
-    <div className="w-80 shrink-0 border-l border-border-subtle bg-surface-raised flex flex-col min-h-0">
+    <div className="flex min-h-0 w-80 shrink-0 flex-col border-l border-border-strong bg-surface-warm/88 backdrop-blur-sm">
       <div className="h-[52px] shrink-0 px-4 flex items-center justify-between border-b border-border-subtle">
-        <span className="text-body font-semibold text-text-primary">工作区</span>
+        <span className="font-display text-body-lg text-text-primary">工作区</span>
         <button
           type="button"
           aria-label="关闭工作区"
           title="关闭工作区"
           onClick={onClose}
-          className="p-1 rounded hover:bg-surface-base text-text-tertiary hover:text-text-primary transition-colors"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {artifacts.map((a) => (
-          <div key={a.id} className="rounded-lg border border-border-subtle bg-surface-base/60 px-3 py-2">
+          <div key={a.id} className="rounded-card border border-border-subtle bg-surface-raised/65 px-3 py-2 shadow-card">
             <div className="flex items-center gap-2 min-w-0">
               <ArtifactMimeIcon mime={a.mime} />
               <span className="text-body text-text-primary truncate">{artifactBasename(a.logical_path)}</span>

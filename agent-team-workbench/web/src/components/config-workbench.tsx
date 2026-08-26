@@ -5,9 +5,9 @@ import { Button, fieldChromeInvalid, fieldChromeNeutral } from './ui';
 /** 配置工作台共享样式（对齐 ui-stack 8px 网格与设计 token） */
 export const configLabelCls = 'block text-caption font-medium text-text-secondary mb-1.5';
 
-// 校验态 chrome 与 ui/Input 同源（DESIGN.md 校验条）；配置页输入更高（py-2.5），其余同规格。
+// 校验态 chrome 与 ui/Input 同源（DESIGN.md 校验条）；min-h-11 消除原生 select 与 input 的盒高差。
 const configInputBaseCls =
-  'w-full rounded-input border bg-surface-raised px-snug py-2.5 text-body text-text-primary outline-none transition-shadow placeholder:text-text-tertiary/70 focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed';
+  'w-full min-h-11 rounded-input border bg-surface-raised px-snug py-2.5 text-body text-text-primary outline-none transition-shadow placeholder:text-text-tertiary/70 focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed';
 export const configInputCls = `${configInputBaseCls} ${fieldChromeNeutral}`;
 export const configInputInvalidCls = `${configInputBaseCls} ${fieldChromeInvalid}`;
 
@@ -26,12 +26,12 @@ export function ConfigPageHeader({
 }) {
   return (
     <header className="config-page-header">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
         <div className="min-w-0">
           <h1 className="text-h2 text-text-primary tracking-tight">{title}</h1>
-          {subtitle ? <p className="text-caption text-text-tertiary mt-1 max-w-2xl">{subtitle}</p> : null}
+          {subtitle ? <p className="text-caption text-text-secondary mt-1 max-w-2xl leading-relaxed">{subtitle}</p> : null}
         </div>
-        {actions ? <div className="flex items-center gap-2 shrink-0">{actions}</div> : null}
+        {actions ? <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">{actions}</div> : null}
       </div>
     </header>
   );
@@ -120,7 +120,7 @@ export function ConfigPanel({ children }: { children: ReactNode }) {
 }
 
 export function ConfigFormCard({ children }: { children: ReactNode }) {
-  return <div className="config-form-card">{children}</div>;
+  return <div className="config-form-card bg-surface-warm/90">{children}</div>;
 }
 
 export function ConfigSection({
@@ -135,10 +135,10 @@ export function ConfigSection({
   noPadding?: boolean;
 }) {
   return (
-    <section className={noPadding ? 'config-section-flat' : 'config-section'}>
+    <section className={`${noPadding ? 'config-section-flat' : 'config-section'} min-w-0`}>
       {title ? (
         <div className="config-section-head">
-          <h2 className="config-section-title">{title}</h2>
+          <h2 className="config-section-title border-l-2 border-brand-primary/60 pl-3">{title}</h2>
           {hint ? <p className="config-section-hint">{hint}</p> : null}
         </div>
       ) : null}

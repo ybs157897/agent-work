@@ -1,8 +1,12 @@
-import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, ScrollText, Settings } from 'lucide-react';
+import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { motion } from 'motion/react';
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
+import { Sidebar, SidebarBody, useSidebar } from './aceternity/sidebar';
+import { InkBackdrop } from './ink/ink-backdrop';
 import { StatusPill } from './ui';
 import { useWorkspaceStore } from '../stores/workspace.store';
+import { isFullBleedPath } from '../utils/route-layout';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
@@ -33,66 +37,36 @@ const SSE_DOT = {
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
-  const workspace = useWorkspaceStore((s) => s.workspace);
-  const me = useWorkspaceStore((s) => s.me);
-  const sseStatus = useWorkspaceStore((s) => s.sseStatus);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const sseStatus = useWorkspaceStore((state) => state.sseStatus);
   const breadcrumb = BREADCRUMBS[location.pathname] ?? '';
-  const isFullBleed = location.pathname === '/chat' || location.pathname === '/models' || location.pathname === '/agents';
+  const isFullBleed = isFullBleedPath(location.pathname);
 
   return (
-    <div className="relative flex h-screen w-full bg-surface-base overflow-hidden">
-      {/* 键盘用户的跳转入口：平时视觉隐藏，聚焦时显现（DESIGN.md 无障碍条） */}
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-surface-base lg:flex-row">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-snug focus:top-snug focus:z-50 focus:rounded-button focus:border focus:border-border-strong focus:bg-surface-raised focus:px-base focus:py-tight focus:text-body focus:text-text-primary focus:shadow-level-2"
       >
         跳到主要内容
       </a>
-      <aside className="w-[220px] shrink-0 h-full bg-sidebar border-r border-sidebar-border flex flex-col z-20">
-        <div className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-sidebar-border">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-primary to-brand-accent flex items-center justify-center text-text-inverse font-bold text-sm shadow-md shadow-brand-primary/25">
-            A
-          </div>
-          <div className="min-w-0">
-            <div className="font-display text-body font-semibold text-text-on-sidebar-active leading-tight truncate">
-              Agent Team
-            </div>
-            <div className="text-caption text-text-on-sidebar/70 leading-tight">Workbench</div>
-          </div>
-        </div>
 
-        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1" aria-label="主导航">
-          {NAV_ITEMS.map((item) => (
-            <NavItem key={item.to} {...item} />
-          ))}
-        </nav>
+      <Sidebar animate>
+        <SidebarBody className="z-20 border-r border-sidebar-border bg-sidebar p-0 text-text-on-sidebar shadow-level-3">
+          <SidebarContents />
+        </SidebarBody>
+      </Sidebar>
 
-        <div className="shrink-0 p-3 border-t border-sidebar-border" title={me?.name ?? ''}>
-          <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-sidebar-hover transition-colors">
-            <div className="w-9 h-9 rounded-full bg-brand-primary/20 text-brand-primary flex items-center justify-center text-caption font-semibold shrink-0 ring-1 ring-brand-primary/20">
-              {(me?.name ?? 'D').slice(0, 1)}
-            </div>
-            <div className="min-w-0">
-              <div className="text-body font-medium text-text-on-sidebar-active truncate leading-tight">
-                {me?.name ?? '…'}
-              </div>
-              <div className="text-caption text-text-on-sidebar truncate leading-tight">
-                {me?.role ?? ''}
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 shrink-0 px-6 flex items-center justify-between border-b border-border-subtle bg-surface-raised/80 backdrop-blur-md z-10 sticky top-0">
-          <div className="flex items-center gap-2 text-body">
-            <span className="text-text-tertiary font-medium">{workspace?.name ?? '…'}</span>
-            <span className="text-text-tertiary/60">/</span>
-            <span className="text-text-primary font-semibold">{breadcrumb}</span>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/88 px-comfortable backdrop-blur-md">
+          <div className="flex min-w-0 items-center gap-snug text-body">
+            <span className="h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
+            <span className="truncate font-medium text-text-tertiary">{workspace?.name ?? '…'}</span>
+            <span className="text-border-strong" aria-hidden="true">/</span>
+            <span className="truncate font-display text-body-lg text-text-primary">{breadcrumb}</span>
           </div>
           <StatusPill title="SSE 实时事件连接状态">
-            <span className={`w-2 h-2 rounded-full ${SSE_DOT[sseStatus]}`} />
+            <span className={`h-2 w-2 rounded-full ${SSE_DOT[sseStatus]}`} />
             <span>{SSE_LABEL[sseStatus]}</span>
           </StatusPill>
         </header>
@@ -100,14 +74,59 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
         <main
           id="main-content"
           tabIndex={-1}
-          className={`flex-1 min-h-0 relative isolate mesh-bg focus:outline-none ${
+          className={`mesh-bg relative isolate min-h-0 flex-1 focus:outline-none ${
             isFullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
           }`}
         >
+          <InkBackdrop />
           {children}
         </main>
       </div>
     </div>
+  );
+}
+
+function SidebarContents() {
+  const me = useWorkspaceStore((state) => state.me);
+  const { open, animate } = useSidebar();
+  const showText = open || !animate;
+
+  return (
+    <>
+      <div className="flex h-14 shrink-0 items-center gap-snug border-b border-sidebar-border px-base">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-brand-primary/45 bg-brand-primary font-display text-h3 text-text-inverse shadow-level-1">
+          策
+        </div>
+        <motion.div
+          animate={{ opacity: showText ? 1 : 0 }}
+          className={`min-w-0 overflow-hidden ${showText ? '' : 'sr-only'}`}
+        >
+          <div className="truncate font-display text-body-lg text-text-on-sidebar-active">Agent Team</div>
+          <div className="truncate text-caption tracking-[0.12em] text-text-on-sidebar/70">案牍工作台</div>
+        </motion.div>
+      </div>
+
+      <nav className="flex-1 space-y-micro overflow-y-auto px-tight py-base" aria-label="主导航">
+        {NAV_ITEMS.map((item) => (
+          <NavItem key={item.to} {...item} />
+        ))}
+      </nav>
+
+      <div className="shrink-0 border-t border-sidebar-border p-tight" title={me?.name ?? ''}>
+        <div className="flex min-h-12 items-center gap-snug rounded-button px-tight py-tight transition-colors duration-ink hover:bg-sidebar-hover">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-brand-primary/30 bg-brand-primary/15 font-display text-body-lg text-brand-muted">
+            {(me?.name ?? 'D').slice(0, 1)}
+          </div>
+          <motion.div
+            animate={{ opacity: showText ? 1 : 0 }}
+            className={`min-w-0 overflow-hidden ${showText ? '' : 'sr-only'}`}
+          >
+            <div className="truncate text-body font-medium text-text-on-sidebar-active">{me?.name ?? '…'}</div>
+            <div className="truncate text-caption text-text-on-sidebar">{me?.role ?? ''}</div>
+          </motion.div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -118,29 +137,49 @@ function NavItem({
   end,
 }: {
   to: string;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: LucideIcon;
   label: string;
   end?: boolean;
 }) {
+  const { open, animate, setOpen } = useSidebar();
+  const showText = open || !animate;
+
   return (
     <NavLink
       to={to}
       end={end}
+      title={!showText ? label : undefined}
+      onClick={() => {
+        if (window.matchMedia('(max-width: 1023px)').matches) setOpen(false);
+      }}
       className={({ isActive }) =>
-        `group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-body transition-all duration-200 focus-visible:ring-offset-sidebar ${
+        `group relative flex min-h-10 items-center gap-snug rounded-button px-snug py-tight text-body transition-colors duration-ink focus-visible:ring-offset-sidebar ${
           isActive
-            ? 'bg-sidebar-hover text-text-on-sidebar-active font-semibold shadow-sm'
-            : 'text-text-on-sidebar font-medium hover:bg-sidebar-hover hover:text-text-on-sidebar-active'
+            ? 'bg-sidebar-hover text-text-on-sidebar-active'
+            : 'text-text-on-sidebar hover:bg-sidebar-hover hover:text-text-on-sidebar-active'
         }`
       }
     >
       {({ isActive }) => (
         <>
-          {isActive && (
-            <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 rounded-full bg-brand-primary" />
-          )}
-          <Icon className={`w-[18px] h-[18px] shrink-0 ${isActive ? 'text-brand-primary' : 'text-text-on-sidebar group-hover:text-text-on-sidebar-active'}`} />
-          <span className="truncate">{label}</span>
+          {isActive ? (
+            <motion.span
+              layoutId="active-nav-seal"
+              className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-sm bg-brand-primary"
+            />
+          ) : null}
+          <Icon
+            strokeWidth={1.6}
+            className={`h-[18px] w-[18px] shrink-0 ${
+              isActive ? 'text-brand-muted' : 'text-text-on-sidebar group-hover:text-text-on-sidebar-active'
+            }`}
+          />
+          <motion.span
+            animate={{ opacity: showText ? 1 : 0 }}
+            className={`truncate whitespace-nowrap ${showText ? '' : 'sr-only'}`}
+          >
+            {label}
+          </motion.span>
         </>
       )}
     </NavLink>

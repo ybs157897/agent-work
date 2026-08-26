@@ -1,4 +1,5 @@
 import { Check, Copy } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { writeClipboard } from './blocks/clipboard';
 
@@ -18,6 +19,7 @@ export function tableToTsv(rows: string[][]): string {
 export function TableCard({ children }: { children?: ReactNode }) {
   const tableRef = useRef<HTMLTableElement>(null);
   const [copied, setCopied] = useState(false);
+  const reduceMotion = useReducedMotion();
   const copyResetTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => () => window.clearTimeout(copyResetTimer.current), []);
@@ -32,18 +34,25 @@ export function TableCard({ children }: { children?: ReactNode }) {
   }
 
   return (
-    <div className="chat-table-wrap group">
-      <button
+    <motion.div
+      className="chat-table-wrap group"
+      initial={reduceMotion ? false : { opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <motion.button
         type="button"
         aria-label="复制表格"
         title={copied ? '已复制' : '复制表格'}
         onClick={() => void onCopy()}
-        className="absolute right-0 top-0 z-10 rounded bg-surface-raised/80 p-1 text-text-tertiary opacity-0 transition-opacity hover:bg-black/[0.06] hover:text-text-primary group-hover:opacity-100"
+        className="absolute right-0 top-0 z-10 inline-flex h-7 w-7 items-center justify-center rounded-button bg-surface-raised/85 text-text-tertiary opacity-0 shadow-card transition-opacity hover:bg-surface-sunken hover:text-text-primary group-hover:opacity-100 group-focus-within:opacity-100"
+        whileHover={reduceMotion ? undefined : { scale: 1.06, y: -1 }}
+        whileTap={reduceMotion ? undefined : { scale: 0.95 }}
       >
         {copied ? <Check className="h-3.5 w-3.5 text-status-success" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      </motion.button>
       <table ref={tableRef}>{children}</table>
-    </div>
+    </motion.div>
   );
 }
 

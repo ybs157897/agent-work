@@ -1,4 +1,4 @@
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Circle } from 'lucide-react';
 import { Button } from './ui';
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
@@ -20,8 +20,8 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
 export function EmptyState({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
-      <div className="w-10 h-10 rounded-full bg-surface-sunken flex items-center justify-center text-text-tertiary text-lg">
-        —
+      <div className="flex h-10 w-10 items-center justify-center rounded-button bg-surface-sunken text-text-tertiary">
+        <Circle className="h-4 w-4" aria-hidden="true" />
       </div>
       <p className="text-body text-text-tertiary">{label}</p>
     </div>

@@ -45,7 +45,7 @@ export function MessageActions({
 
   return (
     <div
-      className={`flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 ${
+      className={`flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 ${
         className ?? ''
       }`}
     >
@@ -55,7 +55,7 @@ export function MessageActions({
         aria-label={copied ? '已复制' : '复制'}
         title={copied ? '已复制' : '复制'}
         onClick={() => void onCopy()}
-        className="rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
       >
         {copied ? (
           <Check className="h-3.5 w-3.5 text-status-success" />
@@ -69,7 +69,7 @@ export function MessageActions({
           aria-label="分叉对话"
           title="分叉对话"
           onClick={onFork}
-          className="rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
         >
           <GitBranch className="h-3.5 w-3.5" />
         </button>

@@ -27,13 +27,13 @@ export function Avatar({
   size?: number;
   ring?: boolean;
 }) {
-  const cls = `rounded-full object-cover shrink-0 ${ring ? 'ring-2 ring-surface-raised shadow-sm' : ''}`;
+  const cls = `rounded-button object-cover shrink-0 ${ring ? 'ring-2 ring-surface-raised shadow-sm' : ''}`;
   if (url) {
     return <img src={url} alt={name} className={cls} style={{ width: size, height: size }} />;
   }
   return (
     <div
-      className={`${pickColor(name)} text-text-inverse flex items-center justify-center font-semibold shrink-0 rounded-full ${
+      className={`${pickColor(name)} text-text-inverse flex items-center justify-center font-display shrink-0 rounded-button ${
         ring ? 'ring-2 ring-surface-raised shadow-sm' : ''
       }`}
       style={{ width: size, height: size, fontSize: size * 0.42 }}

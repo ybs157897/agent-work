@@ -1,4 +1,5 @@
 import { Check, Copy, WrapText } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
 import { Children, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 
 /** 流式期间 markdown 整树重渲染，防抖窗口内不重复触发高亮计算。 */
@@ -57,7 +58,7 @@ function legacyCopy(text: string): boolean {
 
 /**
  * 高亮并返回可安全注入的 HTML；纯文本降级（懒加载失败 / 声明语言未注册 / 自动检测无置信度）返回 null。
- * 只对 highlight.js 产出的 HTML 使用 dangerouslySetInnerHTML——其转义了全部原文，注入面收敛于 token span。
+ * 只对 highlight.js 产出的 HTML 使用 dangerouslySetInnerHTML--其转义了全部原文，注入面收敛于 token span。
  */
 async function highlightCode(code: string, declared: string | null): Promise<Highlighted | null> {
   if (!code) return null;
@@ -93,6 +94,7 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
   const [highlighted, setHighlighted] = useState<Highlighted | null>(null);
   const [copied, setCopied] = useState(false);
   const [wrap, setWrap] = useState(false);
+  const reduceMotion = useReducedMotion();
   const copyResetTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -121,32 +123,42 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
   const current = highlighted?.code === code ? highlighted : null;
 
   return (
-    <div className="code-block my-2 overflow-hidden rounded-md bg-surface-sunken">
+    <motion.div
+      className="code-block my-2 overflow-hidden rounded-md bg-surface-sunken"
+      initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+    >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border-subtle/60 bg-surface-sunken/95 px-3 pt-1.5 pb-1 backdrop-blur-sm">
         <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-wider text-text-tertiary">
           {declared ?? current?.language ?? ''}
         </span>
         <div className="flex shrink-0 items-center gap-0.5">
-          <button
+          <motion.button
             type="button"
             aria-pressed={wrap}
+            aria-label={wrap ? '取消自动换行' : '自动换行'}
             title={wrap ? '取消自动换行' : '自动换行'}
             onClick={() => setWrap((v) => !v)}
-            className={`rounded p-1 transition-colors hover:bg-black/[0.06] hover:text-text-primary ${
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-button transition-colors hover:bg-surface-raised/80 hover:text-text-primary ${
               wrap ? 'text-brand-primary' : 'text-text-tertiary'
             }`}
+            whileHover={reduceMotion ? undefined : { y: -1, scale: 1.05 }}
+            whileTap={reduceMotion ? undefined : { scale: 0.95 }}
           >
             <WrapText className="h-3.5 w-3.5" />
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             type="button"
             aria-label="复制代码"
             title={copied ? '已复制' : '复制'}
             onClick={() => void onCopy()}
-            className="rounded p-1 text-text-tertiary transition-colors hover:bg-black/[0.06] hover:text-text-primary"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-raised/80 hover:text-text-primary"
+            whileHover={reduceMotion ? undefined : { y: -1, scale: 1.05 }}
+            whileTap={reduceMotion ? undefined : { scale: 0.95 }}
           >
             {copied ? <Check className="h-3.5 w-3.5 text-status-success" /> : <Copy className="h-3.5 w-3.5" />}
-          </button>
+          </motion.button>
         </div>
       </div>
       <pre
@@ -163,6 +175,6 @@ export function CodeBlock({ children }: { children?: ReactNode }) {
           <code className={codeClassName}>{code}</code>
         )}
       </pre>
-    </div>
+    </motion.div>
   );
 }

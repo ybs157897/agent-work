@@ -63,11 +63,11 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="h-full min-h-0 w-full flex overflow-hidden">
+    <div className="ink-chat flex h-full min-h-0 w-full overflow-hidden bg-surface-warm/35">
       {/* 左栏：Agent 选择器 + 会话列表 */}
-      <div className="w-64 shrink-0 border-r border-border-subtle bg-surface-raised flex flex-col min-h-0">
-        <div className="p-3 border-b border-border-subtle shrink-0">
-          <h3 className="text-body font-semibold text-text-primary">选择 Agent</h3>
+      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-strong bg-surface-warm/82 backdrop-blur-sm">
+        <div className="shrink-0 border-b border-border-subtle px-snug py-base">
+          <h3 className="font-display text-body-lg text-text-primary">选择 Agent</h3>
         </div>
         <div
           className={`overflow-y-auto p-2 space-y-1 ${
@@ -78,8 +78,10 @@ export default function ChatPage() {
             <button
               key={a.id}
               onClick={() => pick(a.id)}
-              className={`w-full flex items-center gap-2 p-2 rounded-lg text-left transition-colors ${
-                agentId === a.id ? 'bg-brand-primary/10 ring-1 ring-brand-primary/30' : 'hover:bg-surface-base'
+              className={`flex min-h-12 w-full items-center gap-snug rounded-button border px-tight py-tight text-left transition-all duration-ink active:scale-[0.99] ${
+                agentId === a.id
+                  ? 'border-brand-primary/25 bg-brand-muted/70 shadow-card'
+                  : 'border-transparent hover:border-border-subtle hover:bg-surface-raised/65'
               }`}
             >
               <Avatar name={a.name} url={a.avatar} size={28} />
@@ -95,7 +97,7 @@ export default function ChatPage() {
           openConversation(id);
           setSearchParams(id ? { agent: agentId, c: id } : { agent: agentId }, { replace: true });
         }} />}
-      </div>
+      </aside>
 
       {/* 右侧对话区 */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
@@ -119,13 +121,14 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
   const runSnapshots = useRunsStore((s) => s.runs);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-t border-border-subtle">
-      <div className="p-3 flex items-center justify-between">
-        <h3 className="text-body font-semibold text-text-primary">会话</h3>
+    <div className="flex min-h-0 flex-1 flex-col border-t border-border-strong/70">
+      <div className="flex items-center justify-between px-snug py-base">
+        <h3 className="font-display text-body-lg text-text-primary">会话</h3>
         <button
           onClick={() => onPick(null)}
           title="新对话"
-          className="p-1 hover:bg-surface-base rounded text-text-tertiary hover:text-text-primary transition-colors"
+          aria-label="新对话"
+          className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
         >
           <Plus className="w-4 h-4" />
         </button>
@@ -135,8 +138,10 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
           <button
             key={c.id}
             onClick={() => onPick(c.id)}
-            className={`w-full text-left p-2 rounded-lg transition-colors ${
-              conversationId === c.id ? 'bg-brand-primary/10 ring-1 ring-brand-primary/30' : 'hover:bg-surface-base'
+            className={`w-full rounded-button border px-tight py-tight text-left transition-all duration-ink active:scale-[0.99] ${
+              conversationId === c.id
+                ? 'border-brand-primary/20 bg-brand-muted/60 shadow-card'
+                : 'border-transparent hover:border-border-subtle hover:bg-surface-raised/60'
             }`}
           >
             <div className="flex items-center gap-1 text-body text-text-primary">
@@ -210,10 +215,10 @@ function ConversationPane() {
     return () => {
       for (const id of runIds) unwatchRun(id);
     };
-  }, [runIds.join(','), watchRun, unwatchRun]);
+  }, [runIds, watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
-  // 已到任何终态的 run：其内仍 running 的工具行按 stopped（中断/截断）展示，不再扫光——
+  // 已到任何终态的 run：其内仍 running 的工具行按 stopped（中断/截断）展示，不再扫光--
   // 覆盖中断/取消，也覆盖历史数据缺 completed 帧的挂起行（对齐 DSH 的 interruption 投影语义）。
   const stoppedRuns = useMemo(() => {
     const set = new Set<string>();
@@ -232,7 +237,10 @@ function ConversationPane() {
     () => hideLiveRunDrafts(messages, latestRunId, liveRunActive),
     [messages, latestRunId, liveRunActive],
   );
-  const runApprovals = latestRunId ? (approvals[latestRunId] ?? []) : [];
+  const runApprovals = useMemo(
+    () => (latestRunId ? approvals[latestRunId] ?? [] : []),
+    [approvals, latestRunId],
+  );
   const runStatuses = useMemo(() => {
     const map: Record<string, string> = {};
     for (const id of runIds) {
@@ -305,8 +313,10 @@ function ConversationPane() {
     });
   }, [messages, pendingUsers]);
   const runInFlight = !!latestRun && ACTIVE.has(latestRun.status);
-  const latestTimeline = latestRunId ? timelines[latestRunId] ?? [] : [];
-  const hasVisibleOutput = useMemo(() => runHasVisibleOutput(latestTimeline), [latestTimeline]);
+  const hasVisibleOutput = useMemo(
+    () => (latestRunId ? runHasVisibleOutput(timelines[latestRunId] ?? []) : false),
+    [latestRunId, timelines],
+  );
   // 最新 run 的全部审批：pending 渲染交互卡，已决议转完成态行留在流内。
   const latestRunAlert = latestRunId ? runAlerts[latestRunId] : undefined;
 
@@ -356,7 +366,7 @@ function ConversationPane() {
   }, [latestRun, sending, queue.length, drainQueue]);
 
   // 最新 run 的累计输入用量；后端未上报（字段缺失）时不渲染。
-  // 上下文窗口需另拉 /models 匹配 agent 模型——不值得为凑格式加请求，只显 used。
+  // 上下文窗口需另拉 /models 匹配 agent 模型--不值得为凑格式加请求，只显 used。
   const usageText = formatTokenUsage(latestRun?.usage_in);
 
   const doSend = () => {
@@ -380,12 +390,12 @@ function ConversationPane() {
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* 头部 */}
-      <div className="h-[52px] shrink-0 px-comfortable flex items-center justify-between border-b border-border-subtle">
+      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-border-subtle bg-surface-raised/62 px-comfortable backdrop-blur-sm">
         <div className="flex items-center gap-2 min-w-0">
           {agent && <Avatar name={agent.name} url={agent.avatar} size={28} />}
-          <span className="text-body-lg font-semibold text-text-primary truncate">
+          <span className="truncate font-display text-h3 text-text-primary">
             {agent?.name ?? ''}
           </span>
           <span className="text-caption text-text-tertiary truncate">
@@ -399,7 +409,7 @@ function ConversationPane() {
               onClick={() => setWorkspaceOpen((v) => !v)}
               title={workspaceOpen ? '关闭工作区' : '打开工作区'}
               aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
-              className="p-1 rounded hover:bg-surface-base text-text-tertiary hover:text-text-primary transition-colors"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
             >
               <PanelRight className="h-4 w-4" />
             </button>
@@ -415,7 +425,8 @@ function ConversationPane() {
       {/* 消息流 */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-6 py-base min-h-0"
+        data-chat-scroll="transcript"
+        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-base sm:px-6"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
           <div className="chat-thread py-12">
@@ -428,7 +439,7 @@ function ConversationPane() {
                   key={p}
                   type="button"
                   onClick={() => applyPrompt(p)}
-                  className="rounded-full border border-border-subtle bg-surface-raised px-3 py-1.5 text-caption text-text-secondary transition-colors hover:border-brand-primary/35 hover:text-brand-primary"
+                  className="rounded-button border border-border-subtle bg-surface-raised/85 px-snug py-tight text-caption text-text-secondary shadow-card transition-all duration-ink hover:-translate-y-0.5 hover:border-brand-primary/35 hover:text-brand-primary"
                 >
                   {p}
                 </button>
@@ -442,6 +453,7 @@ function ConversationPane() {
             stoppedRuns={stoppedRuns}
             onFork={(key) => void forkConversation(key)}
             agent={agent ? { name: agent.name, avatar: agent.avatar } : undefined}
+            scrollContainerRef={scrollRef}
           />
         </div>
         {latestRunAlert && (
@@ -452,7 +464,7 @@ function ConversationPane() {
       </div>
 
       {/* 底部固定：成果摘要 + 计划 / 目标 + 输入 */}
-      <div className="shrink-0 border-t border-border-subtle bg-surface-base/95 backdrop-blur-sm">
+      <div className="shrink-0 border-t border-border-strong/70 bg-surface-warm/92 backdrop-blur-sm">
         {conversationArtifacts.length > 0 && (
           <div className="chat-thread px-4 sm:px-6 pt-2">
             <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
@@ -464,7 +476,7 @@ function ConversationPane() {
         <div className="chat-thread px-4 sm:px-6 pb-comfortable">
         {/* 待发送队列：运行中入队的消息，本轮成功后自动续发；终态非成功时可手动继续 */}
         {queue.length > 0 && (
-          <div className="mb-2 space-y-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-2">
+          <div className="mb-2 space-y-1 rounded-card border border-border-subtle bg-surface-raised/88 px-snug py-tight shadow-card">
             <div className="flex items-center justify-between gap-2">
               <span className="text-caption text-text-tertiary">待发送队列（{queue.length} 条）</span>
               {latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded' && (
@@ -487,7 +499,7 @@ function ConversationPane() {
                   aria-label="移除待发送消息"
                   title="移除"
                   onClick={() => removeQueued(i)}
-                  className="shrink-0 rounded p-0.5 text-text-tertiary transition-colors hover:text-text-primary"
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -511,9 +523,9 @@ function ConversationPane() {
             }}
             rows={2}
             placeholder={latestRun && !TERMINAL.has(latestRun.status)
-              ? '运行中——消息将进入队列，完成后自动发送'
+              ? '运行中，消息将进入队列，完成后自动发送'
               : '输入消息，Enter 发送，Shift+Enter 换行'}
-            className="flex-1 rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 resize-none"
+            className="min-h-11 flex-1 resize-none rounded-input border border-border-strong bg-surface-raised/92 px-snug py-tight text-body outline-none transition-shadow focus:border-brand-primary/45 focus:ring-2 focus:ring-brand-primary/25"
           />
           {runInFlight && (
             <button
@@ -521,7 +533,7 @@ function ConversationPane() {
               onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
               disabled={!latestRunId || stoppingRunId === latestRunId}
               title="停止当前运行"
-              className="flex items-center gap-1.5 rounded-button border border-border-strong px-base py-tight text-body font-medium text-text-secondary transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex min-h-10 items-center gap-1.5 rounded-button border border-border-strong bg-surface-raised/70 px-base py-tight text-body font-medium text-text-secondary transition-all duration-ink hover:bg-surface-raised active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Square className="w-4 h-4" />
               {stoppingRunId === latestRunId ? '停止中' : '停止'}
@@ -546,4 +558,3 @@ function ConversationPane() {
     </div>
   );
 }
-

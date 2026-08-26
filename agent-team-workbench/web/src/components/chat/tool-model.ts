@@ -186,3 +186,14 @@ export function toolRowModel(msg: ChatMessage): ToolRowModel {
     running: state === 'running',
   };
 }
+
+/** A terminal run can project a persisted running frame as stopped; recompute copy for that visual state. */
+export function toolRowTitleForState(model: ToolRowModel, state: ToolRowState): string {
+  if (state === model.state) return model.title;
+  return toolActivityTitle({
+    family: model.family,
+    state,
+    summary: model.summary,
+    filePath: model.filePath,
+  });
+}

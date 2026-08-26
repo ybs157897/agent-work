@@ -384,7 +384,7 @@ function AddProviderPanel({
             {draftModels.map((m) => (
               <div
                 key={m.key}
-                className="rounded-lg border border-border-subtle bg-surface-base p-3 space-y-2"
+                className="rounded-card border border-border-subtle bg-surface-sunken/45 p-3 space-y-2 shadow-card"
               >
                 <div className="flex items-start gap-2">
                   <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -602,7 +602,7 @@ function ProviderPanel({
               return (
                 <div
                   key={m.id}
-                  className="flex items-center gap-3 rounded-lg border border-border-subtle bg-surface-base px-3 py-2.5 transition-colors hover:border-border-strong hover:bg-surface-raised/60"
+                  className="flex items-center gap-3 rounded-card border border-border-subtle bg-surface-sunken/45 px-3 py-2.5 transition-colors hover:border-border-strong hover:bg-surface-raised/80"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-body font-medium text-text-primary truncate">{m.display_name || m.id}</div>
@@ -719,7 +719,7 @@ function DeleteModelModal({
           ) : null}
           。
         </p>
-        <div className="rounded-lg border border-border-subtle bg-surface-base px-3 py-2.5 text-caption font-mono text-text-tertiary">
+        <div className="rounded-card border border-border-subtle bg-surface-sunken/45 px-3 py-2.5 text-caption font-mono text-text-tertiary">
           API 模型名：{entry.model}
         </div>
         {hint ? (
@@ -781,7 +781,7 @@ function DeleteProviderModal({
         <p className="text-body text-text-secondary">
           将永久删除以下 {group.models.length} 个模型，并清除本机保存的 API Key。此操作无法撤销。
         </p>
-        <ul className="max-h-40 overflow-y-auto rounded-lg border border-border-subtle bg-surface-base divide-y divide-border-subtle">
+        <ul className="max-h-40 overflow-y-auto rounded-card border border-border-subtle bg-surface-sunken/45 divide-y divide-border-subtle">
           {group.models.map((m) => (
             <li key={m.id} className="px-3 py-2 text-body">
               <div className="font-medium text-text-primary">{m.display_name || m.id}</div>

@@ -9,18 +9,22 @@ import { ApprovalCard } from './approval-card';
 import type { TranscriptSegment } from '../../utils/chronological-transcript';
 import { transcriptSegmentKey } from '../../utils/approval-transcript';
 import { formatTime } from '../../utils/format';
+import type { RefObject } from 'react';
 
 export function TranscriptView({
   segments,
   stoppedRuns,
   onFork,
   agent,
+  scrollContainerRef,
 }: {
   segments: TranscriptSegment[];
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
   /** 当前会话归属的 Agent（助手回合头展示身份）。 */
   agent?: { name: string; avatar?: string };
+  /** 聊天拥有独立滚动视口，供 Aceternity TracingBeam 正确计算进度。 */
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
     <>
@@ -31,6 +35,7 @@ export function TranscriptView({
           stoppedRuns={stoppedRuns}
           onFork={onFork}
           agent={agent}
+          scrollContainerRef={scrollContainerRef}
         />
       ))}
     </>
@@ -42,11 +47,13 @@ function TranscriptSegmentView({
   stoppedRuns,
   onFork,
   agent,
+  scrollContainerRef,
 }: {
   seg: TranscriptSegment;
   stoppedRuns?: ReadonlySet<string>;
   onFork?: (key: string) => void;
   agent?: { name: string; avatar?: string };
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   switch (seg.kind) {
     case 'user':
@@ -61,6 +68,7 @@ function TranscriptSegmentView({
           onFork={onFork}
           agentName={agent?.name}
           agentAvatar={agent?.avatar}
+          scrollContainerRef={scrollContainerRef}
         />
       );
     case 'thinking':

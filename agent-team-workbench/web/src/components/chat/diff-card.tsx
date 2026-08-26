@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, Copy, FileDiff } from 'lucide-react';
+import { motion, useReducedMotion } from 'motion/react';
 
 /**
  * Unified diff 卡（对齐 codex-desktop 渲染对比 Q6 的 Web 子集）：
@@ -128,7 +129,7 @@ export function shouldCollapseBySize(files: DiffFile[]): boolean {
 /**
  * 复制到剪贴板的纯文本形态：每文件先路径行，再按行加前缀（add `+ `、del `- `、context
  * 两个空格对齐 +/- 前缀宽），meta 行原样；文件间不额外空行。split 视图下复制的也是
- * unified 形态——复制物与当前视图解耦。
+ * unified 形态--复制物与当前视图解耦。
  */
 export function diffCopyText(files: DiffFile[]): string {
   const rows: string[] = [];
@@ -208,7 +209,7 @@ export interface UnifiedCap {
 
 /**
  * 头尾帽切片参数：超帽且未展开时 capped，渲染头 ceil(16/2)=8 行 + 尾 8 行，hidden 为中段
- * 藏掉的行数；未超帽或已展开时整段直出（head=total、tail=0），hidden 仍非零——「收起」
+ * 藏掉的行数；未超帽或已展开时整段直出（head=total、tail=0），hidden 仍非零--「收起」
  * 按钮靠它保留。
  */
 export function capUnifiedRows(total: number, expanded: boolean): UnifiedCap {
@@ -234,7 +235,7 @@ export function visibleUnifiedRows(
 
 /**
  * 视口 <640px 判定（matchMedia，Tailwind sm 断点之下）。只看视口宽、不响应父容器
- * 收缩——diff 卡所在聊天栏随视口伸缩，容器级监听（ResizeObserver）复杂度不值当。
+ * 收缩--diff 卡所在聊天栏随视口伸缩，容器级监听（ResizeObserver）复杂度不值当。
  */
 function useNarrowViewport(): boolean {
   const [narrow, setNarrow] = useState(false);
@@ -290,7 +291,7 @@ function FileHead({ file }: { file: DiffFile }) {
 
 /**
  * 展平行的按文件聚组渲染。切片把某文件全部行藏进中段时该组整组不产出（文件头随之
- * 不渲染）；tail 起点落在文件中间时不补文件头——diff 行自带 +/− 前缀语义，裸行可读
+ * 不渲染）；tail 起点落在文件中间时不补文件头--diff 行自带 +/− 前缀语义，裸行可读
  * （与 DSH SearchBlock 的补头策略不同，此处有意接受）。
  */
 function UnifiedGroups({ rows }: { rows: FlatRow[] }) {
@@ -331,6 +332,7 @@ export function DiffCard({ text }: { text: string }) {
   const [view, setView] = useState<DiffView>('unified');
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const reduceMotion = useReducedMotion();
   const copyResetTimer = useRef<number | undefined>(undefined);
   const narrow = useNarrowViewport();
   const shown = effectiveView(view, narrow);
@@ -360,7 +362,12 @@ export function DiffCard({ text }: { text: string }) {
   const { additions, deletions } = diffTotalChanges(files);
   const { cap, headRows, tailRows } = unified;
   return (
-    <div className="chat-diff">
+    <motion.div
+      className="chat-diff"
+      initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduceMotion ? { duration: 0 } : { duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+    >
       <div className="chat-diff-head">
         <button className="chat-diff-summary" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
           {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
@@ -372,33 +379,37 @@ export function DiffCard({ text }: { text: string }) {
           </span>
         </button>
         {/* 复制按钮须在 summary toggle 之外（button 套 button 是非法 HTML），故紧随其后落在徽章组右侧。 */}
-        <button
+        <motion.button
           type="button"
           aria-label={copied ? '已复制' : '复制 diff'}
           title={copied ? '已复制' : '复制 diff'}
           onClick={() => void onCopy()}
-          className="ml-0.5 mr-1 shrink-0 self-center rounded p-1 text-text-tertiary transition-colors hover:bg-black/[0.06] hover:text-text-primary"
+          className="ml-0.5 mr-1 inline-flex h-7 w-7 shrink-0 items-center justify-center self-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+          whileHover={reduceMotion ? undefined : { scale: 1.06, y: -1 }}
+          whileTap={reduceMotion ? undefined : { scale: 0.95 }}
         >
           {copied ? <Check className="h-3.5 w-3.5 text-status-success" /> : <Copy className="h-3.5 w-3.5" />}
-        </button>
+        </motion.button>
         {open && !narrow && (
           <div className="chat-diff-toolbar" role="group" aria-label="Diff 视图">
-            <button
+            <motion.button
               type="button"
               className="chat-diff-toggle"
               aria-pressed={shown === 'unified'}
               onClick={() => setView('unified')}
+              whileHover={reduceMotion ? undefined : { y: -1 }}
             >
               Unified
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               type="button"
               className="chat-diff-toggle"
               aria-pressed={shown === 'split'}
               onClick={() => setView('split')}
+              whileHover={reduceMotion ? undefined : { y: -1 }}
             >
               Split
-            </button>
+            </motion.button>
           </div>
         )}
       </div>
@@ -452,6 +463,6 @@ export function DiffCard({ text }: { text: string }) {
           </div>
         </>
       )}
-    </div>
+    </motion.div>
   );
 }

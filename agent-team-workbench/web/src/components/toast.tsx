@@ -1,5 +1,5 @@
-import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AlertCircle, Info, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { useToastStore, type Toast } from '../stores/toast.store';
 
@@ -37,21 +37,25 @@ function ToastCard({ toast }: { toast: Toast }) {
     toast.kind === 'error' ? (
       <AlertCircle className="w-4 h-4 text-status-error shrink-0" />
     ) : toast.kind === 'success' ? (
-      <CheckCircle2 className="w-4 h-4 text-status-success shrink-0" />
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border border-status-success/45 font-display text-caption text-status-success">
+        成
+      </span>
     ) : (
       <Info className="w-4 h-4 text-brand-primary shrink-0" />
     );
 
   return (
     <div
-      className="bg-surface-raised rounded-card shadow-level-3 border border-border-subtle p-3 flex items-start gap-2"
+      className="ink-paper-panel flex items-start gap-snug rounded-card p-snug shadow-level-3"
       role={toast.kind === 'error' ? 'alert' : 'status'}
     >
       {icon}
       <p className="text-body text-text-primary flex-1 break-words">{toast.message}</p>
       <button
+        type="button"
+        aria-label="关闭通知"
         onClick={() => dismiss(toast.id)}
-        className="text-text-tertiary hover:text-text-primary shrink-0"
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
       >
         <X className="w-4 h-4" />
       </button>

@@ -1,5 +1,6 @@
-import { ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, FilePen, FileText, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
 import { createElement, useState, type ReactNode } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { toolDuration, type ChatMessage } from '../../stores/chat.store';
 import { activityWorkedFor } from '../../utils/activity-worked-for';
 import type { ReasoningSlot } from '../../utils/transcript-layout';
@@ -11,7 +12,7 @@ import { TerminalBlock } from './blocks/TerminalBlock';
 import { ReadBlock } from './blocks/ReadBlock';
 import { SearchBlock } from './blocks/SearchBlock';
 import { cx } from './blocks/cx';
-import { toolRowModel, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
+import { toolRowModel, toolRowTitleForState, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
 import { readBlockFromOutput } from './read-model';
 import { parseGrepOutput, parsePathList } from './search-parse';
 import css from './tool-row.module.css';
@@ -105,6 +106,7 @@ export function ActivityGroup({
   suppressDiff?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const reduceMotion = useReducedMotion();
   const running =
     Boolean(reasoning?.streaming) ||
     items.some((m) => m.toolStatus === 'running' && !stoppedRuns?.has(m.runId));
@@ -123,26 +125,34 @@ export function ActivityGroup({
         {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
         <span className="min-w-0 flex-1 truncate font-medium text-text-secondary">{headLabel}</span>
       </button>
-      {open && (
-        <div className="chat-activity-body">
-          {reasoning && (
-            <ReasoningProcessPanel
-              key={reasoning.key}
-              panelKey={reasoning.key}
-              text={reasoning.text}
-              streaming={reasoning.streaming}
-            />
-          )}
-          {items.map((m) => (
-            <ToolRow
-              key={m.key}
-              msg={m}
-              stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
-              suppressDiff={suppressDiff}
-            />
-          ))}
-        </div>
-      )}
+      <AnimatePresence initial={false} mode="sync">
+        {open && (
+          <motion.div
+            className="chat-activity-body"
+            initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
+            animate={{ opacity: 1, height: 'auto', y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
+            transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {reasoning && (
+              <ReasoningProcessPanel
+                key={reasoning.key}
+                panelKey={reasoning.key}
+                text={reasoning.text}
+                streaming={reasoning.streaming}
+              />
+            )}
+            {items.map((m) => (
+              <ToolRow
+                key={m.key}
+                msg={m}
+                stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
+                suppressDiff={suppressDiff}
+              />
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -308,6 +318,7 @@ export function ToolRow({
   const model = toolRowModel(msg);
   const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
   const [expanded, setExpanded] = useState(false);
+  const reduceMotion = useReducedMotion();
   const duration = toolDuration(msg.startedAt, msg.completedAt);
   // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
   const icon = createElement(toolIcon(msg.tool), { className: 'h-3.5 w-3.5' });
@@ -327,6 +338,7 @@ export function ToolRow({
   const failureLine = state === 'error' ? model.errorSummary : null;
   const summaryText = failureLine ?? model.summary;
   const status = stateStatus(state);
+  const title = toolRowTitleForState(model, state);
 
   return (
     <div className={css.root} data-tool={msg.tool} data-state={state}>
@@ -337,7 +349,7 @@ export function ToolRow({
         titleClassName={css.title}
         chevronClassName={css.chevron}
         icon={leadingFor(state, icon)}
-        title={model.title}
+        title={title}
         open={open}
         expandable={expandable}
         expandOnRowClick
@@ -351,13 +363,30 @@ export function ToolRow({
                 <span className={cx(css.summary, failureLine !== null && css.errorSummary)}>{summaryText}</span>
               )}
               {duration !== null && <span className={css.summarySuffix}>{duration}</span>}
+              {state === 'ok' && model.output !== null && (
+                <motion.span
+                  className={css.successSeal}
+                  initial={reduceMotion ? false : { opacity: 0, scale: 0.7, rotate: -8 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                  transition={reduceMotion ? { duration: 0 } : { duration: 0.34, ease: [0.16, 1, 0.3, 1] }}
+                  aria-label="已完成"
+                >
+                  <Check className="h-3 w-3" aria-hidden />
+                </motion.span>
+              )}
             </>
           ) : undefined
         }
       >
-        <div className={css.bodyWrap}>
+        <motion.div
+          className={css.bodyWrap}
+          initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
+          animate={{ opacity: 1, height: 'auto', y: 0 }}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+          data-result-reveal={state === 'ok' ? 'true' : undefined}
+        >
           <ExpandedBody model={model} state={state} suppressDiff={suppressDiff} />
-        </div>
+        </motion.div>
       </DisclosureRow>
     </div>
   );

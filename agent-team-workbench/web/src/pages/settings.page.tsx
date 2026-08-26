@@ -1,4 +1,5 @@
 import { Pencil, Plus, Radar, RefreshCw } from 'lucide-react';
+import type React from 'react';
 import { useEffect, useState } from 'react';
 import { ApiError } from '../api/client';
 import {
@@ -10,6 +11,7 @@ import {
 } from '../api/endpoints';
 import type { ProbeResult, RuntimeBinding } from '../api/types';
 import { Drawer } from '../components/drawer';
+import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
 import { Button, Card, EmptyState, Input, Skeleton } from '../components/ui';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -30,59 +32,74 @@ export default function SettingsPage() {
         <h2 className="page-title">设置</h2>
       </header>
 
-      <Card padded>
-        <div className="flex items-center justify-between mb-comfortable">
-          <h3 className="text-h3 text-text-primary">Workspace</h3>
-          <Button size="sm" onClick={() => setEditingWs(true)}>
-            <Pencil className="w-3.5 h-3.5" />
-            编辑
-          </Button>
-        </div>
-        <dl className="grid grid-cols-2 gap-base max-w-xl text-body">
-          <Field label="名称" value={workspace?.name} />
-          <Field label="时区" value={workspace?.timezone} />
-          <Field label="ID" value={workspace?.id} mono />
-          <Field label="版本" value={workspace ? String(workspace.version) : undefined} />
-        </dl>
-      </Card>
+      <InkBentoGrid className="grid-cols-1 gap-snug md:auto-rows-auto md:grid-cols-2">
+        <InkBentoItem
+          className="!justify-start !space-y-snug p-comfortable"
+          title={
+            <div className="flex items-start justify-between gap-snug">
+              <div>
+                <p className="text-caption uppercase tracking-widest text-text-tertiary">卷宗 · Workspace</p>
+                <h3 className="mt-1 font-display text-h3 text-text-primary">{workspace?.name ?? '未加载'}</h3>
+              </div>
+              <Button size="sm" onClick={() => setEditingWs(true)}>
+                <Pencil className="w-3.5 h-3.5" />
+                编辑
+              </Button>
+            </div>
+          }
+          description={
+            <dl className="grid grid-cols-2 gap-x-comfortable gap-y-snug text-body">
+              <Field label="时区" value={workspace?.timezone} />
+              <Field label="版本" value={workspace ? String(workspace.version) : undefined} />
+              <Field label="Workspace ID" value={workspace?.id} mono />
+            </dl>
+          }
+        />
+
+        <InkBentoItem
+          className="!justify-start !space-y-snug p-comfortable"
+          title={
+            <div className="flex items-start justify-between gap-snug">
+              <div>
+                <p className="text-caption uppercase tracking-widest text-text-tertiary">脉象 · System Health</p>
+                <h3 className="mt-1 font-display text-h3 text-text-primary">系统健康</h3>
+              </div>
+              <span className="text-caption text-text-tertiary tabular-nums">游标 {eventCursor}</span>
+            </div>
+          }
+          description={
+            <div className="grid grid-cols-3 gap-snug text-body">
+              <HealthMetric label="控制平面">
+                <span className="inline-flex items-center gap-1.5 text-text-primary">
+                  <span className={`h-2 w-2 rounded-full ${health?.control_plane === 'healthy' ? 'bg-status-success' : 'bg-status-error'}`} />
+                  {health?.control_plane ?? '未知'}
+                </span>
+              </HealthMetric>
+              <HealthMetric label="Runner">
+                <span className="text-text-primary">
+                  {health?.runners?.length ? `${health.runners.length} 个已连接` : '内置 Mock'}
+                </span>
+              </HealthMetric>
+              <HealthMetric label="SSE 事件流">
+                <span className="text-text-primary">
+                  {sseStatus === 'online' ? '在线' : sseStatus === 'connecting' ? '连接中' : '重连中'}
+                </span>
+              </HealthMetric>
+            </div>
+          }
+        />
+      </InkBentoGrid>
 
       {workspace && <WorkspaceEditModal open={editingWs} onClose={() => setEditingWs(false)} />}
 
-      <Card padded>
-        <h3 className="text-h3 text-text-primary mb-comfortable">系统健康</h3>
-        <div className="grid grid-cols-2 gap-base max-w-xl text-body">
-          <div>
-            <span className="text-caption text-text-tertiary block mb-1">控制平面</span>
-            <span className="inline-flex items-center gap-2">
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  health?.control_plane === 'healthy' ? 'bg-status-success' : 'bg-status-error'
-                }`}
-              />
-              <span className="text-text-primary">{health?.control_plane ?? '未知'}</span>
-            </span>
-          </div>
-          <div>
-            <span className="text-caption text-text-tertiary block mb-1">Runner</span>
-            <span className="text-text-primary">
-              {health?.runners?.length ? `${health.runners.length} 个已连接` : '无连接（Mock Adapter 内置）'}
-            </span>
-          </div>
-          <div>
-            <span className="text-caption text-text-tertiary block mb-1">SSE 事件流</span>
-            <span className="text-text-primary">
-              {sseStatus === 'online' ? '在线' : sseStatus === 'connecting' ? '连接中' : '重连中'} · 游标{' '}
-              {eventCursor}
-            </span>
-          </div>
-        </div>
-      </Card>
-
       <RuntimeBindingsSection workspaceId={workspace?.id} />
 
-      <Card padded>
-        <h3 className="text-h3 text-text-primary mb-comfortable">当前用户</h3>
-        <dl className="grid grid-cols-2 gap-base max-w-xl text-body">
+      <Card padded className="!p-base">
+        <div className="mb-snug flex items-center justify-between">
+          <h3 className="text-h3 text-text-primary">当前用户</h3>
+          <span className="text-caption text-text-tertiary">访问身份</span>
+        </div>
+        <dl className="grid grid-cols-2 gap-x-comfortable gap-y-snug max-w-2xl text-body md:grid-cols-4">
           <Field label="用户" value={me?.name} />
           <Field label="角色" value={me?.role} />
           <Field label="用户 ID" value={me?.user_id} mono />
@@ -123,9 +140,12 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
   };
 
   return (
-    <Card padded>
-      <div className="flex items-center justify-between mb-comfortable">
-        <h3 className="text-h3 text-text-primary">Runtime 绑定</h3>
+    <Card padded className="!p-base">
+      <div className="flex items-center justify-between mb-snug">
+        <div>
+          <p className="text-caption uppercase tracking-widest text-text-tertiary">注册表 · Runtime</p>
+          <h3 className="mt-1 text-h3 text-text-primary">运行时绑定</h3>
+        </div>
         <div className="flex items-center gap-2">
           <Button onClick={load}>
             <RefreshCw className="w-4 h-4" />
@@ -156,52 +176,46 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
           }
         />
       ) : (
-        <div className="space-y-3">
+        <div className="divide-y divide-border-subtle rounded-card border border-border-subtle bg-surface-base">
           {bindings.map((b) => {
             const probeResult = probeResults[b.id];
             return (
-              <div key={b.id} className="rounded-lg border border-border-subtle p-base">
-                <div className="flex items-center justify-between mb-2">
+              <div key={b.id} className="grid gap-snug px-snug py-base md:grid-cols-[minmax(12rem,1.25fr)_minmax(14rem,1.5fr)_auto] md:items-center">
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-body text-text-primary">{b.runtime_label}</span>
-                    <span className="text-caption text-text-tertiary">
-                      {b.adapter_id}@{b.adapter_version || '—'}
-                      {b.provider_version ? ` · provider ${b.provider_version}` : ''}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-caption font-medium ${
-                        b.status === 'ready'
-                          ? 'bg-status-success/10 text-status-success'
-                          : 'bg-surface-base text-text-secondary'
-                      }`}
-                    >
+                    <span className="truncate font-medium text-body text-text-primary">{b.runtime_label}</span>
+                    <span className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-caption font-medium ${b.status === 'ready' ? 'bg-status-success/10 text-status-success' : 'bg-surface-raised text-text-secondary'}`}>
                       {b.status}
                     </span>
-                    <Button size="sm" onClick={() => setEditing(b)}>
-                      <Pencil className="w-3.5 h-3.5" />
-                      编辑
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => void probe(b.id)} disabled={probing !== null}>
-                      <Radar className="w-3.5 h-3.5" />
-                      {probing === b.id ? '探测中…' : 'Probe'}
-                    </Button>
                   </div>
+                  <p className="mt-1 truncate font-mono text-caption text-text-tertiary">
+                      {b.adapter_id}@{b.adapter_version || '-'}
+                      {b.provider_version ? ` · provider ${b.provider_version}` : ''}
+                  </p>
                 </div>
-                <div className="text-caption text-text-secondary mb-2">
-                  {b.provider} / {b.model}
-                  {b.credential_ref && <span className="text-text-tertiary"> · 凭据引用 {b.credential_ref}</span>}
+                <div className="min-w-0 text-caption text-text-secondary">
+                  <p className="truncate">{b.provider} / {b.model}</p>
+                  {b.credential_ref && <p className="mt-1 truncate text-text-tertiary">凭据引用 · {b.credential_ref}</p>}
                 </div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex items-center justify-start gap-tight md:justify-end">
+                  <Button size="sm" onClick={() => setEditing(b)}>
+                    <Pencil className="w-3.5 h-3.5" />
+                    编辑
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void probe(b.id)} disabled={probing !== null}>
+                    <Radar className="w-3.5 h-3.5" />
+                    {probing === b.id ? '探测中…' : '探测'}
+                  </Button>
+                </div>
+                <div className="md:col-span-3 flex flex-wrap gap-1.5">
                   {Object.entries(b.capabilities ?? {}).map(([cap, level]) => (
                     <span
                       key={cap}
-                      className={`inline-flex items-center px-2 py-0.5 rounded-sm text-caption border ${
+                      className={`inline-flex items-center rounded-sm border px-2 py-0.5 text-caption ${
                         level === 'supported' || level === 'provider_native'
                           ? 'bg-brand-primary/10 text-brand-accent border-brand-primary/20'
                           : level === 'unavailable'
-                            ? 'bg-surface-base text-text-tertiary border-border-subtle line-through'
+                            ? 'bg-surface-raised text-text-tertiary border-border-subtle line-through'
                             : 'bg-status-warning/10 text-status-warning border-status-warning/20'
                       }`}
                       title={level}
@@ -211,11 +225,8 @@ function RuntimeBindingsSection({ workspaceId }: { workspaceId?: string }) {
                   ))}
                 </div>
                 {probeResult && (
-                  <p
-                    className={`text-caption mt-2 ${probeResult.ok ? 'text-status-success' : 'text-status-error'}`}
-                  >
-                    Probe {probeResult.ok ? 'OK' : '失败'}
-                    {probeResult.error ? `：${probeResult.error}` : ''}
+                  <p className={`md:col-span-3 text-caption ${probeResult.ok ? 'text-status-success' : 'text-status-error'}`}>
+                    最近探测：{probeResult.ok ? '可用' : '失败'}{probeResult.error ? ` · ${probeResult.error}` : ''}
                   </p>
                 )}
               </div>
@@ -422,7 +433,16 @@ function Field({ label, value, mono }: { label: string; value?: string; mono?: b
   return (
     <div>
       <dt className="text-caption text-text-tertiary block mb-1">{label}</dt>
-      <dd className={`text-text-primary ${mono ? 'font-mono text-caption' : ''}`}>{value ?? '—'}</dd>
+      <dd className={`text-text-primary ${mono ? 'font-mono text-caption' : ''}`}>{value ?? '-'}</dd>
+    </div>
+  );
+}
+
+function HealthMetric({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <span className="mb-1 block text-caption text-text-tertiary">{label}</span>
+      <div className="truncate">{children}</div>
     </div>
   );
 }

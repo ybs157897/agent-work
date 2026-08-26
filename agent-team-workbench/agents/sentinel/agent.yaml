@@ -1,12 +1,15 @@
+# Agent 配置文件（agents/<slug>/ 为真相源；Web 编辑会回写此文件）
 name: Sentinel
 role: reviewer
 skills:
-  - 代码评审、验收
+    - 代码评审、验收
 runtime:
-  preferred: dsh_local
-  mode: default
-  agent_preset: standard
+    preferred: codex_local
+    mode: default
 model:
-  ref: deepseek-v4-flash
+    ref: ox-alpha
+    reasoning_effort: xhigh
 permissions:
-  preset: read-only
+    approval_policy: approve_high_risk
+    sandbox: read-only
+    preset: read-only

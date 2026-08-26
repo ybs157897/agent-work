@@ -85,6 +85,21 @@
   color: hsl(var(--color-text-tertiary));
 }
 
+/* 完成结果的朱砂小印：只在稳定 OUT 出现时落印一次，避免流式 token 逐帧闪动。 */
+.successSeal {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border: 1px solid color-mix(in srgb, hsl(var(--color-status-success)) 48%, transparent);
+  border-radius: 999px;
+  color: hsl(var(--color-status-success));
+  background: color-mix(in srgb, hsl(var(--color-status-success)) 10%, transparent);
+}
+
 /* 错误行的折叠摘要：失败首行用错误色。 */
 .errorSummary {
   color: hsl(var(--color-status-error));

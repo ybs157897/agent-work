@@ -2,6 +2,8 @@ import { MarkdownBody } from './markdown-body';
 import { MessageActions } from './message-actions';
 import { Avatar } from '../avatar';
 import { formatTime } from '../../utils/format';
+import { TracingBeam } from '../aceternity/tracing-beam';
+import type { RefObject } from 'react';
 
 /** Agent 一轮回复：回合头（头像+名字+时间）+ 正文 Markdown（reasoning 已迁入活动组）。 */
 export function AssistantTurn({
@@ -12,6 +14,7 @@ export function AssistantTurn({
   onFork,
   agentName,
   agentAvatar,
+  scrollContainerRef,
 }: {
   text?: string;
   at?: string;
@@ -20,6 +23,7 @@ export function AssistantTurn({
   onFork?: (key: string) => void;
   agentName?: string;
   agentAvatar?: string;
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
 }) {
   if (!text && !streaming) return null;
 
@@ -33,10 +37,14 @@ export function AssistantTurn({
           {at && <span className="text-caption tabular-nums text-text-tertiary">{formatTime(at)}</span>}
         </div>
         {text ? (
-          <div className={streaming ? 'chat-streaming' : undefined}>
-            <div className="chat-markdown">
-              <MarkdownBody text={text} />
-            </div>
+          <div key={streaming ? 'streaming' : 'settled'} className={streaming ? 'chat-streaming' : undefined}>
+            {streaming ? (
+              <div className="chat-markdown"><MarkdownBody text={text} streaming /></div>
+            ) : (
+              <TracingBeam className="chat-transcript-beam" scrollContainerRef={scrollContainerRef}>
+                <div className="chat-markdown"><MarkdownBody text={text} /></div>
+              </TracingBeam>
+            )}
           </div>
         ) : null}
         {at && !streaming && text ? (

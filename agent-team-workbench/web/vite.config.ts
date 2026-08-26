@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
+import { fileURLToPath, URL } from 'node:url';
 
 // 开发代理：浏览器 → Vite → Go 控制平面，保持同源语义（协议文档 §5.1）。
 export default defineConfig(({ mode }) => {
@@ -9,6 +10,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url)),
+      },
+    },
     server: {
       port: 5173,
       proxy: {

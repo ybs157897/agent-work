@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
 
 /** Codex 风格「思考过程」灰底可滚动面板（每条 thinking 独立实例，折叠互不影响）。 */
@@ -16,6 +17,7 @@ export function ReasoningProcessPanel({
   defaultExpanded?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const reduceMotion = useReducedMotion();
   const bodyRef = useRef<HTMLDivElement>(null);
   const open = expanded || streaming;
   const showBody = open && Boolean(text);
@@ -66,20 +68,27 @@ export function ReasoningProcessPanel({
           />
         )}
       </button>
-      <div
-        id={`reasoning-body-${panelKey}`}
-        ref={bodyRef}
-        className="chat-reasoning-panel-body"
-        hidden={!showBody}
-        aria-hidden={!showBody}
-      >
-        {streaming && (
-          <span className="chat-reasoning-sweep pointer-events-none absolute inset-0 rounded-md" aria-hidden />
+      <AnimatePresence initial={false} mode="sync">
+        {showBody && (
+          <motion.div
+            id={`reasoning-body-${panelKey}`}
+            ref={bodyRef}
+            className="chat-reasoning-panel-body"
+            initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
+            animate={{ opacity: 1, height: 'auto', y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
+            transition={reduceMotion ? { duration: 0 } : { duration: 0.26, ease: [0.16, 1, 0.3, 1] }}
+            aria-hidden={false}
+          >
+            {streaming && (
+              <span className="chat-reasoning-sweep pointer-events-none absolute inset-0 rounded-md" aria-hidden />
+            )}
+            <div className="relative whitespace-pre-wrap break-words text-caption leading-6 text-text-secondary">
+              {text}
+            </div>
+          </motion.div>
         )}
-        <div className="relative whitespace-pre-wrap break-words text-caption leading-6 text-text-secondary">
-          {text}
-        </div>
-      </div>
+      </AnimatePresence>
     </div>
   );
 }
