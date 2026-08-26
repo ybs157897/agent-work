@@ -80,13 +80,14 @@ binding 如实声明能力；不声明就不假装能续（负向保证：resume
 ### 操作词汇表（OrchestrationPlan，schema 进 contracts 版本化）
 
 ```
-use_session(mode: continue | fork | rotate)     — 会话策略
 dispatch(agent_id, subtask, acceptance)         — 路由到具体 agent
 consult_knowledge(query, top_k)                 — 知识检索（注入上下文，不是 run）
 defer(until | wakeup_source)                    — 推迟再议（automation wakeup 的天然 producer）
 join(step_ids)                                  — 等分支汇合
 finish(summary)                                 — 计划收口
 ```
+
+会话策略（续接 / fork / rotate）不是词汇表动词：use_session 是编排层的默认行为，由控制平面自管理，不经 planner 在 plan 里显式声明。
 
 ### Lead 是一等 agent（不是系统内置魔法）
 
@@ -111,7 +112,7 @@ Planner 不是裸的 provider 调用，而是**一个可配置的 agent**——�
 - plan 过 schema 校验才执行；词汇表外的操作直接拒绝
 - 步数 / planner 调用预算上限（防 planner 自我循环派活）
 - 高风险操作（fork 超 N 层、跨 agent 派活）挂审批钩子（approvals 表现成）
-- planner 失败 → 回退静态策略（直接派给 assigned agent + 阈值轮换），行为不劣于今天
+- planner 失败无静态回退：plan 提取/校验失败落 `plan_parse_failed` blocker 交人工修复，不静默降级派工
 
 ## 4. 知识层
 
