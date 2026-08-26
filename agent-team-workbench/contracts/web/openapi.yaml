@@ -722,7 +722,7 @@ paths:
     get:
       tags: [models]
       operationId: getProviderCredential
-      summary: 读取本地保存的 provider API Key（仅本机工作台；需 runtime.manage 权限；模型注册表未启用时 404）
+      summary: 读取 provider API Key 配置状态（写后不可读；需 runtime.manage 权限；模型注册表未启用时 404）
       parameters:
         - name: provider_id
           in: query
@@ -734,8 +734,15 @@ paths:
             application/json:
               schema:
                 type: object
+                description: |
+                  凭据状态投影。写后不可读：任何分支都绝不返回 api_key 明文。
+                  未配置：{"configured": false}；
+                  已配置：{"configured": true, "masked_hint": "<末4位提示>", "length": <明文总长度>}。
+                required: [configured]
                 properties:
-                  api_key: { type: string, description: 未配置时为空串 }
+                  configured: { type: boolean }
+                  masked_hint: { type: string, description: 仅已配置时携带；掩码提示（明文末 4 位） }
+                  length: { type: integer, description: 仅已配置时携带；明文总长度 }
         "404": { $ref: "#/components/responses/Conflict" }
     put:
       tags: [models]
