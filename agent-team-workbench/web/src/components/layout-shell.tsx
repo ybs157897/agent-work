@@ -58,7 +58,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
       </Sidebar>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/88 px-comfortable backdrop-blur-md">
+        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/90 px-comfortable backdrop-blur-md">
           <div className="flex min-w-0 items-center gap-snug text-body">
             <span className="h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
             <span className="truncate font-medium text-text-tertiary">{workspace?.name ?? '…'}</span>
