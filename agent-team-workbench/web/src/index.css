@@ -1226,3 +1226,108 @@
   margin-block: 6px 0;
   color: hsl(var(--color-text-secondary));
 }
+
+/* ---- tx：正文独立暗色皮肤（纸墨倒置；决策见 notes/implemented/feature/2026-08-26-tx-transcript-standalone-skin.md） ----
+   作用域覆写 --color-* 语义层：Tailwind hsl(var(--color-*)/<alpha>) 通道让正文内
+   全部语义工具类与 chat-* 组件类自动换肤；色字面量只允许出现在本 CSS 层
+   （design-tokens 门禁扫 TS/TSX，不放宽）。最终适配 = 调亮/删除本段或改挂载点。 */
+.tx-scope {
+  /* 松烟墨三阶层深：stream 面 → 卡面 → 凹陷 */
+  --color-surface-base: 224 16% 7%;
+  --color-surface-warm: 225 15% 9%;
+  --color-surface-sunken: 226 18% 5%;
+  --color-surface-raised: 225 14% 11%;
+  --color-surface-glass: 225 16% 10%;
+
+  --color-text-primary: 220 22% 93%;
+  --color-text-secondary: 220 13% 68%;
+  --color-text-tertiary: 220 10% 47%;
+  --color-text-muted: 220 10% 47%;
+  --color-text-inverse: 224 18% 8%;
+  --color-text-on-sidebar: 220 12% 62%;
+  --color-text-on-sidebar-active: 220 22% 93%;
+
+  --color-border-subtle: 222 13% 17%;
+  --color-border-strong: 222 12% 25%;
+
+  /* 正文唯一强调色 = 行动绿（批准 CTA / 运行态）；朱砂经 --tx-brand 只做身份点 */
+  --color-brand-primary: 152 55% 46%;
+  --color-brand-accent: 152 50% 38%;
+  --color-brand-muted: 152 38% 16%;
+
+  --color-status-success: 152 55% 48%;
+  --color-status-warning: 38 85% 56%;
+  --color-status-error: 2 70% 60%;
+  --color-status-info: 199 75% 58%;
+  --color-status-standby: 220 10% 44%;
+
+  /* 身份色阶：保留原色相，亮度抬到暗底可读区间 */
+  --color-identity-1: 8 65% 60%;
+  --color-identity-2: 195 55% 60%;
+  --color-identity-3: 145 45% 55%;
+  --color-identity-4: 90 40% 58%;
+  --color-identity-5: 215 55% 65%;
+  --color-identity-6: 36 70% 58%;
+  --color-identity-7: 60 6% 55%;
+  --color-identity-8: 345 55% 62%;
+
+  /* 壳层 token 在正文内不可达，给暗色兜底防光值渗入 */
+  --color-sidebar: 225 16% 8%;
+  --color-sidebar-hover: 225 14% 14%;
+  --color-sidebar-border: 222 13% 20%;
+
+  /* tx 微剂量新增：品牌朱砂（身份点）与暗面阴影 */
+  --tx-brand: 8 68% 56%;
+  --tx-shadow-card:
+    0 1px 2px hsl(226 30% 2% / 0.6),
+    0 8px 24px -12px hsl(226 40% 2% / 0.7),
+    inset 0 1px 0 hsl(220 30% 96% / 0.04);
+  --tx-shadow-pop:
+    0 12px 40px -12px hsl(226 40% 2% / 0.8),
+    inset 0 1px 0 hsl(220 30% 96% / 0.05);
+
+  background-color: hsl(var(--color-surface-base));
+  color: hsl(var(--color-text-primary));
+}
+
+/* 暗面选区与滚动条 */
+.tx-scope ::selection {
+  background-color: hsl(var(--color-brand-primary) / 0.28);
+  color: hsl(var(--color-text-primary));
+}
+
+.tx-scope * {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--color-border-strong) / 0.6) transparent;
+}
+
+.tx-scope ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.tx-scope ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  background-color: hsl(var(--color-border-strong) / 0.6);
+}
+
+.tx-scope ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 水墨暖影工具类在暗面上失真：正文内统一换 tx 暗影 */
+.tx-scope .shadow-card {
+  box-shadow: var(--tx-shadow-card);
+}
+
+.tx-scope .shadow-level-1,
+.tx-scope .shadow-level-2 {
+  box-shadow: var(--tx-shadow-card);
+}
+
+.tx-scope .shadow-level-3,
+.tx-scope .shadow-level-4 {
+  box-shadow: var(--tx-shadow-pop);
+}

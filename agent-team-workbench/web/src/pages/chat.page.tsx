@@ -422,11 +422,11 @@ function ConversationPane() {
         </div>
       </div>
 
-      {/* 消息流 */}
+      {/* 消息流（tx：正文独立暗色皮肤，决策见 notes tx-transcript-standalone-skin） */}
       <div
         ref={scrollRef}
         data-chat-scroll="transcript"
-        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-base sm:px-6"
+        className="tx-scope relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-base sm:px-6"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
           <div className="chat-thread py-12">
@@ -463,7 +463,7 @@ function ConversationPane() {
       </div>
 
       {/* 底部固定：成果摘要 + 计划 / 目标 + 输入 */}
-      <div className="shrink-0 border-t border-border-strong/70 bg-surface-warm/92 backdrop-blur-sm">
+      <div className="tx-scope shrink-0 border-t border-border-strong/70 bg-surface-warm/92 backdrop-blur-sm">
         {conversationArtifacts.length > 0 && (
           <div className="chat-thread px-4 sm:px-6 pt-2">
             <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
