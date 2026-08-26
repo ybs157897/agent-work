@@ -117,28 +117,32 @@ Planner 不是裸的 provider 调用，而是**一个可配置的 agent**——�
 
 MVP：workspace 级 `docs/` 目录 + 关键词检索；接口定成 `KnowledgeRetriever` 一层，实现可换，后续升 embedding。知识 agent（如配置示例中的 A）负责沉淀，所有 agent 经 `consult_knowledge` 消费。
 
-## 现状对账（2026-08-23）
+## 现状对账（2026-08-26 核订）
 
 | 能力 | 状态 |
 |---|---|
-| 正交配置（agent × 模型 × runtime） | ✅ 已有；codexapp multi_vendor 缺口待补 |
+| 正交配置（agent × 模型 × runtime） | ✅ 已有；codexapp 的 manifest 仍未声明 multi_vendor，模型覆盖通道缺口保留 |
 | 状态机（execution/review/acceptance、Accept 唯一收口、BeginExecution 打回） | ✅ 已有 |
 | task_sessions 锚点 / 轮换 / handoff / 审计 | ✅ 已有 |
 | codex / kimi 真·session 续接 | ✅ 已有（binding resume=supported） |
-| 历史预算按模型窗口 + 超限轮换 + 前缀稳定契约 | ✅ `feat/model-context-history-budget` 分支，待主干收口后合并 |
-| Agent 自识别会话策略（分类器 + 信号触发） | ❌ 待做（M2） |
-| 子任务树（work_items parent_id） | ❌ 待做（M1） |
-| OrchestrationPlan 词汇表 + 确定性执行器 + automation wakeup producer | ❌ 待做（M1） |
-| lead agent 作为 planner / 评估 run | ❌ 待做（M2） |
-| consult_knowledge / KnowledgeRetriever / 命中率面板 | ❌ 待做（M3） |
-| 多 agent 路由全编排（join / 审批 / 预算护栏）/ 认领模式 | ❌ 待做（M4） |
+| 历史预算按模型窗口 + 超限轮换 + 前缀稳定契约 | ✅ 已合入 main（`12d5ea0`，merge `53982ed`） |
+| 子任务树（work_items parent_id） | ✅ 已有 |
+| OrchestrationPlan 词汇表 + 确定性执行器 + automation wakeup producer | ✅ 已有（`internal/orchestrator`，plans 自 migration 0009 起；HTTP wake 入口 `handlers_wake.go`） |
+| lead agent 作为 planner / 评估 run | ✅ 已有（编排层 M1–M4，2026-08-24 合入 main `03a0b24`） |
+| join / 审批钩子 / 步数与预算护栏 | ✅ 已有（plan executor guardrails，`35b55c5`） |
+| 认领模式（含任务级执行锁 F1、MCP `task_claim`/`task_return` 写面） | ✅ 已有（执行锁迁移 0014，merge `9c3dd6c`） |
+| consult_knowledge / KnowledgeRetriever（关键词检索 MVP） | ✅ 已有（`internal/knowledge` + plan 动词，migration 0009） |
+| 缓存命中率面板（usage_cached → UI） | ⚠️ 部分：usage_cached 已随 usage.updated 进入前端 store，UI 面板未做 |
+| Agent 自识别会话策略（分类器 + 信号触发） | ❌ 待做 |
 
 ## 分期路线（每期独立可用）
 
-- **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树
-- **M2**：lead agent 作为 planner（会话策略 + fork）+ task_sessions 树形化（parent_anchor_id）+ 评估 run + 会话自识别分类器
-- **M3**：consult_knowledge + KnowledgeRetriever + 缓存命中率面板
-- **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量
+> **进度（2026-08-26）**：M1–M4 已全部完成并合入 main。剩余收口项——会话自识别分类器、缓存命中率 UI 面板、codexapp multi_vendor 能力声明。
+
+- **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树 —— ✅ 完成
+- **M2**：lead agent 作为 planner（会话策略 + fork）+ task_sessions 树形化（parent_anchor_id）+ 评估 run + 会话自识别分类器 —— 除分类器外完成
+- **M3**：consult_knowledge + KnowledgeRetriever + 缓存命中率面板 —— 后两项前者完成、面板未做
+- **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量 —— ✅ 完成
 
 ## 参考与决策留痕
 
