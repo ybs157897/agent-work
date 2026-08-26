@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,8 @@ import (
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-// openTestDB 临时文件 sqlite + 全量迁移（migrations/sqlite 新增迁移时同步此列表）。
+// openTestDB 临时文件 sqlite + 全量迁移（动态发现 migrations/sqlite/*.sql，新增迁移免同步清单；
+// 等价性由 cmd/migrate 的守卫测试兜底）。
 func openTestDB(t *testing.T) *sqlstore.Store {
 	t.Helper()
 	db, err := sql.Open("sqlite",
@@ -37,26 +39,21 @@ func openTestDB(t *testing.T) *sqlstore.Store {
 	t.Cleanup(func() { _ = db.Close() })
 	_, current, _, _ := runtime.Caller(0)
 	migrationDir := filepath.Join(filepath.Dir(current), "..", "..", "migrations", "sqlite")
-	for _, name := range []string{
-		"0001_init.sql",
-		"0002_runtime_binding_model_config.sql",
-		"0003_agent_config.sql",
-		"0004_task_sessions.sql",
-		"0005_wakeup.sql",
-		"0006_plans.sql",
-		"0007_task_sessions_parent.sql",
-		"0008_plan_source_run_unique.sql",
-		"0009_plan_consult_knowledge.sql",
-		"0010_plan_join_guardrails.sql",
-		"0011_activity_work_item.sql",
-		"0012_approval_grants.sql", "0013_entity_client_keys.sql", "0014_task_execution_lock.sql",
-	} {
-		body, err := os.ReadFile(filepath.Join(migrationDir, name))
+	names, err := filepath.Glob(filepath.Join(migrationDir, "*.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		t.Fatalf("未在 %s 发现迁移文件", migrationDir)
+	}
+	for _, path := range names {
+		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(string(body)); err != nil {
-			t.Fatalf("migration %s: %v", name, err)
+			t.Fatalf("migration %s: %v", filepath.Base(path), err)
 		}
 	}
 	return sqlstore.New(db, sqlstore.SQLiteDialect())
