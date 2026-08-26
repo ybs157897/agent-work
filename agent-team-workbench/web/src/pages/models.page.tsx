@@ -1,7 +1,15 @@
 import { Cpu, Eye, EyeOff, Pencil, Plus, RefreshCw, Settings2, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { ApiError } from '../api/client';
-import { createModel, deleteModel, getProviderCredential, listModels, putProviderCredential, updateModel } from '../api/endpoints';
+import {
+  createModel,
+  deleteModel,
+  getProviderCredential,
+  listModels,
+  putProviderCredential,
+  updateModel,
+  type ProviderCredentialStatus,
+} from '../api/endpoints';
 import type { ModelEntry } from '../api/types';
 import { Drawer } from '../components/drawer';
 import { Modal } from '../components/modal';
@@ -28,6 +36,7 @@ import { toast } from '../stores/toast.store';
 import {
   buildEditModelPayload,
   formatContextBadge,
+  formatCredentialMasked,
   generateProviderId,
   groupByProvider,
   isProviderDeleteConfirmed,
@@ -469,7 +478,8 @@ function ProviderPanel({
   const [baseURL, setBaseURL] = useState(group.base_url);
   const [api, setApi] = useState<ModelEntry['api']>(group.api ?? '');
   const [apiKey, setApiKey] = useState('');
-  const [savedApiKey, setSavedApiKey] = useState('');
+  // 凭据写后不可读：只持有服务端脱敏状态，输入框留空表示"保持现有 Key 不变"。
+  const [credential, setCredential] = useState<ProviderCredentialStatus | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingKey, setLoadingKey] = useState(true);
@@ -484,10 +494,10 @@ function ProviderPanel({
     let cancelled = false;
     setLoadingKey(true);
     getProviderCredential(group.id)
-      .then(({ api_key }) => {
+      .then((status) => {
         if (cancelled) return;
-        setApiKey(api_key);
-        setSavedApiKey(api_key);
+        setCredential(status);
+        setApiKey('');
       })
       .catch((err) => toast.error(err instanceof ApiError ? err.message : '加载凭据失败'))
       .finally(() => {
@@ -503,7 +513,11 @@ function ProviderPanel({
     try {
       const name = label.trim();
       const resolvedAPI = api || (baseURL.trim() ? 'openai-completions' : '');
-      await putProviderCredential(group.id, apiKey.trim());
+      const nextKey = apiKey.trim();
+      if (nextKey) {
+        // 明文不可回读，留空 = 不改动既有 Key；只有输入了新值才覆盖。
+        await putProviderCredential(group.id, nextKey);
+      }
       for (const m of group.models) {
         await updateModel(m.id, {
           display_name: m.display_name,
@@ -518,7 +532,8 @@ function ProviderPanel({
           notes: m.notes,
         });
       }
-      setSavedApiKey(apiKey.trim());
+      setApiKey('');
+      setCredential(await getProviderCredential(group.id));
       toast.success('供应商配置已保存');
       onRefresh();
     } catch (err) {
@@ -532,7 +547,7 @@ function ProviderPanel({
     label !== group.label ||
     baseURL !== group.base_url ||
     (api ?? '') !== (group.api ?? '') ||
-    apiKey !== savedApiKey;
+    apiKey.trim() !== '';
   const baseURLError = isValidBaseUrl(baseURL) ? '' : 'Base URL 需以 http:// 或 https:// 开头';
 
   return (
@@ -570,7 +585,9 @@ function ProviderPanel({
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 type={showKey ? 'text' : 'password'}
-                placeholder={loadingKey ? '加载中…' : '输入 API Key'}
+                placeholder={
+                  loadingKey ? '加载中…' : credential?.configured ? '已配置，输入新 Key 可覆盖' : '输入 API Key'
+                }
                 disabled={loadingKey}
                 className={`${inputCls} pr-10 font-mono`}
               />
@@ -582,6 +599,11 @@ function ProviderPanel({
                 {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+            {!loadingKey && credential?.configured ? (
+              <p className="text-caption text-text-tertiary mt-1">
+                当前 Key {formatCredentialMasked(credential)}；出于安全不再回显明文，输入新 Key 可覆盖，留空保持不变。
+              </p>
+            ) : null}
           </label>
           <label className="block">
             <span className={configLabelCls}>API 格式</span>

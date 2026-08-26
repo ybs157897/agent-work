@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ModelEntry } from '../api/types';
 import {
   buildEditModelPayload,
+  formatCredentialMasked,
   generateProviderId,
   groupByProvider,
   isProviderDeleteConfirmed,
@@ -149,5 +150,22 @@ describe('delete confirmation helpers', () => {
   it('warns when deleting the last model under a provider', () => {
     expect(modelDeleteHint(1)).toMatch(/最后一个模型/);
     expect(modelDeleteHint(2)).toMatch(/Agent/);
+  });
+});
+
+describe('formatCredentialMasked（写后不可读的凭据展示）', () => {
+  it('未配置时不产生任何脱敏提示', () => {
+    expect(formatCredentialMasked({ configured: false })).toBe('未配置');
+  });
+
+  it('已配置时只展示末 4 位与长度，绝不携带明文', () => {
+    const text = formatCredentialMasked({ configured: true, masked_hint: 'wxyz', length: 19 });
+    expect(text).toBe('已配置（末 4 位 wxyz，长度 19）');
+    expect(text).not.toContain('sk-');
+  });
+
+  it('短密钥无末位提示时只展示长度', () => {
+    expect(formatCredentialMasked({ configured: true, length: 6 })).toBe('已配置（长度 6）');
+    expect(formatCredentialMasked({ configured: true })).toBe('已配置');
   });
 });

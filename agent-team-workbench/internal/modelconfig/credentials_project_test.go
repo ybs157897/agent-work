@@ -7,7 +7,7 @@ import (
 
 func TestCredentialsStoreLoadsProjectFile(t *testing.T) {
 	store := NewCredentialsStore(filepath.Join("..", ".."))
-	if _, ok := store.Get("prov-kimi"); !ok {
-		t.Fatal("project credentials.local.yaml missing prov-kimi")
+	if _, ok, err := store.Get("prov-kimi"); err != nil || !ok {
+		t.Fatalf("project credentials.local.yaml missing prov-kimi: ok=%v err=%v", ok, err)
 	}
 }

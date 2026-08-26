@@ -17,8 +17,9 @@ func (s *CredentialsStore) HydrateEnv(providers []ProviderDef) int {
 		if envName == "" {
 			continue
 		}
-		key, ok := s.Get(p.ID)
-		if !ok {
+		key, ok, err := s.Get(p.ID)
+		if err != nil || !ok {
+			// 读失败（≠未配置）此处无上报通道：跳过注入，子进程将以缺凭据显式失败。
 			continue
 		}
 		os.Setenv(envName, key)

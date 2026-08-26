@@ -46,7 +46,12 @@ func (s *CredentialsStore) load() (*credentialsFile, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+		if p == s.legacyPath {
+			// 遗留路径曾按普通权限（0644）落盘且含明文 Key：读到即收紧为 owner-only。
+			// 收紧失败不影响本次读取结果（如特殊文件系统），下轮读取会再次尝试。
+			_ = os.Chmod(p, 0o600)
 		}
 		var f credentialsFile
 		if err := yaml.Unmarshal(data, &f); err != nil {
@@ -71,26 +76,27 @@ func (s *CredentialsStore) save(f *credentialsFile) error {
 	return writeAtomic(s.path, append(header, data...), 0o600)
 }
 
-// Get 按 provider_id 读取凭据；不存在或为空返回 false。
-func (s *CredentialsStore) Get(providerID string) (apiKey string, ok bool) {
+// Get 按 provider_id 读凭据。ok=false 且 err=nil 表示确实未配置；
+// err 非 nil 表示凭据文件存在但读取/解析失败——调用方不得当作"无凭据"处理。
+func (s *CredentialsStore) Get(providerID string) (apiKey string, ok bool, err error) {
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
-		return "", false
+		return "", false, nil
 	}
 	f, err := s.load()
 	if err != nil {
-		return "", false
+		return "", false, err
 	}
 	for _, item := range f.Items {
 		if item.ProviderID != providerID {
 			continue
 		}
 		if strings.TrimSpace(item.APIKey) == "" {
-			return "", false
+			return "", false, nil
 		}
-		return item.APIKey, true
+		return item.APIKey, true, nil
 	}
-	return "", false
+	return "", false, nil
 }
 
 // Set 保存或删除（apiKey 为空）供应商 API Key。

@@ -61,6 +61,24 @@ export function generateProviderId(label: string, provider: string): string {
   return `prov-${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 }
 
+export interface CredentialMaskStatus {
+  configured: boolean;
+  masked_hint?: string;
+  length?: number;
+}
+
+/**
+ * 凭据脱敏展示文案：写后不可读，仅提示末 4 位与长度，绝不回显明文。
+ * 服务端对短密钥不下发 masked_hint，此时只展示长度。
+ */
+export function formatCredentialMasked(status: CredentialMaskStatus): string {
+  if (!status.configured) return '未配置';
+  const parts: string[] = [];
+  if (status.masked_hint) parts.push(`末 4 位 ${status.masked_hint}`);
+  if (typeof status.length === 'number' && status.length > 0) parts.push(`长度 ${status.length}`);
+  return parts.length > 0 ? `已配置（${parts.join('，')}）` : '已配置';
+}
+
 export interface ModelProviderGroup {
   id: string;
   label: string;

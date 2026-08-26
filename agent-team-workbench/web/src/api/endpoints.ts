@@ -345,8 +345,17 @@ export const updateModel = (id: string, input: UpsertModelInput) =>
 
 export const deleteModel = (id: string) => apiFetch<void>(`/models/${id}`, { method: 'DELETE' });
 
+/** 凭据状态。写后不可读：服务端只回脱敏提示，永不返回完整 api_key 明文。 */
+export interface ProviderCredentialStatus {
+  configured: boolean;
+  /** 末 4 位；密钥过短时缺省，以防外泄内容。 */
+  masked_hint?: string;
+  /** 密钥长度（字符数）。 */
+  length?: number;
+}
+
 export const getProviderCredential = (providerId: string) =>
-  apiFetch<{ api_key: string }>(`/models/provider-credentials?provider_id=${encodeURIComponent(providerId)}`);
+  apiFetch<ProviderCredentialStatus>(`/models/provider-credentials?provider_id=${encodeURIComponent(providerId)}`);
 
 export const putProviderCredential = (providerId: string, apiKey: string) =>
   apiFetch<void>('/models/provider-credentials', { method: 'PUT', body: { provider_id: providerId, api_key: apiKey } });
