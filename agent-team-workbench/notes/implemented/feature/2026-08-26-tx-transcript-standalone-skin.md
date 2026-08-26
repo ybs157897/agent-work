@@ -22,8 +22,10 @@ Status: implemented
   （仅中高风险出现）；朱砂经 `--tx-brand` 只做身份点（agent 角色点），延续品牌
   DNA。「纸墨倒置」：外壳宣纸、正文是墨，最终适配时可保留此对比（阅读面深色是
   生产力工具惯例）或单点回退。
-- **挂载点**：chat.page 消息流滚动容器 + 底部固定区两处 `.tx-scope`；chat 头部
-  （身份/运行控制条）属壳层不动。run-panel 等页面审批面不在作用域内，不受影响。
+- **挂载点（2026-08-27 布局刀改为整页）**：`.tx-scope` 上移到 chat 页根容器——左栏
+  任务列表、头部、composer 全部纳入正文暗面，整页一体；壳层（layout-shell 顶栏/
+  图标轨）仍水墨。对话页即一件完整作品，「最终适配」= 处理壳与面的边界。
+  run-panel 等其他页面审批面不在作用域内。
 - **hljs**：全局 github.min.css（light）不动；`.tx-scope` 内覆写 hljs token 类为
   暗色（不加第二个全局主题 import，避免冲突）。
 - **审批卡倒计时产品语义**：仅 `risk=low && kind∈GRANTABLE && pending` 展示，
@@ -34,7 +36,26 @@ Status: implemented
   对话式 prose；file_change/permissions/tool → prose 摘要。决议后从居中小字升级为
   左对齐回执行（状态图标 + 人话标题 + 时间）。
 
-## 放弃了什么
+## 布局刀（2026-08-27，a6b1d4a）
+
+用户反馈「正文和任务列表和对话框的布局还是不行」，对照素材库重排：
+
+- **根因修复先行为**：composer 白框 = Tailwind 透明度修饰非 5 倍数刻度被静默跳过
+  （`bg-surface-raised/92` 这类 utility 从未生成），textarea 落 Chrome 默认 Field 白。
+  8 处归位 + `tailwind-alpha-scale.test.ts` 门禁钉死（34d0b30）。教训：浅色主题下
+  失效不可见，深色皮肤把它全暴露了。
+- **左栏**：双大标题（选择 Agent/会话）与双层滚动区砍掉。Agent 收成头像切换排
+  （单行 chip + presence 角标，选中 brand 描边），会话列表更名「任务列表」升为主
+  列表（对话即任务），条目去边框化（选中 brand-muted、hover raised）。
+- **一体化 composer（AICSS ai-agent-input 参照）**：容器承载边框/焦点环/暗影，
+  textarea 裸排显式透明底；队列内嵌为容器顶部条（原来是游离卡）；usage 进 footer
+  左、停止/发送进 footer 右。
+- **dock 默认折叠**：目标恒收起一行；任务仅在有进行中步骤时展开——静止清单不再
+  常驻吃掉视口。成果架压成单行摘要条（明细归工作区，其注释本就如此承诺）。
+- **头部瘦身**：h52→48，display 楷体标题退为 body semibold；run 状态从裸文本改
+  胶囊 chip。
+
+## 放弃了什么（布局刀补充）
 
 - **plan/question 变体的契约升级**：`ApprovalRequest` 无 plan steps / question
   options 字段，内嵌 todo 预览（kvnkld 版招牌）需要后端先扩契约，本次不做——
