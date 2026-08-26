@@ -2,28 +2,28 @@
 version: 1.0.0
 name: agent-team-workbench-web
 description: >
-  冷静的蓝调指挥舱工作台：冷灰白画布、深蓝侧边栏、单一品牌蓝强调色、
-  语义化状态色。信息密集但层级清晰，克制的阴影与边框承担层次，
-  界面语言为简体中文。设计意图：让"多智能体团队的运行状态"一眼可读。
+  水墨案牍式多智能体工作台：宣纸画布、墨色侧栏、朱砂单强调色与克制山水留白。
+  Aceternity UI 提供结构和动效原语，Ink Design System 统一材质、层级与交互。
+  信息密集但扫描清晰，界面语言为简体中文。
 colors:
   brand:
-    primary: "var(--color-brand-primary)"      # hsl(199 89% 48%) = #0EA5E9，唯一强调色
-    accent: "var(--color-brand-accent)"        # hsl(199 95% 42%)，仅用于 primary 悬停/按压加深
-    muted: "var(--color-brand-muted)"          # hsl(199 76% 94%)，品牌色浅底（选中态背景）
+    primary: "var(--color-brand-primary)"      # 朱砂，唯一装饰强调色
+    accent: "var(--color-brand-accent)"        # 深朱砂，仅用于 primary 悬停/按压
+    muted: "var(--color-brand-muted)"          # 淡朱砂水痕，选中态背景
   surface:
-    base: "var(--color-surface-base)"          # hsl(214 32% 97%)，页面画布（冷灰白，非纯白）
-    warm: "var(--color-surface-warm)"          # hsl(40 20% 98%)，暖调表面（保留锚点，当前基本未用）
-    sunken: "var(--color-surface-sunken)"      # hsl(214 22% 93%)，凹陷面（代码底/表头底/分组底）
-    raised: "var(--color-surface-raised)"      # 纯白，卡片与浮层
-    glass: "var(--color-surface-glass)"        # 纯白，配合透明度的毛玻璃面
+    base: "var(--color-surface-base)"          # 宣纸画布，叠加真实纸纤维资产
+    warm: "var(--color-surface-warm)"          # 新纸表面，用于表单与安静区块
+    sunken: "var(--color-surface-sunken)"      # 旧纸凹面，用于代码、表头、看板列
+    raised: "var(--color-surface-raised)"      # 熟宣卡片与浮层
+    glass: "var(--color-surface-glass)"        # 半透纸面，仅用于顶栏/浮层
   sidebar:
-    base: "var(--color-sidebar)"               # hsl(222 28% 11%)，深蓝近黑侧边栏
-    hover: "var(--color-sidebar-hover)"        # hsl(222 22% 16%)
-    border: "var(--color-sidebar-border)"      # hsl(222 18% 18%)
+    base: "var(--color-sidebar)"               # 松烟墨侧栏，非纯黑
+    hover: "var(--color-sidebar-hover)"        # 湿墨悬停面
+    border: "var(--color-sidebar-border)"      # 墨层分界
   text:
     primary: "var(--color-text-primary)"       # hsl(222 24% 12%)，正文与标题
     secondary: "var(--color-text-secondary)"   # hsl(215 14% 38%)，次要信息
-    tertiary: "var(--color-text-tertiary)"     # hsl(215 10% 45%)，辅助/时间戳（= text-muted）；45% 亮度是浅底 AA 对比度下限，不得再调浅
+    tertiary: "var(--color-text-tertiary)"     # hsl(60 4% 41%)，辅助/时间戳（= text-muted）；宣纸底 AA 对比度下限，不得再调浅
     inverse: "var(--color-text-inverse)"       # 白，品牌色底上的文字
     on-sidebar: "var(--color-text-on-sidebar)"            # hsl(215 16% 72%)
     on-sidebar-active: "var(--color-text-on-sidebar-active)"  # 白
@@ -38,7 +38,7 @@ colors:
     standby: "var(--color-status-standby)"     # hsl(215 10% 65%)，待机/未激活
 typography:
   display:
-    family: "Outfit + font-zh 回退"
+    family: "STKaiti / Kaiti SC / KaiTi + font-zh 回退"
     size: "42px"; lineHeight: "1.05"; weight: "700"; letterSpacing: "-0.02em"
   h1:
     size: "29px"; lineHeight: "1.15"; weight: "700"; letterSpacing: "-0.015em"
@@ -53,8 +53,8 @@ typography:
   caption:
     size: "12px"; lineHeight: "1.4"; weight: "400"; letterSpacing: "0.01em"
   font-stacks:
-    display: "Outfit, ui-sans-serif, system-ui, sans-serif"
-    body: "Inter, ui-sans-serif, system-ui, sans-serif"
+    display: "FZKai-Z03, STKaiti, Kaiti SC, KaiTi, serif"
+    body: "chironHeiHK, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif"
     zh: "chironHeiHK, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif"   # 全局默认正文字体
     mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 spacing:
@@ -62,15 +62,15 @@ spacing:
   comfortable: "24px"; stack-sm: "24px"; stack-md: "32px"; loose: "32px"
   section: "64px"; stack-lg: "64px"; section-y: "96px"; macro: "128px"
 rounded:
-  control: "8px"     # 按钮、输入框、小徽章（--rounded-button / --rounded-input / rounded-sm|md）
-  card: "12px"       # 卡片、浮层（rounded-card / rounded-lg）
-  container: "16px"  # 大容器（审批卡、dock 面板，rounded-xl）
+  control: "6px"     # 按钮、输入框、小徽章
+  card: "8px"        # 卡片、浮层；纸张不使用肥厚大圆角
+  container: "12px"  # 大容器、审批卡、dock 面板
   pill: "9999px"     # 状态胶囊（rounded-full）
 shadows:
-  level-1: "0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04)"   # 卡片默认（= shadow-card）
-  level-2: "0 4px 12px rgba(0,0,0,0.10), 0 8px 24px rgba(0,0,0,0.06)"  # 交互卡悬停
-  level-3: "0 10px 30px rgba(0,0,0,0.15)"                               # 浮层/模态
-  level-4: "0 20px 40px rgba(0,0,0,0.2)"                                # 仅顶层抽屉/模态
+  level-1: "墨褐色极淡投影 + 纸边 1px 高光"   # 卡片默认（= shadow-card）
+  level-2: "同一光源下略深墨影"               # 交互卡悬停
+  level-3: "浮层墨影，不使用纯黑阴影"         # 浮层/模态
+  level-4: "屏风/抽屉最深层级"                # 仅顶层抽屉/模态
 components:
   button:
     base: "inline-flex items-center justify-center gap-2 rounded-control font-medium transition-all duration-150; focus-visible ring-2 {colors.brand.primary}/40 offset-2; disabled opacity-50 cursor-not-allowed"
@@ -84,7 +84,7 @@ components:
     sizes: "sm = padding {spacing.snug} × {spacing.micro}; md = padding {spacing.base} × {spacing.tight}; 字号固定 {typography.body}，不随尺寸变"
     status-usage: "状态档（success/danger/danger-outline/warning-outline）只允许出现在审批/破坏性语境，禁止当普通强调色用"
   card:
-    base: "bg {colors.surface.raised}; rounded {rounded.card}; border 1px {colors.border.subtle}; shadow {shadows.level-1}"
+    base: "bg {colors.surface.raised}; rounded {rounded.card}; 墨线边框或纸面层级二选一；shadow {shadows.level-1}"
     padded: "card + padding {spacing.comfortable}"
     interactive: "card + cursor-pointer; hover -translate-y-0.5 + shadow {shadows.level-2} + border {colors.border.strong}; duration-200 ease-out"
   input:
@@ -101,7 +101,7 @@ components:
     behavior: "自动消失（error 6s、其余 3.5s）+ 显式关闭；最多同屏 5 条；只承载通知，破坏性操作一律走模态确认（见 Don'ts），不设 undo/action 槽（无消费场景）"
     a11y-motion: "容器 role=region aria-label=通知；error 卡 role=alert、其余 role=status；进出场 150ms easeOut + layout 平滑堆叠，reduced-motion 归零"
   drawer:
-    base: "右侧滑入（spring 250/25）；rounded-l-2xl；bg {colors.surface.raised}; shadow {shadows.level-4}; border-l 1px {colors.border.subtle}；portal 到 body；Escape 与遮罩点击关闭"
+    base: "屏风式右侧滑入（spring 250/25）；rounded-l-container；宣纸面 + 墨影；portal 到 body；Escape 与遮罩点击关闭"
     titled: "表单容器形态：头行 h3 + 关闭钮（同 modal 头行规格）+ 可滚动 body；创建/编辑表单用它，宽度 480 起"
     untitled: "自由内容形态：绝对定位关闭钮，内容 pr-8 避让（任务详情沿用）"
     scope: "破坏性确认（删除/危险操作）一律 Modal，不进 drawer（见 Don'ts）"
@@ -127,18 +127,28 @@ components:
   layout:
     page-shell: "layout-safe（max 1440px，两侧留白 48/40/32px 按断点）; space-y {spacing.stack-md}; padding-y {spacing.comfortable}"
     config-split: "220–256px 左栏 + 流式主区（配置工作台专用布局语言）"
+  aceternity:
+    architecture: "Aceternity primitives → Ink wrappers → Workbench components → Pages"
+    allowed: "Sidebar / Bento Grid / Text Generate Effect / 完成态正文 Tracing Beam / hover-layout motion"
+    banned-defaults: "霓虹、科技光束、强 3D、无限滚动与默认深色皮肤不得直接进入页面"
+  motion:
+    fast: "140ms"; normal: "220ms"; slow: "360ms"; atmospheric: "900ms"
+    ratio: "80% 静态 / 15% UI motion / 5% 氛围动画"
+    transcript-intensity: "完成态正文 7/10：段级入场 + 标签错峰 + 水墨 Beam；流式正文维持 4/10，禁止按 token 重播"
+    ae-boundary: "AE/Lottie/WebM 只用于印章、墨迹、山雾等低频资产；实时交互由 Motion/CSS 驱动"
 ---
 
 # DESIGN.md — agent-team-workbench 前端设计事实源
 
 ## Overview
 
-这是一个**多智能体团队的控制平面工作台**：监控型仪表盘定位，"轻盈亲和指挥舱"视觉方向（见 `../../agent-team-workbench-docs/references/product-brief.md`）。设计语言的核心张力：
+这是一个**多智能体团队的控制平面工作台**。产品仍是高密度监控与执行工具，视觉改为“水墨案牍”：像在一张可操作的宣纸卷宗上调度 Agent、任务与运行记录。设计语言的核心张力：
 
-- **冷灰白画布 + 深蓝侧边栏 + 单一品牌蓝**。画布不是纯白（`surface.base` 带 32% 冷灰），侧边栏深蓝近黑——亮/暗两区形成稳定框架感。
-- **强调色只有一种**（`brand.primary` #0EA5E9）。它出现在主按钮、激活指示、链接、品牌头像上，其余一切是中性色与语义状态色。
-- **层次靠边框与克制的阴影**，不靠色块堆叠。卡片 = 白底 + 1px `border.subtle` + level-1 阴影，仅此而已。
-- **界面语言为简体中文**，全局默认字体是 `font-zh`（chironHeiHK 栈）；Outfit/Inter 只承担展示与数字场景。
+- **宣纸画布 + 松烟墨侧栏 + 单一朱砂强调**。纸纤维与山水为真实位图资产，只承载材质与气韵，不承载信息。
+- **强调色只有朱砂一种**。它出现在主按钮、激活印记、链接和关键选中态；状态色仍只表达真实状态。
+- **层次靠留白、墨线、纸面明度与同一方向的墨影**，避免每块内容都套“白卡 + 黑影”。
+- **楷体只承担标题与印记**，正文继续使用可读的中文黑体栈；数字统一 `tabular-nums` 或等宽字体。
+- **Aceternity UI 是交互底座，不是视觉成品**。所有 Aceternity 原语必须经过 Ink 层水墨化后进入页面。
 
 与 AGENTS.md 的分工：AGENTS.md 管"怎么构建"，本文件管"应该长什么样"。本文件与代码的真相源关系：**颜色/字号/间距的生效值以 `src/index.css` `:root` 与 `tailwind.config.js` 为准**；本 frontmatter 只引用、不重造。发现漂移时以代码为准修正本文件。
 
@@ -146,8 +156,8 @@ components:
 
 四组语义色（详见 frontmatter `colors:`）：
 
-1. **Brand**：`primary` 是唯一强调色；`accent` 只做 primary 的悬停加深，不独立使用；`muted` 做品牌浅底（选中/激活背景）。
-2. **Surface**：四种表面——`base`（画布）→ `raised`（卡片）→ `sunken`（凹陷区分组）→ `sidebar`（深色框架）。`warm` 是预留暖调锚点，当前无消费场景，不要为它发明用法。
+1. **Brand**：`primary` 是朱砂唯一强调色；`accent` 只做悬停/按压加深；`muted` 做淡朱砂选中底。
+2. **Surface**：四种纸面：`base`（宣纸画布）→ `raised`（熟宣内容）→ `sunken`（旧纸分组）→ `sidebar`（松烟墨框架）。`warm` 用于安静表单区，不是第二主题。
 3. **Text**：三级递减（primary → secondary → tertiary）+ `inverse`（品牌底上）+ 侧边栏两级。
 4. **Status**：success / warning / error / info / standby。状态色**只用于表达状态**（运行态、校验、告警），不做装饰。`info` 与 `brand.primary` 同值是刻意的——"信息"与"品牌"在语义上同源。
 5. **Identity**：`identity-1..8` 身份色阶，**只用于头像/归属标记**，不进入强调色与状态色语义（不参与按钮/边框/状态表达）。值冻结为原 avatar 调色板的 token 化版本，新增 hue 需先改本文件。
@@ -166,7 +176,7 @@ components:
 
 原则：
 
-- 标题族（display/h1–h3）用 `font-display`（Outfit）+ `tracking-tight`；正文一律落 `font-zh` 中文栈——**不要给中文正文指定 Outfit/Inter**。
+- 标题族（display/h1–h3）用 `font-display` 楷体栈；正文一律落 `font-zh` 可读中文黑体。楷体是用户明确指定的传统水墨/卷宗语境，不进入长段正文。
 - 强调用字号升级，不用字重堆叠（正文不加粗到 700 来强调，升到 body-lg 或 h3）。
 - 小于 12px 的文字禁止出现（例外：diff/mono 场景与 diff 增删计数徽章，最小 11px）。
 
@@ -181,16 +191,16 @@ components:
 
 四级阴影阶梯（frontmatter `shadows:`），日常只用前两级：
 
-- 卡片默认 `level-1`；交互卡悬停升到 `level-2`；浮层/模态 `level-3`；顶层抽屉/模态 `level-4`。
+- 卡片默认 `level-1`；交互卡悬停升到 `level-2`；浮层/模态 `level-3`；顶层抽屉/模态 `level-4`。所有阴影使用墨褐色，不使用纯黑。
 - 不要给已有边框的卡片叠加重阴影；不要发明第五级阴影。
 
 ## Shapes
 
 | 场景 | 圆角 |
 |---|---|
-| 按钮、输入框、小控件 | 8px（control） |
-| 卡片、弹层内容 | 12px（card） |
-| 大容器（审批卡、dock 面板） | 16px（container） |
+| 按钮、输入框、小控件 | 6px（control） |
+| 卡片、弹层内容 | 8px（card） |
+| 大容器（审批卡、dock 面板） | 12px（container） |
 | 状态胶囊、徽章 | pill |
 
 ## Components
@@ -212,15 +222,21 @@ components:
 - Do：按钮标签动词开头（"创建任务"、"保存配置"）；每个区域最多一个 `primary`。
 - Do：空态说清"为什么空 + 下一步做什么"，并给一个动作入口。
 - Do：加载超过 300ms 才显示骨架屏/加载态，避免闪烁。
+- Do：Aceternity 组件先经 `components/ink/` 封装，再给业务页面消费。
+- Do：氛围动画只使用 transform/opacity，并在 reduced-motion 下变成静态终态。
+- Do：完成态正文按 Markdown 标签做一次性错峰显影；流式输出只保留 caret/sweep，不因 token 追加重播。
 
 **Don'ts**
 
 - Don't：在 TS/TSX 中内联十六进制、`rgb()`、`hsl()` 色值（有测试门禁拦截；唯一豁免 `chat/blocks/ansi.ts` 的终端色协议映射）。
-- Don't：引入第二强调色，或把 `status-*` 当装饰色用。
+- Don't：引入第二装饰强调色，或把 `status-*` 当装饰色用。
 - Don't：给卡片发明新的阴影/圆角组合；用 frontmatter 里已有的阶梯。
-- Don't：给中文正文换字体；给标题加字重来强调（用字号升级）。
+- Don't：把楷体用于长段正文；给标题加字重来强调（优先用字号与留白）。
 - Don't：模态套模态；破坏性操作用模态 + 显式确认而不是 toast。
 - Don't：为暗色模式写任何样式（见 Known Gaps）。
+- Don't：直接复制 Aceternity 的霓虹、光束、黑底和强 3D 默认样式。
+- Don't：在滚动容器上叠实时噪声滤镜；纸纹只用静态压缩位图。
+- Don't：把 Tracing Beam 挂到 live activity/tool 组或按 token 变化的流式正文；这些 key/高度会持续变化。
 
 ## Responsive Behavior
 
@@ -239,7 +255,7 @@ components:
 1. 一次只改一个组件/一个页面；改动引用其 frontmatter token key。
 2. 处处使用语义 token——**never inline hex**。
 3. 只描述默认态与按压/激活态；悬停态按既有组件编码，不额外发明。
-4. 单一品牌蓝 + 中性色 + 语义状态色是三位一体；不要引入第四类色彩角色。
+4. 单一朱砂 + 墨/纸中性色 + 语义状态色是三位一体；不要引入第四类色彩角色。
 5. 拿不准强调方式时：先升字号，再加字重，最后才考虑颜色。
 6. 改完必跑：`pnpm tsc --noEmit && pnpm test && pnpm lint`；视觉改动需在浏览器复核。
 
@@ -248,9 +264,9 @@ components:
 以下范围**未定义**，不要臆造；需要时先在 `notes/` 立项：
 
 1. **暗色模式**：只有单浅色主题；不要写 `dark:` 变体。
-2. **动画时长体系**：对话子系统以外的动效时长未定义（现有 150/200ms 过渡是既成事实，不是体系）。
-3. **空态插画体系**：空态只用图标 + 文案，不引入插画。
+2. **AE 动效资产**：当前只冻结目录与消费边界；真实 Lottie/WebM 需有可审计源资产后逐件接入。
+3. **空态插画体系**：可用同一水墨资产族，但不得用不相关插画填空。
 4. **对话渲染细节**：归 codex 逆向规格文档管，不在本文件范围。
-5. **`surface.warm` 的用法**：预留锚点，无现网消费场景。
+5. **水墨素材扩展**：新增素材必须与宣纸/山水同一笔触体系并做体积预算，禁止随页随机生成。
 6. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
 7. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。

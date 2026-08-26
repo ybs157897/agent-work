@@ -1,13 +1,15 @@
 # 前端架构与交互重设计方案 —— DESIGN.md 法典化与组件库重构
 
 日期：2026-08-24
-状态：M0 已实施（见 §5 提交清单），M1/M2 为后续路线
+状态：M0 已实施（见 §5 提交清单），M1/M2 已陆续实施；水墨视觉基线见仓库根 `notes/implemented/feature/2026-08-26-ink-wash-visual-system.md`
 输入：
 - VoltAgent/awesome-design-md 仓库调研（73 份 DESIGN.md，含 `design-md/claude/DESIGN.md`）
 - Anthropic 官方提示词工程教程（`anthropics/prompt-eng-interactive-tutorial`，补充来源）
 - 本仓库 `.cursor/skills/`（`ui-design-brain`、`using-ui-stack` 等 66 个技能）
 - 前端现状摸底（`agent-team-workbench/web/`）
 - 产品评审留痕 `agent-team-workbench/notes/product/2026-08-24-project-review.md`
+
+> 维护说明（2026-08-26）：本文保留 2026-08-24 前端法典化与组件迁移方案的历史上下文。本文早期章节中的冷蓝视觉描述是当时的基线；当前生效的视觉事实源是 `agent-team-workbench/web/DESIGN.md`，水墨化的取舍与边界见上方状态行链接的决策笔记。
 
 ---
 
