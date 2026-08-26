@@ -12,6 +12,8 @@
 - protocol/mcp-tools.md：atw-mcp 暴露给 agent harness 的 MCP 工具面（9 个工具 + 红线清单）。
 - chat-rendering-spec.md：对话输出渲染规格——TranscriptSegment 段层 / LeAgent 正文骨架 / 工具块层 / 决策卡层的分层契约与剩余缺口。
 - frontend-design-md-redesign.md：水墨重设计的决策记录与 M1/M2 迁移账本（按 2026-08-26 代码现状核订）。
+- references/design-resource-library.md：**Web 设计素材库**——外部设计资源站检索入口（AICSS/ohwow/Curated 核验条目 + 候选池），做前端设计先查这里选站再进站搜。
+- references/design-asset-index.md：**素材级索引**——AICSS 14 组件全量与 Curated 分类/区块的地址、描述、适用场景明细（配套上一条的选站库单）。
 
 ## 时点快照（定格留痕，不随后续实现更新）
 
