@@ -1,5 +1,18 @@
-import { ChevronDown, ShieldAlert } from 'lucide-react';
-import { useState } from 'react';
+import { motion, AnimatePresence, useReducedMotion } from 'motion/react';
+import {
+  Check,
+  ChevronDown,
+  Clock,
+  MessageCircleQuestion,
+  PenLine,
+  ShieldAlert,
+  Terminal,
+  TriangleAlert,
+  Wrench,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { resolveApproval } from '../../api/endpoints';
 import type { ApprovalRequest } from '../../api/types';
@@ -8,12 +21,8 @@ import { toast } from '../../stores/toast.store';
 import { formatTime } from '../../utils/format';
 import { Button } from '../ui';
 
-export interface ApprovalLine {
-  text: string;
-  /** 拒绝行用错误色；批准/过期保持辅助色。 */
-  deny: boolean;
-  at?: string;
-}
+/** 低风险可授权请求的自动批准窗口（秒）；归零即按「允许一次」决议。 */
+export const AUTO_APPROVE_SECS = 30;
 
 /** 允许选项的三级授权（对照 codex 桌面端「本次允许/本会话总是允许/总是允许」）。 */
 export interface AllowChoice {
@@ -58,6 +67,14 @@ const RISK_LABEL: Record<string, string> = {
   high: '高风险',
 };
 
+const KIND_ICON: Record<string, LucideIcon> = {
+  command: Terminal,
+  file_change: PenLine,
+  permissions: ShieldAlert,
+  tool: Wrench,
+  question: MessageCircleQuestion,
+};
+
 /** 审批卡主标题（按 kind 人话化）。 */
 export function approvalHeadline(kind: string): string {
   switch (kind) {
@@ -67,9 +84,16 @@ export function approvalHeadline(kind: string): string {
       return '允许修改文件？';
     case 'permissions':
       return '允许变更权限？';
+    case 'question':
+      return 'Agent 请求确认';
     default:
       return '需要你的批准';
   }
+}
+
+/** 倒计时资格：低风险且可授权且待决议。风险不对称——自动批准不越权到中高风险。 */
+export function autoApproveEligible(a: Pick<ApprovalRequest, 'kind' | 'risk' | 'status'>): boolean {
+  return a.status === 'pending' && a.risk === 'low' && GRANTABLE_KINDS.has(a.kind);
 }
 
 /** 从 summary 提取可展示的命令/摘要正文。 */
@@ -86,32 +110,97 @@ export function approvalDetailText(summary: string): string {
   return trimmed;
 }
 
-/** 已决议审批的消息流完成态行（保留可见）；pending 无行，返回 null 走交互卡。 */
-export function resolvedApprovalLine(a: ApprovalRequest): ApprovalLine | null {
-  const label = `${a.kind} · ${a.risk}`;
-  if (a.status === 'approved') return { text: `✓ 审批已批准 · ${label}`, deny: false, at: a.resolved_at };
-  if (a.status === 'rejected') return { text: `✕ 审批已拒绝 · ${label}`, deny: true, at: a.resolved_at };
-  if (a.status === 'expired') return { text: `审批已过期 · ${label}`, deny: false, at: a.resolved_at };
+/** 决议回执的稳定语义模型：icon 驱动渲染，label 供测试与展示共享。 */
+export interface ApprovalReceipt {
+  icon: 'approved' | 'rejected' | 'expired';
+  label: string;
+  at?: string;
+}
+
+/** 已决议审批的回执行模型；pending 返回 null（走交互卡）。 */
+export function approvalReceipt(a: ApprovalRequest): ApprovalReceipt | null {
+  const kind = KIND_LABEL[a.kind] ?? a.kind;
+  const risk = a.risk && a.risk !== 'low' ? ` · ${RISK_LABEL[a.risk] ?? a.risk}` : '';
+  const label = `${kind}${risk}`;
+  if (a.status === 'approved') return { icon: 'approved', label: `已批准 · ${label}`, at: a.resolved_at };
+  if (a.status === 'rejected') return { icon: 'rejected', label: `已拒绝 · ${label}`, at: a.resolved_at };
+  if (a.status === 'expired') return { icon: 'expired', label: `已过期 · ${label}`, at: a.resolved_at };
   return null;
 }
 
 /**
- * 消息流内的审批卡：pending 渲染交互卡，决议后转完成态行。
- * 决议状态以 runs store 的 listApprovals 投影为权威——本地不缓存结果，重取成功即切换形态。
+ * 消息流内的审批卡（tx 重设计）：pending 渲染交互卡（kind 图标芯片 + 变体正文 +
+ * 低风险倒计时），决议后转左对齐回执行。决议状态以 runs store 的 listApprovals
+ * 投影为权威——本地不缓存结果，重取成功即切换形态。
  */
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
-  const line = resolvedApprovalLine(approval);
-  if (line) {
-    return (
-      <div className="py-0.5">
-        <div className={`text-center text-caption ${line.deny ? 'text-status-error' : 'text-text-tertiary'}`}>
-          {line.text}
-          {line.at && <span className="ml-1 tabular-nums">{formatTime(line.at)}</span>}
-        </div>
-      </div>
-    );
-  }
+  const receipt = approvalReceipt(approval);
+  if (receipt) return <ResolvedReceipt receipt={receipt} />;
   return <PendingApprovalCard approval={approval} />;
+}
+
+function ResolvedReceipt({ receipt }: { receipt: ApprovalReceipt }) {
+  const iconTone =
+    receipt.icon === 'approved'
+      ? 'text-status-success'
+      : receipt.icon === 'rejected'
+        ? 'text-status-error'
+        : 'text-text-tertiary';
+  return (
+    <div className="chat-approval-receipt" data-codex-approval-surface>
+      {receipt.icon === 'approved' && <Check className={`chat-approval-receipt-icon ${iconTone}`} aria-hidden />}
+      {receipt.icon === 'rejected' && <X className={`chat-approval-receipt-icon ${iconTone}`} aria-hidden />}
+      {receipt.icon === 'expired' && <Clock className={`chat-approval-receipt-icon ${iconTone}`} aria-hidden />}
+      <span className="min-w-0 flex-1 truncate text-text-secondary">{receipt.label}</span>
+      {receipt.at && <span className="shrink-0 tabular-nums text-text-tertiary">{formatTime(receipt.at)}</span>}
+    </div>
+  );
+}
+
+/** 滚动数字：数值变化时旧值上滑出、新值下滑入；reduced-motion 退化为静态数字。 */
+function RollingValue({ value }: { value: number }) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <span className="relative inline-block h-4 w-4 overflow-hidden align-[-2px]">
+      <AnimatePresence initial={false} mode="popLayout">
+        <motion.span
+          key={value}
+          className="tabular-nums"
+          initial={reduceMotion ? false : { y: 10, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={reduceMotion ? undefined : { y: -10, opacity: 0 }}
+          transition={reduceMotion ? { duration: 0 } : { duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+        >
+          {value}
+        </motion.span>
+      </AnimatePresence>
+    </span>
+  );
+}
+
+/** 环形进度：剩余时间的微缩表达；静态底环 + 行动色进度弧。 */
+function CountdownRing({ remaining }: { remaining: number }) {
+  const reduceMotion = useReducedMotion();
+  const r = 6.5;
+  const c = 2 * Math.PI * r;
+  const fraction = remaining / AUTO_APPROVE_SECS;
+  return (
+    <svg viewBox="0 0 16 16" className="h-4 w-4 -rotate-90" aria-hidden>
+      <circle cx="8" cy="8" r={r} fill="none" className="chat-approval-ring-track" strokeWidth="2" />
+      <circle
+        cx="8"
+        cy="8"
+        r={r}
+        fill="none"
+        className="chat-approval-ring-value"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={c * (1 - fraction)}
+        style={reduceMotion ? undefined : { transition: 'stroke-dashoffset 1s linear' }}
+      />
+    </svg>
+  );
 }
 
 function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
@@ -120,13 +209,18 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
   const [showMore, setShowMore] = useState(false);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  const [secs, setSecs] = useState(AUTO_APPROVE_SECS);
+  const autoFiredRef = useRef(false);
 
   const choices = cardAllowChoices(approval.kind);
   const onceChoice = choices.find((c) => c.scope === 'once')!;
   const memoryChoices = choices.filter((c) => c.scope !== 'once');
-  const detail = approvalDetailText(approval.summary);
   const kindLabel = KIND_LABEL[approval.kind] ?? approval.kind;
   const riskLabel = RISK_LABEL[approval.risk] ?? approval.risk;
+  const detail = approvalDetailText(approval.summary);
+  const isCommand = approval.kind === 'command';
+  const Icon = KIND_ICON[approval.kind] ?? Wrench;
+  const auto = autoApproveEligible(approval);
 
   const decide = async (
     decision: 'approved' | 'rejected',
@@ -147,60 +241,97 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
     }
   };
 
+  // 低风险倒计时：归零按「允许一次」自动决议；busy/重复触发由 firedRef 收口。
+  useEffect(() => {
+    if (!auto) return;
+    const timer = setInterval(() => setSecs((v) => (v > 0 ? v - 1 : 0)), 1000);
+    return () => clearInterval(timer);
+  }, [auto]);
+  useEffect(() => {
+    if (!auto || secs > 0 || autoFiredRef.current) return;
+    autoFiredRef.current = true;
+    void decide('approved', '', 'once', '已自动批准（低风险）');
+    // decide 闭包随渲染重建，firedRef 已防重入；busy 内部再兜一层。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto, secs]);
+
   return (
-    <div className="chat-approval-card" data-codex-approval-surface>
+    <div className="chat-approval-card" data-codex-approval-surface data-risk={approval.risk}>
       <div className="chat-approval-head">
-        <ShieldAlert className="h-4 w-4 shrink-0 text-status-warning" aria-hidden />
+        <span className="chat-approval-chip" data-risk={approval.risk} aria-hidden>
+          <Icon />
+        </span>
         <div className="min-w-0 flex-1">
-          <p className="text-body font-semibold text-text-primary">{approvalHeadline(approval.kind)}</p>
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            <span className="chat-approval-badge">{kindLabel}</span>
-            <span className="chat-approval-badge chat-approval-badge-risk">{riskLabel}</span>
+          <p className="chat-approval-title">{approvalHeadline(approval.kind)}</p>
+          <div className="chat-approval-sub">
+            <span>{kindLabel}</span>
+            {approval.risk !== 'low' && (
+              <span className="chat-approval-sub-risk">
+                <TriangleAlert aria-hidden className="h-3 w-3" />
+                {riskLabel}
+              </span>
+            )}
           </div>
         </div>
       </div>
 
-      <pre className="chat-approval-detail">{detail}</pre>
+      {isCommand ? (
+        <pre className="chat-approval-code">
+          <span className="chat-approval-prompt" aria-hidden>
+            $
+          </span>
+          {detail}
+        </pre>
+      ) : (
+        <p className="chat-approval-summary">{detail}</p>
+      )}
 
       {rejecting ? (
         <div className="chat-approval-reject">
-          <label className="text-caption font-medium text-text-secondary">拒绝理由（可选）</label>
-          <input
+          <label className="text-caption font-medium text-text-secondary" htmlFor={`reject-${approval.id}`}>
+            拒绝理由（可选）
+          </label>
+          <textarea
+            id={`reject-${approval.id}`}
             autoFocus
+            rows={2}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') {
+              if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void decide('rejected', reason.trim());
               }
               if (e.key === 'Escape') setRejecting(false);
             }}
             placeholder="说明拒绝原因…"
-            className="w-full rounded-lg border border-border-strong bg-surface-base px-3 py-2 text-body outline-none focus:ring-2 focus:ring-brand-primary/30"
+            className="chat-approval-reject-input"
           />
-          <div className="chat-approval-actions">
-            <Button
-              variant="danger"
-              type="button"
-              onClick={() => void decide('rejected', reason.trim())}
-              disabled={busy}
-            >
+          <div className="chat-approval-actions !px-0 !pt-0">
+            <Button variant="danger" type="button" onClick={() => void decide('rejected', reason.trim())} disabled={busy}>
               {busy ? '提交中…' : '确认拒绝'}
             </Button>
-            <Button
-              variant="secondary"
-              type="button"
-              onClick={() => setRejecting(false)}
-              disabled={busy}
-            >
+            <Button variant="secondary" type="button" onClick={() => setRejecting(false)} disabled={busy}>
               取消
             </Button>
           </div>
         </div>
       ) : (
         <>
-          <div className="chat-approval-actions chat-approval-actions-primary">
+          <div className="chat-approval-actions">
+            {auto ? (
+              <span className="chat-approval-countdown" role="timer" aria-label={`${secs} 秒后自动批准`}>
+                <CountdownRing remaining={secs} />
+                <span className="hidden sm:inline">低风险 ·</span>
+                <RollingValue value={secs} />
+                <span>秒后自动批准</span>
+              </span>
+            ) : (
+              <span className="flex-1" />
+            )}
+            <Button variant="ghost" type="button" onClick={() => setRejecting(true)} disabled={busy}>
+              拒绝
+            </Button>
             <Button
               variant="success"
               type="button"
@@ -208,14 +339,6 @@ function PendingApprovalCard({ approval }: { approval: ApprovalRequest }) {
               disabled={busy}
             >
               {busy ? '处理中…' : onceChoice.label}
-            </Button>
-            <Button
-              variant="danger-outline"
-              type="button"
-              onClick={() => setRejecting(true)}
-              disabled={busy}
-            >
-              拒绝
             </Button>
           </div>
 

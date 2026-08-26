@@ -993,59 +993,118 @@
   grid-column: 1 / -1;
 }
 
-/* ---- Chat 审批卡（approval-card.tsx，对齐 codex Q7） ---- */
+/* ---- Chat 审批卡（approval-card.tsx；tx 重设计：图标芯片/变体正文/倒计时/回执行） ---- */
 .chat-approval-card {
-  @apply overflow-hidden rounded-xl border border-status-warning/25 bg-surface-raised shadow-sm;
+  @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised;
+  box-shadow: var(--tx-shadow-card);
   container-type: inline-size;
   container-name: approval-card;
 }
 
 .chat-approval-head {
-  @apply flex items-start gap-2.5 border-b border-border-subtle/80 bg-status-warning/5 px-4 py-3;
+  @apply flex items-start gap-3 px-4 pt-3.5;
 }
 
-.chat-approval-badge {
-  @apply inline-flex rounded-full border border-border-subtle bg-surface-base px-2 py-0.5 text-[11px] text-text-secondary;
+/* kind 图标芯片：风险着色（低=行动绿/中=琥珀/高=红），低风险不再警示恐吓 */
+.chat-approval-chip {
+  @apply flex h-7 w-7 flex-none items-center justify-center rounded-lg border;
 }
 
-.chat-approval-badge-risk {
-  @apply border-status-warning/30 bg-status-warning/10 text-status-warning;
+.chat-approval-chip[data-risk='low'] {
+  @apply border-status-success/25 bg-status-success/10 text-status-success;
 }
 
-.chat-approval-detail {
-  @apply mx-4 mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2 font-mono text-[12px] leading-5 text-text-primary;
+.chat-approval-chip[data-risk='medium'] {
+  @apply border-status-warning/25 bg-status-warning/10 text-status-warning;
+}
+
+.chat-approval-chip[data-risk='high'] {
+  @apply border-status-error/25 bg-status-error/10 text-status-error;
+}
+
+.chat-approval-chip svg {
+  @apply h-4 w-4;
+}
+
+.chat-approval-card[data-risk='high'] .chat-approval-title {
+  @apply text-status-error;
+}
+
+.chat-approval-title {
+  @apply text-[15px] font-semibold leading-5 text-text-primary;
+}
+
+.chat-approval-sub {
+  @apply mt-0.5 flex items-center gap-2 text-caption text-text-tertiary;
+}
+
+.chat-approval-sub-risk {
+  @apply inline-flex items-center gap-1 text-status-warning;
+}
+
+.chat-approval-code {
+  @apply mx-4 mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2.5 font-mono text-[12.5px] leading-5 text-text-primary;
+}
+
+.chat-approval-prompt {
+  @apply mr-1.5 select-none text-text-tertiary;
+}
+
+.chat-approval-summary {
+  @apply mx-4 mt-3 whitespace-pre-wrap break-words text-body leading-6 text-text-secondary;
 }
 
 .chat-approval-actions {
-  @apply flex flex-wrap items-center gap-2 px-4 py-3;
+  @apply flex items-center gap-2 px-4 pb-3.5 pt-3;
 }
 
-.chat-approval-actions-primary {
-  @apply border-t border-border-subtle/60 bg-surface-base/40;
+.chat-approval-countdown {
+  @apply mr-auto flex items-center gap-1.5 text-caption text-text-tertiary;
+}
+
+.chat-approval-ring-track {
+  stroke: hsl(var(--color-border-strong));
+}
+
+.chat-approval-ring-value {
+  stroke: hsl(var(--color-brand-primary));
 }
 
 .chat-approval-reject {
-  @apply space-y-2 border-t border-border-subtle/60 px-4 py-3;
+  @apply mx-4 mt-3 space-y-2;
+}
+
+.chat-approval-reject-input {
+  @apply w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-3 py-2 text-body text-text-primary outline-none transition-shadow focus:ring-2 focus:ring-brand-primary/30;
 }
 
 .chat-approval-memory {
-  @apply border-t border-border-subtle/60 px-4 pb-3;
+  @apply px-4 pb-3;
 }
 
 .chat-approval-memory-toggle {
-  @apply flex w-full items-center justify-between gap-2 py-2 text-left text-caption text-text-tertiary transition-colors hover:text-text-secondary;
+  @apply flex w-full items-center justify-between gap-2 py-1.5 text-left text-caption text-text-tertiary transition-colors hover:text-text-secondary;
 }
 
 .chat-approval-memory-options {
   @apply space-y-1.5 pb-1;
 }
 
+/* 决议回执行：左对齐、状态图标着色（TSX 按态给 tone 类）、时间右靠 */
+.chat-approval-receipt {
+  @apply flex items-center gap-2 py-1 text-caption;
+}
+
+.chat-approval-receipt-icon {
+  @apply h-3.5 w-3.5 flex-none;
+}
+
 @container approval-card (max-width: 28rem) {
-  .chat-approval-actions-primary {
-    @apply flex-col items-stretch;
+  .chat-approval-actions {
+    @apply flex-wrap;
   }
-  .chat-approval-actions-primary > * {
-    @apply w-full;
+  .chat-approval-countdown {
+    @apply basis-full;
   }
 }
 
