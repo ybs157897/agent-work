@@ -1,7 +1,7 @@
 # atw-mcp：任务看板的 stdio MCP 工具面
 
 > 对应设计：`architecture/clawteam-borrowings-design.md` F5 节（控制面 MCP 工具化，只读先行）。
-> 代码版本：`internal/mcpserver/` + `cmd/atw-mcp`（branch `agent/f5-mcp-readonly`，2026-08-24）。
+> 代码版本：`internal/mcpserver/` + `cmd/atw-mcp`（main `368a692`，2026-08-24 合入）。
 
 ## 定位
 
@@ -95,7 +95,7 @@ postgres 部署把 `-dsn` 换成 postgres 连接串即可（无 `sqlite://` 前�
 |---|---|
 | approval resolve | agent 不能批自己的审批——安全红线，审批只归人（HTTP API + UI） |
 | work item 创建 / 删除 | 看板结构变更只归人，agent 只能查与认领 |
-| 会话重置 | 会话生命周期只归 ModuleRunner（resume 探测失败走自愈，不开放外部触发 |
+| 会话重置 | 会话生命周期只归 ModuleRunner（resume 探测失败走自愈，不开放外部触发） |
 
-设计取舍：第一批只读 + 第二批小写面，把「agent 能改看板」的攻击面压到最小；
+写面严格限制在认领与打回，把「agent 能改看板」的攻击面压到最小；
 MCP 进程与控制面主进程分离，崩了不影响调度。

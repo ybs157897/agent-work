@@ -2,7 +2,7 @@
 
 > 来源调研：`references/clawteam-openclaw-comparison.md`（ClawTeam-OpenClaw v0.3.0 源码静态分析）。
 > 本文回答：哪些功能值得借鉴、各自如何落地到 agent-team-workbench（Go 控制平面 + runnerd + adapter + React）。
-> 日期：2026-08-24。状态：设计稿（未实施）。
+> 日期：2026-08-24。状态：F3/F5/F1 已实施合入 main；F2 挂起；F4 砍掉。
 
 ## 设计约束（与现有架构红线对齐）
 
@@ -180,21 +180,21 @@ type Dialect struct {
 ### 设计
 
 新增 `cmd/atw-mcp`（stdio MCP server，Go）：
-- **第一批（只读）**：`task_list / task_get / run_get / run_events_tail / approval_list` —— 让 agent 能自查任务、run 状态与待审批。
-- **第二批（写，小面）**：`task_claim / task_return`（走既有 application 命令，自带 Idempotency-Key + version 校验）。
+- **只读（7 工具）**：`workspace_list / task_list / task_get / run_list / run_get / run_events_tail / approval_list` —— 让 agent 能自查 workspace、任务、run 状态与待审批。
+- **写面（2 工具）**：`task_claim / task_return`（走既有 application 命令，自带 version 乐观锁校验）。
 - **明确不暴露**：approval resolve（agent 不能批自己的审批——安全红线）、work item 创建/删除、会话重置。
-- 传输：stdio（被各 harness 的 MCP 配置拉起）；鉴权：启动参数带 workspace id + 只读 token（本地场景先不做多租户）。
+- 传输：stdio（被各 harness 的 MCP 配置拉起）；鉴权：本地场景靠进程能读到库即有读权限，不额外做多租户隔离。
 
 ### 实施步骤
 
 1. cmd/atw-mcp 骨架 + stdio JSON-RPC（可用 mark3labs/mcp-go，需评估依赖）。
-2. 只读 5 工具直通 application 查询面。
+2. 只读 7 工具直通 application 查询面。
 3. 写 2 工具 + 鉴权边界测试（resolve 类操作不存在于工具表）。
 4. 文档：各 harness 的 MCP 配置接法。
 
 ### 风险与取舍
 
-- 第一批只读，把「agent 能改看板」的攻击面推到第二批再评。
+- 只读先行，写面严格限制在认领与打回，把「agent 能改看板」的攻击面压到最小。
 - 不在控制面主进程内嵌 MCP server——独立进程，崩了不影响调度。
 
 ---
@@ -209,7 +209,7 @@ type Dialect struct {
 |---|---|---|
 | F3 实体级幂等键 | ✅ 已实施（main `635c310`） | 迁移 0013；CreateWorkItemIdempotent/CreateRunIdempotent；队列/fork 已携带 client_key；顺带修复 parent_id 透传丢失（fork 链路真实 bug） |
 | F5 控制面 MCP 工具化 | ✅ 已实施（main `368a692`） | `cmd/atw-mcp` + `internal/mcpserver`；只读 7 工具 + 写面 task_claim/task_return；审批 resolve 等红线不暴露 |
-| F1 任务级执行锁 | 🚧 实施中 | 迁移 0014；transitionRunLocked 事务内取放锁；死锁抢占与周期回收 |
+| F1 任务级执行锁 | ✅ 已实施（main `9c3dd6c`） | 迁移 0014；transitionRunLocked 事务内取放锁；死锁抢占与 `sweepStaleLocks` 周期回收；HTTP DTO 含 locked_by_run_id/locked_at 字段 |
 | F2 健康分熔断 | ⏸ 挂起 | 触发条件：编排层自动派发密度上来（claim 高频无人值守）时重启 |
 | F4 方言表 | ❌ 不实施 | 协议差异不在 CLI flag 层（见 F4 节） |
 
