@@ -102,11 +102,11 @@ function TranscriptSegmentView({
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <div className="group flex justify-end py-1">
+    <div className="group flex flex-col items-end py-1">
       <div className="w-max max-w-full min-w-0 rounded-3xl border border-brand-primary/20 bg-brand-primary/[0.07] px-3 py-1.5 text-base leading-6 text-text-primary whitespace-pre-wrap break-words">
         {msg.text}
-        <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
       </div>
+      <MessageActions text={msg.text} at={msg.at} side="right" className="mt-1" />
     </div>
   );
 }
