@@ -1390,3 +1390,86 @@
 .tx-scope .shadow-level-4 {
   box-shadow: var(--tx-shadow-pop);
 }
+
+/* 代码语法五色板（克制的暗色高亮；全局 github 亮色主题在暗底失明，作用域内覆写） */
+.tx-scope {
+  --tx-syntax-key: 199 70% 62%;  /* 关键字/标签：青 */
+  --tx-syntax-str: 152 38% 60%;  /* 字符串/正则：灰绿 */
+  --tx-syntax-num: 36 75% 62%;   /* 数字/字面量：琥珀 */
+  --tx-syntax-fn: 220 25% 88%;   /* 函数/类型名：亮 */
+  --tx-syntax-comment: 220 10% 47%;
+}
+
+.tx-scope .hljs {
+  color: hsl(var(--color-text-primary));
+  background: transparent;
+}
+
+.tx-scope .hljs-comment,
+.tx-scope .hljs-quote {
+  color: hsl(var(--tx-syntax-comment));
+  font-style: italic;
+}
+
+.tx-scope .hljs-keyword,
+.tx-scope .hljs-selector-tag,
+.tx-scope .hljs-doctag,
+.tx-scope .hljs-tag,
+.tx-scope .hljs-name,
+.tx-scope .hljs-meta .hljs-keyword {
+  color: hsl(var(--tx-syntax-key));
+}
+
+.tx-scope .hljs-string,
+.tx-scope .hljs-regexp,
+.tx-scope .hljs-char.escape_,
+.tx-scope .hljs-meta .hljs-string {
+  color: hsl(var(--tx-syntax-str));
+}
+
+.tx-scope .hljs-number,
+.tx-scope .hljs-literal,
+.tx-scope .hljs-symbol,
+.tx-scope .hljs-bullet,
+.tx-scope .hljs-variable.constant_,
+.tx-scope .hljs-attribute {
+  color: hsl(var(--tx-syntax-num));
+}
+
+.tx-scope .hljs-title,
+.tx-scope .hljs-title.function_,
+.tx-scope .hljs-title.class_,
+.tx-scope .hljs-title.class_.inherited__,
+.tx-scope .hljs-built_in,
+.tx-scope .hljs-type,
+.tx-scope .hljs-selector-id,
+.tx-scope .hljs-selector-class,
+.tx-scope .hljs-section {
+  color: hsl(var(--tx-syntax-fn));
+}
+
+.tx-scope .hljs-attr,
+.tx-scope .hljs-property,
+.tx-scope .hljs-params,
+.tx-scope .hljs-variable,
+.tx-scope .hljs-variable.language_ {
+  color: hsl(var(--color-text-secondary));
+}
+
+.tx-scope .hljs-emphasis {
+  font-style: italic;
+}
+
+.tx-scope .hljs-strong {
+  font-weight: 600;
+}
+
+.tx-scope .hljs-addition {
+  color: hsl(var(--color-status-success));
+  background: hsl(var(--color-status-success) / 0.12);
+}
+
+.tx-scope .hljs-deletion {
+  color: hsl(var(--color-status-error));
+  background: hsl(var(--color-status-error) / 0.12);
+}
