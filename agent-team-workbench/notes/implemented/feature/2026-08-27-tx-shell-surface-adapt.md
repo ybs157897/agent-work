@@ -24,6 +24,9 @@ Status: implemented
 - **阈读只动对比与叠距，不回 72ch。** 用户已定调「填充满」。tx 的 `text-tertiary`
   从 47% 抬到 56%（暗底 caption 过近 AA 下限）；回合 `py-3` 与 `.chat-thread space-y-3`
   叠距去掉一层。阅读槽与 composer 用顶部分割线分区，不靠第二套背景。
+- **启动骨架跟路由走。** 硬刷新 `/chat` 时 `AppShellSkeleton` 原先画宣纸顶栏，
+  会在 bootstrap 完成前闪一帧纸面。`chat` 路由改墨侧栏 + `.tx-scope` 空槽，
+  不进宣纸顶栏。
 
 ## 放弃了什么
 
