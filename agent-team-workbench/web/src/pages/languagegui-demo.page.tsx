@@ -48,6 +48,10 @@ const DEFAULT_MODEL = 'deepseek-v4-flash';
 interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
+  /** assistant：生成该回复的模型 ref（回合头展示，切换模型后不失真）。 */
+  model?: string;
+  /** assistant：思考模型的 reasoning 内容，折叠展示。 */
+  reasoning?: string;
 }
 
 interface ModelOption {
@@ -243,13 +247,37 @@ function WidgetRenderer({ data }: { data: LguiWidgetData }) {
 
 /* ── 消息渲染 ──────────────────────────────────────────────── */
 
-function AssistantBody({ text, streaming }: { text: string; streaming: boolean }) {
+/** 思考块：思考模型先吐的 reasoning 折叠展示。流式中默认展开，落定自动收起，可手动重开。 */
+function ReasoningBlock({ text, streaming }: { text: string; streaming: boolean }) {
+  const [open, setOpen] = useState(streaming);
+  useEffect(() => {
+    if (!streaming) setOpen(false);
+  }, [streaming]);
+  return (
+    <div className="lgui-reasoning">
+      <button type="button" className="lgui-reasoning-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <ChevronDown size={14} className={`lgui-reasoning-chev${open ? ' lgui-reasoning-chev-open' : ''}`} />
+        {streaming ? '思考中…' : '查看思考过程'}
+      </button>
+      {open ? <pre className="lgui-reasoning-body">{text}</pre> : null}
+    </div>
+  );
+}
+
+function AssistantBody({ text, reasoning, streaming }: { text: string; reasoning?: string; streaming: boolean }) {
   const segments = parseSegments(text);
+  const hasReasoning = !!reasoning && reasoning.trim().length > 0;
   if (segments.length === 0) {
-    return streaming ? <div className="lgui-pending" role="status">模型思考中…</div> : <p className="lgui-prose">（空回复）</p>;
+    if (!streaming) return <p className="lgui-prose">（空回复）</p>;
+    return hasReasoning ? (
+      <ReasoningBlock text={reasoning} streaming={streaming} />
+    ) : (
+      <div className="lgui-pending" role="status">模型思考中…</div>
+    );
   }
   return (
     <>
+      {hasReasoning ? <ReasoningBlock text={reasoning} streaming={streaming} /> : null}
       {segments.map((seg, i) => {
         if (seg.kind === 'text') return <p key={i} className="lgui-prose">{seg.text}</p>;
         if (seg.kind === 'widget') return <WidgetRenderer key={i} data={seg.data} />;
@@ -304,9 +332,27 @@ export default function LanguageGuiDemoPage() {
   const [menuOpen, setMenuOpen] = useState(false);
   const streamRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const modelSelectRef = useRef<HTMLDivElement | null>(null);
   // StrictMode 的 updater 双调用不允许带副作用：历史与流式锁走 ref，send 在 updater 外发起。
   const messagesRef = useRef<ChatMessage[]>([]);
   const busyRef = useRef(false);
+
+  // 模型菜单：外点 / Esc 关闭（下拉的基本可用性）。
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (modelSelectRef.current && !modelSelectRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
@@ -327,13 +373,14 @@ export default function LanguageGuiDemoPage() {
     if (!text || busyRef.current) return;
     busyRef.current = true;
     setError(null);
-    const next: ChatMessage[] = [...history, { role: 'user', text }, { role: 'assistant', text: '' }];
+    const next: ChatMessage[] = [...history, { role: 'user', text }, { role: 'assistant', text: '', model }];
     messagesRef.current = next;
     setMessages(next);
     setStreaming(true);
     const controller = new AbortController();
     streamRef.current = controller;
     let buffer = '';
+    let reasonBuffer = '';
     try {
       const resp = await fetch(`${API}/chat`, {
         method: 'POST',
@@ -368,12 +415,15 @@ export default function LanguageGuiDemoPage() {
           try {
             const parsed = JSON.parse(payload);
             const delta: string = parsed.choices?.[0]?.delta?.content ?? '';
-            if (delta) {
+            // 思考模型（deepseek-v4-flash 等）先吐 reasoning_content，单独累积折叠展示。
+            const reasonDelta: string = parsed.choices?.[0]?.delta?.reasoning_content ?? '';
+            if (delta || reasonDelta) {
               buffer += delta;
+              reasonBuffer += reasonDelta;
               setMessages((cur) => {
                 const copy = [...cur];
                 const last = copy[copy.length - 1];
-                copy[copy.length - 1] = { ...last, text: buffer };
+                copy[copy.length - 1] = { ...last, text: buffer, reasoning: reasonBuffer || undefined };
                 return copy;
               });
             }
@@ -462,9 +512,9 @@ export default function LanguageGuiDemoPage() {
             </span>
           </div>
           <div className="lgui-topbar-actions">
-            <div className="lgui-model-select">
+            <div className="lgui-model-select" ref={modelSelectRef}>
               <button type="button" className="lgui-icon-btn lgui-icon-btn-wide" aria-label="切换模型" onClick={() => setMenuOpen((v) => !v)}>
-                {model} <ChevronDown size={13} />
+                {currentModel?.display ?? model} <ChevronDown size={13} />
               </button>
               {menuOpen ? (
                 <div className="lgui-menu" role="menu">
@@ -522,9 +572,9 @@ export default function LanguageGuiDemoPage() {
                   <span className="lgui-avatar lgui-avatar-sm" />
                   <span className="lgui-msg-name">LanguageGUI</span>
                   <span className="lgui-msg-divider">|</span>
-                  <span className="lgui-msg-time">{models.find((x) => x.ref === model)?.display ?? model}</span>
+                  <span className="lgui-msg-time">{models.find((x) => x.ref === m.model)?.display ?? m.model ?? model}</span>
                 </div>
-                <AssistantBody text={m.text} streaming={streaming && i === messages.length - 1} />
+                <AssistantBody text={m.text} reasoning={m.reasoning} streaming={streaming && i === messages.length - 1} />
                 {!(streaming && i === messages.length - 1) ? (
                   <ActionRow disabled={streaming} onRegenerate={() => regenerate()} onCopy={() => void navigator.clipboard?.writeText(m.text).catch(() => {})} />
                 ) : null}
@@ -546,9 +596,10 @@ export default function LanguageGuiDemoPage() {
           <div className="lgui-composer">
             <input
               className="lgui-composer-input"
-              placeholder="How can I help you?"
+              placeholder={streaming ? '正在生成，可点右侧停止…' : 'How can I help you?'}
               aria-label="输入消息"
               value={input}
+              disabled={streaming}
               onChange={(e) => setInput(e.target.value)}
             />
             <div className="lgui-composer-bar">
