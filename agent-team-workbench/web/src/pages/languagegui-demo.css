@@ -787,3 +787,171 @@
   background: var(--lg-accent-soft);
   color: var(--lg-ink);
 }
+
+/* ── 真模型版新增：模型菜单/生成中/柱图/错误 ─────────────────── */
+
+.lgui-model-select {
+  position: relative;
+}
+
+.lgui-icon-btn-wide {
+  width: auto;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.lgui-menu {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  border: 1px solid var(--lg-border);
+  border-radius: 14px;
+  background: var(--lg-surface);
+  box-shadow: var(--lg-shadow-float);
+  padding: 6px;
+}
+
+.lgui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--lg-ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.lgui-menu-item:hover {
+  background: var(--lg-surface-hover);
+}
+
+.lgui-menu-item-active {
+  background: var(--lg-surface-tint);
+}
+
+.lgui-menu-item span:first-child {
+  flex: 1;
+}
+
+.lgui-menu-provider {
+  color: var(--lg-muted);
+  font-size: 11.5px;
+}
+
+.lgui-pending {
+  border: 1px dashed var(--lg-border-active);
+  border-radius: var(--lg-radius-card);
+  color: var(--lg-muted);
+  font-size: 13px;
+  overflow: hidden;
+  padding: 16px 20px;
+  position: relative;
+}
+
+.lgui-pending::after {
+  animation: lgui-shimmer 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, var(--lg-accent-soft), transparent);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+@keyframes lgui-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.lgui-broken {
+  color: var(--lg-text);
+  font-size: 12px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.lgui-error {
+  border: 1px solid var(--lg-border);
+  border-left: 3px solid var(--lg-danger);
+  border-radius: 12px;
+  background: var(--lg-surface);
+  color: var(--lg-text);
+  font-size: 13px;
+  margin: 0 auto;
+  max-width: 720px;
+  padding: 12px 16px;
+  width: 100%;
+}
+
+.lgui-chart {
+  align-items: flex-end;
+  display: flex;
+  gap: 14px;
+  height: 132px;
+  padding-top: 8px;
+}
+
+.lgui-chart-col {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.lgui-chart-col i {
+  background: var(--lg-accent-soft);
+  border-radius: 6px 6px 3px 3px;
+  display: block;
+  max-width: 46px;
+  width: 100%;
+}
+
+.lgui-chart-col i.lgui-spark-hi {
+  background: var(--lg-accent);
+}
+
+.lgui-chart-value {
+  color: var(--lg-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+}
+
+.lgui-chart-label {
+  color: var(--lg-muted);
+  font-size: 11.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lgui-stop {
+  background: #fff;
+  border-radius: 3px;
+  display: block;
+  height: 12px;
+  width: 12px;
+}
+
+.lgui-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.lgui-table-cell {
+  color: var(--lg-text);
+}
