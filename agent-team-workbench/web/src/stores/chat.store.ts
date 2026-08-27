@@ -138,8 +138,8 @@ function formatCount(n: number): string {
   return `${Math.round(n / 100_000) / 10}M`;
 }
 
-/** stats 两字段均为有限非负数才算有效，否则视为缺失（降级裸档位）。 */
-function validStats(stats?: HistoryStats): boolean {
+/** stats 两字段均为有限非负数才算有效，否则视为缺失（降级裸档位）。类型谓词让调用处收窄 stats。 */
+function validStats(stats?: HistoryStats): stats is HistoryStats {
   return (
     !!stats &&
     Number.isFinite(stats.turns) && stats.turns >= 0 &&
