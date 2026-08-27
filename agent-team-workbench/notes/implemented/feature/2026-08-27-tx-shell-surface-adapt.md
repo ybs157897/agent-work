@@ -2,6 +2,10 @@
 
 Status: implemented
 
+## 后继状态（2026-08-27）
+
+壳层收起、ChatPage 独占内容槽与 `.tx-scope` fallback 均继续有效；生产可见面已由更具体的 LanguageGUI 浅色 skin 接管。正文/Composer 的新几何与运行架构边界见 [LanguageGUI 视觉迁入生产 Chat](2026-08-27-languagegui-production-chat-skin.md)。
+
 决策依据：用户 2026-08-27「继续打磨对话页：壳和正文暗面的最终适配、布局和阈读」。
 前序 `2026-08-26-tx-transcript-standalone-skin.md` 把最终适配定义为「处理壳与面的边界」；
 本刀落地该边界。任务分支从 `zcode/chat-transcript-redesign` 分出。

@@ -2,6 +2,10 @@
 
 Status: implemented
 
+## 后继状态（2026-08-27）
+
+生产 `/chat` 已在该暗色基底之上增加更具体的 LanguageGUI 浅色皮肤；本 note 继续描述 `.tx-scope` fallback，而不再是 ChatPage 的最终可见效果。可见角色头随新皮肤移除，原 `--tx-brand` 身份点也因引用归零删除。后继决策见 [LanguageGUI 视觉迁入生产 Chat](2026-08-27-languagegui-production-chat-skin.md)。
+
 决策依据：用户 2026-08-26 约束调整——「正文里面的这些适配都不需要和整体去做适配，
 我们要先做的是一个完美的正文输出，最终最终再去做适配」。DESIGN.md 的「与水墨外壳
 一致」约束对正文区（chat transcript 输出面）暂停执行；设计基准取 kvnkld 审批卡

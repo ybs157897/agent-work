@@ -4,7 +4,7 @@ name: agent-team-workbench-web
 description: >
   水墨案牍式多智能体工作台：宣纸画布、墨色侧栏、朱砂单强调色与克制山水留白。
   Aceternity UI 提供结构和动效原语，Ink Design System 统一材质、层级与交互。
-  信息密集但扫描清晰，界面语言为简体中文。
+  信息密集但扫描清晰，界面语言为简体中文；生产对话页另有 scoped LanguageGUI light/dark 阅读皮肤。
 colors:
   brand:
     primary: "var(--color-brand-primary)"      # 朱砂，唯一装饰强调色
@@ -109,9 +109,9 @@ components:
   status-pill:
     base: "inline-flex gap-2 rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; padding 12px × 4px; text {typography.caption} {colors.text.secondary}"
   user-card:
-    base: "LeAgent 式通栏软底卡；rounded {rounded.container}; bg {colors.surface.sunken}/55%；border 1px {colors.border.subtle}/60%；padding 16px × 12px；正文 15px/1.75"
+    base: "LanguageGUI 对话用户卡；右对齐白色紧凑卡；rounded 20px; bg {colors.surface.raised}; border 1px {colors.border.subtle}; padding 12px 16px；正文 15px/1.6；不显示重复角色头"
   turn-header:
-    base: "LeAgent 式角色标签：6px 角色点 + 11px/600 名称（uppercase、0.08em）+ 11px tabular-nums 时间；间距 6px、下距 8px"
+    base: "仅供需要身份语义的非对话场景使用；生产 /chat 不显示用户或 assistant 重复角色头，身份由消息布局与可访问名称承载"
   prompt-chip:
     base: "rounded {rounded.pill}; border 1px {colors.border.subtle}; bg {colors.surface.raised}; text {typography.caption} {colors.text.secondary}; hover border {colors.brand.primary}/35 + text {colors.brand.primary}"
   session-dot:
@@ -127,7 +127,24 @@ components:
     item-active: "text {colors.text.on-sidebar-active}; bg {colors.sidebar.hover}"
   layout:
     page-shell: "layout-safe（max 1440px，两侧留白 48/40/32px 按断点）; space-y {spacing.stack-md}; padding-y {spacing.comfortable}"
+    chat-page: "ChatPage 根挂 LanguageGUI scoped skin；浅蓝阅读画布 + 白色内容面 + 蓝色强调；正文与 composer 共用约 920px 居中阅读轨，窄屏吃满可用宽度；旧 .tx-scope 仅作 fallback，不改其他页面"
     config-split: "220–256px 左栏 + 流式主区（配置工作台专用布局语言）"
+  chat-composer:
+    base: "约 920px 阅读轨底部白色浮层；外壳 rounded 22px；border 1px {colors.border.subtle}; shadow {shadows.level-2}; textarea rounded 13px 并具 focus-visible brand ring；工具、队列、用量、停止、发送、dock、artifact 行为由真实 ChatPage 状态驱动"
+    prompt-box: "expanded PromptBox：多行输入 + attachment/image/voice/Library&Apps 工具行 + 队列/用量/stop/send；拖放态用 brand ring；pending 附件为本地预览，后端无协议时明确阻止发送，不伪造上传成功"
+  chat-workflow:
+    base: "LanguageGUI 工作流只读投影；同一 rounded {rounded.container} 容器内依次展示目标摘要、方案草稿与 Action 步骤链；步骤卡 rounded {rounded.card}; 连接线用 {colors.border.subtle}; 状态同时用图标和文字表达"
+    behavior: "目标正文始终可扫读；方案草稿可折叠；Action 顺序来自真实 run.plan_updated；无真实 mutation 契约时不展示设置、删除、新增等伪编辑控件"
+  chat-tool-activity:
+    base: "生产工具调用唯一入口 ActivityGroup：浅蓝/白色 LanguageGUI 表面、28px 紧凑 chip 轨、细语义边框、品牌蓝互动态；bash/code/read/search/write/edit/mcp/other 详情体挂在同一组内"
+    behavior: "组与 chip 只由同一 run 的真实工具事件聚合；状态同时显示图标和文字，状态色只表达真实 pending/running/success/error/stopped；点击后单选展开详情，长输入/输出在详情体内渐进披露"
+    demo-boundary: "Demo 只能复用生产 ActivityGroup/ToolRow/详情渲染器与可审计 fixture，不得从模型正文、Markdown 或静态 content block 伪造工具调用；无事件时显示空态"
+  content-block:
+    base: "LanguageGUI 结构化正文块；统一 rounded {rounded.container}、border {colors.border.subtle}、bg {colors.surface.raised} 与 {shadows.level-1}；metric/table/chart/file/event/image/audio/map/search/review-summary 共享标题、说明与来源栏"
+    behavior: "只消费 languagegui/v1 白名单字段；review-summary 用固定 verdict/severity/check 状态同时表达结论、问题与验证证据；图表颜色由语义序列决定；安全 URL 才产生链接；无效 fenced JSON 回落 CodeBlock，不吞原文"
+  code-panel:
+    base: "LanguageGUI 正文代码面板；rounded {rounded.code-panel}、border {colors.border.subtle}、bg {colors.surface.raised}；工具栏展示受限文件名与语言，代码区固定行号列、13px/1.6 mono 与横向滚动"
+    behavior: "支持 fence meta filename/title 与 {3,5-7}/highlight；复制只包含源码，下载只使用安全 basename；导出菜单只提供真实的下载和复制 Markdown 操作"
   aceternity:
     architecture: "Aceternity primitives → Ink wrappers → Workbench components → Pages"
     allowed: "Sidebar / Bento Grid / Text Generate Effect（非正文）/ hover-layout motion"
@@ -163,6 +180,8 @@ components:
 4. **Status**：success / warning / error / info / standby。状态色**只用于表达状态**（运行态、校验、告警），不做装饰。`info` 与 `brand.primary` 同值是刻意的——"信息"与"品牌"在语义上同源。
 5. **Identity**：`identity-1..8` 身份色阶，**只用于头像/归属标记**，不进入强调色与状态色语义（不参与按钮/边框/状态表达）。值冻结为原 avatar 调色板的 token 化版本，新增 hue 需先改本文件。
 
+LanguageGUI 对话皮肤是局部视觉映射：只在 ChatPage 根将对话的 brand emphasis 映射为 LanguageGUI 蓝色，并通过 `data-theme=light|dark` 切换 scoped surface/text/border token；不修改全局朱砂 token，也不把该映射带到其他页面。状态色仍按真实运行语义表达。
+
 ## Typography
 
 | Token | 字号 | 字重 | 行高 | 字距 | 用途 |
@@ -186,7 +205,8 @@ components:
 - **8px 网格**：一切间距是 4 的倍数；语义刻度见 frontmatter `spacing:`（micro 4 → macro 128）。
 - **页面容器**：`.page-shell` = `layout-safe` 限宽（最大 1440px，两侧留白按断点 48/40/32px）+ 纵向 `stack-md`（32px）节奏。
 - **配置工作台**（智能体/模型页）：左栏 220–256px + 流式主区，主区内容再限 `max-w-6xl`。
-- **对话页**：`/chat` 上 `<main>` 挂 `.tx-scope` 铺满暗色阅读面，与松烟墨侧栏对缝；宣纸顶栏、`mesh-bg` 与 `InkBackdrop` 在该路由收起。正文列全宽铺满（不钳 `72ch`）。SSE 连接态在对话页头。非对话页仍走宣纸壳。
+- **对话页**：生产 `/chat` 在 ChatPage 根挂更具体的 LanguageGUI scoped skin：浅蓝画布、白色内容面与蓝色强调；正文和底部 composer 共用约 920px 居中阅读轨，窄屏吃满可用空间。旧 `.tx-scope` 保留为 fallback，不影响其他页面；SSE 连接态仍在对话页头，非对话页继续走宣纸壳。本次皮肤迁移不新增 `<1024px` 或 mobile 断点承诺。
+- **对话工作流**：Goal、Plan 模式方案正文与本轮执行步骤只占一个工作流区域。Goal 是 Workbench 自有语义；Action 卡只读展示真实步骤状态，不复制 LanguageGUI multi-prompt 的编辑器按钮。
 
 ## Elevation & Depth
 
@@ -235,10 +255,12 @@ components:
 - Don't：给卡片发明新的阴影/圆角组合；用 frontmatter 里已有的阶梯。
 - Don't：把楷体用于长段正文；给标题加字重来强调（优先用字号与留白）。
 - Don't：模态套模态；破坏性操作用模态 + 显式确认而不是 toast。
-- Don't：为暗色模式写任何样式（见 Known Gaps）。
+- Don't：在组件里新增散落的 `dark:` 变体；Chat 暗色只能通过 `.chat-languagegui-skin[data-theme]` 的语义 token 映射实现，且不得扩散到其他页面。
+- Don't：为没有上传/音频/App 协议的输入控件伪造成功态，或静默丢弃用户选择的附件。
 - Don't：直接复制 Aceternity 的霓虹、光束、黑底和强 3D 默认样式。
 - Don't：在滚动容器上叠实时噪声滤镜；纸纹只用静态压缩位图。
 - Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具 chip 与正文必须保持同一套 LeAgent 视觉语法。
+- Don't：在生产 ActivityGroup 之外新增第二套工具调用展示，也不要把工具调用伪装成 assistant 正文或 LanguageGUI ContentBlock；工具状态色不得作为装饰色使用。
 
 ## Responsive Behavior
 
@@ -265,10 +287,9 @@ components:
 
 以下范围**未定义**，不要臆造；需要时先在 `notes/` 立项：
 
-1. **暗色模式**：只有单浅色主题；不要写 `dark:` 变体。
-2. **AE 动效资产**：当前只冻结目录与消费边界；真实 Lottie/WebM 需有可审计源资产后逐件接入。
-3. **空态插画体系**：可用同一水墨资产族，但不得用不相关插画填空。
-4. **对话渲染细节**：归 `agent-team-workbench-docs/chat-rendering-spec.md` 管，不在本文件范围。
-5. **水墨素材扩展**：新增素材必须与宣纸/山水同一笔触体系并做体积预算，禁止随页随机生成。
-6. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
-7. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。
+1. **AE 动效资产**：当前只冻结目录与消费边界；真实 Lottie/WebM 需有可审计源资产后逐件接入。
+2. **空态插画体系**：可用同一水墨资产族，但不得用不相关插画填空。
+3. **对话渲染细节**：归 `agent-team-workbench-docs/chat-rendering-spec.md` 管，不在本文件范围。
+4. **水墨素材扩展**：新增素材必须与宣纸/山水同一笔触体系并做体积预算，禁止随页随机生成。
+5. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
+6. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。
