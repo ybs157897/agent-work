@@ -12,7 +12,7 @@ export function ArtifactShelf({ artifacts, onOpen }: { artifacts: Artifact[]; on
   const latest = artifacts[artifacts.length - 1];
 
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border-subtle/70 bg-surface-raised/60 px-snug py-tight">
+    <div className="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised px-snug py-tight">
       <Package className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
       <span className="shrink-0 text-caption font-medium text-text-primary">已生成 {artifacts.length} 个成果</span>
       <span className="hidden min-w-0 flex-1 truncate text-caption text-text-tertiary sm:inline">

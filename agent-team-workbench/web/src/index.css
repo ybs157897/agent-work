@@ -1288,7 +1288,9 @@
 /* ---- tx：正文独立暗色皮肤（纸墨倒置；决策见 notes/implemented/feature/2026-08-26-tx-transcript-standalone-skin.md） ----
    作用域覆写 --color-* 语义层：Tailwind hsl(var(--color-*)/<alpha>) 通道让正文内
    全部语义工具类与 chat-* 组件类自动换肤；色字面量只允许出现在本 CSS 层
-   （design-tokens 门禁扫 TS/TSX，不放宽）。最终适配 = 调亮/删除本段或改挂载点。 */
+   （design-tokens 门禁扫 TS/TSX，不放宽）。
+   挂载：/chat 上 layout-shell 的 <main> + ChatPage 根；壳/面边界见
+   notes/implemented/feature/2026-08-27-tx-shell-surface-adapt.md。 */
 .tx-scope {
   /* 松烟墨三阶层深：stream 面 → 卡面 → 凹陷 */
   --color-surface-base: 224 16% 7%;
@@ -1298,9 +1300,9 @@
   --color-surface-glass: 225 16% 10%;
 
   --color-text-primary: 220 22% 93%;
-  --color-text-secondary: 220 13% 68%;
-  --color-text-tertiary: 220 10% 47%;
-  --color-text-muted: 220 10% 47%;
+  --color-text-secondary: 220 13% 72%;
+  --color-text-tertiary: 220 10% 56%;
+  --color-text-muted: 220 10% 56%;
   --color-text-inverse: 224 18% 8%;
   --color-text-on-sidebar: 220 12% 62%;
   --color-text-on-sidebar-active: 220 22% 93%;
@@ -1345,6 +1347,7 @@
     inset 0 1px 0 hsl(220 30% 96% / 0.05);
 
   background-color: hsl(var(--color-surface-base));
+  background-image: none;
   color: hsl(var(--color-text-primary));
 }
 
@@ -1453,7 +1456,7 @@
   --tx-syntax-str: 152 38% 60%;  /* 字符串/正则：灰绿 */
   --tx-syntax-num: 36 75% 62%;   /* 数字/字面量：琥珀 */
   --tx-syntax-fn: 220 25% 88%;   /* 函数/类型名：亮 */
-  --tx-syntax-comment: 220 10% 47%;
+  --tx-syntax-comment: 220 10% 56%;
 }
 
 .tx-scope .hljs {

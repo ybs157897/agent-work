@@ -1,5 +1,5 @@
 import { GitBranch, MessageSquare, PanelRight, Plus, SendHorizonal, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
@@ -7,6 +7,7 @@ import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
 import { Avatar } from '../components/avatar';
 import { Button, EmptyState } from '../components/ui';
+import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL } from '../stores/chat.store';
@@ -63,9 +64,9 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="tx-scope ink-chat flex h-full min-h-0 w-full overflow-hidden">
+    <div className="tx-scope flex h-full min-h-0 w-full overflow-hidden">
       {/* 左栏：Agent 切换排 + 任务列表（对话即任务） */}
-      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle/80 bg-surface-sunken">
+      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
           <div className="mb-1 px-1 text-caption font-medium uppercase tracking-wide text-text-tertiary">Agent</div>
           <div className="flex flex-wrap gap-1">
@@ -95,15 +96,30 @@ export default function ChatPage() {
       {/* 右侧对话区 */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {agentId ? <ConversationPane /> : (
-          <div className="flex-1 flex items-center justify-center">
-            <EmptyState
-              icon={<MessageSquare className="w-5 h-5" />}
-              title="选择一个 Agent 开始对话"
-              description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ChatChrome
+              left={<span className="text-body font-semibold text-text-primary">对话</span>}
+              right={<SseStatusPill />}
             />
+            <div className="flex flex-1 items-center justify-center">
+              <EmptyState
+                icon={<MessageSquare className="w-5 h-5" />}
+                title="选择一个 Agent 开始对话"
+                description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+              />
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-base px-6">
+      <div className="flex min-w-0 items-center gap-snug">{left}</div>
+      <div className="flex shrink-0 items-center gap-2">{right}</div>
     </div>
   );
 }
@@ -384,43 +400,47 @@ function ConversationPane() {
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* 头部 */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-raised/60 px-comfortable backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-snug">
-          {agent && <Avatar name={agent.name} url={agent.avatar} size={24} />}
-          <span className="truncate text-body font-semibold text-text-primary">
-            {agent?.name ?? ''}
-          </span>
-          <span className="truncate text-caption text-text-tertiary" title={conversation?.title}>
-            {conversation ? conversation.title : '新对话'}
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {conversationArtifacts.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setWorkspaceOpen((v) => !v)}
-              title={workspaceOpen ? '关闭工作区' : '打开工作区'}
-              aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
-            >
-              <PanelRight className="h-4 w-4" />
-            </button>
-          )}
-          {latestRun && (
-            <span className={`inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-sunken px-2 py-0.5 text-caption font-medium ${runStatusColor(latestRun.status)}`}>
-              <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-              {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
+      <ChatChrome
+        left={(
+          <>
+            {agent && <Avatar name={agent.name} url={agent.avatar} size={24} />}
+            <span className="truncate text-body font-semibold text-text-primary">
+              {agent?.name ?? ''}
             </span>
-          )}
-        </div>
-      </div>
+            <span className="truncate text-caption text-text-tertiary" title={conversation?.title}>
+              {conversation ? conversation.title : '新对话'}
+            </span>
+          </>
+        )}
+        right={(
+          <>
+            {conversationArtifacts.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setWorkspaceOpen((v) => !v)}
+                title={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+              >
+                <PanelRight className="h-4 w-4" />
+              </button>
+            )}
+            {latestRun && (
+              <span className={`inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-sunken px-2 py-0.5 text-caption font-medium ${runStatusColor(latestRun.status)}`}>
+                <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
+              </span>
+            )}
+            <SseStatusPill />
+          </>
+        )}
+      />
 
       {/* 消息流（tx：正文独立暗色皮肤，决策见 notes tx-transcript-standalone-skin） */}
       <div
         ref={scrollRef}
         data-chat-scroll="transcript"
-        className="tx-scope relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-base sm:px-6"
+        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-comfortable"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
           <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
@@ -457,17 +477,14 @@ function ConversationPane() {
       </div>
 
       {/* 底部固定：成果摘要 + 计划 / 目标 + 一体化输入卡 */}
-      <div className="shrink-0">
+      <div className="shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
         {conversationArtifacts.length > 0 && (
-          <div className="chat-thread px-4 pt-2 sm:px-6">
+          <div className="mb-2">
             <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
           </div>
         )}
-        <div className="chat-thread px-4 pt-2 sm:px-6">
-          <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
-        </div>
-        <div className="chat-thread px-4 pb-comfortable pt-2 sm:px-6">
-          <div className="chat-composer" data-chat-composer>
+        <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
+        <div className="chat-composer" data-chat-composer>
             {/* 待发送队列（运行中入队，本轮成功后自动续发） */}
             {queue.length > 0 && (
               <div className="chat-composer-queue">
@@ -534,7 +551,6 @@ function ConversationPane() {
               </Button>
             </div>
           </div>
-        </div>
       </div>
       </div>
       {workspaceOpen && (
