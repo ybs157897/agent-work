@@ -86,6 +86,22 @@
 2026-08-26 已全量过筛 106 条：除 @kvnkld 审批卡（=AICSS approval-card 原型）外与 workbench 无关。
 用途定位：动效氛围随手翻的 moodboard，不当素材库用。
 
+## 四、LanguageGUI — LLM 富输出设计 Kit（Figma 源）
+
+来源库：https://www.figma.com/community/file/1334658200949332345/languagegui-a-ui-kit-for-llms ｜ 官网：https://languagegui.com
+授权：MIT，免费商用无署名要求。核验：2026-08-27 类目级（官网+评测）；Figma 文件内逐组件命名与数量未核。
+关键事实：官网 FAQ 承认内部已验证「LLM 结构化输出 → JSON 匹配 widget → 实时渲染」链路，但刻意不开源代码库——它给的是设计契约的参照物，不是可复制的实现。
+
+| 类目 | 规模 | workbench 适用场景 |
+|---|---|---|
+| Conversational widgets（表格卡/图表卡/评分/天气图形卡等） | 10+ | 正文富媒体 Part 的契约分类起点；diff 无数据源缺口的形态库 |
+| Chat bubbles | 20+ | 回合气泡视觉精修对照 |
+| Pre-built screens（含 multi-prompt workflow 屏） | 30+ | lead/worker 编排视图布局参照 |
+| Prompt box 变体 | 8+ | composer 形态横向对照（一体化 composer 已落地） |
+| Chat sidebars 变体 | 5+ | 左栏任务列表布局对照 |
+
+局限：SaaS 浅色风与 tx 皮肤不同语系——借结构与信息架构不借皮；agent 深交互（审批/工具流）不如 AICSS 全。
+
 ## 维护约定
 
 1. 新素材进表 = 地址 + 描述 + 适用场景三列齐全，缺一不收。

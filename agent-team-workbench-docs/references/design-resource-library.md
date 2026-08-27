@@ -16,6 +16,7 @@
 | 营销面/落地页布局 | Curated + SaaS Landing Page | |
 | 真实产品界面截图（按控件/流程找） | Mobbin（候选） | 未内容核验 |
 | 暗色界面专项 | Dark.design（候选） | tx 正文暗色皮肤的同类参考池 |
+| LLM 输出富化形态（表格/图表/评分 widget、workflow 屏） | LanguageGUI | 纯 Figma 设计 Kit，MIT 免费商用，无代码实现 |
 
 ## 核心条目（已核验）
 
