@@ -19,6 +19,22 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         '/api': { target: backend, changeOrigin: true },
+        // LanguageGUI 演示支线：/languagegui-api/* → 本地模型代理（scripts/languagegui-proxy.mjs）。
+        '/languagegui-api': {
+          target: 'http://127.0.0.1:8790',
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/languagegui-api/, ''),
+        },
+      },
+    },
+    // 演示截图走 preview（无 HMR 长连接，无头浏览器能等到网络空闲）。
+    preview: {
+      proxy: {
+        '/languagegui-api': {
+          target: 'http://127.0.0.1:8790',
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/languagegui-api/, ''),
+        },
       },
     },
     test: {

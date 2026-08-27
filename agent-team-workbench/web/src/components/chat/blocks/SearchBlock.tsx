@@ -25,10 +25,10 @@ export interface SearchFileGroup {
 
 /** 两种形态共有的字段（调用方负责定位；本组件只负责绘制）。 */
 interface SearchBlockCommon {
-  /** 工具是否截断了内联结果：形态里只带保留结果，不带全部。横幅摘要因此折入截断前的 total（显示 X / 共 N …），绝不把截断结果当成完整结果展示。 */
+  /** 工具是否截断了内联结果：形态里只带保留结果，不带全部。 */
   truncated: boolean;
-  /** 截断前的结果总数（未截断时等于保留数）。 */
-  total: number;
+  /** 截断前的可信结果总数；协议未提供时保持 undefined，绝不拿保留数冒充总数。 */
+  total?: number | undefined;
   /** 折叠阈值（结果行数），默认 16。 */
   maxLines?: number | undefined;
   /** 追加到根元素的额外 class。 */
@@ -73,14 +73,18 @@ function shownCount(props: SearchBlockProps): number {
     : props.files.reduce((sum, file) => sum + file.matches.length, 0);
 }
 
-/** 横幅摘要：截断时读作「显示 X / 共 N …」（保留数与截断前总数同句，对齐 Read 卡的「显示 X / Y 行」）；未截断时是卡内持有数的平铺计数，单位后置。 */
+/** 横幅摘要：只有可信 total 才显示「显示 X / 共 N」；未知总数明确写「已截断」。 */
 function summaryText(
   props: SearchBlockProps,
   shown: number,
   truncated: boolean,
-  total: number,
+  total: number | undefined,
 ): string {
-  const count = truncated ? `显示 ${shown} / 共 ${total}` : `${shown}`;
+  const count = truncated
+    ? total !== undefined && total > shown
+      ? `显示 ${shown} / 共 ${total}`
+      : `已截断 · 显示 ${shown}`
+    : `${shown}`;
   return props.kind === 'paths'
     ? `${count} 个路径`
     : `${count} 处匹配 · ${props.files.length} 个文件`;

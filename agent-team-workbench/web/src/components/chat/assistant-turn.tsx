@@ -1,43 +1,42 @@
 import { MarkdownBody } from './markdown-body';
 import { MessageActions } from './message-actions';
-import { formatTime } from '../../utils/format';
+import type { ContentBlockDocument } from '../../utils/content-blocks';
+import { stripLanguageGuiFences } from '../../utils/content-blocks';
+import { ContentBlockList } from './content-blocks/content-block-renderer';
 
-/** Agent 一轮回复：角色标签、正文与消息操作（reasoning 已迁入活动组）。 */
+/** Agent 一轮回复：正文与消息操作（reasoning 已迁入活动组）。 */
 export function AssistantTurn({
   text = '',
-  at,
   streaming = false,
   forkKey,
   onFork,
   agentName,
+  contentBlocks,
 }: {
   text?: string;
-  at?: string;
   streaming?: boolean;
   forkKey?: string;
   onFork?: (key: string) => void;
   agentName?: string;
+  contentBlocks?: ContentBlockDocument;
 }) {
-  if (!text && !streaming) return null;
+  if (!text && !streaming && !contentBlocks) return null;
 
   const name = agentName ?? 'Agent';
+  const displayText = contentBlocks ? stripLanguageGuiFences(text) : text;
   return (
-    <article className="group" aria-label={`${name} 的消息`}>
+    <article className="chat-assistant-turn group" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
-        <div className="chat-role-label">
-          <span className="chat-role-dot" aria-hidden />
-          <span>{name}</span>
-          {at && <span className="chat-msg-time">{formatTime(at)}</span>}
-        </div>
-        {text ? (
+        {displayText ? (
           <div key={streaming ? 'streaming' : 'settled'} className={streaming ? 'chat-streaming' : undefined}>
             <div className="chat-prose">
-              <MarkdownBody text={text} streaming={streaming} />
+              <MarkdownBody text={displayText} streaming={streaming} />
               {streaming && <span className="chat-stream-caret" aria-hidden />}
             </div>
           </div>
         ) : null}
-        {at && !streaming && text ? (
+        {contentBlocks && <ContentBlockList document={contentBlocks} />}
+        {!streaming && text ? (
           <MessageActions
             text={text}
             className="mt-2"

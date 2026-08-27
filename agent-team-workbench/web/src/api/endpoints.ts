@@ -206,6 +206,7 @@ export const getWorkItemPlan = (workItemId: string) => apiFetch<Plan>(`/work-ite
 
 export interface CreateRunInput {
   agent_profile_id?: string;
+  output_contract?: 'languagegui/v1';
   runtime_preference?: { preferred: string; fallbacks?: string[] };
   requirements?: Record<string, string>;
   /** 实体级幂等键：同 key 重复创建返回既有 run（防队列 drain 重试重复建轮）。 */

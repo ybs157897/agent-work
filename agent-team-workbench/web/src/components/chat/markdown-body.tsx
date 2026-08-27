@@ -3,10 +3,12 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { CodeBlock, languageFromClassName } from "./code-block";
+import { CodeBlock, languageFromClassName, parseCodeFenceMeta } from "./code-block";
 import { MarkdownErrorBoundary } from "./error-boundary";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableCard } from "./table-card";
+import { isSafeContentUrl } from "../../utils/content-blocks";
+import { LanguageGuiFence } from "./content-blocks/languagegui-fence";
 
 const STREAMING_PARSE_INTERVAL_MS = 100;
 
@@ -79,9 +81,26 @@ function classNames(value: unknown): string[] {
 export type MdNode = {
   type: string;
   value?: string;
+  lang?: string | null;
+  meta?: string | null;
   children?: MdNode[];
   data?: { hName?: string; hProperties?: Record<string, unknown> };
 };
+
+/** Carries mdast code-fence meta through remark-rehype to the pre renderer. */
+export function remarkFenceMeta() {
+  return (tree: MdNode) => {
+    const visit = (node: MdNode) => {
+      if (node.type === 'code' && node.meta) {
+        node.data ??= {};
+        node.data.hProperties ??= {};
+        node.data.hProperties['data-fence-meta'] = node.meta;
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
 function calloutNode(type: string, body: MdNode[]): MdNode {
   return {
     type: "blockquote",
@@ -196,7 +215,7 @@ export function MarkdownBody({
 }) {
   const parsedText = useThrottledMarkdown(stripThinkTags(text), streaming);
   const remarkPlugins = useMemo(
-    () => [remarkGfm, remarkMath, remarkCallouts],
+    () => [remarkGfm, remarkMath, remarkCallouts, remarkFenceMeta],
     [],
   );
   const rehypePlugins = useMemo(
@@ -206,11 +225,12 @@ export function MarkdownBody({
   const components = useMemo(
     () =>
       ({
-        a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-          <a href={href} target="_blank" rel="noreferrer noopener">
-            {children}
-          </a>
-        ),
+        a: ({ href, children }: { href?: string; children?: ReactNode }) =>
+          isSafeContentUrl(href) ? (
+            <a href={href} target="_blank" rel="noreferrer noopener">
+              {children}
+            </a>
+          ) : <span>{children}</span>,
         code: ({
           className,
           children,
@@ -230,6 +250,7 @@ export function MarkdownBody({
               properties?: Record<string, unknown>;
               children?: Array<{ value?: string }>;
             }>;
+            data?: { meta?: string | null };
           };
           [key: string]: unknown;
         }) => {
@@ -237,12 +258,22 @@ export function MarkdownBody({
           if (code?.tagName === "code") {
             const classes = classNames(code.properties?.className);
             const language = languageFromClassName(classes.join(" "));
+            const meta = parseCodeFenceMeta(typeof code?.properties?.['data-fence-meta'] === 'string' ? code.properties['data-fence-meta'] : undefined);
             if (streaming) return <pre {...rest}>{children}</pre>;
+            if (language === "languagegui" || language === "lgui") {
+              const fallback = <CodeBlock>{children}</CodeBlock>;
+              return (
+                <LanguageGuiFence
+                  source={extractCode(code.children).trim()}
+                  fallback={fallback}
+                />
+              );
+            }
             if (language === "mermaid")
               return (
                 <MermaidDiagram source={extractCode(code.children).trim()} />
               );
-            return <CodeBlock>{children}</CodeBlock>;
+            return <CodeBlock filename={meta.filename} title={meta.title} highlightedLines={meta.highlightedLines}>{children}</CodeBlock>;
           }
           return <pre {...rest}>{children}</pre>;
         },

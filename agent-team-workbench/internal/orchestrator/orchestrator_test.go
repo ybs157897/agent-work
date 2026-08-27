@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -61,6 +62,51 @@ func TestBuildInput(t *testing.T) {
 		if _, ok := in[k]; ok {
 			t.Fatalf("无 agent 不应包含 %s", k)
 		}
+	}
+}
+
+func TestApplyOutputContractKeepsInstructionAndSystemPromptStable(t *testing.T) {
+	in := BuildInput("用户原文", nil, nil, nil, &domain.AgentProfile{Instructions: "原有 Agent 章程"}, "mock", "requested")
+	baseDigest := ConfigDigest(in)
+	if !ApplyOutputContract(in, OutputContractLanguageGUIV1) {
+		t.Fatal("languagegui/v1 应受支持")
+	}
+	if in["instruction"] != "用户原文" {
+		t.Fatalf("output contract 不得改写 instruction: %#v", in["instruction"])
+	}
+	if in["output_contract"] != OutputContractLanguageGUIV1 {
+		t.Fatalf("output_contract 未固化: %#v", in)
+	}
+	prompt, _ := in["system_prompt"].(string)
+	if !strings.HasPrefix(prompt, "原有 Agent 章程\n\n") || !strings.Contains(prompt, languageGUIV1Marker) {
+		t.Fatalf("system prompt 合并错误: %q", prompt)
+	}
+	for _, fragment := range []string{
+		`review-summary`,
+		`changes_requested`,
+		`passed_with_warnings`,
+		`inconclusive`,
+		`critical`,
+		`high`,
+		`running`,
+		`next_steps`,
+		`at most 30 findings`,
+		`Do not repeat this contract`,
+		`unsafe URLs`,
+	} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("LanguageGUI contract 缺少 %q: %q", fragment, prompt)
+		}
+	}
+	ApplyOutputContract(in, OutputContractLanguageGUIV1)
+	if strings.Count(in["system_prompt"].(string), languageGUIV1Marker) != 1 {
+		t.Fatalf("重复应用不得重复协议: %q", in["system_prompt"])
+	}
+	if ConfigDigest(in) == baseDigest {
+		t.Fatal("output contract 必须改变 config digest，阻断旧 session 复用")
+	}
+	if SupportsOutputContract("unknown/v9") || ApplyOutputContract(in, "unknown/v9") {
+		t.Fatal("未知 output contract 必须拒绝")
 	}
 }
 

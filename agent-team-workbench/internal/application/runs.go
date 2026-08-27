@@ -19,11 +19,13 @@ import (
 // ── Run 创建与控制 ───────────────────────────────────────────────────
 
 type CreateRunParams struct {
-	AgentProfileID      string
-	RuntimePreference   *domain.RuntimePreference
-	Requirements        map[string]string
-	Instruction         string
-	AcceptanceCriteria  []string
+	AgentProfileID     string
+	RuntimePreference  *domain.RuntimePreference
+	Requirements       map[string]string
+	Instruction        string
+	AcceptanceCriteria []string
+	// OutputContract 是请求级展示协议；只影响 system prompt 快照，不改写用户 instruction。
+	OutputContract      string
 	ExpectedWorkItemVer int
 	// AutoHealOf 非空表示本 run 是 session_unknown 失败的一次性自愈重试（源 run ID）。
 	// 固化进 input.auto_heal_of，防止自愈链无限递归。
@@ -42,6 +44,9 @@ type CreateRunParams struct {
 func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunParams) (*domain.ExecutionRun, error) {
 	if p.Instruction == "" {
 		return nil, fmt.Errorf("%w: instruction required", domain.ErrValidation)
+	}
+	if !orchestrator.SupportsOutputContract(p.OutputContract) {
+		return nil, fmt.Errorf("%w: unsupported output_contract %q", domain.ErrValidation, p.OutputContract)
 	}
 	var run *domain.ExecutionRun
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -213,12 +218,16 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if err := validateAdapterModel(binding, spec); err != nil {
 		return nil, err
 	}
+	runInput := orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
+		p.RuntimePreference, agent, label, reason)
+	if !orchestrator.ApplyOutputContract(runInput, p.OutputContract) {
+		return nil, fmt.Errorf("%w: unsupported output_contract %q", domain.ErrValidation, p.OutputContract)
+	}
 	r := &domain.ExecutionRun{
 		ID: runID, WorkspaceID: wi.WorkspaceID,
 		WorkItemID: wi.ID, AgentProfileID: p.AgentProfileID, Status: domain.RunQueued,
 		RuntimeLabel: label, CapabilitySnapshotID: capsID, ClientKey: p.ClientKey,
-		Input: orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
-			p.RuntimePreference, agent, label, reason),
+		Input:   runInput,
 		Version: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if binding != nil {
@@ -1114,6 +1123,7 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 			Instruction:       instruction,
 			RuntimePreference: runtimePreferenceOf(run.Input["runtime_preference"]),
 		}
+		p.OutputContract, _ = run.Input["output_contract"].(string)
 		if raw, ok := run.Input["acceptance_criteria"].([]any); ok {
 			for _, item := range raw {
 				if text, ok := item.(string); ok {

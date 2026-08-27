@@ -55,11 +55,11 @@ function TranscriptSegmentView({
       return (
         <AssistantTurn
           text={seg.msg.text}
-          at={seg.msg.at}
           streaming={seg.streaming}
           forkKey={seg.msg.key}
           onFork={onFork}
           agentName={agent?.name}
+          contentBlocks={seg.msg.contentBlocks}
         />
       );
     case 'thinking':
@@ -79,7 +79,7 @@ function TranscriptSegmentView({
         <ActivityGroup
           items={seg.items}
           stoppedRuns={stoppedRuns}
-          defaultCollapsed={stoppedRuns?.has(seg.runId) ?? false}
+          defaultCollapsed={(stoppedRuns?.has(seg.runId) ?? false) && seg.items.length > 4}
         />
       );
     case 'thinking-placeholder':
@@ -93,12 +93,7 @@ function TranscriptSegmentView({
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <article className="group" aria-label="你的消息">
-      <div className="chat-role-label">
-        <span className="chat-role-dot chat-role-dot-user" aria-hidden />
-        <span>你</span>
-        {msg.at && <span className="chat-msg-time">{formatTime(msg.at)}</span>}
-      </div>
+    <article className="chat-user-turn group" aria-label="你的消息">
       <div className="chat-user-card whitespace-pre-wrap break-words">
         {msg.text}
       </div>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FilePen, FileText, Plug, Search, Terminal, Wrench } from 'lucide-react';
 import type { ChatMessage } from '../../stores/chat.store';
-import { groupActivity, humanizeToolName, toolChipModel, toolIcon } from './tool-card';
+import { activityGroupModel, groupActivity, humanizeToolName, toolChipModel, toolIcon } from './tool-card';
 
 const msg = (over: Partial<ChatMessage> & Pick<ChatMessage, 'key' | 'runId' | 'kind' | 'text' | 'at'>): ChatMessage => over;
 
@@ -37,8 +37,44 @@ describe('humanizeToolName', () => {
 describe('toolChipModel', () => {
   it('keeps the human title and terminal state stable for a chip', () => {
     const message = msg({ key: 'chip', runId: 'r1', kind: 'tool', at: '', tool: 'bash', toolStatus: 'failed', text: '调用工具 bash：pnpm test' });
-    expect(toolChipModel(message)).toMatchObject({ title: 'Bash', state: 'error' });
+    expect(toolChipModel(message)).toMatchObject({ title: 'Bash', summary: 'Command failed', state: 'error' });
     expect(toolChipModel({ ...message, toolStatus: 'running' }, true).state).toBe('stopped');
+  });
+});
+
+describe('activityGroupModel', () => {
+  it('汇总真实工具状态并让运行中优先成为组状态', () => {
+    const items = [
+      msg({ key: 'ok', runId: 'r1', kind: 'tool', text: 'done', at: '', toolStatus: 'success' }),
+      msg({ key: 'run', runId: 'r1', kind: 'tool', text: 'running', at: '', toolStatus: 'running' }),
+      msg({ key: 'fail', runId: 'r1', kind: 'tool', text: 'failed', at: '', toolStatus: 'failed' }),
+    ];
+    expect(activityGroupModel(items)).toEqual({
+      total: 3,
+      completed: 1,
+      running: 1,
+      failed: 1,
+      stopped: 0,
+      state: 'running',
+      summary: '1 完成 · 1 进行中 · 1 失败',
+      status: '正在执行',
+    });
+  });
+
+  it('终态 run 的遗留 running 工具只做中断视觉投影，空组有明确空态', () => {
+    const item = msg({ key: 'run', runId: 'r1', kind: 'tool', text: 'running', at: '', toolStatus: 'running' });
+    expect(activityGroupModel([item], new Set(['r1']))).toMatchObject({
+      stopped: 1,
+      running: 0,
+      state: 'stopped',
+      status: '执行中断',
+    });
+    expect(activityGroupModel([])).toMatchObject({
+      total: 0,
+      state: 'empty',
+      summary: '暂无工具调用',
+      status: '等待调用',
+    });
   });
 });
 

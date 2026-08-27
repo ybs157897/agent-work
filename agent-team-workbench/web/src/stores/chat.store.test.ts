@@ -57,6 +57,27 @@ describe('buildMessages', () => {
     expect(msgs[0].text).toContain('MISSING_CREDENTIAL');
   });
 
+  it('message.completed 将 canonical content_blocks 校验后投影为 Assistant 正文块', () => {
+    const contentBlocks = {
+      version: 'languagegui/v1',
+      blocks: [{ type: 'metric', items: [{ label: 'Revenue', value: '$42' }] }],
+    };
+    const msgs = buildMessages(['run_blocks'], {
+      run_blocks: [
+        entry('run_blocks', 1, 'message.completed', { role: 'assistant', content_blocks: contentBlocks }, 'assistant'),
+        entry('run_blocks', 2, 'message.completed', { role: 'assistant', text: 'invalid', content_blocks: { version: 'bad', blocks: [] } }, 'assistant', 'invalid'),
+      ],
+    });
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0].kind).toBe('assistant');
+    expect(msgs[0].text).toBe('');
+    expect(msgs[0].contentBlocks).toEqual({
+      version: 'languagegui/v1',
+      blocks: [{ type: 'metric', items: [{ label: 'Revenue', value: '$42', tone: 'neutral' }] }],
+    });
+    expect(msgs[1].contentBlocks).toBeUndefined();
+  });
+
   it('tool 事件按 call_id 折叠：args_summary 上标题，completed 输出挂 detail，failed 转 error', () => {
     const timelines = {
       run_1: [
@@ -310,6 +331,35 @@ describe('buildMessages', () => {
     const msgs = buildMessages(['run_1'], timelines);
     expect(msgs.some((m) => m.kind === 'plan')).toBe(false);
   });
+
+  it('run.plan_updated 合法空数组清除同 run 的旧计划，畸形帧不清除', () => {
+    const cleared = buildMessages(['run_1'], {
+      run_1: [
+        entry('run_1', 1, 'run.plan_updated', {
+          steps: [{ step: '实现', status: 'in_progress' }],
+        }),
+        entry('run_1', 2, 'run.plan_updated', {
+          steps: [{ step: 'bad', status: 'bogus' }],
+        }),
+        entry('run_1', 3, 'run.plan_updated', { steps: [] }),
+      ],
+    });
+    expect(cleared.some((m) => m.kind === 'plan')).toBe(false);
+
+    const retained = buildMessages(['run_1'], {
+      run_1: [
+        entry('run_1', 1, 'run.plan_updated', {
+          steps: [{ step: '实现', status: 'in_progress' }],
+        }),
+        entry('run_1', 2, 'run.plan_updated', {
+          steps: [{ step: 'bad', status: 'bogus' }],
+        }),
+      ],
+    });
+    expect(retained.find((m) => m.kind === 'plan')?.steps).toEqual([
+      { step: '实现', status: 'in_progress' },
+    ]);
+  });
 });
 
 describe('parsePlanSteps', () => {
@@ -329,7 +379,8 @@ describe('parsePlanSteps', () => {
     ]);
   });
 
-  it('steps 缺失/非数组/无有效条目返回 null', () => {
+  it('合法空数组保留为清除信号；缺失/非数组/非空但无有效条目返回 null', () => {
+    expect(parsePlanSteps({ steps: [] })).toEqual([]);
     expect(parsePlanSteps()).toBeNull();
     expect(parsePlanSteps({})).toBeNull();
     expect(parsePlanSteps({ steps: null })).toBeNull();
@@ -874,6 +925,7 @@ describe('send 队列语义（不再 steering）', () => {
     expect(creates).toHaveLength(1); // 只发队头，不整队连发
     const sentBody = JSON.parse(String(creates[0][1]?.body));
     expect(sentBody.input.instruction).toBe('第一条');
+    expect(sentBody.output_contract).toBe('languagegui/v1');
     expect(sentBody.client_key).toBe('q:k1'); // drain 携带入队时的幂等键（重试安全）
     expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['第二条', '第三条']); // 本条排到队尾
     expect(inputCalls(fetchMock)).toHaveLength(0);
@@ -885,7 +937,9 @@ describe('send 队列语义（不再 steering）', () => {
     await useChatStore.getState().send('新消息');
     const creates = createRunCalls(fetchMock);
     expect(creates).toHaveLength(1);
-    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe('新消息');
+    const body = JSON.parse(String(creates[0][1]?.body));
+    expect(body.input.instruction).toBe('新消息');
+    expect(body.output_contract).toBe('languagegui/v1');
     expect(useChatStore.getState().queue).toEqual([]);
   });
 
@@ -912,6 +966,7 @@ describe('send 队列语义（不再 steering）', () => {
     expect(creates).toHaveLength(1);
     const sentBody = JSON.parse(String(creates[0][1]?.body));
     expect(sentBody.input.instruction).toBe('head');
+    expect(sentBody.output_contract).toBe('languagegui/v1');
     expect(sentBody.client_key).toBe('q:head');
     expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['tail']);
     expect(useChatStore.getState().sending).toBe(false); // 复位 sending 闸
@@ -949,7 +1004,9 @@ describe('send 队列语义（不再 steering）', () => {
       ([u, init]) => /\/work-items\/wi_fork\/runs$/.test(String(u)) && (init?.method ?? '') === 'POST',
     );
     expect(creates).toHaveLength(1);
-    expect(JSON.parse(String(creates[0][1]?.body)).input.instruction).toBe(`${description}\n\n【用户新指令】\n新指令`);
+    const body = JSON.parse(String(creates[0][1]?.body));
+    expect(body.input.instruction).toBe(`${description}\n\n【用户新指令】\n新指令`);
+    expect(body.output_contract).toBe('languagegui/v1');
   });
 
   it('分叉会话已有 run 后续轮：不再注入上下文包', async () => {

@@ -1145,6 +1145,7 @@ components:
       required: [agent_profile_id, input]
       properties:
         agent_profile_id: { type: string }
+        output_contract: { type: string, enum: [languagegui/v1] }
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
         requirements:
           type: object

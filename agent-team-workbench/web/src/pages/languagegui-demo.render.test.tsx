@@ -1,0 +1,55 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import LanguageGuiDemoPage from './languagegui-demo.page';
+
+describe('LanguageGUI demo · rich assistant output', () => {
+  it('默认示例同时渲染 Markdown 与结构化卡片，不把 lgui JSON 当代码展示', () => {
+    const html = renderToStaticMarkup(<LanguageGuiDemoPage />);
+
+    expect(html).toContain('<h1>本周团队效率简报</h1>');
+    expect(html).toContain('<strong>交付速度变快了</strong>');
+    expect(html).toContain('<ol>');
+    expect(html).toContain('chat-code-panel');
+    expect(html).toContain('src/metrics/delivery-summary.ts');
+    expect(html).toContain('chat-code-panel__export');
+    expect(html).toContain('chat-table-wrap');
+    expect(html).toContain('lgui-chart');
+    expect(html).toContain('lgui-clock-row');
+    expect(html).toContain('lgui-table');
+    expect(html).toContain('chat-content-rating');
+    expect(html).toContain('data-content-block="metric"');
+    expect(html).toContain('data-content-block="chart"');
+    expect(html).toContain('data-content-block="table"');
+    expect(html).toContain('data-content-block="file"');
+    expect(html).toContain('data-content-block="event"');
+    expect(html).toContain('data-content-block="image"');
+    expect(html).toContain('data-content-block="map"');
+    expect(html).toContain('data-content-block="search"');
+    expect(html).toContain('data-content-block="rating"');
+    expect(html).toContain('data-content-block="review-summary"');
+    expect(html).toContain('data-languagegui-tool-showcase');
+    expect(html).toContain('TOOL ACTIVITY · DEMO DATA');
+    expect(html).toContain('aria-label="工具调用"');
+    expect(html).toContain('data-tool="bash"');
+    expect(html).toContain('data-tool="read"');
+    expect(html).toContain('data-tool="search"');
+    expect(html).toContain('data-tool="edit"');
+    expect(html).toContain('data-tool="github_mcp"');
+    expect(html).toContain('data-state="error"');
+    expect(html).toContain('role="region" aria-label="Bash 工具详情"');
+    expect(html).toContain('agent-work/internal/orchestrator');
+    expect(html).toContain('等待审批的运行会被统一超时中断');
+    expect(html).toContain('3/4 通过');
+    expect(html).toContain('weekly-efficiency-report.csv');
+    expect(html).toContain('Meta Platforms Inc · META');
+    expect(html).toContain('Spain League · Live · 63:24');
+    expect(html).not.toContain('lgui-bubble-head');
+    expect(html).not.toContain('lgui-msg-head');
+    expect(html).toContain('class="lgui-table-cell">林晓</td>');
+    expect(html).toContain('class="lgui-table-cell">Mauro</td>');
+    expect(html).not.toContain('class="lgui-table-cell lgui-num">林晓</td>');
+    expect(html).not.toContain('class="lgui-table-cell lgui-num">Mauro</td>');
+    expect(html).not.toContain('class="language-lgui"');
+    expect(html).not.toContain('{&quot;widget&quot;:&quot;chart&quot;');
+  });
+});

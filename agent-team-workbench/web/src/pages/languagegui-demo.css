@@ -1,0 +1,1102 @@
+/*
+ * LanguageGUI 演示皮肤（zcode/languagegui-demo 支线，2026-08-27）。
+ * 复刻 Tonki Labs LanguageGUI（MIT）的设计语言：浅蓝底、白色大圆角卡、
+ * 亮蓝 accent、渐变球头像、slate 正文、拟物 widget 卡。
+ * 色值只允许出现在本 CSS 层（design-tokens 门禁扫 TS/TSX），全部挂在
+ * .lgui 作用域下，不污染工作台既有语义 token——与 tx-scope 同一手法。
+ */
+
+.lgui {
+  --lg-bg: #f2f5fc;
+  --lg-surface: #ffffff;
+  --lg-surface-tint: #eef3fe;
+  --lg-surface-hover: #f7f9fe;
+  --lg-border: #e4eaf6;
+  --lg-border-active: #b9ccf2;
+  --lg-accent: #2e7cf6;
+  --lg-accent-deep: #1d5fd0;
+  --lg-accent-soft: #dce8fe;
+  --lg-ink: #16233f;
+  --lg-text: #4a5a78;
+  --lg-muted: #8b98b3;
+  --lg-success: #1f9d61;
+  --lg-warning: #d97706;
+  --lg-danger: #dc2626;
+  --lg-radius-card: 20px;
+  --lg-radius-chip: 10px;
+  --lg-shadow-card: 0 10px 30px rgba(22, 35, 63, 0.06);
+  --lg-shadow-float: 0 16px 40px rgba(22, 35, 63, 0.1);
+
+  /* MarkdownBody reads the workbench semantic HSL components; scope them here. */
+  --color-text-primary: 222 48% 17%;
+  --color-text-secondary: 218 25% 38%;
+  --color-text-tertiary: 218 20% 56%;
+  --color-text-muted: 218 20% 56%;
+  --color-border-subtle: 220 38% 91%;
+  --color-border-strong: 220 34% 79%;
+  --color-surface-base: 220 48% 97%;
+  --color-surface-sunken: 220 45% 94%;
+  --color-surface-raised: 0 0% 100%;
+  --color-brand-primary: 217 91% 57%;
+
+  display: flex;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--lg-bg);
+  color: var(--lg-text);
+  font-family:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 左栏：thread 列表 ─────────────────────────────────────── */
+
+.lgui-sidebar {
+  display: flex;
+  width: 264px;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 20px;
+  border-right: 1px solid var(--lg-border);
+  background: var(--lg-surface);
+  padding: 20px 14px;
+}
+
+.lgui-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 8px;
+}
+
+.lgui-avatar {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 32% 28%, #9db8ff 0%, #4d7df7 42%, #2743b8 78%, #1a1f66 100%);
+  box-shadow: inset -3px -4px 8px rgba(10, 16, 48, 0.45);
+}
+
+.lgui-brand-name {
+  color: var(--lg-ink);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.lgui-new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: 12px;
+  background: var(--lg-accent);
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 11px 0;
+  transition: background 0.15s ease;
+}
+
+.lgui-new-chat:hover {
+  background: var(--lg-accent-deep);
+}
+
+.lgui-nav-label {
+  color: var(--lg-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  padding: 0 8px 6px;
+  text-transform: uppercase;
+}
+
+.lgui-threads {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.lgui-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 10px 12px;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+
+.lgui-thread:hover {
+  background: var(--lg-surface-hover);
+}
+
+.lgui-thread-active {
+  background: var(--lg-surface-tint);
+}
+
+.lgui-thread-title {
+  color: var(--lg-ink);
+  font-size: 13.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lgui-thread-meta {
+  color: var(--lg-muted);
+  font-size: 12px;
+}
+
+.lgui-sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--lg-border);
+  padding-top: 14px;
+}
+
+.lgui-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px;
+}
+
+.lgui-user-photo {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ffd9a8, #f0955e);
+}
+
+.lgui-user-name {
+  color: var(--lg-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lgui-user-plan {
+  color: var(--lg-muted);
+  font-size: 11.5px;
+}
+
+.lgui-back {
+  color: var(--lg-muted);
+  font-size: 12px;
+  text-decoration: none;
+  padding: 0 8px;
+}
+
+.lgui-back:hover {
+  color: var(--lg-accent);
+}
+
+/* ── 主区 ─────────────────────────────────────────────────── */
+
+.lgui-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lgui-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--lg-border);
+  background: color-mix(in srgb, var(--lg-surface) 82%, transparent);
+  padding: 14px 28px;
+  backdrop-filter: blur(8px);
+}
+
+.lgui-topbar-title {
+  color: var(--lg-ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.lgui-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  border: 1px solid var(--lg-border);
+  border-radius: 999px;
+  background: var(--lg-surface);
+  color: var(--lg-text);
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+.lgui-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lgui-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--lg-border);
+  border-radius: 10px;
+  background: var(--lg-surface);
+  color: var(--lg-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lgui-icon-btn:hover {
+  border-color: var(--lg-border-active);
+  color: var(--lg-accent);
+}
+.lgui-icon-btn:disabled { cursor: not-allowed; opacity: 0.45; }
+
+.lgui-stream {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 26px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 30px 28px 12px;
+}
+
+.lgui-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 auto;
+  max-width: 720px;
+  width: 100%;
+}
+
+.lgui-tool-showcase {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.lgui-tool-showcase-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lgui-tool-showcase-head > div {
+  min-width: 0;
+}
+
+.lgui-eyebrow {
+  display: block;
+  color: var(--lg-accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.lgui-tool-showcase h2 {
+  margin-top: 3px;
+  color: var(--lg-ink);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.lgui-tool-showcase-status {
+  display: inline-flex;
+  min-height: 28px;
+  flex: none;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--lg-danger) 22%, var(--lg-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lg-danger) 6%, var(--lg-surface));
+  color: var(--lg-danger);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lgui-tool-showcase-copy {
+  max-width: 64ch;
+  color: var(--lg-text);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.lgui-turn-user {
+  align-items: flex-end;
+}
+
+/* 用户气泡：右对齐白色大圆角卡 */
+.lgui-bubble {
+  border: 1px solid var(--lg-border);
+  border-radius: var(--lg-radius-card);
+  border-bottom-right-radius: 8px;
+  background: var(--lg-surface);
+  box-shadow: var(--lg-shadow-card);
+  max-width: 520px;
+  padding: 14px 18px;
+}
+
+.lgui-prose {
+  color: var(--lg-text);
+  font-size: 15px;
+  line-height: 1.65;
+  margin: 0;
+}
+
+.lgui-prose strong {
+  color: var(--lg-ink);
+  font-weight: 640;
+}
+
+/* 完整正文：复用 chat MarkdownBody 的 HTML 结构，调整到 LanguageGUI 节奏。 */
+.lgui-markdown {
+  color: var(--lg-text);
+  font-size: 15.5px;
+  line-height: 1.72;
+  min-width: 0;
+}
+
+.lgui-markdown > *:first-child { margin-top: 0; }
+.lgui-markdown > *:last-child { margin-bottom: 0; }
+.lgui-markdown h1,
+.lgui-markdown h2,
+.lgui-markdown h3,
+.lgui-markdown h4 {
+  color: var(--lg-ink);
+  font-family: inherit;
+  line-height: 1.3;
+  margin: 1.35em 0 0.45em;
+}
+.lgui-markdown h1 { font-size: 27px; letter-spacing: -0.02em; }
+.lgui-markdown h2 { font-size: 21px; }
+.lgui-markdown h3 { font-size: 17px; }
+.lgui-markdown p,
+.lgui-markdown ul,
+.lgui-markdown ol,
+.lgui-markdown blockquote { margin: 0.8em 0; }
+.lgui-markdown ul,
+.lgui-markdown ol { padding-left: 1.55em; }
+.lgui-markdown li + li { margin-top: 0.25em; }
+.lgui-markdown a { color: var(--lg-accent-deep); text-decoration: underline; text-decoration-color: var(--lg-border-active); text-underline-offset: 3px; }
+.lgui-markdown strong { color: var(--lg-ink); font-weight: 650; }
+.lgui-markdown blockquote { border-left: 3px solid var(--lg-border-active); color: var(--lg-text); padding: 8px 16px; }
+.lgui-markdown .chat-callout { border: 1px solid var(--lg-border-active); border-radius: 12px; background: var(--lg-surface-tint); padding: 10px 14px; }
+.lgui-markdown .chat-callout-title { color: var(--lg-accent-deep); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; margin: 0 0 2px; text-transform: uppercase; }
+.lgui-markdown .chat-code-panel { border: 1px solid var(--lg-border); border-radius: 14px; background: var(--lg-surface); box-shadow: var(--lg-shadow-card); font-size: 13px; line-height: 1.6; overflow-x: auto; }
+.lgui-markdown :not(pre) > code { border: 1px solid var(--lg-border); border-radius: 5px; background: var(--lg-surface-tint); color: var(--lg-accent-deep); font-size: 0.9em; padding: 0.12em 0.35em; }
+.lgui-markdown .chat-table-wrap { border: 1px solid var(--lg-border); border-radius: 12px; box-shadow: var(--lg-shadow-card); margin: 1em 0; overflow-x: auto; }
+.lgui-markdown table { border-collapse: collapse; min-width: 100%; }
+.lgui-markdown th { background: var(--lg-surface-tint); color: var(--lg-ink); font-size: 12px; font-weight: 650; padding: 9px 12px; text-align: left; }
+.lgui-markdown td { border-top: 1px solid var(--lg-border); padding: 9px 12px; }
+
+/* ── widget 卡（回答即界面） ───────────────────────────────── */
+
+.lgui-widget-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lgui-widget {
+  border: 1px solid var(--lg-border);
+  border-radius: var(--lg-radius-card);
+  background: var(--lg-surface);
+  box-shadow: var(--lg-shadow-card);
+  padding: 20px 22px;
+}
+
+.lgui-widget-active {
+  border-color: var(--lg-border-active);
+  background: linear-gradient(180deg, var(--lg-surface-tint), var(--lg-surface) 70%);
+}
+
+.lgui-widget-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.lgui-widget-title h4 {
+  color: var(--lg-ink);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+/* 世界时钟行 */
+.lgui-clock-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lgui-clock-city {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lgui-clock-city b {
+  color: var(--lg-ink);
+  font-size: 19px;
+  font-weight: 680;
+}
+
+.lgui-chip {
+  align-self: flex-start;
+  border: 1px solid var(--lg-border);
+  border-radius: var(--lg-radius-chip);
+  background: var(--lg-surface);
+  box-shadow: 0 2px 6px rgba(22, 35, 63, 0.05);
+  color: var(--lg-text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+}
+
+.lgui-clock-time {
+  text-align: right;
+}
+
+.lgui-clock-time b {
+  color: var(--lg-ink);
+  display: block;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lgui-clock-time span {
+  color: var(--lg-muted);
+  font-size: 14px;
+}
+
+.lgui-clock-dim b {
+  color: color-mix(in srgb, var(--lg-ink) 55%, var(--lg-muted));
+}
+
+.lgui-clock-face {
+  flex-shrink: 0;
+}
+
+/* 汇率卡 */
+.lgui-amount-label {
+  color: var(--lg-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lgui-amount {
+  color: var(--lg-ink);
+  font-size: 36px;
+  font-weight: 720;
+  letter-spacing: -0.015em;
+  margin: 2px 0 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lgui-fx-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--lg-border);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.lgui-fx-row + .lgui-fx-swap,
+.lgui-fx-swap + .lgui-fx-row {
+  margin-top: 6px;
+}
+
+.lgui-fx-swap {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0;
+}
+
+.lgui-fx-swap button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 9px;
+  background: var(--lg-accent);
+  color: #fff;
+  cursor: pointer;
+  transform: rotate(90deg);
+}
+
+.lgui-fx-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--lg-surface-tint);
+  font-size: 17px;
+}
+
+.lgui-fx-code {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.lgui-fx-code b {
+  color: var(--lg-ink);
+  font-size: 14.5px;
+}
+
+.lgui-fx-code span {
+  color: var(--lg-muted);
+  font-size: 12px;
+}
+
+.lgui-fx-value {
+  color: var(--lg-ink);
+  font-size: 16px;
+  font-weight: 660;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 数据表 widget */
+.lgui-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+}
+
+.lgui-table th {
+  color: var(--lg-muted);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 8px 10px;
+  text-align: left;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.lgui-table td {
+  border-top: 1px solid var(--lg-border);
+  color: var(--lg-text);
+  padding: 11px 10px;
+}
+
+.lgui-table td:first-child {
+  color: var(--lg-ink);
+  font-weight: 600;
+}
+
+.lgui-table .lgui-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.lgui-delta-up {
+  color: var(--lg-success);
+  font-weight: 620;
+}
+
+.lgui-delta-down {
+  color: var(--lg-danger);
+  font-weight: 620;
+}
+
+/* 迷你柱状图 */
+.lgui-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 44px;
+}
+
+.lgui-spark i {
+  border-radius: 4px 4px 2px 2px;
+  background: var(--lg-accent-soft);
+  display: block;
+  width: 14px;
+}
+
+.lgui-spark i.lgui-spark-hi {
+  background: var(--lg-accent);
+}
+
+/* 评分 widget */
+.lgui-rating {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lgui-stars {
+  display: flex;
+  gap: 4px;
+  color: var(--lg-warning);
+}
+
+.lgui-star {
+  border: 0;
+  background: transparent;
+  color: var(--lg-warning);
+  cursor: pointer;
+  display: inline-flex;
+  padding: 2px;
+}
+.lgui-star:hover,
+.lgui-star:focus-visible { color: var(--lg-accent); outline: 2px solid var(--lg-border-active); outline-offset: 2px; }
+
+.lgui-rating-text b {
+  color: var(--lg-ink);
+  display: block;
+  font-size: 15px;
+}
+
+.lgui-rating-text span {
+  color: var(--lg-muted);
+  font-size: 12.5px;
+}
+
+/* 语音回复 widget */
+.lgui-voice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lgui-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 12px;
+  background: var(--lg-accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.lgui-wave {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 30px;
+  flex: 1;
+}
+
+.lgui-wave i {
+  background: var(--lg-accent);
+  border-radius: 2px;
+  display: block;
+  opacity: 0.35;
+  width: 3px;
+}
+
+.lgui-wave i.lgui-wave-played {
+  opacity: 1;
+}
+
+.lgui-voice-time {
+  color: var(--lg-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 动作行 */
+.lgui-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lg-muted);
+}
+
+.lgui-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--lg-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lgui-actions button:hover {
+  background: var(--lg-surface-tint);
+  color: var(--lg-accent);
+}
+.lgui-actions button.lgui-action-active { background: var(--lg-accent-soft); color: var(--lg-accent); }
+.lgui-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
+
+/* ── composer ─────────────────────────────────────────────── */
+
+.lgui-composer-wrap {
+  margin: 10px auto 0;
+  max-width: 720px;
+  padding: 0 28px 24px;
+  width: 100%;
+}
+
+.lgui-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.lgui-suggestion {
+  border: 1px solid var(--lg-border);
+  border-radius: 999px;
+  background: var(--lg-surface);
+  color: var(--lg-text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 6px 14px;
+  transition: all 0.15s ease;
+}
+
+.lgui-suggestion:hover {
+  border-color: var(--lg-border-active);
+  color: var(--lg-accent);
+}
+
+.lgui-composer {
+  border: 1px solid var(--lg-border);
+  border-radius: 22px;
+  background: var(--lg-surface);
+  box-shadow: var(--lg-shadow-float);
+  padding: 14px 14px 12px 18px;
+}
+
+.lgui-composer-input {
+  border: 1px solid var(--lg-border);
+  border-radius: 13px;
+  background: transparent;
+  color: var(--lg-ink);
+  font-family: inherit;
+  font-size: 15px;
+  outline: none;
+  padding: 8px 12px;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  width: 100%;
+}
+
+.lgui-composer-input:focus-visible {
+  border-color: var(--lg-border-active);
+  background: var(--lg-surface-hover);
+  box-shadow: 0 0 0 3px var(--lg-accent-soft);
+}
+
+.lgui-composer-input::placeholder {
+  color: var(--lg-muted);
+}
+
+.lgui-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lgui-composer-tools {
+  display: flex;
+  gap: 4px;
+}
+
+.lgui-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 12px;
+  background: var(--lg-accent);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.lgui-send:hover {
+  background: var(--lg-accent-deep);
+}
+
+/* 滚动条：与皮肤同调 */
+.lgui ::-webkit-scrollbar {
+  width: 10px;
+}
+
+.lgui ::-webkit-scrollbar-thumb {
+  background: var(--lg-border);
+  border: 3px solid transparent;
+  border-radius: 8px;
+  background-clip: content-box;
+}
+
+.lgui ::selection {
+  background: var(--lg-accent-soft);
+  color: var(--lg-ink);
+}
+
+/* ── 真模型版新增：模型菜单/生成中/柱图/错误 ─────────────────── */
+
+.lgui-model-select {
+  position: relative;
+}
+
+.lgui-icon-btn-wide {
+  width: auto;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.lgui-menu {
+  position: absolute;
+  top: 38px;
+  right: 0;
+  z-index: 20;
+  min-width: 230px;
+  border: 1px solid var(--lg-border);
+  border-radius: 14px;
+  background: var(--lg-surface);
+  box-shadow: var(--lg-shadow-float);
+  padding: 6px;
+}
+
+.lgui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--lg-ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.lgui-menu-item:hover {
+  background: var(--lg-surface-hover);
+}
+
+.lgui-menu-item-active {
+  background: var(--lg-surface-tint);
+}
+
+.lgui-menu-item span:first-child {
+  flex: 1;
+}
+
+.lgui-menu-provider {
+  color: var(--lg-muted);
+  font-size: 11.5px;
+}
+
+.lgui-pending {
+  border: 1px dashed var(--lg-border-active);
+  border-radius: var(--lg-radius-card);
+  color: var(--lg-muted);
+  font-size: 13px;
+  overflow: hidden;
+  padding: 16px 20px;
+  position: relative;
+}
+
+.lgui-pending::after {
+  animation: lgui-shimmer 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, var(--lg-accent-soft), transparent);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+@keyframes lgui-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.lgui-broken {
+  color: var(--lg-text);
+  font-size: 12px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.lgui-error {
+  border: 1px solid var(--lg-border);
+  border-left: 3px solid var(--lg-danger);
+  border-radius: 12px;
+  background: var(--lg-surface);
+  color: var(--lg-text);
+  font-size: 13px;
+  margin: 0 auto;
+  max-width: 720px;
+  padding: 12px 16px;
+  width: 100%;
+}
+
+.lgui-chart {
+  align-items: flex-end;
+  display: flex;
+  gap: 14px;
+  height: 132px;
+  padding-top: 8px;
+}
+
+.lgui-chart-col {
+  align-items: center;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.lgui-chart-col i {
+  background: var(--lg-accent-soft);
+  border-radius: 6px 6px 3px 3px;
+  display: block;
+  max-width: 46px;
+  width: 100%;
+}
+
+.lgui-chart-col i.lgui-spark-hi {
+  background: var(--lg-accent);
+}
+
+.lgui-chart-value {
+  color: var(--lg-ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+}
+
+.lgui-chart-label {
+  color: var(--lg-muted);
+  font-size: 11.5px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lgui-stop {
+  background: #fff;
+  border-radius: 3px;
+  display: block;
+  height: 12px;
+  width: 12px;
+}
+
+.lgui-actions button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.lgui-table-cell {
+  color: var(--lg-text);
+}
+
+/* ── 交互修复轮：思考块 / 输入禁用 ─────────────────────────── */
+
+.lgui-reasoning {
+  border: 1px solid var(--lg-border);
+  border-radius: 14px;
+  background: var(--lg-surface-hover);
+  overflow: hidden;
+}
+
+.lgui-reasoning-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--lg-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 9px 14px;
+  text-align: left;
+}
+
+.lgui-reasoning-head:hover {
+  color: var(--lg-accent);
+}
+
+.lgui-reasoning-chev {
+  transition: transform 0.15s ease;
+}
+
+.lgui-reasoning-chev-open {
+  transform: rotate(180deg);
+}
+
+.lgui-reasoning-body {
+  border-top: 1px solid var(--lg-border);
+  color: var(--lg-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.lgui-composer-input:disabled {
+  color: var(--lg-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}

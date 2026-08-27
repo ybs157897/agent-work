@@ -314,6 +314,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		}
 		p := application.CreateRunParams{
 			AgentProfileID:     req.AgentProfileID,
+			OutputContract:     req.OutputContract,
 			Requirements:       req.Requirements,
 			Instruction:        req.Input.Instruction,
 			AcceptanceCriteria: req.Input.AcceptanceCriteria,

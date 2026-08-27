@@ -337,6 +337,7 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 		return
 	}
 	p := CreateRunParams{AgentProfileID: r.AgentProfileID, Instruction: instruction, AutoHealOf: r.ID}
+	p.OutputContract, _ = r.Input["output_contract"].(string)
 	if raw, ok := r.Input["acceptance_criteria"].([]any); ok {
 		for _, item := range raw {
 			if text, ok := item.(string); ok {

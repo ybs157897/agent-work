@@ -1,12 +1,13 @@
-import { GitBranch, MessageSquare, PanelRight, Plus, SendHorizonal, Square, X } from 'lucide-react';
+import { BookOpen, Boxes, GitBranch, MessageSquare, Moon, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
+import { PROMPT_LIBRARY, PromptBox } from '../components/chat/prompt-box';
 import { Avatar } from '../components/avatar';
-import { Button, EmptyState } from '../components/ui';
+import { EmptyState } from '../components/ui';
 import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
@@ -14,6 +15,7 @@ import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage,
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
+import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { deriveChatDock } from '../utils/derive-chat-dock';
 import {
@@ -32,6 +34,9 @@ export default function ChatPage() {
   const openConversation = useChatStore((s) => s.openConversation);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
+  const [promptSeed, setPromptSeed] = useState<{ id: number; text: string } | null>(null);
+  const [chatTheme, setChatTheme] = useState<ChatTheme>(readInitialChatTheme);
   const urlBooted = useRef(false);
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
@@ -60,13 +65,26 @@ export default function ChatPage() {
 
   const pick = (id: string) => {
     selectAgent(id);
+    setSidebarView('chats');
+    setPromptSeed(null);
     setSearchParams({ agent: id }, { replace: true });
+  };
+  const changeChatTheme = () => {
+    const next = chatTheme === 'light' ? 'dark' : 'light';
+    setChatTheme(next);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem('chat:theme', next);
+      } catch {
+        // 存储不可用时仍保留本次页面状态。
+      }
+    }
   };
 
   return (
-    <div className="tx-scope flex h-full min-h-0 w-full overflow-hidden">
+    <div className="tx-scope chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden" data-theme={chatTheme}>
       {/* 左栏：Agent 切换排 + 任务列表（对话即任务） */}
-      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
+      <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
           <div className="mb-1 px-1 text-caption font-medium uppercase tracking-wide text-text-tertiary">Agent</div>
           <div className="flex flex-wrap gap-1">
@@ -87,19 +105,32 @@ export default function ChatPage() {
             ))}
           </div>
         </div>
-        {agentId && <ConversationList onPick={(id) => {
-          openConversation(id);
-          setSearchParams(id ? { agent: agentId, c: id } : { agent: agentId }, { replace: true });
-        }} />}
+        {agentId && (
+          <>
+            <ChatSidebarNav view={sidebarView} onChange={setSidebarView} />
+            {sidebarView === 'chats' && <ConversationList onPick={(id) => {
+              setPromptSeed(null);
+              openConversation(id);
+              setSearchParams(id ? { agent: agentId, c: id } : { agent: agentId }, { replace: true });
+            }} />}
+            {sidebarView === 'library' && <SidebarLibrary onUse={(text) => {
+              openConversation(null);
+              setSearchParams({ agent: agentId }, { replace: true });
+              setPromptSeed({ id: Date.now(), text });
+              setSidebarView('chats');
+            }} />}
+            {sidebarView === 'apps' && <SidebarApps />}
+          </>
+        )}
       </aside>
 
       {/* 右侧对话区 */}
-      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {agentId ? <ConversationPane /> : (
+      <div className="chat-languagegui-main flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        {agentId ? <ConversationPane key={`${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
-              right={<SseStatusPill />}
+              right={<><ChatThemeToggle theme={chatTheme} onToggle={changeChatTheme} /><SseStatusPill /></>}
             />
             <div className="flex flex-1 items-center justify-center">
               <EmptyState
@@ -117,65 +148,227 @@ export default function ChatPage() {
 
 function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
   return (
-    <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-base px-6">
+    <div className="chat-chrome flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-base px-6">
       <div className="flex min-w-0 items-center gap-snug">{left}</div>
       <div className="flex shrink-0 items-center gap-2">{right}</div>
     </div>
   );
 }
 
+type ChatTheme = 'light' | 'dark';
+
+function readInitialChatTheme(): ChatTheme {
+  if (typeof window === 'undefined') return 'light';
+  return window.localStorage.getItem('chat:theme') === 'dark' ? 'dark' : 'light';
+}
+
+function ChatThemeToggle({ theme, onToggle }: { theme: ChatTheme; onToggle: () => void }) {
+  const dark = theme === 'dark';
+  return (
+    <button type="button" onClick={onToggle} className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary" aria-label={dark ? '切换到浅色模式' : '切换到暗色模式'} title={dark ? '浅色模式' : '暗色模式'} aria-pressed={dark}>
+      {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+    </button>
+  );
+}
+
+type SidebarView = 'chats' | 'library' | 'apps';
+
+function ChatSidebarNav({ view, onChange }: { view: SidebarView; onChange: (view: SidebarView) => void }) {
+  const items: Array<{ id: SidebarView; label: string; icon: ReactNode }> = [
+    { id: 'chats', label: '对话', icon: <MessageSquare className="h-3.5 w-3.5" /> },
+    { id: 'library', label: 'Library', icon: <BookOpen className="h-3.5 w-3.5" /> },
+    { id: 'apps', label: 'Apps', icon: <Boxes className="h-3.5 w-3.5" /> },
+  ];
+  return (
+    <nav className="chat-sidebar-nav" aria-label="对话资源">
+      {items.map((item) => (
+        <button key={item.id} type="button" aria-pressed={view === item.id} onClick={() => onChange(item.id)} className={`chat-sidebar-nav-item${view === item.id ? ' chat-sidebar-nav-item-active' : ''}`}>
+          {item.icon}<span>{item.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function SidebarLibrary({ onUse }: { onUse: (prompt: string) => void }) {
+  return (
+    <section className="chat-sidebar-panel" aria-labelledby="chat-library-title">
+      <div className="chat-sidebar-panel-head">
+        <BookOpen className="h-4 w-4" aria-hidden />
+        <span id="chat-library-title">Prompt Library</span>
+      </div>
+      <p className="px-snug pb-tight text-caption leading-5 text-text-tertiary">选择一个模板，在新对话中继续编辑后发送。</p>
+      <div className="space-y-tight px-tight pb-snug">
+        {PROMPT_LIBRARY.map((item) => (
+          <button key={item.title} type="button" onClick={() => onUse(item.prompt)} className="w-full rounded-card border border-border-subtle bg-surface-raised px-snug py-tight text-left shadow-card transition-colors hover:border-brand-primary/30 hover:bg-brand-muted/20">
+            <span className="block text-caption font-medium text-text-primary">{item.title}</span>
+            <span className="mt-micro line-clamp-2 block text-caption leading-5 text-text-tertiary">{item.prompt}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SidebarApps() {
+  return (
+    <section className="chat-sidebar-panel" aria-labelledby="chat-apps-title">
+      <div className="chat-sidebar-panel-head">
+        <Boxes className="h-4 w-4" aria-hidden />
+        <span id="chat-apps-title">Apps</span>
+      </div>
+      <div className="space-y-tight px-tight pb-snug">
+        <div className="chat-sidebar-app-card">
+          <span><strong>LanguageGUI v1</strong><small>结构化正文输出</small></span>
+          <b className="text-status-success">已启用</b>
+        </div>
+        <div className="chat-sidebar-app-card">
+          <span><strong>外部 Apps</strong><small>连接器与第三方服务</small></span>
+          <b className="text-text-tertiary">尚未配置</b>
+        </div>
+        <Link to="/agents" className="chat-sidebar-settings-link">
+          <Settings2 className="h-3.5 w-3.5" aria-hidden />在 Agent 配置中管理工具权限
+        </Link>
+      </div>
+    </section>
+  );
+}
+
 function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
   const conversations = useChatStore((s) => s.conversations);
   const conversationId = useChatStore((s) => s.conversationId);
+  const agentId = useChatStore((s) => s.agentId);
   const runSnapshots = useRunsStore((s) => s.runs);
+  const [query, setQuery] = useState('');
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!agentId || typeof window === 'undefined') {
+      setPinnedIds([]);
+      return;
+    }
+    try {
+      const value = JSON.parse(window.localStorage.getItem(`chat:pinned:${agentId}`) ?? '[]') as unknown;
+      setPinnedIds(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []);
+    } catch {
+      setPinnedIds([]);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    const focusSearch = (event: globalThis.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', focusSearch);
+    return () => document.removeEventListener('keydown', focusSearch);
+  }, []);
+
+  const togglePinned = (id: string) => {
+    setPinnedIds((current) => {
+      const next = current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
+      if (agentId && typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(`chat:pinned:${agentId}`, JSON.stringify(next));
+        } catch {
+          // 浏览器禁用存储时保留本次会话内状态。
+        }
+      }
+      return next;
+    });
+  };
+
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filtered = conversations.filter((conversation) => !normalizedQuery || conversation.title.toLocaleLowerCase().includes(normalizedQuery));
+  const pinned = filtered.filter((conversation) => pinnedIds.includes(conversation.id));
+  const history = filtered.filter((conversation) => !pinnedIds.includes(conversation.id));
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between px-3 pb-1 pt-3">
-        <span className="text-caption font-medium uppercase tracking-wide text-text-tertiary">任务列表</span>
+      <div className="px-tight pb-tight pt-tight">
+        <div className="chat-conversation-search">
+          <Search className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />
+          <input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话" aria-label="搜索对话" />
+          <kbd>⌘K</kbd>
+        </div>
+      </div>
+      <div className="flex items-center justify-between px-snug pb-tight">
+        <span className="text-caption font-medium text-text-tertiary">对话（{filtered.length}）</span>
         <button
           onClick={() => onPick(null)}
-          title="新任务"
-          aria-label="新任务"
+          title="新对话"
+          aria-label="新对话"
           className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-raised hover:text-text-primary"
         >
           <Plus className="w-4 h-4" />
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {conversations.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => onPick(c.id)}
-            className={`mb-0.5 w-full rounded-lg border px-tight py-tight text-left transition-colors duration-150 ${
-              conversationId === c.id
-                ? 'border-brand-primary/25 bg-brand-muted/50'
-                : 'border-transparent hover:border-border-subtle/60 hover:bg-surface-raised/60'
-            }`}
-          >
-            <div className="flex items-center gap-1 text-body text-text-primary">
-              {c.parent_id && (
-                <GitBranch className="h-3 w-3 shrink-0 text-text-tertiary" aria-label="分叉会话" />
-              )}
-              <span className="truncate font-medium">{c.title}</span>
-            </div>
-            <div className="mt-0.5 flex items-center gap-1.5 text-caption text-text-tertiary">
-              <span
-                className={`h-1.5 w-1.5 rounded-full shrink-0 ${conversationStatusDotClass(c, runSnapshots)}`}
-              />
-              {c.runs_count} 轮 · {conversationLabel(c, runSnapshots)}
-            </div>
-          </button>
-        ))}
-        {conversations.length === 0 && (
-          <EmptyState title="暂无会话" description="点右上角 + 开始新对话" className="py-6" />
+        {pinned.length > 0 && (
+          <ConversationGroup label="置顶" items={pinned} conversationId={conversationId} pinnedIds={pinnedIds} runSnapshots={runSnapshots} onPick={onPick} onTogglePinned={togglePinned} />
+        )}
+        {history.length > 0 && (
+          <ConversationGroup label="历史" items={history} conversationId={conversationId} pinnedIds={pinnedIds} runSnapshots={runSnapshots} onPick={onPick} onTogglePinned={togglePinned} />
+        )}
+        {filtered.length === 0 && (
+          <EmptyState title={query ? '没有匹配的对话' : '暂无会话'} description={query ? '换一个关键词试试' : '点右上角 + 开始新对话'} className="py-6" />
         )}
       </div>
     </div>
   );
 }
 
-function ConversationPane() {
+function ConversationGroup({
+  label,
+  items,
+  conversationId,
+  pinnedIds,
+  runSnapshots,
+  onPick,
+  onTogglePinned,
+}: {
+  label: string;
+  items: WorkItem[];
+  conversationId: string | null;
+  pinnedIds: string[];
+  runSnapshots: Record<string, { status: string }>;
+  onPick: (id: string | null) => void;
+  onTogglePinned: (id: string) => void;
+}) {
+  return (
+    <section className="mb-snug" aria-label={label}>
+      <div className="px-tight pb-micro text-caption font-medium uppercase tracking-wide text-text-tertiary">{label}</div>
+      <div className="space-y-micro">
+        {items.map((conversation) => {
+          const isPinned = pinnedIds.includes(conversation.id);
+          const selected = conversationId === conversation.id;
+          return (
+            <div key={conversation.id} className={`chat-conversation-row group${selected ? ' chat-conversation-row-active' : ''}`}>
+              <button type="button" onClick={() => onPick(conversation.id)} className="min-w-0 flex-1 px-tight py-tight text-left">
+                <div className="flex items-center gap-1 text-body text-text-primary">
+                  {conversation.parent_id && <GitBranch className="h-3 w-3 shrink-0 text-text-tertiary" aria-label="分叉会话" />}
+                  <span className="truncate font-medium">{conversation.title}</span>
+                </div>
+                <div className="mt-0.5 flex items-center gap-1.5 text-caption text-text-tertiary">
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${conversationStatusDotClass(conversation, runSnapshots)}`} aria-hidden />
+                  {conversation.runs_count} 轮 · {conversationLabel(conversation, runSnapshots)}
+                </div>
+              </button>
+              <button type="button" onClick={() => onTogglePinned(conversation.id)} className="chat-conversation-pin" aria-label={isPinned ? `取消置顶：${conversation.title}` : `置顶：${conversation.title}`} title={isPinned ? '取消置顶' : '置顶'}>
+                {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initialPrompt: string; chatTheme: ChatTheme; onToggleTheme: () => void }) {
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
   const conversations = useChatStore((s) => s.conversations);
@@ -198,13 +391,17 @@ function ConversationPane() {
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const approvals = useRunsStore((s) => s.approvals);
 
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(initialPrompt);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const followStreamRef = useRef(true);
   const approvalAnchorsRef = useRef<Record<string, string>>({});
   const [approvalAnchors, setApprovalAnchors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (initialPrompt) textareaRef.current?.focus();
+  }, [initialPrompt]);
 
   const agent = agents.find((a) => a.id === agentId);
   const conversation = conversations.find((c) => c.id === conversationId);
@@ -382,14 +579,7 @@ function ConversationPane() {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
-    if (textareaRef.current) textareaRef.current.style.height = 'auto';
     void send(text);
-  };
-
-  /** 输入框随内容增高，封顶 160px 后内部滚动。 */
-  const autoGrow = (el: HTMLTextAreaElement) => {
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   };
 
   const applyPrompt = (text: string) => {
@@ -399,7 +589,7 @@ function ConversationPane() {
 
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="chat-languagegui-main flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <ChatChrome
         left={(
           <>
@@ -414,6 +604,7 @@ function ConversationPane() {
         )}
         right={(
           <>
+            <ChatThemeToggle theme={chatTheme} onToggle={onToggleTheme} />
             {conversationArtifacts.length > 0 && (
               <button
                 type="button"
@@ -440,7 +631,7 @@ function ConversationPane() {
       <div
         ref={scrollRef}
         data-chat-scroll="transcript"
-        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-comfortable"
+        className="chat-languagegui-transcript relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-comfortable"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
           <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
@@ -477,80 +668,34 @@ function ConversationPane() {
       </div>
 
       {/* 底部固定：成果摘要 + 计划 / 目标 + 一体化输入卡 */}
-      <div className="shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
-        {conversationArtifacts.length > 0 && (
-          <div className="mb-2">
-            <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
-          </div>
-        )}
-        <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
-        <div className="chat-composer" data-chat-composer>
-            {/* 待发送队列（运行中入队，本轮成功后自动续发） */}
-            {queue.length > 0 && (
-              <div className="chat-composer-queue">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-caption text-text-tertiary">待发送队列（{queue.length} 条）</span>
-                  {latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded' && (
-                    <button
-                      type="button"
-                      onClick={() => void drainQueue()}
-                      disabled={sending}
-                      className="text-caption font-medium text-brand-primary transition-colors hover:text-brand-accent disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      继续发送
-                    </button>
-                  )}
-                </div>
-                {queue.map((q, i) => (
-                  <div key={q.clientKey} className="flex items-center gap-2">
-                    <span className="text-caption tabular-nums text-text-tertiary">{i + 1}</span>
-                    <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{q.text}</span>
-                    <button
-                      type="button"
-                      aria-label="移除待发送消息"
-                      title="移除"
-                      onClick={() => removeQueued(i)}
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value);
-                autoGrow(e.currentTarget);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  doSend();
-                }
-              }}
-              rows={1}
-              placeholder={latestRun && !TERMINAL.has(latestRun.status)
-                ? '运行中，消息将进入队列，完成后自动发送'
-                : '输入消息，Enter 发送，Shift+Enter 换行'}
-              className="chat-composer-input"
-            />
-            <div className="flex items-center gap-2 px-snug pb-tight pt-0">
-              <span className="min-w-0 flex-1 truncate text-caption tabular-nums text-text-tertiary">{usageText}</span>
-              {runInFlight && (
-                <Button variant="ghost" type="button" onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')} disabled={!latestRunId || stoppingRunId === latestRunId}>
-                  <Square className="w-3.5 h-3.5" />
-                  {stoppingRunId === latestRunId ? '停止中' : '停止'}
-                </Button>
-              )}
-              <Button variant="primary" onClick={doSend} disabled={!draft.trim() || sending}>
-                {sending ? '发送中' : '发送'}
-                <SendHorizonal className="w-4 h-4" />
-              </Button>
+      <div className="chat-bottom-region shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
+        <div className="chat-composer-stack">
+          {conversationArtifacts.length > 0 && (
+            <div className="mb-2">
+              <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
             </div>
-          </div>
+          )}
+          <ChatBottomDock workflow={dock.workflow} />
+          <PromptBox
+            key={conversationId ?? 'new-conversation'}
+            draft={draft}
+            onDraftChange={setDraft}
+            onSend={doSend}
+            placeholder={latestRun && !TERMINAL.has(latestRun.status)
+              ? '运行中，消息将进入队列，完成后自动发送'
+              : '输入消息，Enter 发送，Shift+Enter 换行'}
+            inputRef={textareaRef}
+            queue={queue}
+            onRemoveQueued={removeQueued}
+            canDrainQueue={!!latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded'}
+            onDrainQueue={() => void drainQueue()}
+            sending={sending}
+            runInFlight={runInFlight}
+            stopping={!!latestRunId && stoppingRunId === latestRunId}
+            onStop={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
+            usageText={usageText}
+          />
+        </div>
       </div>
       </div>
       {workspaceOpen && (
