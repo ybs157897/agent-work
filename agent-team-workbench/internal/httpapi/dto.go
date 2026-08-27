@@ -242,6 +242,7 @@ type unblockWorkItemRequest struct {
 
 type createRunRequest struct {
 	AgentProfileID    string            `json:"agent_profile_id"`
+	OutputContract    string            `json:"output_contract"`
 	RuntimePreference *runtimePrefDTO   `json:"runtime_preference"`
 	Requirements      map[string]string `json:"requirements"`
 	ClientKey         string            `json:"client_key"`

@@ -39,3 +39,13 @@ func TestWorkItemDTOPassesThroughLockFields(t *testing.T) {
 		t.Fatalf("无锁字段应 omitted: %s", body)
 	}
 }
+
+func TestCreateRunRequestDecodesOutputContractWithoutTouchingInstruction(t *testing.T) {
+	var req createRunRequest
+	if err := json.Unmarshal([]byte(`{"agent_profile_id":"agent_1","output_contract":"languagegui/v1","input":{"instruction":"用户原文"}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.OutputContract != "languagegui/v1" || req.Input.Instruction != "用户原文" {
+		t.Fatalf("create run request decode mismatch: %+v", req)
+	}
+}

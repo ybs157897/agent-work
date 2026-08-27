@@ -13,6 +13,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/migtest"
+	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
@@ -841,10 +842,17 @@ func finishRun(ctx context.Context, svc *application.Service, runID string, assi
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db")+"?_pragma=foreign_keys(1)")
+	// The application integration fixtures deliberately exercise asynchronous
+	// approval resolution. Keep the file-backed SQLite connection serialized so
+	// the polling reader cannot race the grant resolver's write transaction into
+	// SQLITE_BUSY. This mirrors SQLite's one-writer deployment semantics while
+	// leaving the PostgreSQL path unaffected.
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db")+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	// migtest 动态发现 migrations/sqlite 全量清单，新增迁移免同步文件名列表。
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
@@ -910,6 +918,33 @@ func TestSystemPromptInjection(t *testing.T) {
 	}
 	if _, has := runBare.Input["system_prompt"]; has {
 		t.Fatalf("空 Instructions 不应落 system_prompt: %#v", runBare.Input["system_prompt"])
+	}
+	chatWI, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "Chat 输出协议", AgentProfileID: agent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatRun, err := svc.CreateRun(ctx, chatWI.ID, application.CreateRunParams{
+		AgentProfileID: agent.ID,
+		Instruction:    "保持原文",
+		OutputContract: orchestrator.OutputContractLanguageGUIV1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chatRun.Input["instruction"] != "保持原文" {
+		t.Fatalf("Chat contract 不得改写 instruction: %#v", chatRun.Input["instruction"])
+	}
+	if chatRun.Input["output_contract"] != orchestrator.OutputContractLanguageGUIV1 {
+		t.Fatalf("output_contract 未固化: %#v", chatRun.Input)
+	}
+	chatPrompt, _ := chatRun.Input["system_prompt"].(string)
+	if !strings.HasPrefix(chatPrompt, charter+"\n\n") || !strings.Contains(chatPrompt, "[Chat output contract: languagegui/v1]") {
+		t.Fatalf("Chat contract 应追加在 Agent 章程后: %q", chatPrompt)
+	}
+	if _, err := svc.CreateRun(ctx, chatWI.ID, application.CreateRunParams{
+		AgentProfileID: agent.ID, Instruction: "bad", OutputContract: "unknown/v9",
+	}); err == nil || !strings.Contains(err.Error(), "unsupported output_contract") {
+		t.Fatalf("未知 output_contract 应拒绝: %v", err)
 	}
 }
 
