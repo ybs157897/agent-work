@@ -6,6 +6,7 @@ import { AppShellSkeleton, Skeleton } from './components/ui';
 import { LayoutShell } from './components/layout-shell';
 import { Toaster } from './components/toast';
 import DashboardPage from './pages/dashboard.page';
+import LanguageGuiDemoPage from './pages/languagegui-demo.page';
 import NotFoundPage from './pages/not-found.page';
 import { bootstrap } from './stores/bootstrap';
 import { useWorkspaceStore } from './stores/workspace.store';
@@ -27,6 +28,12 @@ export default function App() {
   useEffect(() => {
     void bootstrap();
   }, []);
+
+  // LanguageGUI 演示页：独立皮肤（.lgui 作用域）、mock 数据，
+  // 不进工作台壳层、不等后端 bootstrap——支线演示专用，见 languagegui-demo.page.tsx。
+  if (location.pathname === '/languagegui') {
+    return <LanguageGuiDemoPage />;
+  }
 
   if (phase === 'error') {
     return (
