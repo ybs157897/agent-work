@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../stores/chat.store';
+import type { ChatMessage, PlanStepView } from '../stores/chat.store';
 import type { TimelineEntry } from '../stores/runs.store';
 
 /** Kimi transcript meta.goal / Codex thread goal 的 UI 投影（仅会话内显式启动后才有）。 */
@@ -7,13 +7,16 @@ export interface SessionGoalView {
   status?: string;
 }
 
-export interface ChatDockState {
-  /** /goal 或 goal.* 事件激活的目标（Kimi: meta.goal.objective）。 */
+/** LanguageGUI 视觉原语承载的 Workbench 只读工作流。 */
+export interface ChatWorkflowView {
   goal?: SessionGoalView;
-  /** Codex todo-list / run.plan_updated 步骤清单。 */
-  todoPlan?: ChatMessage;
-  /** Codex proposed-plan / plan item 正文（plan 模式产出，非 agent 配置）。 */
+  steps: PlanStepView[];
   proposedPlan?: string;
+}
+
+export interface ChatDockState {
+  /** Goal、执行步骤与 Plan 模式正文的统一只读投影。 */
+  workflow?: ChatWorkflowView;
 }
 
 const GOAL_INLINE = /^\/goal(?:\s+([\s\S]+))?$/i;
@@ -25,10 +28,12 @@ export function deriveSessionGoal(
   timelines?: Readonly<Record<string, TimelineEntry[]>>,
 ): SessionGoalView | undefined {
   let fromEvents: SessionGoalView | undefined;
+  let sawGoalEvent = false;
   if (timelines) {
     for (const entries of Object.values(timelines)) {
       for (const e of entries) {
         if (!GOAL_EVENT_TYPES.has(e.type)) continue;
+        sawGoalEvent = true;
         if (e.type === 'goal.clear') {
           fromEvents = undefined;
           continue;
@@ -46,7 +51,8 @@ export function deriveSessionGoal(
       }
     }
   }
-  if (fromEvents) return fromEvents;
+  // 显式 clear 是终态，不能回退到历史 /goal 文本重新激活旧目标。
+  if (sawGoalEvent) return fromEvents;
 
   let armed = false;
   let goal: SessionGoalView | undefined;
@@ -90,14 +96,28 @@ export function deriveProposedPlan(messages: readonly ChatMessage[], latestRunId
   return last;
 }
 
+export function deriveChatWorkflow(
+  messages: readonly ChatMessage[],
+  latestRunId?: string,
+  timelines?: Readonly<Record<string, TimelineEntry[]>>,
+): ChatWorkflowView | undefined {
+  const goal = deriveSessionGoal(messages, timelines);
+  const todoPlan = deriveTodoPlan(messages, latestRunId);
+  const proposedPlan = deriveProposedPlan(messages, latestRunId);
+  const steps = todoPlan?.steps ?? [];
+  if (!goal && steps.length === 0 && !proposedPlan) return undefined;
+  return {
+    ...(goal ? { goal } : {}),
+    steps,
+    ...(proposedPlan ? { proposedPlan } : {}),
+  };
+}
+
 export function deriveChatDock(
   messages: readonly ChatMessage[],
   latestRunId?: string,
   timelines?: Readonly<Record<string, TimelineEntry[]>>,
 ): ChatDockState {
-  return {
-    goal: deriveSessionGoal(messages, timelines),
-    todoPlan: deriveTodoPlan(messages, latestRunId),
-    proposedPlan: deriveProposedPlan(messages, latestRunId),
-  };
+  const workflow = deriveChatWorkflow(messages, latestRunId, timelines);
+  return workflow ? { workflow } : {};
 }

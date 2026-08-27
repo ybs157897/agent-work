@@ -1,14 +1,13 @@
-import { Check, CircleX, ChevronDown, ChevronRight, FilePen, FileText, LoaderCircle, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
-import { createElement, useState, type ReactNode } from 'react';
+import { Check, CircleStop, CircleX, ChevronDown, ChevronRight, FilePen, FileText, LoaderCircle, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
+import { createElement, useId, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { toolDuration, type ChatMessage } from '../../stores/chat.store';
 import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
-import { StateDot } from './blocks/StateDot';
 import { TerminalBlock } from './blocks/TerminalBlock';
 import { ReadBlock } from './blocks/ReadBlock';
 import { SearchBlock } from './blocks/SearchBlock';
 import { cx } from './blocks/cx';
-import { FAMILY_TITLES, toolRowModel, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
+import { FAMILY_TITLES, toolRowModel, toolRowTitleForState, classifyTool, type ToolFamily, type ToolRowModel, type ToolRowState } from './tool-model';
 import { readBlockFromOutput } from './read-model';
 import { parseGrepOutput, parsePathList } from './search-parse';
 import css from './tool-row.module.css';
@@ -85,80 +84,184 @@ export function toolChipModel(msg: ChatMessage, stopped = false) {
   const state: ToolRowState = stopped && model.state === 'running' ? 'stopped' : model.state;
   return {
     title: humanizeToolName(msg.tool, model.family),
+    summary: toolRowTitleForState(model, state),
     state,
     duration: toolDuration(msg.startedAt, msg.completedAt),
   } as const;
 }
 
+export type ActivityGroupState = ToolRowState | 'empty';
+
+export interface ActivityGroupModel {
+  total: number;
+  completed: number;
+  running: number;
+  failed: number;
+  stopped: number;
+  state: ActivityGroupState;
+  summary: string;
+  status: string;
+}
+
+/** 同一 run 工具组的可见汇总；只消费真实工具消息，不从正文推断。 */
+export function activityGroupModel(
+  items: ChatMessage[],
+  stoppedRuns?: ReadonlySet<string>,
+): ActivityGroupModel {
+  let completed = 0;
+  let running = 0;
+  let failed = 0;
+  let stopped = 0;
+  for (const item of items) {
+    const visuallyStopped = stoppedRuns?.has(item.runId) && item.toolStatus === 'running';
+    const state = toolChipModel(item, visuallyStopped).state;
+    if (state === 'ok') completed += 1;
+    else if (state === 'running') running += 1;
+    else if (state === 'error') failed += 1;
+    else stopped += 1;
+  }
+  const total = items.length;
+  const state: ActivityGroupState = total === 0
+    ? 'empty'
+    : running > 0
+      ? 'running'
+      : failed > 0
+        ? 'error'
+        : stopped > 0
+          ? 'stopped'
+          : 'ok';
+  const summary = total === 0
+    ? '暂无工具调用'
+    : [
+        completed ? `${completed} 完成` : '',
+        running ? `${running} 进行中` : '',
+        failed ? `${failed} 失败` : '',
+        stopped ? `${stopped} 中断` : '',
+      ].filter(Boolean).join(' · ');
+  const status = state === 'running'
+    ? '正在执行'
+    : state === 'error'
+      ? '执行失败'
+      : state === 'stopped'
+        ? '执行中断'
+        : state === 'ok'
+          ? '执行完成'
+          : '等待调用';
+  return { total, completed, running, failed, stopped, state, summary, status };
+}
+
+function ActivityStatusIcon({ state }: { state: ActivityGroupState }) {
+  if (state === 'running') return <LoaderCircle className={css.runningIcon} aria-hidden />;
+  if (state === 'error') return <CircleX className={css.errorIcon} aria-hidden />;
+  if (state === 'stopped') return <CircleStop className={css.stoppedIcon} aria-hidden />;
+  if (state === 'ok') return <Check className={css.okIcon} aria-hidden />;
+  return <Wrench aria-hidden />;
+}
+
 /**
- * 同 run 工具调用按 LeAgent 的横向 chip 轨展示；单选 chip 后在轨道下方展开本地专用详情体。
- * stoppedRuns 把终态 run 遗留的 running 帧投影为中断态，避免继续显示运行动画。
+ * 同 run 工具调用收敛成一个 LanguageGUI 活动卡；组级折叠控制扫描密度，
+ * 单选 Action 卡在下方渐进披露真实工具详情。
  */
 export function ActivityGroup({
   items,
   stoppedRuns,
   defaultCollapsed = false,
+  defaultSelectedKey,
   suppressDiff = false,
 }: {
   items: ChatMessage[];
   stoppedRuns?: ReadonlySet<string>;
-  /** run 终态且无 running 工具时默认折叠 */
+  /** 历史终态 run 默认只展示组级汇总。 */
   defaultCollapsed?: boolean;
+  /** Demo/验收可指定首个展开项；生产默认不抢占用户注意力。 */
+  defaultSelectedKey?: string;
   /** turn 级 diff 汇总存在时隐藏工具行内 diff */
   suppressDiff?: boolean;
 }) {
-  const [panelExpanded, setPanelExpanded] = useState(!defaultCollapsed);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const headingId = useId();
+  const bodyId = useId();
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [selectedKey, setSelectedKey] = useState<string | null>(() =>
+    defaultSelectedKey && items.some((item) => item.key === defaultSelectedKey)
+      ? defaultSelectedKey
+      : null,
+  );
   const reduceMotion = useReducedMotion();
+  const group = activityGroupModel(items, stoppedRuns);
   const selected = selectedKey ? items.find((item) => item.key === selectedKey) : undefined;
   const selectedStopped = selected ? stoppedRuns?.has(selected.runId) && selected.toolStatus === 'running' : false;
   const selectedModel = selected ? toolRowModel(selected) : undefined;
   const selectedState = selected ? toolChipModel(selected, selectedStopped).state : undefined;
-  const showDetails = Boolean(panelExpanded && selectedModel && selectedState);
+  const showDetails = Boolean(!collapsed && selectedModel && selectedState);
 
   return (
-    <div className={css.activityBody}>
-      <div className={css.stripRow}>
-        <button
-          type="button"
-          className={css.detailsToggle}
-          disabled={!selected}
-          onClick={() => setPanelExpanded((value) => !value)}
-          aria-expanded={showDetails}
-          aria-label="切换工具详情"
-        >
-          {showDetails ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}
-        </button>
-        <div className={css.strip} role="list" aria-label="工具调用">
-          {items.map((m, index) => (
-            <ToolRow
-              key={m.key}
-              msg={m}
-              index={index + 1}
-              stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
-              selected={selectedKey === m.key}
-              onToggle={() => {
-                setSelectedKey((key) => key === m.key ? null : m.key);
-                setPanelExpanded(true);
-              }}
-            />
-          ))}
+    <section
+      className={css.activity}
+      data-state={group.state}
+      aria-labelledby={headingId}
+    >
+      <header className={css.activityHeader}>
+        <span className={css.activityMark} aria-hidden><Wrench /></span>
+        <div className={css.activityHeading}>
+          <h3 id={headingId}>工具执行</h3>
+          <p>{group.summary}</p>
         </div>
-      </div>
-      <AnimatePresence initial={false}>
-        {showDetails && selectedModel && selectedState && (
-          <motion.div
-            className={css.details}
-            initial={reduceMotion ? false : { opacity: 0, height: 0, y: -4 }}
-            animate={{ opacity: 1, height: 'auto', y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, height: 0, y: -4 }}
-            transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+        <span
+          className={css.groupStatus}
+          role={group.state === 'running' ? 'status' : undefined}
+          aria-atomic={group.state === 'running' ? 'true' : undefined}
+        >
+          <ActivityStatusIcon state={group.state} />
+          <span>{group.status}</span>
+        </span>
+        {items.length > 0 && (
+          <button
+            type="button"
+            className={css.collapseButton}
+            onClick={() => setCollapsed((value) => !value)}
+            aria-expanded={!collapsed}
+            aria-controls={bodyId}
+            aria-label={collapsed ? `展开 ${group.total} 个工具调用` : '收起工具调用'}
           >
-            <ExpandedBody model={selectedModel} state={selectedState} suppressDiff={suppressDiff} />
-          </motion.div>
+            {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
+          </button>
         )}
-      </AnimatePresence>
-    </div>
+      </header>
+
+      {items.length === 0 ? (
+        <div className={css.emptyState}>当前回合没有工具调用</div>
+      ) : !collapsed ? (
+        <div id={bodyId} className={css.activityBody}>
+          <div className={css.strip} role="list" aria-label="工具调用">
+            {items.map((m, index) => (
+              <ToolRow
+                key={m.key}
+                msg={m}
+                index={index + 1}
+                stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
+                selected={selectedKey === m.key}
+                onToggle={() => setSelectedKey((key) => key === m.key ? null : m.key)}
+              />
+            ))}
+          </div>
+          <AnimatePresence initial={false}>
+            {showDetails && selectedModel && selectedState && selected && (
+              <motion.div
+                className={css.details}
+                role="region"
+                aria-label={`${toolChipModel(selected, selectedStopped).title} 工具详情`}
+                initial={reduceMotion ? false : { opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                transition={reduceMotion ? { duration: 0 } : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              >
+                <ExpandedBody model={selectedModel} state={selectedState} suppressDiff={suppressDiff} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -213,25 +316,27 @@ const TOOL_BODY_RENDERERS: Partial<Record<ToolFamily, FamilyBodyRenderer>> = {
     if (model.output !== null) {
       const grep = parseGrepOutput(model.output);
       if (grep !== null) {
+        const shown = grep.files.reduce((count, file) => count + file.matches.length, 0);
         return (
           <SearchBlock
             kind="matches"
             className={css.cardBody}
             files={grep.files}
             truncated={grep.truncated}
-            total={grep.files.reduce((n, f) => n + f.matches.length, 0)}
+            total={grep.truncated ? undefined : shown}
           />
         );
       }
       const paths = parsePathList(model.output);
       if (paths !== null) {
+        const truncated = model.output.length >= 1900;
         return (
           <SearchBlock
             kind="paths"
             className={css.cardBody}
             paths={paths}
-            truncated={model.output.length >= 1900}
-            total={paths.length}
+            truncated={truncated}
+            total={truncated ? undefined : paths.length}
           />
         );
       }
@@ -251,13 +356,27 @@ function ExpandedBody({
   suppressDiff?: boolean;
 }) {
   const output = model.output;
+  if (
+    suppressDiff
+    && (model.family === 'write' || model.family === 'edit')
+    && output !== null
+    && looksLikeUnifiedDiff(output)
+  ) {
+    return <div className={css.emptyDetails}>变更内容已汇总到本轮 Diff</div>;
+  }
   const specialized = TOOL_BODY_RENDERERS[model.family]?.(model, state, { suppressDiff });
   if (specialized !== undefined && specialized !== null) return <>{specialized}</>;
 
   // 通用 IN/OUT 卡：单文件工具不暴露 IN（路径已是摘要；对齐 DSH single-file 取舍）。
   const singleFile = model.filePath !== undefined;
   const body = singleFile ? null : model.body;
-  if (body === null && output === null) return null;
+  if (body === null && output === null) {
+    return (
+      <div className={css.emptyDetails}>
+        {state === 'running' ? '等待工具输出…' : '工具未返回可展示详情'}
+      </div>
+    );
+  }
   return (
     <div className={cx(css.ioCard, css.cardBody)}>
       {body !== null && (
@@ -279,8 +398,8 @@ function ExpandedBody({
   );
 }
 
-/** 运行态的无障碍文本：扫光与状态点是纯视觉，AT 需要文字承载状态。 */
-function stateStatus(state: ToolRowState): string | null {
+/** 工具状态同时用于可见文案和无障碍名称，不能只靠颜色或动画。 */
+function stateStatus(state: ToolRowState): string {
   switch (state) {
     case 'running':
       return '进行中';
@@ -289,11 +408,11 @@ function stateStatus(state: ToolRowState): string | null {
     case 'stopped':
       return '已中断';
     default:
-      return null;
+      return '已完成';
   }
 }
 
-/** ToolCallStrip 中的单次调用 chip；详情由 ActivityGroup 在 strip 外统一渲染。 */
+/** LanguageGUI Action 卡；详情由 ActivityGroup 在轨道外单选展开。 */
 export function ToolRow({
   msg,
   index,
@@ -310,21 +429,47 @@ export function ToolRow({
   const chip = toolChipModel(msg, stopped);
   const state = chip.state;
   const duration = chip.duration;
-  // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
-  const icon = createElement(toolIcon(msg.tool), { className: 'h-3.5 w-3.5' });
-  // 卡片存在性判定与 ExpandedBody 的分派保持一致（行能否展开取决于有无任何展开体）。
   const status = stateStatus(state);
   const title = chip.title;
-  const statusIcon = state === 'running' ? <LoaderCircle className={css.runningIcon} aria-hidden /> : state === 'error' ? <CircleX className={css.errorIcon} aria-hidden /> : state === 'stopped' ? <StateDot state="warning" /> : <Check className={css.okIcon} aria-hidden />;
+  // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
+  const icon = createElement(toolIcon(msg.tool), { 'aria-hidden': true });
+  const statusIcon = state === 'running'
+    ? <LoaderCircle className={css.runningIcon} aria-hidden />
+    : state === 'error'
+      ? <CircleX className={css.errorIcon} aria-hidden />
+      : state === 'stopped'
+        ? <CircleStop className={css.stoppedIcon} aria-hidden />
+        : <Check className={css.okIcon} aria-hidden />;
+  const accessibleName = [
+    `Action ${index ?? 1}`,
+    title,
+    chip.summary,
+    status,
+    duration,
+  ].filter(Boolean).join('，');
   return (
     <div className={css.root} data-tool={msg.tool} data-state={state} role="listitem">
-      {status !== null && <span className={css.visuallyHidden}>{status}</span>}
-      <button type="button" className={css.chip} data-selected={selected || undefined} onClick={onToggle} aria-expanded={selected} aria-pressed={selected} title={title}>
-        <span className={css.index}>{index ?? 1}</span>
-        <span className={css.icon}>{icon}</span>
-        <span className={css.title}>{title}</span>
-        {duration !== null && <span className={css.summarySuffix}>{duration}</span>}
-        <span className={css.status}>{statusIcon}</span>
+      <button
+        type="button"
+        className={css.chip}
+        data-selected={selected || undefined}
+        onClick={onToggle}
+        aria-expanded={selected}
+        aria-pressed={selected}
+        aria-label={accessibleName}
+      >
+        <span className={css.chipMeta}>
+          <span className={css.index}>Action {index ?? 1}</span>
+          <span className={css.toolBadge}>
+            <span className={css.icon}>{icon}</span>
+            <span className={css.title}>{title}</span>
+          </span>
+        </span>
+        <span className={css.chipSummary} title={chip.summary}>{chip.summary}</span>
+        <span className={css.chipFooter}>
+          <span className={css.duration}>{duration ?? '—'}</span>
+          <span className={css.status}>{statusIcon}<span>{status}</span></span>
+        </span>
       </button>
     </div>
   );

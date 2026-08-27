@@ -136,7 +136,7 @@ components:
     base: "LanguageGUI 工作流只读投影；同一 rounded {rounded.container} 容器内依次展示目标摘要、方案草稿与 Action 步骤链；步骤卡 rounded {rounded.card}; 连接线用 {colors.border.subtle}; 状态同时用图标和文字表达"
     behavior: "目标正文始终可扫读；方案草稿可折叠；Action 顺序来自真实 run.plan_updated；无真实 mutation 契约时不展示设置、删除、新增等伪编辑控件"
   chat-tool-activity:
-    base: "生产工具调用唯一入口 ActivityGroup：浅蓝/白色 LanguageGUI 表面、28px 紧凑 chip 轨、细语义边框、品牌蓝互动态；bash/code/read/search/write/edit/mcp/other 详情体挂在同一组内"
+    base: "生产工具调用唯一入口 ActivityGroup：58px 汇总头 + 横向 232×88px LanguageGUI Action 卡轨；浅蓝/白色表面、细语义边框、品牌蓝选中态；bash/code/read/search/write/edit/mcp/other 详情体挂在同一组内"
     behavior: "组与 chip 只由同一 run 的真实工具事件聚合；状态同时显示图标和文字，状态色只表达真实 pending/running/success/error/stopped；点击后单选展开详情，长输入/输出在详情体内渐进披露"
     demo-boundary: "Demo 只能复用生产 ActivityGroup/ToolRow/详情渲染器与可审计 fixture，不得从模型正文、Markdown 或静态 content block 伪造工具调用；无事件时显示空态"
   content-block:
@@ -259,7 +259,7 @@ LanguageGUI 对话皮肤是局部视觉映射：只在 ChatPage 根将对话的 
 - Don't：为没有上传/音频/App 协议的输入控件伪造成功态，或静默丢弃用户选择的附件。
 - Don't：直接复制 Aceternity 的霓虹、光束、黑底和强 3D 默认样式。
 - Don't：在滚动容器上叠实时噪声滤镜；纸纹只用静态压缩位图。
-- Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具 chip 与正文必须保持同一套 LeAgent 视觉语法。
+- Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具 Action 卡与正文必须保持同一套 LanguageGUI 阅读语法。
 - Don't：在生产 ActivityGroup 之外新增第二套工具调用展示，也不要把工具调用伪装成 assistant 正文或 LanguageGUI ContentBlock；工具状态色不得作为装饰色使用。
 
 ## Responsive Behavior

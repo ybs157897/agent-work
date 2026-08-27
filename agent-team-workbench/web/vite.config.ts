@@ -27,6 +27,16 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    // 演示截图走 preview（无 HMR 长连接，无头浏览器能等到网络空闲）。
+    preview: {
+      proxy: {
+        '/languagegui-api': {
+          target: 'http://127.0.0.1:8790',
+          changeOrigin: true,
+          rewrite: (p) => p.replace(/^\/languagegui-api/, ''),
+        },
+      },
+    },
     test: {
       environment: 'node',
       include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],

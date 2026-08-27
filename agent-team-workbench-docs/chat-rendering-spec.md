@@ -11,7 +11,7 @@
 **真相源约定**：本文是渲染清单与视觉规格；数值生效值以
 `web/src/index.css`（`.chat-*` 区）、`web/src/components/chat/*.module.css`、
 `web/tailwind.config.js` 为准。文档与代码漂移时以代码为准修本文。
-几何来源：消息、正文、Callout、代码面板与工具 chip 对齐 LeAgent；Terminal/Read/Search/Diff 内容体保留 DSH 几何。生产 `/chat` 的展示层采用已验收的 LanguageGUI 浅蓝/白/蓝强调 scoped skin；颜色全部改走本项目语义 token。真实 TranscriptSegment、Markdown、队列、usage、stop/send、SSE、审批、artifact 与 dock 行为不因换肤改变。
+几何来源：消息、正文与 Callout 保留 LeAgent 扫描节奏；代码面板和工具 Action 卡对齐 LanguageGUI，Terminal/Read/Search/Diff 内容体保留 DSH 几何。生产 `/chat` 的展示层采用已验收的 LanguageGUI 浅蓝/白/蓝强调 scoped skin；颜色全部改走本项目语义 token。真实 TranscriptSegment、Markdown、队列、usage、stop/send、SSE、审批、artifact 与 dock 行为不因换肤改变。
 
 主题：生产 Chat 根使用 `data-theme=light|dark` 切换 LanguageGUI scoped 语义 token；默认 light，用户显式选择后本地记忆。组件禁止自行写 `dark:` 颜色分支。
 
@@ -26,7 +26,7 @@
 | thinking | reasoning 事件 | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `h-52` 纵滚 `px-3 py-2.5` | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
-| activity | 同 run 连续工具行 | LeAgent 式横向 `ActivityGroup`；chip 点击后在轨道下展开详情 | chip 28px 高，编号/图标/单行工具名/耗时/状态 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
+| activity | 同 run 连续工具行 | LanguageGUI `ActivityGroup`；组头汇总，Action 卡点击后在轨道下展开详情 | `Action N` + 工具徽章 + 摘要 + 耗时 + 状态文字 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
 | turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
@@ -76,19 +76,23 @@
 
 ## 4. 工具块层（activity 组内）
 
-### 公共件（LeAgent 工具 chip + 本地专用详情体）
+### 公共件（LanguageGUI Action 卡 + 本地专用详情体）
 | 件 | 规格 |
 |---|---|
-| ActivityGroup | 28px 横向滚动轨；左侧 28px detail toggle；chip 间距 2px、无滚动条 |
-| ToolRow | 高 28px，宽 132–224px；序号 10px mono + 12px 工具图标 + 单行工具名 + 10px 耗时 + 状态图标；hover 凹面 40%，active 50% |
+| ActivityGroup | 58px 汇总头；历史大组可折叠；横向 Action 卡轨，8px 间距、细滚动条 |
+| ToolRow | 约 232×88px；`Action N` 与工具徽章在首行，双行摘要居中，耗时与图标+文字状态收尾；选中用品牌蓝边与 ring |
 | 状态 | pending/running=Loader；success=Check；error=Alert；stopped=中断图标；图标之外有读屏文本，运行动画遵循 reduced-motion |
 | 展开体 | 同一时间只展开一个 chip；复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
 
 **实现不变量**：`ActivityGroup` 是生产环境工具调用的唯一渲染入口。它只由
 真实 transcript/run 事件聚合而成，工具数量、顺序、名称、参数摘要、耗时与终态都必须
 来自同一个 run 的事件；不得根据助手正文、Markdown 或模型声称的“已调用工具”创建
-工具卡。`tool-card.tsx` 负责组装组与 chip，族渲染器只负责详情体，二者之间不允许再
+工具卡。`tool-card.tsx` 负责组装组与 Action 卡，族渲染器只负责详情体，二者之间不允许再
 出现 demo 专用的第二套工具协议。
+
+历史回放仍受 500 帧预算约束，但裁剪必须先保留正文结构锚点与完整工具 bundle：
+已结束调用保留 `started + completed/failed`，运行中调用保留 `started + 最新 progress`，
+再用最新 `message.delta` 填充余量；禁止 terminal 脱离 started 单独留下无名称工具卡。
 
 LanguageGUI 范式在这里落成四条可验收规则：
 
@@ -98,7 +102,7 @@ LanguageGUI 范式在这里落成四条可验收规则：
   pending/running/success/error/stopped 状态。
 - **可读**：状态必须同时输出图标和文字；动画只是运行态辅助，`prefers-reduced-motion`
   下仍保留静态状态文字。
-- **披露**：首屏只展示可扫描的工具 chip；点击一个 chip 才展开对应详情体，同一组
+- **披露**：首屏只展示可扫描的工具 Action 卡；点击一张卡才展开对应详情体，同一组
   同时只展开一个，长输入/输出在各自滚动区域内截断而不撑破阅读轨。
 
 Demo 页面若要演示工具调用，必须复用生产 `ActivityGroup`/`ToolRow` 与详情渲染器，
@@ -108,9 +112,9 @@ Demo 页面若要演示工具调用，必须复用生产 `ActivityGroup`/`ToolRo
 ### 族专用渲染器（TOOL_BODY_RENDERERS 注册表）
 | 族 | 块 | 几何/表面 | 排版 | 状态 |
 |---|---|---|---|---|
-| bash/code | TerminalBlock | 12px 圆角；底 `surface-sunken`；左 30px 状态点槽（卡自身 padding）；margin 16/0 | mono 13；行高 22；输出 `white-space:pre` 横滚不折行（对齐是载荷） | 运行中只画横幅无分隔线；退出码≠0 → 错误胶囊（`status-error` 边 40%/底 8%，11px，sticky） |
-| read | ReadBlock | 12px 圆角；底 `surface-sunken/55`；banner `surface-sunken` 9×14；48px 行号列 | mono 13/22；行号右对齐 `user-select:none`（chrome 不是内容） | 长行横滚；行号列固定不随文件宽度动 |
-| search | SearchBlock | 同 ReadBlock 几何；body 8/14/12/0 | 13/22 `pre` 不折行；行号弱化；文件组头 600 路径 + 命中数，整行折叠开关 | matches/paths 两形态；截断标记 |
+| bash/code | TerminalBlock | 12px 圆角细边；raised body + `surface-sunken/58` header；左 30px 状态点槽；margin 0 | mono 13；行高 22；输出 `white-space:pre` 横滚不折行（对齐是载荷） | 运行中只画横幅无分隔线；退出码≠0 → 错误胶囊（`status-error` 边 40%/底 8%，11px，sticky） |
+| read | ReadBlock | 12px 圆角细边；raised body + `surface-sunken/58` banner；48px 行号列；margin 0 | mono 13/22；行号右对齐 `user-select:none`（chrome 不是内容） | 长行横滚；行号列固定不随文件宽度动 |
+| search | SearchBlock | 与 ReadBlock 同表面；body 8/14/12/0 | 13/22 `pre` 不折行；行号弱化；文件组头 600 路径 + 命中数，整行折叠开关 | matches/paths 两形态；截断标记 |
 | write/edit | DiffCard | `.chat-diff`：`rounded-lg` 边 `border-subtle` 底 `surface-raised`；头 `surface-sunken/50` | mono 11/16；增行 `status-success/10`、删行 `status-error/10`；split 双栏等宽 | 按文件分组（`divide-y`）；文件头 `surface-base/60` |
 | others | 通用 IN/OUT 卡 | 凹陷底 `surface-sunken` + 细边 + 12px 圆角；section 独立限高 150px（长输入不掩埋短输出） | mono 12/18；IN/OUT 标签 sticky | 错误输出 `status-error`；单文件工具不暴露 IN |
 

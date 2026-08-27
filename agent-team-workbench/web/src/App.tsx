@@ -6,7 +6,6 @@ import { AppShellSkeleton, Skeleton } from './components/ui';
 import { LayoutShell } from './components/layout-shell';
 import { Toaster } from './components/toast';
 import DashboardPage from './pages/dashboard.page';
-import LanguageGuiDemoPage from './pages/languagegui-demo.page';
 import NotFoundPage from './pages/not-found.page';
 import { bootstrap } from './stores/bootstrap';
 import { useWorkspaceStore } from './stores/workspace.store';
@@ -15,6 +14,7 @@ import { isChatPath, isFullBleedPath } from './utils/route-layout';
 
 const AgentsPage = lazy(() => import('./pages/agents.page'));
 const ChatPage = lazy(() => import('./pages/chat.page'));
+const LanguageGuiDemoPage = lazy(() => import('./pages/languagegui-demo.page'));
 const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
 const SettingsPage = lazy(() => import('./pages/settings.page'));
@@ -29,10 +29,14 @@ export default function App() {
     void bootstrap();
   }, []);
 
-  // LanguageGUI 演示页：独立皮肤（.lgui 作用域）、mock 数据，
-  // 不进工作台壳层、不等后端 bootstrap——支线演示专用，见 languagegui-demo.page.tsx。
+  // LanguageGUI 展台：独立皮肤、可审计 fixture 与真实模型入口；不进工作台壳层、
+  // 不等 Workbench bootstrap，生产组件仍由该页直接复用。
   if (location.pathname === '/languagegui') {
-    return <LanguageGuiDemoPage />;
+    return (
+      <Suspense fallback={<div className="flex h-dvh items-center justify-center bg-surface-base" role="status" aria-label="LanguageGUI 页面加载中"><Skeleton className="h-24 w-80 rounded-xl" /></div>}>
+        <LanguageGuiDemoPage />
+      </Suspense>
+    );
   }
 
   if (phase === 'error') {

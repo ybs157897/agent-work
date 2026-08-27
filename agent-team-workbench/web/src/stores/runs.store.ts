@@ -15,6 +15,10 @@ export interface TimelineEntry {
 }
 
 const TIMELINE_CAP = 500;
+const TIMELINE_STICKY_GROUPS: ReadonlyArray<ReadonlySet<string>> = [
+  new Set(['run.plan_updated']),
+  new Set(['goal.updated', 'goal.create', 'goal.clear', 'session.goal.updated']),
+];
 
 interface RunsStore {
   runs: Record<string, ExecutionRun>;
@@ -76,7 +80,113 @@ function mergeTimeline(history: TimelineEntry[], live: TimelineEntry[]): Timelin
     else noSeq.push(e);
   }
   const merged = [...bySeq.values()].sort((a, b) => (a.run_seq ?? 0) - (b.run_seq ?? 0));
-  return [...merged, ...noSeq].slice(-TIMELINE_CAP);
+  return capTimeline([...merged, ...noSeq]);
+}
+
+const TOOL_EVENT_TYPES = new Set(['tool.started', 'tool.progress', 'tool.completed', 'tool.failed']);
+const TOOL_TERMINAL_TYPES = new Set(['tool.completed', 'tool.failed']);
+const STRUCTURAL_EVENT_TYPES = new Set(['run.created', 'message.completed']);
+
+function toolCallId(entry: TimelineEntry): string | undefined {
+  const value = entry.data?.call_id;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function entryIdentity(entry: TimelineEntry): string {
+  return entry.run_seq === undefined ? entry.event_id : `run:${entry.run_seq}`;
+}
+
+function latestEntry(entries: TimelineEntry[], predicate: (entry: TimelineEntry) => boolean): TimelineEntry | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (predicate(entries[index])) return entries[index];
+  }
+  return undefined;
+}
+
+/**
+ * Select complete tool call bundles without allowing a terminal event to outlive
+ * its started event. A completed call needs started + terminal; a live call needs
+ * started + its latest progress only. This is deliberately event based so history
+ * replay and SSE use the same retention semantics.
+ */
+function selectToolBundles(entries: TimelineEntry[], budget: number): Set<string> {
+  const calls = new Map<string, TimelineEntry[]>();
+  for (const entry of entries) {
+    if (!TOOL_EVENT_TYPES.has(entry.type)) continue;
+    const callId = toolCallId(entry);
+    if (!callId) continue;
+    const call = calls.get(callId) ?? [];
+    call.push(entry);
+    calls.set(callId, call);
+  }
+
+  const bundles = [...calls.entries()]
+    .map(([callId, callEntries]) => {
+      const started = callEntries.find((entry) => entry.type === 'tool.started');
+      if (!started) return undefined;
+      const terminal = latestEntry(callEntries, (entry) => TOOL_TERMINAL_TYPES.has(entry.type));
+      const latestProgress = latestEntry(callEntries, (entry) => entry.type === 'tool.progress');
+      const retained = terminal ? [started, terminal] : [started, ...(latestProgress ? [latestProgress] : [])];
+      const lastIndex = Math.max(...retained.map((entry) => entries.indexOf(entry)));
+      return { callId, retained, lastIndex };
+    })
+    .filter((bundle): bundle is { callId: string; retained: TimelineEntry[]; lastIndex: number } => Boolean(bundle))
+    .sort((a, b) => b.lastIndex - a.lastIndex);
+
+  const selected = new Set<string>();
+  let used = 0;
+  for (const bundle of bundles) {
+    if (used + bundle.retained.length > budget) continue;
+    for (const entry of bundle.retained) selected.add(entryIdentity(entry));
+    used += bundle.retained.length;
+  }
+  return selected;
+}
+
+/**
+ * 高频 delta 只保留尾部，但结构事件、Plan/Goal 快照和工具生命周期有更高保留优先级。
+ * 工具按完整 call bundle 从新到旧选择，绝不保留没有 started 的 terminal。
+ */
+function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
+  if (entries.length <= TIMELINE_CAP) return entries;
+  const selected = new Set<string>();
+  const identity = entryIdentity;
+
+  // These are the durable transcript anchors. Preserve them before noisy delta
+  // frames; the common case has only a handful of these entries.
+  for (const entry of entries) {
+    if (STRUCTURAL_EVENT_TYPES.has(entry.type)) selected.add(identity(entry));
+  }
+
+  // Plan and Goal are current-state snapshots. Keep the latest entry in each
+  // family, including an explicit empty/clear payload.
+  for (const group of TIMELINE_STICKY_GROUPS) {
+    const latest = latestEntry(entries, (entry) => group.has(entry.type));
+    if (latest) selected.add(identity(latest));
+  }
+
+  // If an unusually large transcript contains more anchors than the cap, keep
+  // the newest anchors first while retaining run.created when possible.
+  if (selected.size > TIMELINE_CAP) {
+    const anchors = entries.filter((entry) => selected.has(identity(entry)));
+    const newest = anchors.slice(-TIMELINE_CAP);
+    return newest.sort((a, b) => entries.indexOf(a) - entries.indexOf(b));
+  }
+
+  const toolBudget = TIMELINE_CAP - selected.size;
+  const toolEntries = entries.filter((entry) => TOOL_EVENT_TYPES.has(entry.type));
+  const toolSelected = selectToolBundles(toolEntries, toolBudget);
+  for (const id of toolSelected) selected.add(id);
+
+  // Fill remaining capacity with newest non-structural, non-tool frames. This
+  // preserves the visible tail without allowing it to evict a call lifecycle.
+  const remaining = TIMELINE_CAP - selected.size;
+  if (remaining > 0) {
+    const tail = entries.filter((entry) => !selected.has(identity(entry)) && !TOOL_EVENT_TYPES.has(entry.type));
+    for (const entry of tail.slice(-remaining)) selected.add(identity(entry));
+  }
+
+  return entries.filter((entry) => selected.has(identity(entry)));
 }
 
 export const useRunsStore = create<RunsStore>()((set, get) => ({

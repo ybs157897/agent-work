@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../stores/chat.store';
 import type { TimelineEntry } from '../stores/runs.store';
-import { deriveChatDock, deriveProposedPlan, deriveSessionGoal, deriveTodoPlan } from './derive-chat-dock';
+import { deriveChatDock, deriveChatWorkflow, deriveProposedPlan, deriveSessionGoal, deriveTodoPlan } from './derive-chat-dock';
 
 const user = (text: string, key = text): ChatMessage => ({
   key,
@@ -58,7 +58,7 @@ describe('deriveSessionGoal', () => {
     });
   });
 
-  it('goal.clear removes goal from events', () => {
+  it('goal.clear removes goal without reviving an older /goal command', () => {
     const timelines: Record<string, TimelineEntry[]> = {
       r1: [
         {
@@ -76,7 +76,7 @@ describe('deriveSessionGoal', () => {
         },
       ],
     };
-    expect(deriveSessionGoal([], timelines)).toBeUndefined();
+    expect(deriveSessionGoal([user('/goal old objective')], timelines)).toBeUndefined();
   });
 });
 
@@ -114,5 +114,35 @@ describe('deriveProposedPlan', () => {
 describe('deriveChatDock', () => {
   it('returns empty dock when nothing active', () => {
     expect(deriveChatDock([user('hi')], 'r1', {})).toEqual({});
+  });
+
+  it('combines goal, execution steps and proposed plan into one workflow', () => {
+    const messages: ChatMessage[] = [
+      user('/goal ship the release'),
+      {
+        key: 'p',
+        runId: 'r1',
+        kind: 'plan',
+        text: '',
+        at: '2026-01-01T00:00:01Z',
+        steps: [
+          { step: 'Inspect', status: 'completed' },
+          { step: 'Implement', status: 'in_progress' },
+        ],
+      },
+      assistant('# Proposed plan\n\nKeep the rollout reversible.', 'plan'),
+    ];
+
+    expect(deriveChatWorkflow(messages, 'r1')).toEqual({
+      goal: { objective: 'ship the release', status: 'active' },
+      steps: [
+        { step: 'Inspect', status: 'completed' },
+        { step: 'Implement', status: 'in_progress' },
+      ],
+      proposedPlan: '# Proposed plan\n\nKeep the rollout reversible.',
+    });
+    expect(deriveChatDock(messages, 'r1')).toEqual({
+      workflow: deriveChatWorkflow(messages, 'r1'),
+    });
   });
 });

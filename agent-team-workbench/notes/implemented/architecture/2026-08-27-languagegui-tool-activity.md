@@ -1,11 +1,11 @@
 # LanguageGUI 工具调用 ActivityGroup 视觉契约
 
-Status: proposed
+Status: implemented
 
 ## 决策与理由
 
 生产工具调用统一由 `ActivityGroup` 负责展示。它把同一个 run 的真实工具事件按事件
-顺序聚合为可扫描的 chip 轨，再将当前 chip 的详情渐进披露为 Terminal、Read、Search、
+顺序聚合为可扫描的 Action 卡轨，再将当前 Action 的详情渐进披露为 Terminal、Read、Search、
 Diff 或 IN/OUT 内容体。这样既保留了工具执行的审计顺序，也让默认正文维持
 LanguageGUI 的白色/浅蓝阅读表面，不会被一串终端输出打断。
 
@@ -15,12 +15,14 @@ LanguageGUI 的白色/浅蓝阅读表面，不会被一串终端输出打断。
 
 ## 事件边界
 
-- 工具 chip 的名称、类型、参数摘要、耗时、顺序和终态只能来自同一 run 的真实
+- 工具 Action 卡的名称、类型、参数摘要、耗时、顺序和终态只能来自同一 run 的真实
   `tool.*`/transcript 事件。
 - 助手 Markdown、模型自报的“我执行了某工具”、普通 `content_blocks` 都不能创建
   ActivityGroup 或改变其状态。
 - bash/code、read、search、write/edit、mcp/other 只改变详情渲染器，不改变组协议。
-- 同一组同时只展开一个 chip；没有真实事件时展示空态，不渲染“成功”的静态调用。
+- 同一组同时只展开一个 Action；没有真实事件时展示空态，不渲染“成功”的静态调用。
+- 500 帧时间线预算优先保留完整工具 bundle（started + terminal，或 started + 最新
+  progress）与正文结构锚点，再用高频 delta 填充余量；terminal 永不脱离 started 单独保留。
 
 ## Demo 边界与放弃项
 

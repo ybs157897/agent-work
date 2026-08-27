@@ -7,10 +7,13 @@
   --search-line-height: 22px;
 
   position: relative;
-  margin: 16px 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--color-border-subtle));
   color: hsl(var(--color-text-primary));
-  background: hsl(var(--color-surface-sunken) / 0.55);
+  background: hsl(var(--color-surface-raised));
   border-radius: var(--search-radius);
+  box-shadow: 0 6px 18px hsl(var(--color-text-primary) / 0.05);
 }
 
 /* 横幅：左侧结果摘要，右侧复制控件保持固有宽度 */
@@ -19,7 +22,7 @@
   align-items: center;
   gap: 12px;
   padding: 9px 14px;
-  background: hsl(var(--color-surface-sunken));
+  background: hsl(var(--color-surface-sunken) / 0.58);
   border-top-left-radius: var(--search-radius);
   border-top-right-radius: var(--search-radius);
 }
@@ -45,6 +48,19 @@
   cursor: pointer;
   font-size: 12px;
   line-height: 18px;
+}
+
+.copyButton:hover,
+.fileHeader:hover,
+.expand:hover {
+  color: hsl(var(--color-brand-primary));
+}
+
+.copyButton:focus-visible,
+.fileHeader:focus-visible,
+.expand:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary) / 0.65);
+  outline-offset: 2px;
 }
 
 .body {
@@ -106,10 +122,6 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
-}
-
-.expand:hover {
-  color: hsl(var(--color-text-secondary));
 }
 
 .empty {

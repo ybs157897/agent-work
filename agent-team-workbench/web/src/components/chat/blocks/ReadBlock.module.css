@@ -9,10 +9,13 @@
   --read-gutter: 48px;
 
   position: relative;
-  margin: 16px 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--color-border-subtle));
   color: hsl(var(--color-text-primary));
-  background: hsl(var(--color-surface-sunken) / 0.55);
+  background: hsl(var(--color-surface-raised));
   border-radius: var(--read-radius);
+  box-shadow: 0 6px 18px hsl(var(--color-text-primary) / 0.05);
 }
 
 .banner {
@@ -21,7 +24,7 @@
   align-items: center;
   gap: 12px;
   padding: 9px 14px;
-  background: hsl(var(--color-surface-sunken));
+  background: hsl(var(--color-surface-sunken) / 0.58);
   border-top-left-radius: var(--read-radius);
   border-top-right-radius: var(--read-radius);
 }
@@ -66,6 +69,17 @@
   cursor: pointer;
   font-size: 12px;
   line-height: 18px;
+}
+
+.copyButton:hover,
+.expand:hover {
+  color: hsl(var(--color-brand-primary));
+}
+
+.copyButton:focus-visible,
+.expand:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary) / 0.65);
+  outline-offset: 2px;
 }
 
 .body {
@@ -125,8 +139,4 @@
   cursor: pointer;
   font: inherit;
   text-align: left;
-}
-
-.expand:hover {
-  color: hsl(var(--color-text-secondary));
 }

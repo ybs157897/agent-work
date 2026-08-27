@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
+import { buildMessages } from './chat.store';
 import { useRunsStore } from './runs.store';
 
 const runEvent = (seq: number, type: string, data?: Record<string, unknown>): CanonicalEvent => ({
@@ -16,7 +17,7 @@ const runEvent = (seq: number, type: string, data?: Record<string, unknown>): Ca
 
 describe('runs.store applyEvent', () => {
   beforeEach(() => {
-    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {} });
+    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
   });
 
   it('追加时间线并就地更新已缓存 run 的状态/进度', () => {
@@ -86,6 +87,79 @@ describe('runs.store applyEvent', () => {
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
     expect(useRunsStore.getState().timelines.run_1).toHaveLength(1);
+  });
+
+  it('高频事件超过时间线容量后仍保留最新 Plan 与 Goal 状态快照', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.plan_updated', {
+      steps: [{ step: '保留计划', status: 'in_progress' }],
+    }));
+    applyEvent(runEvent(2, 'goal.updated', { objective: '保留目标', status: 'active' }));
+    for (let seq = 3; seq <= 505; seq += 1) {
+      applyEvent(runEvent(seq, 'message.delta', { text: `delta-${seq}` }));
+    }
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline).toHaveLength(500);
+    expect(timeline.find((event) => event.type === 'run.plan_updated')?.data).toEqual({
+      steps: [{ step: '保留计划', status: 'in_progress' }],
+    });
+    expect(timeline.find((event) => event.type === 'goal.updated')?.data).toEqual({
+      objective: '保留目标',
+      status: 'active',
+    });
+  });
+
+  it('146 个工具调用被尾部 delta 挤压时仍保留 started/terminal 成对生命周期', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    applyEvent(runEvent(2, 'message.completed', { role: 'assistant', text: '开始执行' }));
+    let seq = 3;
+    for (let index = 1; index <= 146; index += 1) {
+      const callId = `call-${index}`;
+      applyEvent(runEvent(seq, 'tool.started', { tool: 'Bash', call_id: callId, args_summary: `step-${index}` }));
+      seq += 1;
+      applyEvent(runEvent(seq, 'tool.completed', { call_id: callId, output: `ok-${index}`, exit_code: 0 }));
+      seq += 1;
+    }
+    for (let index = 0; index < 400; index += 1) {
+      applyEvent(runEvent(seq, 'message.delta', { text: `tail-${index}` }));
+      seq += 1;
+    }
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline).toHaveLength(500);
+    const starts = timeline.filter((entry) => entry.type === 'tool.started');
+    const terminals = timeline.filter((entry) => entry.type === 'tool.completed' || entry.type === 'tool.failed');
+    expect(starts).toHaveLength(146);
+    expect(terminals).toHaveLength(146);
+    expect(new Set(starts.map((entry) => entry.data?.call_id))).toEqual(
+      new Set(terminals.map((entry) => entry.data?.call_id)),
+    );
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    const toolMessages = messages.filter((message) => message.kind === 'tool');
+    expect(toolMessages).toHaveLength(146);
+    expect(toolMessages.every((message) => message.tool === 'Bash')).toBe(true);
+  });
+
+  it('容量紧张时运行中的 call 保留 started 与最新 progress，并丢弃孤立 terminal', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'tool.started', { tool: 'Read', call_id: 'live', args_summary: 'a.go' }));
+    applyEvent(runEvent(2, 'tool.progress', { call_id: 'live', text: 'old' }));
+    applyEvent(runEvent(3, 'tool.progress', { call_id: 'live', text: 'latest' }));
+    applyEvent(runEvent(4, 'tool.completed', { call_id: 'orphan', output: 'must not render' }));
+    for (let seq = 5; seq <= 505; seq += 1) {
+      applyEvent(runEvent(seq, 'message.delta', { text: `tail-${seq}` }));
+    }
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline.some((entry) => entry.type === 'tool.completed' && entry.data?.call_id === 'orphan')).toBe(false);
+    expect(timeline.filter((entry) => entry.data?.call_id === 'live').map((entry) => entry.type)).toEqual([
+      'tool.started',
+      'tool.progress',
+    ]);
+    expect(timeline.find((entry) => entry.data?.call_id === 'live' && entry.type === 'tool.progress')?.data?.text).toBe('latest');
   });
 
   it('未知聚合类型不消费', () => {

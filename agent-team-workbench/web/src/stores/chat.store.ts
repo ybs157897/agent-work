@@ -15,6 +15,7 @@ import { createRequestGuard } from './request-guard';
 import { useTasksStore } from './tasks.store';
 import { toast } from './toast.store';
 import { useWorkspaceStore } from './workspace.store';
+import { parseContentBlockDocument, type ContentBlockDocument } from '../utils/content-blocks';
 
 /** 工具行卡片状态：started 时 running，completed/failed 后落定。 */
 export type ToolStatus = 'running' | 'success' | 'failed';
@@ -52,6 +53,8 @@ export interface ChatMessage {
   liveOutput?: string;
   /** message.completed 的 item_type（Codex：plan | agentMessage 等）。 */
   itemType?: string;
+  /** canonical message.completed.data.content_blocks 的已校验 LanguageGUI 文档。 */
+  contentBlocks?: ContentBlockDocument;
   /** 会话运维元信息（session.decision / compacted）：不在对话正文展示。 */
   sessionMeta?: boolean;
 }
@@ -207,12 +210,13 @@ function parseHistoryStats(data?: Record<string, unknown>): HistoryStats | undef
 }
 
 /**
- * 防御式解析 run.plan_updated 载荷：steps 非数组或全为无效条目返回 null
- * （事件契约未落地/载荷异常时卡片不出现，不报错）。
+ * 防御式解析 run.plan_updated 载荷：合法空数组保留为清除信号；steps 非数组或
+ * 非空但全为无效条目返回 null（载荷异常不破坏上一份有效快照）。
  */
 export function parsePlanSteps(data?: Record<string, unknown>): PlanStepView[] | null {
   const raw = data?.steps;
   if (!Array.isArray(raw)) return null;
+  if (raw.length === 0) return [];
   const steps: PlanStepView[] = [];
   for (const s of raw) {
     if (!s || typeof s !== 'object') continue;
@@ -301,7 +305,14 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
       switch (e.type) {
         case 'run.plan_updated': {
           const steps = parsePlanSteps(e.data);
-          if (!steps) break; // 契约未落地/载荷异常：不产生卡片
+          if (!steps) break; // 契约未落地/载荷异常：保留上一份有效快照
+          if (steps.length === 0) {
+            if (planIdx >= 0) {
+              out.splice(planIdx, 1);
+              planIdx = -1;
+            }
+            break;
+          }
           if (planIdx >= 0) {
             out[planIdx] = { ...out[planIdx], steps, at: e.occurred_at };
           } else {
@@ -361,9 +372,20 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             reasoningBuf = '';
           }
           answerBuf = '';
-          if (e.text) {
+          {
             const itemType = typeof e.data?.item_type === 'string' ? e.data.item_type : undefined;
-            out.push({ key: e.event_id, runId, kind: 'assistant', text: e.text, at: e.occurred_at, itemType });
+            const contentBlocks = parseContentBlockDocument(e.data?.content_blocks);
+            if (e.text || contentBlocks) {
+              out.push({
+                key: e.event_id,
+                runId,
+                kind: 'assistant',
+                text: e.text ?? '',
+                at: e.occurred_at,
+                itemType,
+                ...(contentBlocks ? { contentBlocks } : {}),
+              });
+            }
           }
           break;
         case 'tool.started': {
@@ -648,6 +670,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     }
     const resp = await createRun(conversationId, {
       agent_profile_id: agentId,
+      output_contract: 'languagegui/v1',
       input: { instruction },
       ...(clientKey ? { client_key: clientKey } : {}),
     });

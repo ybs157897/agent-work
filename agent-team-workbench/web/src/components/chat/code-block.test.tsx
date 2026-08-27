@@ -1,6 +1,6 @@
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CodeBlock, codeFilename, copyText, downloadCode, languageFromClassName, nodeText } from './code-block';
+import { CodeBlock, codeFilename, copyText, downloadCode, languageFromClassName, nodeText, parseCodeFenceMeta, safeCodeFilename, splitHighlightedHtml } from './code-block';
 
 describe('CodeBlock 模块（node 环境无 DOM）', () => {
   it('import 不炸且组件可取用（highlight.js 懒加载不在 import 期触发）', () => {
@@ -26,6 +26,34 @@ describe('languageFromClassName', () => {
     expect(languageFromClassName('')).toBeNull();
     expect(languageFromClassName('lang-ts')).toBeNull();
     expect(languageFromClassName('mylanguage-ts')).toBeNull();
+  });
+});
+
+describe('parseCodeFenceMeta', () => {
+  it('解析 filename/title 与行范围并去重排序', () => {
+    expect(parseCodeFenceMeta('filename=src/App.tsx {5,3,5-7}')).toEqual({
+      filename: 'src/App.tsx',
+      highlightedLines: [3, 5, 6, 7],
+    });
+    expect(parseCodeFenceMeta('title="Demo" highlight=2,4-5')).toEqual({
+      title: 'Demo',
+      highlightedLines: [2, 4, 5],
+    });
+  });
+
+  it('忽略非法范围，展示路径但把下载名限制为安全 basename', () => {
+    expect(parseCodeFenceMeta('{0,-1,abc,8-6}')).toEqual({ highlightedLines: [8] });
+    expect(safeCodeFilename('../secret.ts')).toBe('secret.ts');
+    expect(safeCodeFilename('')).toBeUndefined();
+  });
+});
+
+describe('splitHighlightedHtml', () => {
+  it('跨行 token 会在每行关闭并重新打开，保留完整高亮结构', () => {
+    expect(splitHighlightedHtml('<span class="x">one\ntwo</span>')).toEqual([
+      '<span class="x">one</span>',
+      '<span class="x">two</span>',
+    ]);
   });
 });
 
@@ -89,6 +117,7 @@ describe('code download metadata', () => {
     expect(codeFilename('C++')).toBe('code.cpp');
     expect(codeFilename(null)).toBe('code.txt');
     expect(codeFilename('unknown language')).toBe('code.unknownlanguage');
+    expect(codeFilename('x'.repeat(200))).toHaveLength('code.'.length + 24);
   });
 
   it('sets the language-derived download filename', () => {
@@ -99,6 +128,17 @@ describe('code download metadata', () => {
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() });
     downloadCode('const answer = 42;', 'javascript');
     expect(anchor.download).toBe('code.js');
+    expect(click).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('uses a safe basename for model-provided filenames', () => {
+    const click = vi.fn();
+    const anchor = { href: '', download: '', click };
+    vi.stubGlobal('document', { createElement: vi.fn(() => anchor) });
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:test'), revokeObjectURL: vi.fn() });
+    downloadCode('export const answer = 42;', 'typescript', '../../src/answer.ts');
+    expect(anchor.download).toBe('answer.ts');
     expect(click).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
