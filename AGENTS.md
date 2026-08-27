@@ -12,12 +12,12 @@
 
 蜂群模式补充：耗时领域任务派后台 executor 并让其成为该领域长期 owner（完成不弃，后续变更派同一实例）；owner 工作状态落盘工件；工件合并后清出主干。
 
-## 功能实施隔离：git worktree
+## 任务实施隔离：git worktree
 
-主树常带其他会话/用途的未提交改动，功能实施不在当前工作树直接做：
+主树常带其他会话/用途的未提交改动，主线任务不在当前工作树直接做：
 
-1. **开 worktree 开工**：`git worktree add ../agent-work-<任务slug> -b <agent|类型>/<任务slug>`，该任务的一切改动发生在 worktree 内，与主树互不影响。
-2. **完成即合并恢复**：验证通过后回主树 `git merge --no-ff <分支>`，随后 `git branch -d <分支>` + `git worktree remove`，恢复当前分支现场。
+1. **开 worktree 开工**：主线任务开始时先 `git worktree add ../agent-work-<任务slug> -b <agent|类型>/<任务slug>`，该任务的一切改动发生在 worktree 内的支线上，与主树互不影响。
+2. **完成后等用户声明再合并**：实现与验证完成后停留在支线、如实汇报，**不自行合入主线分支**；待用户明确声明/指示后，才由我回主树执行 `git merge --no-ff <分支>`，随后 `git branch -d <分支>` + `git worktree remove`，恢复现场。
 3. 分支命名、分刀提交、决策留痕等 dsh-dev-workflow 纪律在 worktree 内照常；蜂群 executor 派进 worktree 干活，文件边界规则照旧。
 
 ## 验证入口
