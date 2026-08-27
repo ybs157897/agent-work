@@ -29,7 +29,7 @@
 | turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
 
-段间距：`.chat-thread space-y-3`（12px）；正文限宽 `min(72ch, 100%)` 居中。
+段间距：`.chat-thread space-y-3`（12px）；正文列全宽铺满（2026-08-27 用户定调「填充满」，不钳 `72ch`）。
 
 ---
 
@@ -127,14 +127,14 @@
 
 | 面 | 位置 | 表面/排版 |
 |---|---|---|
-| ArtifactShelf 摘要卡 | composer 上方 | `rounded-lg` 边 `border-subtle` 底 `surface-raised` `px-3 py-2`；头 `caption` 500 + 品牌色「打开工作区」；行 = mime 图标 + `caption` 文件名 + 11px 字节数；超 4 项折叠 |
-| ArtifactWorkspace 面板 | 右缘 320px | `border-l` `surface-raised`；头 52px 同页头；行 `rounded-lg` 边 `border-subtle` 底 `surface-base/60` `px-3 py-2`；状态：草稿 `warning` / 已接受 `success`；空态 EmptyState |
+| ArtifactShelf 摘要卡 | composer 上方 | 单行摘要条：`rounded-lg` 边 `border-subtle` 底 `surface-raised`；数量 + 最新文件名 + 品牌色「打开工作区」；明细归工作区 |
+| ArtifactWorkspace 面板 | 右缘 320px | `border-l` 不透明 `surface-warm`；头 52px；行 `rounded-card` 边 `border-subtle` 底 `surface-raised`；状态：草稿 `warning` / 已接受 `success`；空态 EmptyState |
 | 待发送队列 | composer 上方 | `rounded-lg` 边 `border-subtle` 底 `surface-raised`；序号 11px、条目 `caption` 截断、移除 X 悬停变深 |
 | 用量行 | composer 右下 | 11px `tabular-nums` `text-tertiary` |
 | run 错误告警 | 流尾居中 | `caption` `status-error` ✕ 前缀 |
 | 空态脚手架 | 空会话 | 居中 `caption` 引导 + chips：pill 细边 `surface-raised` `caption` `text-secondary`，悬停边 `brand-primary/35` + 字品牌色 |
 | MessageActions | 消息悬停 | 复制/分叉 14px 图标 `text-tertiary` 悬停变深；时钟 11px；`group-hover` 显现 |
-| 页头状态/开关 | 52px 页头右 | 状态文 `caption` 500 按 runStatusColor；PanelRight 开关同图标钮规范 |
+| 页头状态/开关 | 48px 页头右 | run 胶囊 + SSE 连接胶囊 + PanelRight 开关；壳层宣纸顶栏在 `/chat` 收起 |
 
 ---
 

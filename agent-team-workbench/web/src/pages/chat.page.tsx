@@ -1,5 +1,5 @@
 import { GitBranch, MessageSquare, PanelRight, Plus, SendHorizonal, Square, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
@@ -7,7 +7,8 @@ import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
 import { Avatar } from '../components/avatar';
 import { Button, EmptyState } from '../components/ui';
-import { PresenceDot, runStatusColor, runStatusText } from '../components/status';
+import { SseStatusPill } from '../components/sse-status';
+import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL } from '../stores/chat.store';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
@@ -63,35 +64,28 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="ink-chat flex h-full min-h-0 w-full overflow-hidden bg-surface-warm/35">
-      {/* 左栏：Agent 选择器 + 会话列表 */}
-      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-strong bg-surface-warm/82 backdrop-blur-sm">
-        <div className="shrink-0 border-b border-border-subtle px-snug py-base">
-          <h3 className="font-display text-body-lg text-text-primary">选择 Agent</h3>
-        </div>
-        <div
-          className={`overflow-y-auto p-2 space-y-1 ${
-            agentId ? 'shrink-0 max-h-[45%]' : 'flex-1'
-          }`}
-        >
-          {agents.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => pick(a.id)}
-              className={`flex min-h-12 w-full items-center gap-snug rounded-button border px-tight py-tight text-left transition-all duration-ink active:scale-[0.99] ${
-                agentId === a.id
-                  ? 'border-brand-primary/25 bg-brand-muted/70 shadow-card'
-                  : 'border-transparent hover:border-border-subtle hover:bg-surface-raised/65'
-              }`}
-            >
-              <Avatar name={a.name} url={a.avatar} size={28} />
-              <div className="min-w-0 flex-1">
-                <div className="text-body font-medium text-text-primary truncate">{a.name}</div>
-                <div className="text-caption text-text-tertiary truncate">{a.role}</div>
-              </div>
-              <PresenceDot presence={a.presence} pulse={false} />
-            </button>
-          ))}
+    <div className="tx-scope flex h-full min-h-0 w-full overflow-hidden">
+      {/* 左栏：Agent 切换排 + 任务列表（对话即任务） */}
+      <aside className="flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
+        <div className="shrink-0 border-b border-border-subtle/60 p-2">
+          <div className="mb-1 px-1 text-caption font-medium uppercase tracking-wide text-text-tertiary">Agent</div>
+          <div className="flex flex-wrap gap-1">
+            {agents.map((a) => (
+              <button
+                key={a.id}
+                onClick={() => pick(a.id)}
+                title={`${a.name} · ${a.role}`}
+                aria-label={`${a.name}（${a.role}）`}
+                aria-pressed={agentId === a.id}
+                className={`chat-agent-chip ${agentId === a.id ? 'chat-agent-chip-active' : ''}`}
+              >
+                <Avatar name={a.name} url={a.avatar} size={26} />
+                {(a.presence === 'idle' || a.presence === 'busy') && (
+                  <span className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-surface-sunken ${a.presence === 'busy' ? 'bg-status-warning' : 'bg-status-success'}`} aria-hidden />
+                )}
+              </button>
+            ))}
+          </div>
         </div>
         {agentId && <ConversationList onPick={(id) => {
           openConversation(id);
@@ -102,15 +96,30 @@ export default function ChatPage() {
       {/* 右侧对话区 */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
         {agentId ? <ConversationPane /> : (
-          <div className="flex-1 flex items-center justify-center">
-            <EmptyState
-              icon={<MessageSquare className="w-5 h-5" />}
-              title="选择一个 Agent 开始对话"
-              description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <ChatChrome
+              left={<span className="text-body font-semibold text-text-primary">对话</span>}
+              right={<SseStatusPill />}
             />
+            <div className="flex flex-1 items-center justify-center">
+              <EmptyState
+                icon={<MessageSquare className="w-5 h-5" />}
+                title="选择一个 Agent 开始对话"
+                description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+              />
+            </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-base px-6">
+      <div className="flex min-w-0 items-center gap-snug">{left}</div>
+      <div className="flex shrink-0 items-center gap-2">{right}</div>
     </div>
   );
 }
@@ -121,36 +130,36 @@ function ConversationList({ onPick }: { onPick: (id: string | null) => void }) {
   const runSnapshots = useRunsStore((s) => s.runs);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-border-strong/70">
-      <div className="flex items-center justify-between px-snug py-base">
-        <h3 className="font-display text-body-lg text-text-primary">会话</h3>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center justify-between px-3 pb-1 pt-3">
+        <span className="text-caption font-medium uppercase tracking-wide text-text-tertiary">任务列表</span>
         <button
           onClick={() => onPick(null)}
-          title="新对话"
-          aria-label="新对话"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+          title="新任务"
+          aria-label="新任务"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-raised hover:text-text-primary"
         >
           <Plus className="w-4 h-4" />
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto p-2 space-y-1">
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {conversations.map((c) => (
           <button
             key={c.id}
             onClick={() => onPick(c.id)}
-            className={`w-full rounded-button border px-tight py-tight text-left transition-all duration-ink active:scale-[0.99] ${
+            className={`mb-0.5 w-full rounded-lg border px-tight py-tight text-left transition-colors duration-150 ${
               conversationId === c.id
-                ? 'border-brand-primary/20 bg-brand-muted/60 shadow-card'
-                : 'border-transparent hover:border-border-subtle hover:bg-surface-raised/60'
+                ? 'border-brand-primary/25 bg-brand-muted/50'
+                : 'border-transparent hover:border-border-subtle/60 hover:bg-surface-raised/60'
             }`}
           >
             <div className="flex items-center gap-1 text-body text-text-primary">
               {c.parent_id && (
                 <GitBranch className="h-3 w-3 shrink-0 text-text-tertiary" aria-label="分叉会话" />
               )}
-              <span className="truncate">{c.title}</span>
+              <span className="truncate font-medium">{c.title}</span>
             </div>
-            <div className="flex items-center gap-1.5 text-caption text-text-tertiary">
+            <div className="mt-0.5 flex items-center gap-1.5 text-caption text-text-tertiary">
               <span
                 className={`h-1.5 w-1.5 rounded-full shrink-0 ${conversationStatusDotClass(c, runSnapshots)}`}
               />
@@ -391,45 +400,50 @@ function ConversationPane() {
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* 头部 */}
-      <div className="flex h-[52px] shrink-0 items-center justify-between border-b border-border-subtle bg-surface-raised/62 px-comfortable backdrop-blur-sm">
-        <div className="flex items-center gap-2 min-w-0">
-          {agent && <Avatar name={agent.name} url={agent.avatar} size={28} />}
-          <span className="truncate font-display text-h3 text-text-primary">
-            {agent?.name ?? ''}
-          </span>
-          <span className="text-caption text-text-tertiary truncate">
-            {conversation ? conversation.title : '新对话'}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {conversationArtifacts.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setWorkspaceOpen((v) => !v)}
-              title={workspaceOpen ? '关闭工作区' : '打开工作区'}
-              aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
-            >
-              <PanelRight className="h-4 w-4" />
-            </button>
-          )}
-          {latestRun && (
-            <span className={`text-caption font-medium ${runStatusColor(latestRun.status)}`}>
-              {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
+      <ChatChrome
+        left={(
+          <>
+            {agent && <Avatar name={agent.name} url={agent.avatar} size={24} />}
+            <span className="truncate text-body font-semibold text-text-primary">
+              {agent?.name ?? ''}
             </span>
-          )}
-        </div>
-      </div>
+            <span className="truncate text-caption text-text-tertiary" title={conversation?.title}>
+              {conversation ? conversation.title : '新对话'}
+            </span>
+          </>
+        )}
+        right={(
+          <>
+            {conversationArtifacts.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setWorkspaceOpen((v) => !v)}
+                title={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+              >
+                <PanelRight className="h-4 w-4" />
+              </button>
+            )}
+            {latestRun && (
+              <span className={`inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-sunken px-2 py-0.5 text-caption font-medium ${runStatusColor(latestRun.status)}`}>
+                <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                {latestRun.status === 'reconnecting' ? '正在重连…' : runStatusText(latestRun.status)}
+              </span>
+            )}
+            <SseStatusPill />
+          </>
+        )}
+      />
 
-      {/* 消息流 */}
+      {/* 消息流（tx：正文独立暗色皮肤，决策见 notes tx-transcript-standalone-skin） */}
       <div
         ref={scrollRef}
         data-chat-scroll="transcript"
-        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-base sm:px-6"
+        className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-comfortable"
       >
         {messages.length === 0 && transcriptSegments.length === 0 && (
-          <div className="chat-thread py-12">
+          <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
             <p className="text-center text-caption text-text-tertiary">
               输入第一条消息，为 {agent?.name ?? 'Agent'} 创建任务并开始运行；或从建议开始：
             </p>
@@ -462,93 +476,81 @@ function ConversationPane() {
         )}
       </div>
 
-      {/* 底部固定：成果摘要 + 计划 / 目标 + 输入 */}
-      <div className="shrink-0 border-t border-border-strong/70 bg-surface-warm/92 backdrop-blur-sm">
+      {/* 底部固定：成果摘要 + 计划 / 目标 + 一体化输入卡 */}
+      <div className="shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
         {conversationArtifacts.length > 0 && (
-          <div className="chat-thread px-4 sm:px-6 pt-2">
+          <div className="mb-2">
             <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
           </div>
         )}
-        <div className="chat-thread px-4 sm:px-6 pt-2">
-          <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
-        </div>
-        <div className="chat-thread px-4 sm:px-6 pb-comfortable">
-        {/* 待发送队列：运行中入队的消息，本轮成功后自动续发；终态非成功时可手动继续 */}
-        {queue.length > 0 && (
-          <div className="mb-2 space-y-1 rounded-card border border-border-subtle bg-surface-raised/88 px-snug py-tight shadow-card">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-caption text-text-tertiary">待发送队列（{queue.length} 条）</span>
-              {latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded' && (
-                <button
-                  type="button"
-                  onClick={() => void drainQueue()}
-                  disabled={sending}
-                  className="text-caption font-medium text-brand-primary transition-colors hover:text-brand-accent disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  继续发送
-                </button>
-              )}
-            </div>
-            {queue.map((q, i) => (
-              <div key={q.clientKey} className="flex items-center gap-2">
-                <span className="text-caption tabular-nums text-text-tertiary">{i + 1}</span>
-                <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{q.text}</span>
-                <button
-                  type="button"
-                  aria-label="移除待发送消息"
-                  title="移除"
-                  onClick={() => removeQueued(i)}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+        <ChatBottomDock goal={dock.goal} todoPlan={dock.todoPlan} proposedPlan={dock.proposedPlan} />
+        <div className="chat-composer" data-chat-composer>
+            {/* 待发送队列（运行中入队，本轮成功后自动续发） */}
+            {queue.length > 0 && (
+              <div className="chat-composer-queue">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-caption text-text-tertiary">待发送队列（{queue.length} 条）</span>
+                  {latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded' && (
+                    <button
+                      type="button"
+                      onClick={() => void drainQueue()}
+                      disabled={sending}
+                      className="text-caption font-medium text-brand-primary transition-colors hover:text-brand-accent disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      继续发送
+                    </button>
+                  )}
+                </div>
+                {queue.map((q, i) => (
+                  <div key={q.clientKey} className="flex items-center gap-2">
+                    <span className="text-caption tabular-nums text-text-tertiary">{i + 1}</span>
+                    <span className="min-w-0 flex-1 truncate text-caption text-text-secondary">{q.text}</span>
+                    <button
+                      type="button"
+                      aria-label="移除待发送消息"
+                      title="移除"
+                      onClick={() => removeQueued(i)}
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
+            <textarea
+              ref={textareaRef}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                autoGrow(e.currentTarget);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  doSend();
+                }
+              }}
+              rows={1}
+              placeholder={latestRun && !TERMINAL.has(latestRun.status)
+                ? '运行中，消息将进入队列，完成后自动发送'
+                : '输入消息，Enter 发送，Shift+Enter 换行'}
+              className="chat-composer-input"
+            />
+            <div className="flex items-center gap-2 px-snug pb-tight pt-0">
+              <span className="min-w-0 flex-1 truncate text-caption tabular-nums text-text-tertiary">{usageText}</span>
+              {runInFlight && (
+                <Button variant="ghost" type="button" onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')} disabled={!latestRunId || stoppingRunId === latestRunId}>
+                  <Square className="w-3.5 h-3.5" />
+                  {stoppingRunId === latestRunId ? '停止中' : '停止'}
+                </Button>
+              )}
+              <Button variant="primary" onClick={doSend} disabled={!draft.trim() || sending}>
+                {sending ? '发送中' : '发送'}
+                <SendHorizonal className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
-        )}
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              autoGrow(e.currentTarget);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                doSend();
-              }
-            }}
-            rows={2}
-            placeholder={latestRun && !TERMINAL.has(latestRun.status)
-              ? '运行中，消息将进入队列，完成后自动发送'
-              : '输入消息，Enter 发送，Shift+Enter 换行'}
-            className="min-h-11 flex-1 resize-none rounded-input border border-border-strong bg-surface-raised/92 px-snug py-tight text-body outline-none transition-shadow focus:border-brand-primary/45 focus:ring-2 focus:ring-brand-primary/25"
-          />
-          {runInFlight && (
-            <button
-              type="button"
-              onClick={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
-              disabled={!latestRunId || stoppingRunId === latestRunId}
-              title="停止当前运行"
-              className="flex min-h-10 items-center gap-1.5 rounded-button border border-border-strong bg-surface-raised/70 px-base py-tight text-body font-medium text-text-secondary transition-all duration-ink hover:bg-surface-raised active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Square className="w-4 h-4" />
-              {stoppingRunId === latestRunId ? '停止中' : '停止'}
-            </button>
-          )}
-          <Button variant="primary" onClick={doSend} disabled={!draft.trim() || sending}>
-            <SendHorizonal className="w-4 h-4" />
-            {sending ? '发送中' : '发送'}
-          </Button>
-        </div>
-        {usageText && (
-          <div className="mt-1 flex justify-end">
-            <span className="text-caption tabular-nums text-text-tertiary">{usageText}</span>
-          </div>
-        )}
-        </div>
       </div>
       </div>
       {workspaceOpen && (

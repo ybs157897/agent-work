@@ -93,7 +93,7 @@ function TranscriptSegmentView({
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
   return (
-    <article className="group py-3" aria-label="你的消息">
+    <article className="group" aria-label="你的消息">
       <div className="chat-role-label">
         <span className="chat-role-dot chat-role-dot-user" aria-hidden />
         <span>你</span>

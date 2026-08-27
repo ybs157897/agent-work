@@ -117,7 +117,8 @@ function DockHeader({
 }
 
 function DockTodoPlan({ plan }: { plan: ChatMessage }) {
-  const [open, setOpen] = useState(true);
+  // 默认展开仅当有进行中步骤（有活动才值得占位）；静止清单默认折叠成一行。
+  const [open, setOpen] = useState(() => (plan.steps ?? []).some((step) => step.status === 'in_progress'));
   const bodyId = useId();
   const steps = plan.steps ?? [];
   const inProgress = steps.filter((step) => step.status === 'in_progress').length;
@@ -174,7 +175,8 @@ function DockProposedPlan({ text }: { text: string }) {
 }
 
 function DockGoal({ goal }: { goal: SessionGoalView }) {
-  const [open, setOpen] = useState(true);
+  // 目标一行即可扫读，默认折叠；状态标签（TextGenerateEffect）在头上已承载活性。
+  const [open, setOpen] = useState(false);
   const bodyId = useId();
   const reduceMotion = useReducedMotion();
   const statusLabel = goal.status === 'complete' ? '已完成' : goal.status === 'paused' ? '已暂停' : goal.status === 'blocked' ? '受阻' : '进行中';

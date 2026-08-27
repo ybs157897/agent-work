@@ -100,7 +100,9 @@
   height: 14px;
 }
 
-.okIcon { color: hsl(var(--color-status-success)); }
+/* 成功态降噪：chip 轨道里满屏绿勾会淹没「行动绿=进行中」的注意力层级；
+   完成对勾退为灰，注意力只留给活的东西（tx 单强调纪律）。 */
+.okIcon { color: hsl(var(--color-text-tertiary)); }
 .errorIcon { color: hsl(var(--color-status-error)); }
 .runningIcon { color: hsl(var(--color-brand-primary)); animation: tool-chip-spin 1.2s linear infinite; }
 

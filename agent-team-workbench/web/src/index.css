@@ -753,12 +753,11 @@
   padding-block: 0.25em;
 }
 
-/* LeAgent 对齐：长文阅读列固定为 72ch。 */
+/* LeAgent 对齐改全宽（2026-08-27 用户定调「填充满」）：正文列不再钳 72ch，
+   与 composer/dock 共用同一容器，直接吃满对话区宽度。 */
 .chat-thread {
-  --thread-content-max-width: min(72ch, 100%);
   width: 100%;
-  max-width: var(--thread-content-max-width);
-  margin-inline: auto;
+  max-width: none;
 }
 
 .chat-turn {
@@ -993,59 +992,118 @@
   grid-column: 1 / -1;
 }
 
-/* ---- Chat 审批卡（approval-card.tsx，对齐 codex Q7） ---- */
+/* ---- Chat 审批卡（approval-card.tsx；tx 重设计：图标芯片/变体正文/倒计时/回执行） ---- */
 .chat-approval-card {
-  @apply overflow-hidden rounded-xl border border-status-warning/25 bg-surface-raised shadow-sm;
+  @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised;
+  box-shadow: var(--tx-shadow-card);
   container-type: inline-size;
   container-name: approval-card;
 }
 
 .chat-approval-head {
-  @apply flex items-start gap-2.5 border-b border-border-subtle/80 bg-status-warning/5 px-4 py-3;
+  @apply flex items-start gap-3 px-4 pt-3.5;
 }
 
-.chat-approval-badge {
-  @apply inline-flex rounded-full border border-border-subtle bg-surface-base px-2 py-0.5 text-[11px] text-text-secondary;
+/* kind 图标芯片：风险着色（低=行动绿/中=琥珀/高=红），低风险不再警示恐吓 */
+.chat-approval-chip {
+  @apply flex h-7 w-7 flex-none items-center justify-center rounded-lg border;
 }
 
-.chat-approval-badge-risk {
-  @apply border-status-warning/30 bg-status-warning/10 text-status-warning;
+.chat-approval-chip[data-risk='low'] {
+  @apply border-status-success/25 bg-status-success/10 text-status-success;
 }
 
-.chat-approval-detail {
-  @apply mx-4 mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2 font-mono text-[12px] leading-5 text-text-primary;
+.chat-approval-chip[data-risk='medium'] {
+  @apply border-status-warning/25 bg-status-warning/10 text-status-warning;
+}
+
+.chat-approval-chip[data-risk='high'] {
+  @apply border-status-error/25 bg-status-error/10 text-status-error;
+}
+
+.chat-approval-chip svg {
+  @apply h-4 w-4;
+}
+
+.chat-approval-card[data-risk='high'] .chat-approval-title {
+  @apply text-status-error;
+}
+
+.chat-approval-title {
+  @apply text-[15px] font-semibold leading-5 text-text-primary;
+}
+
+.chat-approval-sub {
+  @apply mt-0.5 flex items-center gap-2 text-caption text-text-tertiary;
+}
+
+.chat-approval-sub-risk {
+  @apply inline-flex items-center gap-1 text-status-warning;
+}
+
+.chat-approval-code {
+  @apply mx-4 mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-sunken px-3 py-2.5 font-mono text-[12.5px] leading-5 text-text-primary;
+}
+
+.chat-approval-prompt {
+  @apply mr-1.5 select-none text-text-tertiary;
+}
+
+.chat-approval-summary {
+  @apply mx-4 mt-3 whitespace-pre-wrap break-words text-body leading-6 text-text-secondary;
 }
 
 .chat-approval-actions {
-  @apply flex flex-wrap items-center gap-2 px-4 py-3;
+  @apply flex items-center gap-2 px-4 pb-3.5 pt-3;
 }
 
-.chat-approval-actions-primary {
-  @apply border-t border-border-subtle/60 bg-surface-base/40;
+.chat-approval-countdown {
+  @apply mr-auto flex items-center gap-1.5 text-caption text-text-tertiary;
+}
+
+.chat-approval-ring-track {
+  stroke: hsl(var(--color-border-strong));
+}
+
+.chat-approval-ring-value {
+  stroke: hsl(var(--color-brand-primary));
 }
 
 .chat-approval-reject {
-  @apply space-y-2 border-t border-border-subtle/60 px-4 py-3;
+  @apply mx-4 mt-3 space-y-2;
+}
+
+.chat-approval-reject-input {
+  @apply w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-3 py-2 text-body text-text-primary outline-none transition-shadow focus:ring-2 focus:ring-brand-primary/30;
 }
 
 .chat-approval-memory {
-  @apply border-t border-border-subtle/60 px-4 pb-3;
+  @apply px-4 pb-3;
 }
 
 .chat-approval-memory-toggle {
-  @apply flex w-full items-center justify-between gap-2 py-2 text-left text-caption text-text-tertiary transition-colors hover:text-text-secondary;
+  @apply flex w-full items-center justify-between gap-2 py-1.5 text-left text-caption text-text-tertiary transition-colors hover:text-text-secondary;
 }
 
 .chat-approval-memory-options {
   @apply space-y-1.5 pb-1;
 }
 
+/* 决议回执行：左对齐、状态图标着色（TSX 按态给 tone 类）、时间右靠 */
+.chat-approval-receipt {
+  @apply flex items-center gap-2 py-1 text-caption;
+}
+
+.chat-approval-receipt-icon {
+  @apply h-3.5 w-3.5 flex-none;
+}
+
 @container approval-card (max-width: 28rem) {
-  .chat-approval-actions-primary {
-    @apply flex-col items-stretch;
+  .chat-approval-actions {
+    @apply flex-wrap;
   }
-  .chat-approval-actions-primary > * {
-    @apply w-full;
+  .chat-approval-countdown {
+    @apply basis-full;
   }
 }
 
@@ -1225,4 +1283,252 @@
 .chat-mermaid-error .chat-mermaid-fallback {
   margin-block: 6px 0;
   color: hsl(var(--color-text-secondary));
+}
+
+/* ---- tx：正文独立暗色皮肤（纸墨倒置；决策见 notes/implemented/feature/2026-08-26-tx-transcript-standalone-skin.md） ----
+   作用域覆写 --color-* 语义层：Tailwind hsl(var(--color-*)/<alpha>) 通道让正文内
+   全部语义工具类与 chat-* 组件类自动换肤；色字面量只允许出现在本 CSS 层
+   （design-tokens 门禁扫 TS/TSX，不放宽）。
+   挂载：/chat 上 layout-shell 的 <main> + ChatPage 根；壳/面边界见
+   notes/implemented/feature/2026-08-27-tx-shell-surface-adapt.md。 */
+.tx-scope {
+  /* 松烟墨三阶层深：stream 面 → 卡面 → 凹陷 */
+  --color-surface-base: 224 16% 7%;
+  --color-surface-warm: 225 15% 9%;
+  --color-surface-sunken: 226 18% 5%;
+  --color-surface-raised: 225 14% 11%;
+  --color-surface-glass: 225 16% 10%;
+
+  --color-text-primary: 220 22% 93%;
+  --color-text-secondary: 220 13% 72%;
+  --color-text-tertiary: 220 10% 56%;
+  --color-text-muted: 220 10% 56%;
+  --color-text-inverse: 224 18% 8%;
+  --color-text-on-sidebar: 220 12% 62%;
+  --color-text-on-sidebar-active: 220 22% 93%;
+
+  --color-border-subtle: 222 13% 17%;
+  --color-border-strong: 222 12% 25%;
+
+  /* 正文唯一强调色 = 行动绿（批准 CTA / 运行态）；朱砂经 --tx-brand 只做身份点 */
+  --color-brand-primary: 152 55% 46%;
+  --color-brand-accent: 152 50% 38%;
+  --color-brand-muted: 152 38% 16%;
+
+  --color-status-success: 152 55% 48%;
+  --color-status-warning: 38 85% 56%;
+  --color-status-error: 2 70% 60%;
+  --color-status-info: 199 75% 58%;
+  --color-status-standby: 220 10% 44%;
+
+  /* 身份色阶：保留原色相，亮度抬到暗底可读区间 */
+  --color-identity-1: 8 65% 60%;
+  --color-identity-2: 195 55% 60%;
+  --color-identity-3: 145 45% 55%;
+  --color-identity-4: 90 40% 58%;
+  --color-identity-5: 215 55% 65%;
+  --color-identity-6: 36 70% 58%;
+  --color-identity-7: 60 6% 55%;
+  --color-identity-8: 345 55% 62%;
+
+  /* 壳层 token 在正文内不可达，给暗色兜底防光值渗入 */
+  --color-sidebar: 225 16% 8%;
+  --color-sidebar-hover: 225 14% 14%;
+  --color-sidebar-border: 222 13% 20%;
+
+  /* tx 微剂量新增：品牌朱砂（身份点）与暗面阴影 */
+  --tx-brand: 8 68% 56%;
+  --tx-shadow-card:
+    0 1px 2px hsl(226 30% 2% / 0.6),
+    0 8px 24px -12px hsl(226 40% 2% / 0.7),
+    inset 0 1px 0 hsl(220 30% 96% / 0.04);
+  --tx-shadow-pop:
+    0 12px 40px -12px hsl(226 40% 2% / 0.8),
+    inset 0 1px 0 hsl(220 30% 96% / 0.05);
+
+  background-color: hsl(var(--color-surface-base));
+  background-image: none;
+  color: hsl(var(--color-text-primary));
+}
+
+/* 暗面选区与滚动条 */
+.tx-scope ::selection {
+  background-color: hsl(var(--color-brand-primary) / 0.28);
+  color: hsl(var(--color-text-primary));
+}
+
+.tx-scope * {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--color-border-strong) / 0.6) transparent;
+}
+
+.tx-scope ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.tx-scope ::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+  background-color: hsl(var(--color-border-strong) / 0.6);
+}
+
+.tx-scope ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 水墨暖影工具类在暗面上失真：正文内统一换 tx 暗影 */
+.tx-scope .shadow-card {
+  box-shadow: var(--tx-shadow-card);
+}
+
+.tx-scope .shadow-level-1,
+.tx-scope .shadow-level-2 {
+  box-shadow: var(--tx-shadow-card);
+}
+
+.tx-scope .shadow-level-3,
+.tx-scope .shadow-level-4 {
+  box-shadow: var(--tx-shadow-pop);
+}
+
+/* Agent 身份点是朱砂在正文里的唯一微剂量（品牌 DNA）；用户点保持灰。 */
+.tx-scope .chat-role-dot {
+  background: hsl(var(--tx-brand) / 0.85);
+}
+
+/* ---- tx 布局刀：紧凑任务列表 / 一体化输入卡 ---- */
+
+/* 左栏 Agent 切换排：头像 chip，选中用品牌微剂量描边 */
+.chat-agent-chip {
+  @apply relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-transparent transition-colors hover:border-border-subtle hover:bg-surface-raised/70;
+}
+
+.chat-agent-chip-active {
+  @apply border-brand-primary/40 bg-brand-muted/50;
+}
+
+/* 一体化输入卡（AICSS ai-agent-input 参照）：容器承载边框/焦点，textarea 裸排。
+   input 显式透明底——压掉 Chrome 表单默认 Field 白（bg utility 失效时的兜底）。 */
+.chat-composer {
+  @apply overflow-hidden rounded-xl border border-border-strong bg-surface-raised;
+  box-shadow: var(--tx-shadow-card);
+  transition: border-color var(--motion-fast) var(--ease-ink-out), box-shadow var(--motion-fast) var(--ease-ink-out);
+}
+
+.chat-composer:focus-within {
+  border-color: hsl(var(--color-brand-primary) / 0.45);
+  box-shadow: 0 0 0 3px hsl(var(--color-brand-primary) / 0.15), var(--tx-shadow-card);
+}
+
+.chat-composer-input {
+  background-color: transparent;
+  color: hsl(var(--color-text-primary));
+  width: 100%;
+  min-height: 2.75rem;
+  max-height: 160px;
+  border: 0;
+  outline: none;
+  resize: none;
+  padding: 12px 14px 6px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.chat-composer-input::placeholder {
+  color: hsl(var(--color-text-tertiary));
+}
+
+.chat-composer-queue {
+  @apply space-y-1 border-b border-border-subtle/70 bg-surface-sunken/60 px-snug pb-tight pt-tight;
+}
+
+/* dock 面板头部收紧：折叠态一行即扫过 */
+.tx-scope .chat-dock-head {
+  @apply py-1.5 text-caption;
+}
+
+/* 代码语法五色板（克制的暗色高亮；全局 github 亮色主题在暗底失明，作用域内覆写） */
+.tx-scope {
+  --tx-syntax-key: 199 70% 62%;  /* 关键字/标签：青 */
+  --tx-syntax-str: 152 38% 60%;  /* 字符串/正则：灰绿 */
+  --tx-syntax-num: 36 75% 62%;   /* 数字/字面量：琥珀 */
+  --tx-syntax-fn: 220 25% 88%;   /* 函数/类型名：亮 */
+  --tx-syntax-comment: 220 10% 56%;
+}
+
+.tx-scope .hljs {
+  color: hsl(var(--color-text-primary));
+  background: transparent;
+}
+
+.tx-scope .hljs-comment,
+.tx-scope .hljs-quote {
+  color: hsl(var(--tx-syntax-comment));
+  font-style: italic;
+}
+
+.tx-scope .hljs-keyword,
+.tx-scope .hljs-selector-tag,
+.tx-scope .hljs-doctag,
+.tx-scope .hljs-tag,
+.tx-scope .hljs-name,
+.tx-scope .hljs-meta .hljs-keyword {
+  color: hsl(var(--tx-syntax-key));
+}
+
+.tx-scope .hljs-string,
+.tx-scope .hljs-regexp,
+.tx-scope .hljs-char.escape_,
+.tx-scope .hljs-meta .hljs-string {
+  color: hsl(var(--tx-syntax-str));
+}
+
+.tx-scope .hljs-number,
+.tx-scope .hljs-literal,
+.tx-scope .hljs-symbol,
+.tx-scope .hljs-bullet,
+.tx-scope .hljs-variable.constant_,
+.tx-scope .hljs-attribute {
+  color: hsl(var(--tx-syntax-num));
+}
+
+.tx-scope .hljs-title,
+.tx-scope .hljs-title.function_,
+.tx-scope .hljs-title.class_,
+.tx-scope .hljs-title.class_.inherited__,
+.tx-scope .hljs-built_in,
+.tx-scope .hljs-type,
+.tx-scope .hljs-selector-id,
+.tx-scope .hljs-selector-class,
+.tx-scope .hljs-section {
+  color: hsl(var(--tx-syntax-fn));
+}
+
+.tx-scope .hljs-attr,
+.tx-scope .hljs-property,
+.tx-scope .hljs-params,
+.tx-scope .hljs-variable,
+.tx-scope .hljs-variable.language_ {
+  color: hsl(var(--color-text-secondary));
+}
+
+.tx-scope .hljs-emphasis {
+  font-style: italic;
+}
+
+.tx-scope .hljs-strong {
+  font-weight: 600;
+}
+
+.tx-scope .hljs-addition {
+  color: hsl(var(--color-status-success));
+  background: hsl(var(--color-status-success) / 0.12);
+}
+
+.tx-scope .hljs-deletion {
+  color: hsl(var(--color-status-error));
+  background: hsl(var(--color-status-error) / 0.12);
 }

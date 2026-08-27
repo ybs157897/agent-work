@@ -22,7 +22,7 @@ export function AssistantTurn({
 
   const name = agentName ?? 'Agent';
   return (
-    <article className="group flex justify-start py-3" aria-label={`${name} 的消息`}>
+    <article className="group" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
         <div className="chat-role-label">
           <span className="chat-role-dot" aria-hidden />

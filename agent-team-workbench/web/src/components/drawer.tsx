@@ -40,7 +40,7 @@ export function Drawer({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 z-40 bg-sidebar/28 backdrop-blur-sm"
+            className="fixed inset-0 z-40 bg-sidebar/30 backdrop-blur-sm"
           />
           <motion.div
             role="dialog"

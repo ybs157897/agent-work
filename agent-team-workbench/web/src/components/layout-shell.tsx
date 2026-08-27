@@ -4,9 +4,9 @@ import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { Sidebar, SidebarBody, useSidebar } from './aceternity/sidebar';
 import { InkBackdrop } from './ink/ink-backdrop';
-import { StatusPill } from './ui';
+import { SseStatusPill } from './sse-status';
 import { useWorkspaceStore } from '../stores/workspace.store';
-import { isFullBleedPath } from '../utils/route-layout';
+import { isChatPath, mainContentClassName } from '../utils/route-layout';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
@@ -28,19 +28,11 @@ const BREADCRUMBS: Record<string, string> = {
   '/settings': '设置',
 };
 
-const SSE_LABEL = { online: '实时连接', connecting: '连接中', reconnecting: '重连中' } as const;
-const SSE_DOT = {
-  online: 'bg-status-success status-pulse',
-  connecting: 'bg-status-standby',
-  reconnecting: 'bg-status-warning status-pulse',
-} as const;
-
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const workspace = useWorkspaceStore((state) => state.workspace);
-  const sseStatus = useWorkspaceStore((state) => state.sseStatus);
   const breadcrumb = BREADCRUMBS[location.pathname] ?? '';
-  const isFullBleed = isFullBleedPath(location.pathname);
+  const isChat = isChatPath(location.pathname);
 
   return (
     <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-surface-base lg:flex-row">
@@ -58,27 +50,24 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
       </Sidebar>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/88 px-comfortable backdrop-blur-md">
-          <div className="flex min-w-0 items-center gap-snug text-body">
-            <span className="h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
-            <span className="truncate font-medium text-text-tertiary">{workspace?.name ?? '…'}</span>
-            <span className="text-border-strong" aria-hidden="true">/</span>
-            <span className="truncate font-display text-body-lg text-text-primary">{breadcrumb}</span>
-          </div>
-          <StatusPill title="SSE 实时事件连接状态">
-            <span className={`h-2 w-2 rounded-full ${SSE_DOT[sseStatus]}`} />
-            <span>{SSE_LABEL[sseStatus]}</span>
-          </StatusPill>
-        </header>
+        {isChat ? null : (
+          <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/90 px-comfortable backdrop-blur-md">
+            <div className="flex min-w-0 items-center gap-snug text-body">
+              <span className="h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
+              <span className="truncate font-medium text-text-tertiary">{workspace?.name ?? '…'}</span>
+              <span className="text-border-strong" aria-hidden="true">/</span>
+              <span className="truncate font-display text-body-lg text-text-primary">{breadcrumb}</span>
+            </div>
+            <SseStatusPill />
+          </header>
+        )}
 
         <main
           id="main-content"
           tabIndex={-1}
-          className={`mesh-bg relative isolate min-h-0 flex-1 focus:outline-none ${
-            isFullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
-          }`}
+          className={mainContentClassName(location.pathname)}
         >
-          <InkBackdrop />
+          {isChat ? null : <InkBackdrop />}
           {children}
         </main>
       </div>

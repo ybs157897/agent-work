@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { ApprovalRequest } from '../../api/types';
-import { allowChoices, approvalDetailText, approvalHeadline, cardAllowChoices, resolvedApprovalLine } from './approval-card';
+import {
+  allowChoices,
+  approvalDetailText,
+  approvalHeadline,
+  approvalReceipt,
+  autoApproveEligible,
+  cardAllowChoices,
+} from './approval-card';
 
 const base: ApprovalRequest = {
   id: 'ap_1',
@@ -12,31 +19,54 @@ const base: ApprovalRequest = {
   summary: 'rm -rf /tmp/scratch',
 };
 
-describe('resolvedApprovalLine', () => {
-  it('pending 无完成态行（走交互卡）', () => {
-    expect(resolvedApprovalLine(base)).toBeNull();
+describe('approvalReceipt', () => {
+  it('pending 无回执（走交互卡）', () => {
+    expect(approvalReceipt(base)).toBeNull();
   });
 
-  it('approved/rejected 行携带 kind·risk 与 resolved_at；拒绝行标 deny', () => {
-    const approved = resolvedApprovalLine({
+  it('approved/rejected 回执携带 kind·risk 与 resolved_at；图标态区分', () => {
+    const approved = approvalReceipt({
       ...base,
       status: 'approved',
       resolved_at: '2026-08-22T00:00:00Z',
     });
-    expect(approved?.text).toBe('✓ 审批已批准 · bash · high');
-    expect(approved?.deny).toBe(false);
+    expect(approved?.label).toBe('已批准 · bash · 高风险');
+    expect(approved?.icon).toBe('approved');
     expect(approved?.at).toBe('2026-08-22T00:00:00Z');
 
-    const rejected = resolvedApprovalLine({ ...base, status: 'rejected' });
-    expect(rejected?.text).toBe('✕ 审批已拒绝 · bash · high');
-    expect(rejected?.deny).toBe(true);
+    const rejected = approvalReceipt({ ...base, status: 'rejected' });
+    expect(rejected?.label).toBe('已拒绝 · bash · 高风险');
+    expect(rejected?.icon).toBe('rejected');
     expect(rejected?.at).toBeUndefined();
   });
 
-  it('expired 渲染中性过期行，不带决议标记', () => {
-    const line = resolvedApprovalLine({ ...base, status: 'expired' });
-    expect(line?.text).toBe('审批已过期 · bash · high');
-    expect(line?.deny).toBe(false);
+  it('expired 渲染中性过期回执；低风险不标风险后缀', () => {
+    const line = approvalReceipt({ ...base, status: 'expired' });
+    expect(line?.label).toBe('已过期 · bash · 高风险');
+    expect(line?.icon).toBe('expired');
+
+    const low = approvalReceipt({ ...base, risk: 'low', status: 'approved' });
+    expect(low?.label).toBe('已批准 · bash');
+  });
+});
+
+describe('autoApproveEligible（低风险倒计时资格）', () => {
+  it('低风险 + 可授权 kind + pending 才有资格', () => {
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'command' })).toBe(true);
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'file_change' })).toBe(true);
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'permissions' })).toBe(true);
+  });
+
+  it('中高风险不自动批准（风险不对称）', () => {
+    expect(autoApproveEligible({ ...base, risk: 'medium', kind: 'command' })).toBe(false);
+    expect(autoApproveEligible({ ...base, risk: 'high', kind: 'command' })).toBe(false);
+  });
+
+  it('非可授权 kind 与非 pending 状态无资格', () => {
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'tool' })).toBe(false);
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'question' })).toBe(false);
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'command', status: 'approved' })).toBe(false);
+    expect(autoApproveEligible({ ...base, risk: 'low', kind: 'command', status: 'expired' })).toBe(false);
   });
 });
 

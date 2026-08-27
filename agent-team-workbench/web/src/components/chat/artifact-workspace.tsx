@@ -25,8 +25,8 @@ export function ArtifactMimeIcon({ mime, className }: { mime: string; className?
  */
 export function ArtifactWorkspace({ artifacts, onClose }: { artifacts: Artifact[]; onClose: () => void }) {
   return (
-    <div className="flex min-h-0 w-80 shrink-0 flex-col border-l border-border-strong bg-surface-warm/88 backdrop-blur-sm">
-      <div className="h-[52px] shrink-0 px-4 flex items-center justify-between border-b border-border-subtle">
+    <div className="flex min-h-0 w-80 shrink-0 flex-col border-l border-border-strong bg-surface-warm">
+      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
         <span className="font-display text-body-lg text-text-primary">工作区</span>
         <button
           type="button"
