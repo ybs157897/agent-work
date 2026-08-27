@@ -1,6 +1,7 @@
 package application
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -69,6 +70,126 @@ func TestHistoryExceedsBudget(t *testing.T) {
 	}
 	if historyExceedsBudget(under, spec) {
 		t.Fatal("未超预算不得误判")
+	}
+}
+
+// TestPlanHistoryReplayTiers 三档边界各一档（防回归：除预算终档外不允许悬崖，
+// 信息降级必须分档）。spec 用缺省回退窗口（32768 → 预算 11468 token）。
+func TestPlanHistoryReplayTiers(t *testing.T) {
+	spec := orchestrator.ModelSpec{}
+	turn := func(user, assistant string) []map[string]any {
+		return []map[string]any{
+			{"role": "user", "text": user},
+			{"role": "assistant", "text": assistant},
+		}
+	}
+
+	// 档位一：预算内 → full 全量原样。
+	full := append(turn("第一问", "第一答"), turn("第二问", "第二答")...)
+	plan := planHistoryReplay(full, spec)
+	if plan.Tier != "full" || plan.Rotated || &plan.Replay[0] != &full[0] {
+		t.Fatalf("预算内必须落 full 且不复制: %#v", plan)
+	}
+
+	// 档位二：两条旧巨轮超预算，近 4 轮很小 → digest 压缩后容纳。
+	history := append([]map[string]any{},
+		turn("旧指令零", strings.Repeat("长", 6000))...,
+	)
+	history = append(history, turn("旧指令一", strings.Repeat("长", 6000))...)
+	for i := 0; i < 4; i++ {
+		history = append(history, turn(fmt.Sprintf("新指令%d", i), fmt.Sprintf("新答%d", i))...)
+	}
+	if !historyExceedsBudget(history, spec) {
+		t.Fatal("fixture 必须先超预算再谈压缩")
+	}
+	plan = planHistoryReplay(history, spec)
+	if plan.Tier != "digest" || plan.Rotated {
+		t.Fatalf("压缩可容纳应落 digest: %#v", plan)
+	}
+	old := plan.Replay[1]
+	if text, _ := old["text"].(string); len([]rune(text)) != DigestMaxAssistantRunes+1 ||
+		!strings.HasSuffix(text, "…") {
+		t.Fatalf("旧助手文本应截断到 %d runes+省略号，实际 %d runes", DigestMaxAssistantRunes, len([]rune(text)))
+	}
+	if user, _ := plan.Replay[0]["text"].(string); user != "旧指令零" {
+		t.Fatalf("旧用户指令不得截断: %q", user)
+	}
+	for i := 4; i < len(plan.Replay); i++ {
+		recent, _ := plan.Replay[i]["text"].(string)
+		origin, _ := history[i]["text"].(string)
+		if recent != origin {
+			t.Fatalf("最近 K 轮必须逐字保留: msg#%d %q != %q", i, recent, origin)
+		}
+	}
+	var tokens int64
+	for _, m := range plan.Replay {
+		text, _ := m["text"].(string)
+		tokens += estimateTokens(text)
+	}
+	if historyExceedsBudget(plan.Replay, spec) {
+		t.Fatalf("digest 结果仍超预算: %d", tokens)
+	}
+
+	// 档位三：单条巨轮属于最近 K 轮、无法收缩 → 压缩后仍超 → handoff 终档。
+	giant := turn("继续", strings.Repeat("长", 15000))
+	plan = planHistoryReplay(giant, spec)
+	if plan.Tier != "handoff" || !plan.Rotated || plan.Replay != nil {
+		t.Fatalf("压缩仍超必须落 handoff 终档: %#v", plan)
+	}
+}
+
+// TestCompressHistoryDigestPreservesTrace 防回归：旧轮次压缩只截助手正文，
+// 工具轨迹附录与用户侧内容（含轮中追加标记）必须保真。
+func TestCompressHistoryDigestPreservesTrace(t *testing.T) {
+	trace := "[本轮执行轨迹]\n- shell(git status): 完成\n- edit(main.go): 失败"
+	long := strings.Repeat("正文很长。", 200) // 1200 runes，超 DigestMaxAssistantRunes
+	assistantMsg := long + "\n\n" + trace
+
+	got := compactAssistant(assistantMsg)
+	wantLen := DigestMaxAssistantRunes + 1 + len([]rune("\n\n"+trace))
+	if runes := len([]rune(got)); runes != wantLen {
+		t.Fatalf("压缩后长度异常: %d runes，want %d（正文 %d+省略号+轨迹原样）", runes, wantLen, DigestMaxAssistantRunes)
+	}
+	if !strings.Contains(got, trace) {
+		t.Fatalf("工具轨迹附录必须原样保留: %q", got)
+	}
+
+	// 只有轨迹没有正文的崩溃 run：轨迹不被吃掉。
+	if got := compactAssistant(trace); got != trace {
+		t.Fatalf("纯轨迹消息应原样保留: %q", got)
+	}
+}
+
+// TestToolTraceLinesPinFormat 钉死轨迹行格式与状态词；孤儿帧兜底不丢事实。
+func TestToolTraceLinesPinFormat(t *testing.T) {
+	ev := func(seq int64, typ string, payload map[string]any) RunEvent {
+		return RunEvent{RunSeq: seq, EventType: typ, Payload: payload}
+	}
+	events := []RunEvent{
+		ev(1, domain.EventToolStarted, map[string]any{"tool": "shell", "call_id": "c1",
+			"args": strings.Repeat("x", 100)}),
+		ev(2, domain.EventToolCompleted, map[string]any{"call_id": "c1"}), // kimi/dsh 形态：只有 call_id
+		ev(3, domain.EventToolStarted, map[string]any{"tool": "edit", "call_id": "c2"}),
+		ev(4, domain.EventToolFailed, map[string]any{"call_id": "c2"}),
+		ev(5, domain.EventToolStarted, map[string]any{"tool": "grep", "call_id": "c3",
+			"args_summary": "pattern todo src"}),
+		// c3 无终局事件（中断/崩溃）：未完成
+		ev(6, domain.EventToolFailed, map[string]any{"call_id": "ghost"}), // 孤儿终局帧
+	}
+	lines := toolTraceLines(events)
+	want := []string{
+		"- shell(" + strings.Repeat("x", DigestToolArgRunes) + "…): 完成",
+		"- edit: 失败",
+		"- grep(pattern todo src): 未完成",
+		"- 未知工具: 失败",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("行数不符: %#v", lines)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Fatalf("line[%d] = %q, want %q", i, lines[i], want[i])
+		}
 	}
 }
 

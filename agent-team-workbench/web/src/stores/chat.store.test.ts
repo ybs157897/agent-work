@@ -355,6 +355,43 @@ describe('sessionLine', () => {
     expect(sessionLine({ tier: '' })).toBeNull();
     expect(sessionLine({ tier: 'inline', reason: 'future_reason' })).toBeNull();
   });
+
+  it('带 history_tier 时并为一行「基线 · 档位片段」：不拆两行，stats 齐全时带轮数与 tokens', () => {
+    expect(sessionLine({ tier: 'rotation', reason: 'budget', history_tier: 'handoff' })).toBe(
+      '已轮换新会话（预算） · 交接摘要延续',
+    );
+    expect(sessionLine({ tier: 'inline', reason: 'fresh', history_tier: 'full', history_stats: { turns: 12, est_tokens: 5_400 } })).toBe(
+      '已开新会话 · 历史回放：12 轮（约 5.4k tokens）',
+    );
+    expect(sessionLine({ tier: 'inline', reason: 'config_drift', history_tier: 'digest', history_stats: { turns: 30, est_tokens: 800 } })).toBe(
+      '已重建会话（配置漂移） · 压缩回放：30 轮（约 800 tokens）',
+    );
+    expect(sessionLine({ tier: 'inline', reason: 'session_unknown', history_tier: 'digest', history_stats: { turns: 58, est_tokens: 1_234_567 } })).toBe(
+      '已重建会话（自愈） · 压缩回放：58 轮（约 1.2M tokens）',
+    );
+  });
+
+  it('history_stats 缺失或字段无效时降级为裸档位；handoff 不消费 stats；resume 无档位不重复', () => {
+    expect(sessionLine({ tier: 'inline', reason: 'fresh', history_tier: 'full' })).toBe('已开新会话 · 历史回放');
+    expect(sessionLine({ tier: 'inline', reason: 'fresh', history_tier: 'digest' })).toBe('已开新会话 · 压缩回放');
+    expect(sessionLine({ tier: 'inline', reason: 'fresh', history_tier: 'handoff' })).toBe('已开新会话 · 交接摘要延续');
+    expect(
+      sessionLine({
+        tier: 'rotation',
+        reason: 'threshold',
+        history_tier: 'handoff',
+        history_stats: { turns: Number.NaN, est_tokens: -1 },
+      }),
+    ).toBe('已轮换新会话（阈值） · 交接摘要延续');
+    // resume 契约上省略 history_tier：仅基线一行。
+    expect(sessionLine({ tier: 'resume', reason: 'resume_hit' })).toBe('已续接会话');
+  });
+
+  it('基线 tier×reason 未识别时整行不渲染（fail-safe 盖过档位信息）', () => {
+    expect(sessionLine({ tier: 'quantum', history_tier: 'handoff' })).toBeNull();
+    expect(sessionLine({ tier: 'inline', reason: 'future_reason', history_tier: 'full' })).toBeNull();
+    expect(sessionLine({ tier: 'compacted' })).toBe('会话已压缩'); // compacted 本地判别不受拼接影响
+  });
 });
 
 describe('buildMessages 会话元信息行', () => {
@@ -383,6 +420,71 @@ describe('buildMessages 会话元信息行', () => {
       ],
     };
     expect(buildMessages(['run_1'], timelines)).toHaveLength(0);
+  });
+
+  it('decision 带 history_tier 合并为单行 system（不产生两条）：inline 自愈 + full 回放带数字', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'run.created', { instruction: '继续干' }),
+        entry('run_1', 2, 'session.decision', {
+          tier: 'inline',
+          reason: 'session_unknown',
+          history_tier: 'full',
+          history_stats: { turns: 7, est_tokens: 2_300 },
+        }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['user', '继续干'],
+      ['system', '已重建会话（自愈） · 历史回放：7 轮（约 2.3k tokens）'],
+    ]);
+  });
+
+  it('rotation 带 handoff 档位：轮换原因语义保留在同一行（不是两行）', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'session.decision', { tier: 'rotation', reason: 'threshold', history_tier: 'handoff' }),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].kind).toBe('system');
+    expect(msgs[0].sessionMeta).toBe(true);
+    expect(msgs[0].text).toBe('已轮换新会话（阈值） · 交接摘要延续');
+  });
+
+  it('tier=resume（无 history_tier）只出「已续接会话」一行；session.compacted 行不受影响', () => {
+    const timelines = {
+      run_1: [
+        entry('run_1', 1, 'session.decision', { tier: 'resume', reason: 'resume_hit', session_ref: 'sess_9' }),
+        entry('run_1', 2, 'session.compacted', {}),
+      ],
+    };
+    const msgs = buildMessages(['run_1'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['system', '已续接会话'],
+      ['system', '会话已压缩'],
+    ]);
+  });
+
+  it('wire 层未知 history_tier 忽略：仅基线文案；stats 字段非法同样降级不带数字', () => {
+    const timelines = {
+      run_1: [entry('run_1', 1, 'session.decision', { tier: 'rotation', reason: 'budget', history_tier: 'teleport' })],
+      run_2: [
+        entry('run_2', 1, 'session.decision', {
+          tier: 'inline',
+          reason: 'fresh',
+          history_tier: 'digest',
+          history_stats: { turns: 'many', est_tokens: 900 },
+        }),
+      ],
+    };
+    const msgs = buildMessages(['run_1', 'run_2'], timelines);
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['system', '已轮换新会话（预算）'],
+      ['system', '已开新会话 · 压缩回放'],
+    ]);
   });
 
   it('run.recovery_started/failed 渲染重连系统/错误行', () => {
