@@ -1,6 +1,6 @@
 # 会话信息完整性：回放保真、渐进压缩与观测面
 
-Status: proposed
+Status: implemented
 
 ## 决策与理由
 

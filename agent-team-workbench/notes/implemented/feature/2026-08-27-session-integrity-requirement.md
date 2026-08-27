@@ -1,6 +1,6 @@
 # 会话信息完整性治理：需求存档（起章确认版）
 
-Status: proposed
+Status: implemented
 
 ## 决策与理由
 
