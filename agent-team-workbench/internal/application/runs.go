@@ -90,17 +90,32 @@ func (s *Service) CreateRunIdempotent(ctx context.Context, workItemID string, p 
 	return existing, true, nil
 }
 
+// historyDecisionStats session.decision.history_stats 载荷：本次请求实际注入的
+// 结构化回放规模观测（契约锁定，web chat.store 并行消费）。
+type historyDecisionStats struct {
+	Turns     int
+	EstTokens int64
+}
+
 // emitSessionDecision 发布 CreateRun 会话决议事件（session.decision，
 // AggregateExecutionRun，纯观测面）。tier/reason 判定与 resolveResume 同源：
 //
 //	tier=resume    reason=resume_hit   锚点有效且 binding 声明 resume
 //	tier=rotation  reason=threshold    锚点轮换阈值超限（runs/tokens/age）
-//	tier=rotation  reason=budget       内联历史超模型窗口预算升级轮换
+//	tier=rotation  reason=budget       内联历史 digest 压缩后仍超窗口预算
 //	tier=inline    reason=session_unknown  session_unknown 自愈 fresh 重试
 //	tier=inline    reason=config_drift 锚点指纹漂移，丢弃开新会话
 //	tier=inline    reason=fresh        无锚点/空墓碑/播种无果的全新会话
+//
+// data 额外携带回放档位信息（信息降级分档留痕，设计 note
+// 2026-08-27-session-integrity）：
+//
+//	history_tier   full|digest|handoff——注入历史的实际档位；tier=resume 无回放
+//	              省略；tier=rotation 恒为 handoff；tier=inline 取 planHistoryReplay 结果
+//	history_stats  {"turns","est_tokens"} 回放规模；仅在存在结构化回放（full/digest
+//	              且非空）时携带——handoff 注入自由文本摘要，不伪造结构化统计
 func (s *Service) emitSessionDecision(ctx context.Context, r *domain.ExecutionRun, autoHealOf, resumeRef string,
-	outcome resumeOutcome, resumeSupported, budgetRotated bool) error {
+	outcome resumeOutcome, resumeSupported bool, historyTier string, stats *historyDecisionStats) error {
 	tier, reason := "inline", "fresh"
 	sessionRef := ""
 	switch {
@@ -108,7 +123,7 @@ func (s *Service) emitSessionDecision(ctx context.Context, r *domain.ExecutionRu
 		tier, reason, sessionRef = "resume", "resume_hit", resumeRef
 	case outcome == resumeOutcomeRotate:
 		tier, reason = "rotation", "threshold"
-	case budgetRotated:
+	case historyTier == "handoff":
 		tier, reason = "rotation", "budget"
 	case autoHealOf != "":
 		reason = "session_unknown"
@@ -118,6 +133,12 @@ func (s *Service) emitSessionDecision(ctx context.Context, r *domain.ExecutionRu
 	data := map[string]any{"tier": tier, "reason": reason}
 	if sessionRef != "" {
 		data["session_ref"] = sessionRef
+	}
+	if historyTier != "" {
+		data["history_tier"] = historyTier
+	}
+	if stats != nil {
+		data["history_stats"] = map[string]any{"turns": stats.Turns, "est_tokens": stats.EstTokens}
 	}
 	return s.emit(ctx, r.WorkspaceID, domain.EventSessionDecision,
 		domain.AggregateExecutionRun, r.ID, r.Version, nil, data)
@@ -261,12 +282,29 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	// 能力协商（对齐 ResumeRun）：binding 未声明 resume=supported 时不注入
 	// resume_session_ref——adapter 无法续接 provider 会话，落 tier-3 全量历史内联。
 	resumeSupported := binding != nil && binding.Capabilities["resume"] == string(runtime.CapSupported)
-	// 内联档（tier-3）历史超模型窗口预算 → 升级为轮换：砍头截断会移动请求
-	// 前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。tier-1（resume
-	// 命中）上下文由 harness 持有，不适用本预算（其增长归锚点阈值管）。
-	budgetRotated := false
-	if !(resumeRef != "" && resumeSupported) && outcome != resumeOutcomeRotate && historyExceedsBudget(history, spec) {
-		budgetRotated = true
+	// 内联档三档渐进压缩（full→digest→handoff，planHistoryReplay）取代「超预算
+	// 即轮换」悬崖：超预算先试 digest 老化压缩（近轮全量 + 远轮规则截断，信息
+	// 分档降级并落 session.decision.history_tier）；digest 仍装不下才升级轮换——
+	// 砍头截断会移动请求前缀使 provider 缓存持续清零，轮换只付一次新前缀成本。
+	// tier-1（resume 命中）上下文由 harness 持有，不适用本预算（增长归锚点阈值管）。
+	replay, historyTier := history, "full"
+	var stats *historyDecisionStats
+	if resumeRef != "" && resumeSupported {
+		historyTier = "" // provider 会话缓存命中：无结构化回放，payload 省略档位字段
+	} else if outcome == resumeOutcomeRotate {
+		historyTier = "handoff"
+	} else if plan := planHistoryReplay(history, spec); !plan.Rotated {
+		replay = plan.Replay
+		historyTier = plan.Tier
+	} else {
+		// digest 压缩后仍超预算 → handoff 终档（reason=budget）。
+		historyTier = "handoff"
+	}
+	conversation["history"] = replay
+	if historyTier == "full" || historyTier == "digest" {
+		if turns, tokens := replayStats(replay); len(replay) > 0 {
+			stats = &historyDecisionStats{Turns: turns, EstTokens: tokens}
+		}
 	}
 	if resumeRef != "" && resumeSupported {
 		conversation["resume_session_ref"] = resumeRef
@@ -274,7 +312,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			conversation["resume_from_run_id"] = fromRunID
 		}
 		r.SessionBefore = resumeRef
-	} else if outcome == resumeOutcomeRotate || budgetRotated {
+	} else if outcome == resumeOutcomeRotate || historyTier == "handoff" {
 		// 会话轮换：放弃 resume 开新会话，用 handoff 摘要代替全量历史
 		//（EffectiveInstruction 轮换档）；新会话首次上报时锚点计数清零重起。
 		conversation["session_rotation"] = true
@@ -292,8 +330,9 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if p.Evaluation {
 		r.Input["evaluation"] = true
 	}
-	// 会话决议显式化（纯观测面）：为什么换了会话可查可审计。
-	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, budgetRotated); err != nil {
+	// 会话决议显式化（纯观测面）：为什么换了会话可查可审计；history_tier/
+	// history_stats 记录本次请求注入历史的实际档位与规模（分档留痕）。
+	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, historyTier, stats); err != nil {
 		return nil, err
 	}
 	if err := s.store.Runs().Create(ctx, r); err != nil {

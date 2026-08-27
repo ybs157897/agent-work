@@ -521,6 +521,13 @@ func TestSessionDecisionEvent(t *testing.T) {
 	if data["tier"] != "resume" || data["reason"] != "resume_hit" || data["session_ref"] != "codex://thread_m2" {
 		t.Fatalf("resume 命中路径 session.decision 异常: %#v", data)
 	}
+	// resume 命中无结构化回放：history_tier/history_stats 必须省略。
+	if _, has := data["history_tier"]; has {
+		t.Fatalf("resume 档不得携带 history_tier: %#v", data)
+	}
+	if _, has := data["history_stats"]; has {
+		t.Fatalf("resume 档不得携带 history_stats: %#v", data)
+	}
 
 	// 路径 B（超预算轮换）：dsh binding 无 resume，长历史内联超窗口预算 → 轮换。
 	wiB, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "会话B"})
@@ -548,6 +555,13 @@ func TestSessionDecisionEvent(t *testing.T) {
 	if data["tier"] != "rotation" || data["reason"] != "budget" {
 		t.Fatalf("超预算轮换路径 session.decision 异常: %#v", data)
 	}
+	// 单轮巨历史无法经 digest 收缩（最近 K 轮保全文）→ 预算终档 handoff。
+	if data["history_tier"] != "handoff" {
+		t.Fatalf("budget 轮换档 history_tier 应为 handoff: %#v", data)
+	}
+	if _, has := data["history_stats"]; has {
+		t.Fatalf("handoff 注入的是自由文本摘要，不得伪造结构化 stats: %#v", data)
+	}
 
 	// 路径 C（全新会话）：无锚点任务的首个 run。
 	wiC, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "会话C"})
@@ -561,6 +575,59 @@ func TestSessionDecisionEvent(t *testing.T) {
 	data = sessionDecisionEvent(t, ctx, store, wsID, firstC.ID)
 	if data["tier"] != "inline" || data["reason"] != "fresh" {
 		t.Fatalf("全新会话路径 session.decision 异常: %#v", data)
+	}
+	// 首跑预算内但零回放：history_tier=full 恒定携带，stats 因无回放省略。
+	if data["history_tier"] != "full" {
+		t.Fatalf("首跑 history_tier 应为 full: %#v", data)
+	}
+	if _, has := data["history_stats"]; has {
+		t.Fatalf("零回放不得携带 history_stats: %#v", data)
+	}
+}
+
+// TestSessionDecisionRotationThresholdHandoffTier 验收：阈值轮换路径（runs 阈值）
+// 同样必须落 history_tier=handoff 且不伪造结构化 stats——两档轮换共享终档语义。
+func TestSessionDecisionRotationThresholdHandoffTier(t *testing.T) {
+	application.RotationMaxRuns = 1
+	defer func() { application.RotationMaxRuns = 40 }()
+
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	wsID, leadID, _ := seedM2Env(t, ctx, store)
+	wi, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "阈值轮换"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: leadID, Instruction: "第一轮：记住暗号 DELTA-4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRun(t, ctx, svc, first)
+	if err := svc.RecordRunSessionRef(ctx, first.ID, "codex://thread_rot_tier"); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, first.ID, "暗号已记录"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: leadID, Instruction: "第二轮"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := sessionDecisionEvent(t, ctx, store, wsID, second.ID)
+	if data["tier"] != "rotation" || data["reason"] != "threshold" || data["history_tier"] != "handoff" {
+		t.Fatalf("阈值轮换档 session.decision 异常: %#v", data)
+	}
+	if _, has := data["history_stats"]; has {
+		t.Fatalf("handoff 档不得携带 history_stats: %#v", data)
+	}
+	conv, _ := second.Input["conversation"].(map[string]any)
+	summary, _ := conv["handoff_summary"].(string)
+	if !strings.Contains(summary, "DELTA-4") {
+		t.Fatalf("handoff 摘要缺关键内容: %q", summary)
 	}
 }
 
