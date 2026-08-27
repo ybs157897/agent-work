@@ -71,3 +71,7 @@ Status: implemented
 - 最终适配是单点操作：调亮/删改 `.tx-scope` 的 `--color-*` 覆写段，或重挂载点，
   不需要触碰组件结构。
 - 门禁零豁免扩容：`design-tokens.test.ts` 的 EXEMPT_FILES 保持只有 ansi.ts。
+
+## 后续
+
+壳/面边界已落地，见 `2026-08-27-tx-shell-surface-adapt.md`。

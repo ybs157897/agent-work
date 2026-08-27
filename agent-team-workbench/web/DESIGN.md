@@ -186,7 +186,7 @@ components:
 - **8px 网格**：一切间距是 4 的倍数；语义刻度见 frontmatter `spacing:`（micro 4 → macro 128）。
 - **页面容器**：`.page-shell` = `layout-safe` 限宽（最大 1440px，两侧留白按断点 48/40/32px）+ 纵向 `stack-md`（32px）节奏。
 - **配置工作台**（智能体/模型页）：左栏 220–256px + 流式主区，主区内容再限 `max-w-6xl`。
-- **对话页**：正文区限宽 `min(72ch, 100%)` 居中（LeAgent 对齐）。
+- **对话页**：`/chat` 上 `<main>` 挂 `.tx-scope` 铺满暗色阅读面，与松烟墨侧栏对缝；宣纸顶栏、`mesh-bg` 与 `InkBackdrop` 在该路由收起。正文列全宽铺满（不钳 `72ch`）。SSE 连接态在对话页头。非对话页仍走宣纸壳。
 
 ## Elevation & Depth
 
