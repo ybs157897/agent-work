@@ -104,35 +104,106 @@ export function toolDuration(startedAt?: string, completedAt?: string): string |
 
 const PLAN_STEP_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
 
+/** session.decision 的历史档位（EffectiveInstruction 三档对外投影）。 */
+export type HistoryTier = 'full' | 'digest' | 'handoff';
+
+/** 历史回放统计：turns 轮数 / est_tokens 估算 token 总量。 */
+export interface HistoryStats {
+  turns: number;
+  est_tokens: number;
+}
+
 /** sessionLine 输入：session.decision 的 tier/reason；'compacted' 为 session.compacted 的 UI 本地判别。 */
 export interface SessionEventData {
   tier: string;
   reason?: string;
+  /** 可选：模型侧实际注入的那一档历史（resume 契约上省略；rotation 恒为 handoff；inline 按实际档位）。 */
+  history_tier?: HistoryTier;
+  /** 可选：随 history_tier 出现的量化统计；字段无效按缺失处理（降级渲染不带数字）。 */
+  history_stats?: HistoryStats;
+}
+
+const HISTORY_TIERS: ReadonlySet<string> = new Set(['full', 'digest', 'handoff']);
+
+/**
+ * 计数人话缩写：<1k 原样，<1M 一位小数 k（整数千 k 无小数点），其余 M。
+ * est_tokens 是粗估口径，不承诺精确值。
+ */
+function formatCount(n: number): string {
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n < 100_000 ? Math.round(n / 100) / 10 : Math.round(n / 1000);
+    return `${k}k`;
+  }
+  return `${Math.round(n / 100_000) / 10}M`;
+}
+
+/** stats 两字段均为有限非负数才算有效，否则视为缺失（降级裸档位）。 */
+function validStats(stats?: HistoryStats): boolean {
+  return (
+    !!stats &&
+    Number.isFinite(stats.turns) && stats.turns >= 0 &&
+    Number.isFinite(stats.est_tokens) && stats.est_tokens >= 0
+  );
+}
+
+/** 历史档位片段：full/digest 有有效 stats 时缀轮数与估算 tokens，缺则降级裸档位；handoff 恒定措辞、不消费 stats。 */
+function historyFragment(tier: HistoryTier, stats?: HistoryStats): string {
+  if (tier === 'handoff') return '交接摘要延续';
+  const label = tier === 'full' ? '历史回放' : '压缩回放';
+  if (!validStats(stats)) return label;
+  return `${label}：${Math.round(stats.turns)} 轮（约 ${formatCount(stats.est_tokens)} tokens）`;
 }
 
 /**
  * 会话状态元信息行文案映射（tier×reason → 人话；未知组合返回 null 不渲染）。
  * 会话管理可视化：续接/轮换/自愈/压缩从隐形变可见。
+ *
+ * 合并策略（防同一事件渲染两行）：带 history_tier 的 decision 不另起行，
+ * 以「基线文案 · 档位片段」并为单行——轮换/自愈的原因语义（budget/threshold/
+ * session_unknown/config_drift…）是既有观测面，不能被档位行顶掉；契约上
+ * resume 不带 history_tier，即便带上也照常拼接进「已续接会话」同一行。
+ * 未知 history_tier 按 absence 处理（只出基线行）；fail-safe 保持事件级：
+ * tier×reason 组合不被识别时整行不渲染（history_tier 不改变此判定）。
  */
 export function sessionLine(data?: SessionEventData): string | null {
   if (!data) return null;
+  let base: string | null;
   switch (data.tier) {
     case 'resume':
-      return '已续接会话';
+      base = '已续接会话';
+      break;
     case 'rotation':
-      if (data.reason === 'budget') return '已轮换新会话（预算）';
-      if (data.reason === 'threshold') return '已轮换新会话（阈值）';
-      return '已轮换新会话';
+      if (data.reason === 'budget') base = '已轮换新会话（预算）';
+      else if (data.reason === 'threshold') base = '已轮换新会话（阈值）';
+      else base = '已轮换新会话';
+      break;
     case 'inline':
-      if (data.reason === 'session_unknown') return '已重建会话（自愈）';
-      if (data.reason === 'config_drift') return '已重建会话（配置漂移）';
-      if (data.reason === 'fresh') return '已开新会话';
-      return null;
+      if (data.reason === 'session_unknown') base = '已重建会话（自愈）';
+      else if (data.reason === 'config_drift') base = '已重建会话（配置漂移）';
+      else if (data.reason === 'fresh') base = '已开新会话';
+      else return null;
+      break;
     case 'compacted':
-      return '会话已压缩';
+      base = '会话已压缩';
+      break;
     default:
       return null;
   }
+  const fragment = data.history_tier ? historyFragment(data.history_tier, data.history_stats) : '';
+  return fragment ? `${base} · ${fragment}` : base;
+}
+
+/** wire 层收窄 history_tier：仅认三档枚举，缺席/未知返回 undefined（降级纯基线行）。 */
+function parseHistoryTier(data?: Record<string, unknown>): HistoryTier | undefined {
+  const v = data?.history_tier;
+  return typeof v === 'string' && HISTORY_TIERS.has(v) ? (v as HistoryTier) : undefined;
+}
+
+/** wire 层收窄 history_stats 容器：数值有效性由 historyFragment 统一判定（单一校验点）。 */
+function parseHistoryStats(data?: Record<string, unknown>): HistoryStats | undefined {
+  const v = data?.history_stats;
+  return v && typeof v === 'object' ? (v as HistoryStats) : undefined;
 }
 
 /**
@@ -245,10 +316,18 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           }
           break;
         case 'session.decision': {
-          // CreateRun 会话决议（纯观测面）：映射失败（未知 tier/reason）不渲染。
+          // CreateRun 会话决议（纯观测面）：映射失败（未知 tier/reason）不渲染；
+          // history_tier/history_stats 为可选增强，wire 层收窄后由 sessionLine 并为单行。
           const tier = typeof e.data?.tier === 'string' ? e.data.tier : '';
           const reason = typeof e.data?.reason === 'string' ? e.data.reason : '';
-          const text = sessionLine({ tier, reason });
+          const historyTier = parseHistoryTier(e.data);
+          const historyStats = parseHistoryStats(e.data);
+          const text = sessionLine({
+            tier,
+            reason,
+            ...(historyTier ? { history_tier: historyTier } : {}),
+            ...(historyTier && historyStats ? { history_stats: historyStats } : {}),
+          });
           if (text) out.push({ key: e.event_id, runId, kind: 'system', text, at: e.occurred_at, sessionMeta: true });
           break;
         }
