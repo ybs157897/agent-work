@@ -15,6 +15,7 @@ import { isChatPath, isFullBleedPath } from './utils/route-layout';
 const AgentsPage = lazy(() => import('./pages/agents.page'));
 const ChatPage = lazy(() => import('./pages/chat.page'));
 const LanguageGuiDemoPage = lazy(() => import('./pages/languagegui-demo.page'));
+const CanvasDemoPage = lazy(() => import('./pages/canvas-demo.page'));
 const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
 const SettingsPage = lazy(() => import('./pages/settings.page'));
@@ -35,6 +36,14 @@ export default function App() {
     return (
       <Suspense fallback={<div className="flex h-dvh items-center justify-center bg-surface-base" role="status" aria-label="LanguageGUI 页面加载中"><Skeleton className="h-24 w-80 rounded-xl" /></div>}>
         <LanguageGuiDemoPage />
+      </Suspense>
+    );
+  }
+
+  if (location.pathname === '/canvas-demo') {
+    return (
+      <Suspense fallback={<div className="flex h-dvh items-center justify-center bg-surface-base" role="status" aria-label="Canvas Demo 加载中"><Skeleton className="h-24 w-80 rounded-xl" /></div>}>
+        <CanvasDemoPage />
       </Suspense>
     );
   }

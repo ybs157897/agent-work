@@ -1468,7 +1468,7 @@
 }
 
 .chat-content-canvas-node-kind {
-  @apply text-micro font-medium uppercase tracking-wide text-text-tertiary;
+  @apply text-caption font-medium uppercase tracking-wide text-text-tertiary;
 }
 
 .chat-content-canvas-node-label {
@@ -1476,7 +1476,7 @@
 }
 
 .chat-content-canvas-node-detail {
-  @apply break-words text-micro leading-4 text-text-secondary;
+  @apply break-words text-caption leading-4 text-text-secondary;
 }
 
 .chat-content-canvas-data {
@@ -1496,7 +1496,7 @@
 }
 
 .chat-content-canvas-list-kind {
-  @apply rounded-button border border-border-subtle bg-surface-sunken px-tight py-micro text-micro text-text-tertiary;
+  @apply rounded-button border border-border-subtle bg-surface-sunken px-tight py-micro text-caption text-text-tertiary;
 }
 
 .chat-content-canvas-list-label {
@@ -2862,4 +2862,71 @@ a.chat-review-location:hover,
 .tx-scope.chat-languagegui-skin .chat-activity-head:hover,
 .tx-scope.chat-languagegui-skin .chat-reasoning-panel-head:hover {
   background: hsl(var(--color-surface-base));
+}
+
+/* ---- Canvas 调研 Demo（/canvas-demo）---- */
+.canvas-demo {
+  @apply mx-auto min-h-dvh max-w-5xl space-y-loose bg-surface-base px-base py-loose text-text-primary;
+}
+
+.canvas-demo-header {
+  @apply space-y-snug border-b border-border-subtle pb-loose;
+}
+
+.canvas-demo-brand {
+  @apply inline-flex items-center gap-snug text-h2 font-semibold text-text-primary;
+}
+
+.canvas-demo-lead {
+  @apply max-w-3xl text-body leading-7 text-text-secondary;
+}
+
+.canvas-demo-back {
+  @apply inline-flex text-caption text-brand-primary no-underline hover:underline;
+}
+
+.canvas-demo-section {
+  @apply space-y-snug;
+}
+
+.canvas-demo-section-muted {
+  @apply rounded-xl border border-border-subtle bg-surface-raised p-base;
+}
+
+.canvas-demo-section h2 {
+  @apply text-h3 font-semibold text-text-primary;
+}
+
+.canvas-demo-section p,
+.canvas-demo-notes {
+  @apply text-body leading-7 text-text-secondary;
+}
+
+.canvas-demo-notes {
+  @apply list-disc space-y-tight pl-base;
+}
+
+.canvas-demo-code {
+  @apply overflow-x-auto rounded-card border border-border-subtle bg-surface-sunken p-base font-mono text-caption leading-6 text-text-primary;
+}
+
+.canvas-demo-preview {
+  @apply rounded-xl border border-border-subtle bg-surface-raised p-base shadow-card;
+}
+
+.canvas-demo-table {
+  @apply w-full border-collapse text-body;
+}
+
+.canvas-demo-table th,
+.canvas-demo-table td {
+  @apply border-b border-border-subtle px-snug py-tight text-left align-top;
+}
+
+.canvas-demo-table th {
+  @apply text-caption font-semibold text-text-secondary;
+}
+
+.canvas-demo-table td {
+  @apply text-text-secondary;
 }
