@@ -39,7 +39,7 @@ describe('ActivityGroup · ordered compact tool log', () => {
     );
 
     expect(html).toContain('data-state="error"');
-    expect(html).toContain('工具执行');
+    expect(html).toContain('工具调用');
     expect(html).toContain('role="heading" aria-level="3"');
     expect(html).toContain('1 完成 · 1 失败');
     expect(html).toContain('执行失败');
@@ -116,5 +116,59 @@ describe('ActivityGroup · ordered compact tool log', () => {
     );
     expect(suppressedHtml).toContain('变更内容已汇总到本轮 Diff');
     expect(suppressedHtml).not.toContain('class="chat-diff"');
+  });
+
+  it('timeline 折叠行展示最新工具的人类摘要，并保留组级状态', () => {
+    const html = renderToStaticMarkup(<ActivityGroup items={items} variant="timeline" />);
+    expect(html).toContain('data-variant="timeline"');
+    expect(html).toContain('sr-only');
+    expect(html).not.toContain('>工具执行<');
+    expect(html).toContain('Tool failed');
+    expect(html).toContain('1 完成 · 1 失败');
+    expect(html).toContain('title="Tool failed"');
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it('started 事件到达时即显示 running 工具，后续 started 可增量加入同一组', () => {
+    const running: ChatMessage = {
+      key: 'started-1', runId: 'run-3', kind: 'tool', text: '调用工具 read',
+      tool: 'read', toolStatus: 'running', argsSummary: 'src/App.tsx', at: '2026-08-27T08:00:00.000Z',
+    };
+    const laterRunning: ChatMessage = { ...running, key: 'started-2', tool: 'bash', argsSummary: 'pnpm test' };
+    const html = renderToStaticMarkup(<ActivityGroup items={[running, laterRunning]} variant="timeline" />);
+    expect(html).toContain('2 次调用');
+    expect(html).toContain('2 进行中');
+    expect(html).toContain('正在执行');
+    expect(html).not.toContain('role="list" aria-label="工具调用"');
+  });
+
+  it('Write 行把 diff 统计渲染为灰色摘要与彩色增删数字', () => {
+    const write: ChatMessage = {
+      key: 'write-diff', runId: 'run-3', kind: 'tool', tool: 'Write', toolStatus: 'success', at: '',
+      text: '调用工具 Write：knowledge/prd/evolution-roadmap-next-phase.md',
+      detail: 'diff --git a/a.md b/a.md\n--- a/a.md\n+++ b/a.md\n@@ -1 +1,2 @@\n-old\n+new\n+line',
+    };
+    const html = renderToStaticMarkup(<ActivityGroup items={[write]} defaultCollapsed={false} />);
+    expect(html).toContain('1 个文件已更改');
+    expect(html).toMatch(/changeAddition[^\"]*\"> \+2<\/span>/);
+    expect(html).toMatch(/changeDeletion[^\"]*\"> −1<\/span>/);
+  });
+
+  it('Write bytes 回退展示文件与大小，不生成虚假的增删行数', () => {
+    const write: ChatMessage = {
+      key: 'write-bytes', runId: 'run-3', kind: 'tool', tool: 'Write', toolStatus: 'success', at: '',
+      text: '调用工具 Write：knowledge/prd/evolution-roadmap-next-phase.md',
+      detail: 'Wrote 24832 bytes to knowledge/prd/evolution-roadmap-next-phase.md',
+    };
+    const html = renderToStaticMarkup(<ActivityGroup items={[write]} defaultCollapsed={false} />);
+    expect(html).toContain('1 个文件已更改');
+    expect(html).toContain('24.8 KB');
+    expect(html).not.toContain('changeAddition');
+    expect(html).not.toContain('changeDeletion');
+
+    const collapsed = renderToStaticMarkup(<ActivityGroup items={[write]} variant="timeline" />);
+    expect(collapsed).toContain('1 个文件已更改');
+    expect(collapsed).toContain('24.8 KB');
+    expect(collapsed).not.toContain('Updated Writing');
   });
 });

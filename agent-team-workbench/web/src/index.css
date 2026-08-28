@@ -881,34 +881,6 @@
   display: none;
 }
 
-/* ---- Chat 长回答渐进披露（long-answer-fold.tsx：落定长文默认收起） ---- */
-
-/* 预览底部渐变淡出：目标色取 transcript 同款 surface-base（皮肤 scoped
-   映射后浅/暗主题自动贴合），transparent 起步只压淡末行，不遮挡点击。 */
-.chat-long-answer-fade {
-  @apply pointer-events-none absolute inset-x-0 bottom-0 h-16;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    hsl(var(--color-surface-base))
-  );
-}
-
-/* 展开/收起幽灵按钮：caption 尺寸、tertiary → hover primary（对齐
-   message-actions 按钮面），hover 补凹面软底提示可点；与正文的间距由
-   `.chat-prose > * + *` 的节奏承担，不自带 margin。 */
-.chat-long-answer-toggle {
-  @apply inline-flex items-center gap-1 rounded-button px-1 py-0.5 text-caption text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand-primary/30;
-}
-
-.chat-long-answer-toggle .chat-long-answer-chevron {
-  @apply transition-transform;
-}
-
-.chat-long-answer-toggle[aria-expanded='true'] .chat-long-answer-chevron {
-  @apply rotate-180;
-}
-
 /* ---- Chat diff 卡（diff-card.tsx：行底色对接 status tokens，对齐 codex Q6） ---- */
 .chat-diff {
   @apply overflow-hidden rounded-lg border border-border-subtle bg-surface-raised;

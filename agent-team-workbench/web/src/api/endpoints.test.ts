@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Plan, WorkItem } from './types';
-import { acceptWorkItem, createPlan, getPlan, getWorkItemPlan, getWorkItemTree, listWorkItems, returnWorkItem } from './endpoints';
+import {
+  acceptWorkItem,
+  createPlan,
+  getPlan,
+  getRunChangeDiff,
+  getWorkItemPlan,
+  getWorkItemTree,
+  listRunChanges,
+  listWorkItems,
+  returnWorkItem,
+  revertRunChanges,
+} from './endpoints';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -162,5 +173,34 @@ describe('work item accept / return commands', () => {
     await returnWorkItem('wi_1', undefined, 8);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ expected_version: 8 });
+  });
+});
+
+describe('run file changes endpoints', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reads the run-scoped summary and safely encodes a diff path', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({
+      file_count: 0, additions: 0, deletions: 0, files: [], state: 'ready', can_revert: false, version: 1,
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listRunChanges('run_1');
+    await getRunChangeDiff('run_1', 'src/a file.ts');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/runs/run_1/changes');
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/runs/run_1/changes/diff?path=src%2Fa+file.ts');
+  });
+
+  it('revert sends the same idempotency key in the header and body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ file_count: 1, additions: 0, deletions: 0, files: [], state: 'reverted', can_revert: false, version: 2 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await revertRunChanges('run_1', 'revert-key');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/runs/run_1/commands/revert-changes');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('revert-key');
+    expect(JSON.parse(init.body as string)).toEqual({ idempotency_key: 'revert-key' });
   });
 });

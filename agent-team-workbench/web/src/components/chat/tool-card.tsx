@@ -1,5 +1,5 @@
 import { Check, CircleStop, CircleX, ChevronDown, ChevronRight, FilePen, FileText, LoaderCircle, Plug, Search, SquareCode, Terminal, Wrench, type LucideIcon } from 'lucide-react';
-import { createElement, useId, useState, type ReactNode } from 'react';
+import { createElement, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { toolDuration, type ChatMessage } from '../../stores/chat.store';
 import { DiffCard, looksLikeUnifiedDiff, stripControlChars } from './diff-card';
@@ -52,23 +52,76 @@ export type ActivitySegment =
   | { kind: 'activity'; runId: string; items: ChatMessage[] }
   | { kind: 'single'; item: ChatMessage };
 
+type ActivityKind = 'explore' | 'execute' | 'changes' | 'cua' | 'agent' | 'tool';
+
+export interface GroupActivityOptions {
+  /** ZCode 默认将探索类连续调用合并为一个 Explore 组。 */
+  groupExplore?: boolean;
+  /** ZCode 默认将终端/代码类连续调用合并为一个 Execute 组。 */
+  groupExecute?: boolean;
+  /** ZCode 默认不合并变更类调用，保持单文件操作可追溯。 */
+  groupChanges?: boolean;
+}
+
+function activityKind(item: ChatMessage): ActivityKind {
+  const name = (item.tool ?? '').toLowerCase();
+  if (/(^|[_-])(computer(?:_use)?|cua|browser|playwright|screenshot|click|type)([_-]|$)/.test(name)) return 'cua';
+  if (/(^|[_-])(agent|task|subagent)([_-]|$)/.test(name)) return 'agent';
+  switch (toolRowModel(item).family) {
+    case 'read':
+    case 'search':
+      return 'explore';
+    case 'bash':
+    case 'code':
+      return 'execute';
+    case 'write':
+    case 'edit':
+      return 'changes';
+    default:
+      return 'tool';
+  }
+}
+
+const ACTIVITY_KIND_TITLES: Record<ActivityKind, string> = {
+  explore: '探索',
+  execute: '执行',
+  changes: '变更',
+  cua: '电脑操作',
+  agent: 'Agent',
+  tool: '工具',
+};
+
 /**
  * 把消息流切段：连续且同 run 的工具行（toolStatus 已定义）合成一个活动组；
  * assistant/error(system)/user 等消息切段边界——工具跨轮次分属各自的组。
  */
-export function groupActivity(messages: ChatMessage[]): ActivitySegment[] {
+export function groupActivity(messages: ChatMessage[], options: GroupActivityOptions = {}): ActivitySegment[] {
   const segments: ActivitySegment[] = [];
   let buffer: ChatMessage[] = [];
+  let bufferKind: ActivityKind | undefined;
+  const groupExplore = options.groupExplore ?? true;
+  const groupExecute = options.groupExecute ?? true;
+  const groupChanges = options.groupChanges ?? false;
   const flush = () => {
     if (buffer.length) {
       segments.push({ kind: 'activity', runId: buffer[0].runId, items: buffer });
       buffer = [];
     }
+    bufferKind = undefined;
   };
   for (const m of messages) {
     if (m.toolStatus !== undefined) {
-      if (buffer.length && buffer[0].runId !== m.runId) flush();
+      const kind = activityKind(m);
+      const shouldGroup = kind === 'explore'
+        ? groupExplore
+        : kind === 'execute'
+          ? groupExecute
+          : kind === 'changes'
+            ? groupChanges
+            : true;
+      if (buffer.length && (buffer[0].runId !== m.runId || bufferKind !== kind || !shouldGroup)) flush();
       buffer.push(m);
+      bufferKind = kind;
       continue;
     }
     flush();
@@ -91,6 +144,13 @@ export function toolChipModel(msg: ChatMessage, stopped = false) {
 }
 
 export type ActivityGroupState = ToolRowState | 'empty';
+
+export function shouldAutoCollapseActivity(
+  previous: ActivityGroupState | null,
+  current: ActivityGroupState,
+): boolean {
+  return previous === 'running' && current !== 'running';
+}
 
 export interface ActivityGroupModel {
   total: number;
@@ -177,6 +237,7 @@ export function ActivityGroup({
   defaultCollapsed = true,
   defaultSelectedKey,
   suppressDiff = false,
+  variant = 'default',
 }: {
   items: ChatMessage[];
   stoppedRuns?: ReadonlySet<string>;
@@ -186,22 +247,57 @@ export function ActivityGroup({
   defaultSelectedKey?: string;
   /** turn 级 diff 汇总存在时隐藏工具行内 diff */
   suppressDiff?: boolean;
+  /** 嵌入工作时间线时使用紧凑的命令行视觉。 */
+  variant?: 'default' | 'timeline';
 }) {
   const headingId = useId();
   const bodyId = useId();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const previousState = useRef<ActivityGroupState | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(() =>
     defaultSelectedKey && items.some((item) => item.key === defaultSelectedKey)
       ? defaultSelectedKey
       : null,
   );
   const reduceMotion = useReducedMotion();
+  const latestSummaryRef = useRef<HTMLSpanElement>(null);
   const group = activityGroupModel(items, stoppedRuns);
+  const latestItem = items[items.length - 1];
+  const latestModel = latestItem ? toolRowModel(latestItem) : undefined;
+  const latestChangeStats = latestModel?.changeStats;
+  const latestSummary = latestChangeStats
+    ? changeSummaryText(latestChangeStats)
+    : latestItem
+      ? toolChipModel(latestItem, Boolean(stoppedRuns?.has(latestItem.runId) && latestItem.toolStatus === 'running')).summary
+      : '';
+
+  useEffect(() => {
+    const previous = previousState.current;
+    if (shouldAutoCollapseActivity(previous, group.state)) setCollapsed(true);
+    previousState.current = group.state;
+  }, [group.state]);
+
+  useEffect(() => {
+    if (selectedKey && !items.some((item) => item.key === selectedKey)) setSelectedKey(null);
+  }, [items, selectedKey]);
+
+  useEffect(() => {
+    if (variant !== 'timeline' || !collapsed || !latestSummaryRef.current) return;
+    latestSummaryRef.current.scrollLeft = latestSummaryRef.current.scrollWidth;
+  }, [collapsed, variant, latestItem?.key, latestSummary]);
+
+  const kind = items.length > 0 ? activityKind(items[0]) : 'tool';
+  const runningItem = items.find((item) => toolChipModel(
+    item,
+    Boolean(stoppedRuns?.has(item.runId) && item.toolStatus === 'running'),
+  ).state === 'running');
+  const currentAction = runningItem ? toolChipModel(runningItem).summary : undefined;
 
   return (
     <section
-      className={css.activity}
+      className={`${css.activity} ${variant === 'timeline' ? css.timelineActivity : ''}`}
       data-state={group.state}
+      data-variant={variant}
       aria-labelledby={headingId}
     >
       {items.length > 0 ? (
@@ -211,16 +307,29 @@ export function ActivityGroup({
           onClick={() => setCollapsed((value) => !value)}
           aria-expanded={!collapsed}
           aria-controls={collapsed ? undefined : bodyId}
-          aria-label={`${collapsed ? '展开' : '收起'}工具调用：共 ${group.total} 次；${group.toolSummary}；${group.summary}`}
+          aria-label={`${collapsed ? '展开' : '收起'}工具调用：共 ${group.total} 次；${group.toolSummary}；${variant === 'timeline' && latestSummary ? `${latestSummary}；` : ''}${group.summary}`}
         >
           <span className={css.activityMark} aria-hidden><Wrench /></span>
           <span className={css.activityHeading}>
             <span className={css.activityTitle}>
-              <span id={headingId} role="heading" aria-level={3}>工具执行</span>
+              <span className={css.activityLabel} id={headingId} role="heading" aria-level={3}>
+                <span className="sr-only">工具调用</span>
+              </span>
+              <span className={css.activityKind}>{ACTIVITY_KIND_TITLES[kind]}</span>
               <span className={css.activityCount}>{group.total} 次调用</span>
             </span>
             <span className={css.activityToolSummary}>{group.toolSummary}</span>
+            {variant === 'timeline' && latestSummary && !currentAction && (
+              <span ref={latestSummaryRef} className={css.timelineLatestSummary} title={latestSummary}>
+                {latestChangeStats ? <ChangeSummary stats={latestChangeStats} /> : latestSummary}
+              </span>
+            )}
             <span className={css.activitySummary}>{group.summary}</span>
+            {currentAction && (
+              <span className={css.activityTicker} aria-label={`当前动作：${currentAction}`}>
+                <span className={css.runningSweep}>{currentAction}</span>
+              </span>
+            )}
           </span>
           <span
             className={css.groupStatus}
@@ -238,7 +347,7 @@ export function ActivityGroup({
         <div className={css.activityHeader}>
           <span className={css.activityMark} aria-hidden><Wrench /></span>
           <div className={css.activityHeading}>
-            <h3 id={headingId}>工具执行</h3>
+            <h3 id={headingId} className="sr-only">工具调用</h3>
             <p>{group.summary}</p>
           </div>
           <span className={css.groupStatus}>
@@ -442,6 +551,35 @@ function stateStatus(state: ToolRowState): string {
   }
 }
 
+function formatWrittenBytes(bytes: number): string {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+function changeSummaryText(stats: NonNullable<ToolRowModel['changeStats']>): string {
+  const parts = [`${stats.files} 个文件已更改`];
+  if (stats.additions !== undefined) parts.push(`+${stats.additions}`);
+  if (stats.deletions !== undefined) parts.push(`−${stats.deletions}`);
+  if (stats.bytes !== undefined && stats.additions === undefined && stats.deletions === undefined) {
+    parts.push(`· ${formatWrittenBytes(stats.bytes)}`);
+  }
+  return parts.join(' ');
+}
+
+function ChangeSummary({ stats }: { stats: NonNullable<ToolRowModel['changeStats']> }) {
+  if (stats.operation === 'written') {
+    return <><span>{stats.files} 个文件已更改</span>{stats.bytes !== undefined && <span className={css.changeBytes}> · {formatWrittenBytes(stats.bytes)}</span>}</>;
+  }
+  return (
+    <>
+      <span>{stats.files} 个文件已更改</span>
+      {stats.additions !== undefined && <span className={css.changeAddition}> +{stats.additions}</span>}
+      {stats.deletions !== undefined && <span className={css.changeDeletion}> −{stats.deletions}</span>}
+    </>
+  );
+}
+
 /** 纵向工具日志行；详情由 ActivityGroup 紧跟当前行单选展开。 */
 export function ToolRow({
   msg,
@@ -463,6 +601,7 @@ export function ToolRow({
   const duration = chip.duration;
   const status = stateStatus(state);
   const title = chip.title;
+  const model = toolRowModel(msg);
   // createElement 渲染图标引用：避免本地变量承接组件触发 static-components 规则。
   const icon = createElement(toolIcon(msg.tool), { 'aria-hidden': true });
   const statusIcon = state === 'running'
@@ -475,7 +614,7 @@ export function ToolRow({
   const accessibleName = [
     `Action ${index ?? 1}`,
     title,
-    chip.summary,
+    model.changeStats ? changeSummaryText(model.changeStats) : chip.summary,
     status,
     duration,
   ].filter(Boolean).join('，');
@@ -497,7 +636,9 @@ export function ToolRow({
             <span className={css.title}>{title}</span>
           </span>
         </span>
-        <span className={css.chipSummary} title={chip.summary}>{chip.summary}</span>
+        <span className={css.chipSummary} title={model.changeStats ? changeSummaryText(model.changeStats) : chip.summary}>
+          {model.changeStats ? <ChangeSummary stats={model.changeStats} /> : chip.summary}
+        </span>
         <span className={css.chipFooter}>
           <span className={css.duration}>{duration ?? '—'}</span>
           <span className={css.status}>{statusIcon}<span>{status}</span></span>

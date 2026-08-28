@@ -15,6 +15,17 @@ const document: ContentBlockDocument = {
 };
 
 describe('AssistantTurn · canonical ContentBlock placement', () => {
+  it('长正文默认完整渲染，不显示隐藏或展开控制', () => {
+    const tail = '正文末尾 TAIL-MARKER';
+    const html = renderToStaticMarkup(
+      <AssistantTurn text={`# 标题\n\n${'内容段落。'.repeat(80)}\n\n${tail}`} />,
+    );
+    expect(html).toContain(tail);
+    expect(html).not.toContain('展开全文');
+    expect(html).not.toContain('收起全文');
+    expect(html).not.toContain('chat-long-answer-toggle');
+  });
+
   it('在同源 fence 的原位置渲染 canonical block，不移动到回答末尾', () => {
     const html = renderToStaticMarkup(
       <AssistantTurn

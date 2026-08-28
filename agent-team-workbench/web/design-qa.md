@@ -1,262 +1,172 @@
-# Production Chat LanguageGUI QA
+# Design QA — LanguageGUI Work Timeline
 
-## Comparison target
+## Evidence
 
-- Source visual truth: `/tmp/languagegui-reference.zQuUb3/multi-prompt.png` and `/tmp/languagegui-reference.zQuUb3/figma-dashboard.png`.
-- Rendered implementation: `/tmp/languagegui-reference.zQuUb3/chat-workflow-pass2.png`.
-- Focused implementation crop: `/tmp/languagegui-reference.zQuUb3/chat-workflow-pass2-focus.png`.
-- Combined comparison input: `/tmp/languagegui-reference.zQuUb3/chat-workflow-comparison-pass2.png`.
-- Route: `http://localhost:5180/chat?agent=agent_01M0MS9FSV89X5M5ACJXVC05A7&c=wi_01M0T0W6JNQ4X4J2JMHK44XGQE`.
-- State: stored successful run with a real four-step `run.plan_updated` snapshot; three completed steps and one active step.
-- Browser viewport: 1500 × 1482 CSS px; `devicePixelRatio = 2`.
-- Full screenshot: 1500 × 1482 px, normalized by the browser capture to CSS-pixel dimensions.
-- Focus crop: 960 × 390 px. Source reference: 816 × 857 px. The combined comparison preserves each image's aspect ratio rather than stretching either component.
+- Source visual truth:
+  - `design-qa-assets/reference-codex-file-changes-card.png` — Codex final-answer file-change card with total files, per-file additions/deletions, undo and review controls, 1552×1012 px.
+  - `design-qa-assets/reference-codex-diff-review-sidebar.png` — Codex right-side file review surface with a real per-file diff, 2376×3008 px.
+  - `design-qa-assets/reference-file-change-summary.png` — selected compact change summary reference (`N 个文件已更改 +A −D`), 442×92 px.
+  - `design-qa-assets/reference-zcode-live-output-loading.png` — latest user reference for paragraph output followed by a small gray loading spinner, 3112×1406 px.
+  - `design-qa-assets/reference-zcode-segment-disclosures.png` — user-confirmed running hierarchy: thinking, interim Markdown and Run shell, 2662×2784 px.
+  - `design-qa-assets/reference-zcode-success.png` — ZCode completed state, 3420×2958 px.
+  - `design-qa-assets/reference-zcode-running.png` — ZCode expanded work state, 2506×2210 px.
+- Browser-rendered implementation:
+  - `design-qa-assets/2026-08-29-run-changes-card.png` — isolated four-file terminal Run showing `已编辑 4 个文件`, aggregate `+7 −3`, per-file stats and the disclosure for the fourth file, 1280×720 px.
+  - `design-qa-assets/2026-08-29-run-changes-review-drawer.png` — the same Run with the right-side review drawer open and a real snapshot-derived unified diff selected, 1280×720 px.
+  - `design-qa-assets/2026-08-29-write-change-summary.png` — target conversation with the Write phase rendered as `1 个文件已更改 · 24.8 KB` inside the existing 44 px activity row, 1360×1482 px.
+  - `design-qa-assets/2026-08-29-full-final-and-reasoning-duration.png` — target 615-event conversation with the former 52-second reasoning gap corrected to `<1 秒` and Final Answer fully expanded, 1360×1482 px.
+  - `design-qa-assets/2026-08-28-zcode-compact-tools-expanded.png` — real interrupted Run showing compact 44 px tool/thinking rows, ordered interim Markdown and one expanded six-call list, 1360×1482 px.
+  - `design-qa-assets/work-timeline-corrected-expanded.jpg` — corrected multi-stage Run with collapsed thinking/tool rows and independent interim Markdown, 1500×1482 px.
+  - `design-qa-assets/work-timeline-corrected-collapsed.jpg` — corrected terminal state: whole work process collapsed, final answer visible, 1500×1482 px.
+  - `design-qa-assets/work-timeline-corrected-dark.jpg` — corrected disclosure hierarchy in dark theme, 1500×1482 px.
+  - `design-qa-assets/work-timeline-corrected-narrow.jpg` — corrected hierarchy at 900×720 CSS px.
+  - `design-qa-assets/work-timeline-corrected-compact.jpg` — corrected hierarchy at 720×720 CSS px.
+  - `design-qa-assets/work-timeline-success.jpg` — completed Run collapsed above the final answer, 1280×720 px.
+  - `design-qa-assets/work-timeline-failure.jpg` — failed Run expanded with reasoning, tool summary and error evidence, 1280×720 px.
+  - `design-qa-assets/work-timeline-dark.jpg` — dark-theme failure state, 1280×720 px.
+  - `design-qa-assets/work-timeline-narrow.jpg` — 900×720 CSS viewport, no horizontal overflow.
+  - `design-qa-assets/work-timeline-compact.jpg` — 720×720 CSS viewport, no horizontal overflow.
+- Combined full-view comparisons:
+  - `design-qa-assets/2026-08-29-run-changes-card-comparison.png`
+  - `design-qa-assets/2026-08-29-run-changes-review-comparison.png`
+  - `design-qa-assets/2026-08-28-zcode-compact-tools-comparison.png`
+  - `design-qa-assets/comparison-corrected-full.jpg`
+  - `design-qa-assets/comparison-success.jpg`
+  - `design-qa-assets/comparison-expanded.jpg`
+- Combined focused comparisons:
+  - `design-qa-assets/2026-08-29-write-change-summary-comparison.png` — source summary and the matching Workbench row crop in one 920×372 comparison.
+  - `design-qa-assets/comparison-corrected-focused.jpg`
+  - `design-qa-assets/comparison-success-focused.jpg`
+  - `design-qa-assets/comparison-expanded-focused.jpg`
+- Local route for the isolated file-change fixture: `http://127.0.0.1:5185/chat?agent=agent_01M14M4ZWKTSAP89WVZD7K35SY&c=wi_01M14M4ZWMTTDYY2VJEC2D3G62`
 
-## Full-view comparison evidence
+The corrected default capture used a 1500×1482 CSS viewport at devicePixelRatio 2; the Browser capture is normalized to 1500×1482 output pixels. Corrected responsive captures used 900×720 and 720×720 CSS/output pixel sizes. Source screenshots are product captures with unknown CSS viewport/density, so they were normalized by height only in the combined comparison files; layout and interaction hierarchy, not absolute pixel scale, is the fidelity target.
 
-- The workflow remains on the same 920 px reading rail as transcript and composer, so the new surface does not create page-level horizontal overflow or detach the execution state from the input path.
-- The LanguageGUI white card, cool canvas, thin border, soft shadow and blue/semantic status accents remain consistent with the accepted production Chat skin.
-- Four Action cards fit above the composer; longer workflows scroll inside the bounded list rather than growing the persistent bottom region indefinitely.
-- The implementation intentionally retains the Workbench shell, real conversation data and runtime status instead of copying the Figma demo shell.
+## Required Fidelity Surfaces
 
-## Focused comparison evidence
+- Fonts and typography: passed. The implementation preserves the product's existing system sans/mono stack. Status copy, phase labels, tool summaries and final Markdown retain a readable hierarchy at desktop, 900 px and 720 px widths. No clipping or forced line breaks were introduced.
+- Spacing and layout rhythm: passed. The Run summary is a 44 px semantic row; successful work collapses to one line directly above the final answer. Expanded reasoning, interim Markdown, tool batches and errors follow one vertical event order. LanguageGUI's existing 8 px rhythm, 12 px radius and centered reading rail are preserved.
+- Colors and visual tokens: passed. All new surfaces, borders, text and status tones use repository semantic tokens. Light and dark captures preserve contrast; failure and interruption use icon plus text, not color alone.
+- Image quality and asset fidelity: passed. The target contains no raster product imagery requiring generation. Existing product iconography is reused; no emoji, CSS illustration, placeholder art or custom inline SVG was introduced.
+- Copy and content: passed. Visible labels are localized and state-specific: `工作中`, `已工作`, `运行失败`, `已中断`, `思考 · 持续了 X`, and compact tool summaries. The final assistant Markdown remains outside the work timeline.
+- Interaction and accessibility: passed. Work and tool summaries are semantic buttons with `aria-expanded`; Run status changes use a short stable `role=status` announcement; the large streaming body is not a live region. Keyboard focus is visible, reduced-motion keeps state changes without animation dependency, and the 900/720 px captures have `scrollWidth === innerWidth`.
 
-- The combined comparison input places the official multi-prompt reference and the rendered Workbench workflow in one view. Both use ordered, independent Action cards, compact badges, generous white content surfaces and a visible connector between steps.
-- The Workbench projection is deliberately denser because it is a persistent execution summary rather than a workflow editor. It replaces Figma's model/settings/delete/add controls with real completed/current/pending status pills.
-- The active Action is visible on initial render even when the list overflows. DOM order remains Action 1 → Action 4 and the current item carries `aria-current="step"`.
+## Comparison History
 
-## Required fidelity surfaces
+### Iteration 8 — final-answer file changes and review passed
 
-- Fonts and typography: passed. Kicker, badges and status use the existing 12 px caption token; action text uses the 14 px body token with natural wrapping. No role/model header was reintroduced.
-- Spacing and layout rhythm: passed. Goal/proposal/actions share one 12 px-radius container; Action cards use the existing 8 px card radius and 8 px vertical rhythm; the centered connector follows the card stack.
-- Colors and visual tokens: passed. All product styles use semantic surface, border, brand and status tokens. Completed/current/pending states also include icon and text, so color is not the only signal.
-- Image quality and asset fidelity: passed. The production component is code-native UI and uses the installed Lucide icon set; no raster placeholder, handcrafted SVG, emoji or CSS illustration replaced a visible source asset.
-- Copy and content: passed. Labels distinguish「当前目标」「方案草稿」「本轮执行计划」and use real stored step text. Unavailable editing commands are not shown as fake controls.
-- Accessibility: passed. The workflow is a named section, execution order is an `ol`, the current step uses `aria-current`, goal progress is a named progressbar, proposal disclosure exposes `aria-expanded`/`aria-controls`, and every status has visible text.
-- Responsiveness: passed for the repository's supported desktop surface. The workflow stays single-column and bounds long content; no new sub-1024 contract was introduced.
+- The implementation follows ZCode's capture model instead of deriving chat history from the mutable Git worktree: every supported Write/Edit records bounded before/after text snapshots, repeated writes fold to the first before and last after, and a line-level LCS produces the aggregate and per-file `+A/−D` values.
+- The terminal assistant turn now ends with one compact `已编辑 N 个文件` card. It shows total additions/deletions, the first three paths, a disclosure for the remaining files, and explicit `撤销` / `审核` actions without changing the established LanguageGUI reading rail.
+- `审核` opens a 760 px right-side drawer with a file rail and snapshot-derived unified diff. Switching files updates the diff in place; empty/unavailable text diff has a visible fallback.
+- `撤销` first validates every current file against the recorded final snapshot. Any external change rejects the entire command before a write; a successful command restores prior contents, removes files created by the Run, persists a replayable `file_changes.reverted` event and disables the control as `已撤销`.
+- Browser acceptance used a real isolated API/SQLite fixture with four files and `+7 −3`. It verified the collapsed and expanded file list, right-side review, file switching, confirmation dialog, ready/reverted states and zero console errors.
+- Visual comparison: passed. The source's hierarchy, neutral card, dense file rows, green/red signed counts and side-by-side review grammar are preserved. Existing product tokens, iconography and drawer primitives remain authoritative rather than copying Codex chrome literally.
+- Automated verification passed: 67 Vitest files / 564 tests, TypeScript project build, ESLint, production Vite build, Go build/vet and race-enabled focused backend tests.
 
-## Comparison history
+### Iteration 7 — Write/Edit change summary passed
 
-### Pass 1
+- The selected source uses one compact line: neutral file-count copy followed by green additions and red deletions. The implementation preserves that hierarchy and maps the colored values to existing success/error tokens without introducing a second card, badge, or interaction.
+- The real historical Write event exposes one file and 24,832 written bytes but no old snapshot, diff, additions or deletions. Its honest matching state is therefore `1 个文件已更改 · 24.8 KB`; line counts are deliberately omitted rather than shown as fabricated zeroes.
+- When canonical `change_stats` or a verifiable unified diff supplies line facts, the same component renders `N 个文件已更改 +A −D`. Focused render tests verify the neutral/green/red spans; the real browser capture verifies the file/bytes fallback in the same 44 px row.
+- Fonts and typography: passed. Existing system UI typography, tabular figures and 11 px compact-row scale are preserved.
+- Spacing and layout rhythm: passed. No row-height or surrounding stage spacing changed; the summary remains one line with the existing overflow behavior.
+- Colors and visual tokens: passed. Neutral copy uses secondary/tertiary text tokens; additions use status-success and deletions use status-error. `+`/`−` signs preserve meaning without color.
+- Image quality and asset fidelity: passed. The target is UI text only and requires no raster or generated asset.
+- Copy and content: passed with an intentional data constraint. The current Run shows bytes because those are the only reliable facts; raw `Wrote ... bytes` remains available only in the deeper trace detail.
+- Interaction and accessibility: passed. The summary is static content inside the existing disclosure button; the button's accessible name includes the full change summary, status and duration.
+- Fresh focused and full-suite verification passed: 66 Vitest files / 559 tests, TypeScript, ESLint, production Vite build, Go build/vet, gofmt and Kimi adapter race test.
 
-- P1: a real stored Plan did not render because the generic 500-event timeline cap discarded the latest `run.plan_updated` snapshot before Chat projection.
-  - Fix: preserve the latest Plan and Goal state frames while still capping delta-heavy timeline tails at 500 entries.
-  - Post-fix evidence: the real stored conversation renders one workflow with four Action cards.
-- P2: the active fourth Action began below the bounded list viewport, so the most important current state was not initially visible.
-  - Fix: increase the bounded list height and scroll the active step into the nearest visible position after state updates.
-  - Post-fix evidence: Action 4 bounds are inside the list bounds (`1270.20–1338.99` vs `1050.80–1338.80`, sub-pixel edge only) and the screenshot visibly includes its「进行中」pill.
+### Iteration 6 — full Final Answer and reasoning-gap feedback passed
 
-### Pass 2
+- User-requested Final Answer folding was removed completely. The target conversation rendered one 1,101-character final article through its last recommendation with zero `展开全文/收起全文` controls.
+- Event evidence for `run_01M14GZP47M8XQ60M90CJX9R1P` showed the sixth reasoning phase streamed for 573ms, then produced no event for 52.396s before `tool.started`. The UI now records the final reasoning delta as `completedAt`, so the historical row reads `思考 · 持续了 <1 秒` instead of 52 seconds.
+- A live reasoning phase that receives no delta for 700ms stops its streaming sweep and appends the small accessible output loader. A new delta restores streaming; running tools, pending approval and terminal Runs suppress the loader.
+- Fresh-page browser acceptance found zero console errors, zero old `持续了 52 秒` rows, zero long-answer controls, the full final tail in the DOM, and zero terminal-state loading indicators.
+- Automated verification passed: 66 Vitest files / 553 tests, TypeScript project build, ESLint and production Vite build.
 
-- No remaining actionable P0, P1 or P2 visual findings.
-- Accepted adaptations: read-only status controls instead of editor controls; compact persistent geometry instead of full-page workflow-builder cards; Workbench Chinese copy instead of reference lorem ipsum.
+### Iteration 5 — live density and paragraph streaming passed
 
-## Interaction and runtime evidence
+- Browser measurements on a real 68-call Run found the first eight tool disclosures and all seven thinking disclosures were exactly 44 px high. No visible `工具执行` heading remains; the 14 px wrench icon, call count, current/latest summary, terminal state and chevron carry the compact row.
+- Expanding a real six-call Execute group produced six ordered list rows with their individual durations and terminal states. Each later tool phase remains a separate disclosure because settled Markdown/reasoning is a hard grouping boundary.
+- A live final draft is now projected as the ordinary outer assistant answer immediately, with a stable paragraph-block Markdown tree. Completed paragraphs stop reparsing while only the current safe block updates; open fences, math and callouts remain buffered.
+- The output loader is a 15 px token-colored spinner with `role=status`, hidden while reasoning, a tool or approval is active and removed at every terminal state. The real interrupted Run showed zero stale loaders; render/state tests cover initial wait and post-paragraph wait.
+- Unknown Run status is no longer enough to hide a received `tool.started`: an actually streaming thinking/answer, pending approval or running tool infers the temporary live presentation until the canonical status arrives.
+- Browser comparison and console inspection passed; the source/implementation comparison is recorded above. Automated verification passed: 67 Vitest files / 552 tests, TypeScript project build, ESLint, production Vite build, Go build/vet, gofmt and the Kimi adapter race test.
 
-- Real history load produced one `.chat-workflow` and four `.chat-workflow-action-card` elements.
-- Visible text reports `3/4 已完成`, three completed steps and one current step.
-- Legal empty Plan frames remove the old Plan snapshot; malformed non-empty frames retain the last valid snapshot.
-- Goal clear events cannot revive an older `/goal` command.
-- Browser console contains no errors. Only the two pre-existing React Router v7 future-flag warnings remain.
-- Full frontend evidence: 57 test files / 425 tests passed, ESLint passed, TypeScript project build passed, and the production Vite build passed.
+### Iteration 4 — ZCode behavior alignment passed
 
-## Follow-up polish
+- Real 1325-event conversation retained `11 段思考 · 82 次工具 · 9 段过程正文` and the external final answer.
+- Reasoning ticker now uses the final non-empty source line, scrolls to its horizontal tail, exposes a two-sided mask, and keeps the collapsed body mounted for 300 ms before unmount. Browser timing check observed body counts `1 → 1 → 0` across expand, immediate collapse and 360 ms.
+- ZCode grouping defaults split the real transcript into 14 semantic groups (Agent, Explore and Execute visible in the inspected sample) without changing the 82 underlying tool rows.
+- The final Markdown measured `scrollHeight=10826`; its collapsed `clientHeight/max-height` was exactly 120 px. Expand restored full `clientHeight=10925`, and collapse returned to the height cap.
+- Settings expose four accessible switches. `显示全部思考` defaults on; turning it off reduced the same Run from 11 visible reasoning rows to exactly 1, then the default was restored.
+- Retryable failed Run `wi_01M0ZNR10TMJ5S1TP39DBZV4YD` rendered one composer-adjacent error Banner with detail/copy/Retry controls and zero transcript error rows; the Retry action was present but deliberately not invoked during read-only acceptance.
+- The settings, reasoning, tool and final controls have accessible names and state; reduced-motion disables the new sweep/transition effects. Browser console contained zero error-level entries.
+- Automated verification: 67 Vitest files / 535 tests, TypeScript build, ESLint and production Vite build passed; Kimi adapter race test plus Go build/vet passed.
 
-- P3: when a real conversation containing both Goal and Plan-mode proposal becomes available, capture those live states in addition to the current static-render coverage.
+### Iteration 3 — passed
 
-## ContentBlock v1 comparison target
+- The corrected real conversation contains 19 independent thinking phases, 18 collapsed tool batches, two interim Markdown messages and one external final answer in strict event order.
+- Every thinking phase now defaults to a 44 px collapsed disclosure row. Its one-line preview follows the horizontal tail while streaming; expanding reveals only that phase's complete reasoning.
+- Every tool batch defaults to one collapsed row whose latest human-readable tool summary follows the horizontal tail. Expanding still reveals the existing ordered tool log and details.
+- Interim assistant output renders as an independent `article[aria-label="过程正文"] > .chat-prose` sibling. It has no thinking border, background or label and uses the same Markdown typography as normal assistant output.
+- On terminal success, the outer WorkTimeline collapses all thinking/interim/tool history into `已工作 X`; `article[aria-label="Atlas 的消息"]` remains visible as the single final answer.
+- Browser interaction checks passed for thinking expand/collapse, tool expand/collapse, outer Run collapse, final-answer visibility, light/dark themes, 900 px and 720 px viewports. Page `scrollWidth === innerWidth` at both responsive widths; preview rows retained internal horizontal overflow for tail following.
+- Browser console: zero error-level entries.
+- Automated verification: TypeScript build, 65 Vitest files / 520 tests, ESLint and production Vite build all passed.
 
-- Official source visuals:
-  - `/tmp/languagegui-reference.zQuUb3/current-dashboard.png`
-  - `/tmp/languagegui-reference.zQuUb3/chart-detail.png`
-  - `/tmp/languagegui-reference.zQuUb3/top-5-gdp.png`
-  - `/tmp/languagegui-reference.zQuUb3/widgets-overview.png`
-  - `/tmp/languagegui-reference.zQuUb3/drag-drop-files.png`
-- Rendered implementation captures:
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-pass1-metric.png`
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-pass1-mid.png`
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-pass1-bottom.png`
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-pass2-event.png`
-- Combined comparison input: `/tmp/languagegui-reference.zQuUb3/content-blocks-comparison-pass2.png`.
-- Route/state: `http://localhost:5180/languagegui`, seeded assistant output containing one `languagegui/v1` document with metric, bar chart, table, file and event blocks.
-- Viewport: 1265 × 712 CSS px and normalized screenshot pixels; source images retain their original aspect ratio in the combined comparison.
+### Iteration 1 — blocked
 
-### ContentBlock full-view and focused evidence
+- [P1] Terminal events depended on an asynchronous Run refetch, leaving a visible window where final text existed while the work header still said running.
+- [P1] Missing Run status was interpreted as running, starting a timer and `aria-busy` state for historical/unknown data.
+- [P2] The initial live-region scope included the entire streaming work body and could repeatedly announce long Markdown.
+- [P2] Folded reasoning did not carry its first-delta timestamp, so long historical phases could not report a meaningful duration.
 
-- MetricBlock preserves the official large-value hierarchy while generalizing it to an auto-fit metric grid; delta text uses explicit positive/warning wording in addition to semantic color.
-- ChartBlock reproduces the official white plotting card, blue series, grid, axes, tooltip and source footer. It adds a keyboard-operable native details disclosure containing the exact data table.
-- TableBlock uses a real table with column scopes, semantic alignment and bounded horizontal overflow. FileBlock and EventBlock reuse the same shell instead of introducing domain-specific dashboards.
-- Event date/time copy was tightened after the first capture: same-day ranges show the date once, the end time once and a separate timezone badge.
-- All five blocks use the shared 920 px reading surface and semantic tokens; unsafe URLs produce metadata-only cards rather than empty or executable actions.
+### Fixes
 
-### ContentBlock comparison history
+- `run.completed` and `run.failed` now patch the cached Run to `succeeded`/`failed` immediately and update the terminal timestamp before the asynchronous refresh.
+- Unknown status now renders a static `工作过程` state; only the canonical active-state set is treated as running.
+- Only a short, stable status string is announced. The ordered body is a normal list.
+- Folded reasoning now attaches to its matching `tool.started` / `message.completed` boundary, retains `reasoning_folded_started_at` and phaseId, and no longer reappears as one late whole-Run block. Live and settled phases carry `phaseStartedAt`/`startedAt`.
 
-- P1: importing Recharts eagerly increased the main application chunk from about 881 kB to 1.30 MB.
-  - Fix: lazy-load ChartBlock and its chart runtime behind a stable loading surface.
-  - Post-fix evidence: the final main chunk is about 908 kB after all navigation/theme/template work; Recharts remains isolated in a 350 kB chart chunk and loads only when a chart block is present.
-- P2: the first EventBlock repeated the full date and timezone on both ends of a same-day range.
-  - Fix: render the start date/time once, then only the end time, with timezone in its own badge.
-- P2: canonical blocks and the same fenced JSON could render twice.
-  - Fix: canonical blocks are authoritative and the matching closed LanguageGUI fence is removed from visible Markdown before rendering.
-- No remaining actionable P0, P1 or P2 findings after the second pass.
+### Iteration 2 — superseded
 
-### ContentBlock interaction and safety evidence
+- Completed comparison shows the same key hierarchy as ZCode: one `已工作 X` summary, then the final answer outside it.
+- Expanded comparison shows the same chronological grammar: phase label and reasoning, compact tool row, then failure evidence. The implementation intentionally keeps the LanguageGUI raised surface and semantic status colors instead of copying ZCode's plain white shell.
+- Primary interactions tested in the browser: expand/collapse completed work, expand/collapse a nested tool batch, default-expanded failure evidence, final Markdown visibility, light/dark theme.
+- Browser console: zero error-level entries. Existing React Router future-flag warnings are unrelated to this change.
+- This iteration proved Run-level collapse but was superseded because it rendered thinking expanded and did not visually separate interim Markdown strongly enough.
 
-- Browser DOM reports all five types in order: `metric`, `chart`, `table`, `file`, `event`.
-- Chart「查看数据表」changes the native details state from closed to open and exposes the table.
-- Browser console has no errors; only the pre-existing React Router v7 future-flag warnings remain.
-- Parser caps blocks, metrics, rows/columns, chart series/points and files; rejects unknown versions/types, non-finite chart values, executable URLs, DOM props and oversized JSON.
-- Invalid fenced JSON falls back to the normal CodeBlock; streaming fences stay source text until settled; a bad block does not remove valid siblings or surrounding Markdown.
-- Chat Run requests declare `output_contract=languagegui/v1`; backend tests prove the protocol is appended to the system prompt snapshot while user instruction remains unchanged.
+## Open Questions
 
-## PromptBox comparison target
+- The reference screenshot shows its sample thinking body expanded, while the user's explicit confirmed requirement says each thinking phase must default collapsed with a scrolling one-line preview. The implementation follows the explicit requirement; the reference is used for sibling hierarchy and typography rather than that default state.
+- Exact `+A/−D` is available for new Kimi Write/Edit events whose text snapshots are captured. Historical Runs, shell-based edits, multi-file patches without one resolvable path, binary files and bounded-out large files intentionally remain unavailable rather than reporting fabricated counts.
 
-- Official source visuals:
-  - `/tmp/languagegui-reference.zQuUb3/prompt-boxes.png`
-  - `/tmp/languagegui-reference.zQuUb3/how-can-help.png`
-  - `/tmp/languagegui-reference.zQuUb3/drag-drop-files.png`
-- Rendered implementation:
-  - `/tmp/languagegui-reference.zQuUb3/prompt-box-pass2-focus.png`
-  - `/tmp/languagegui-reference.zQuUb3/prompt-box-attachment-pass1-focus.png`
-  - `/tmp/languagegui-reference.zQuUb3/prompt-box-apps-pass2-focus.png`
-- Combined comparison input: `/tmp/languagegui-reference.zQuUb3/prompt-box-comparison-pass1.png`.
-- Route/state: production Chat with the real completed-run workflow above the composer; default, local attachment and Library/Apps-open states.
-- Viewport: 1500 × 1482 CSS px and normalized screenshot pixels; focused crops preserve the 920 px composer width.
+## Follow-up Polish
 
-### PromptBox evidence and comparison history
+- P3: ZCode uses a nearly borderless work log; LanguageGUI keeps a subtle raised card to remain consistent with the existing chat surface. This is an intentional product-system adaptation, not an actionable mismatch.
 
-- Default state matches the official expanded PromptBox hierarchy: rounded white shell, inset multiline input, compact attachment/image/mic/apps toolbar and a high-weight blue send action.
-- Existing queue, usage, stop/send and Enter/Shift+Enter behavior remain connected to the real Chat store. Running runs change the send label to「加入队列」instead of hiding the queue behavior.
-- Attachment state uses a real hidden file input plus keyboard-operable button, bounded file chips, explicit remove actions and an inline explanation. The composer remains fully visible with the extra rows.
-- Library/Apps uses one lightweight popover, three useful prompt templates, a truthful「LanguageGUI v1 已启用」row and a neutral「外部 Apps 尚未配置」row.
-- P2: the first Apps styling colored「尚未配置」like a success state.
-  - Fix: default App status copy is tertiary; only the explicit enabled class uses success.
-- P2: pending attachments could have survived a conversation switch if the same PromptBox instance remained mounted.
-  - Fix: key PromptBox by conversation ID so local files and object URLs are disposed at the conversation boundary.
-- Intentional capability boundary: local attachments disable send because no upload/user-content-part API exists. No file bytes, base64 or local paths enter Run JSON; voice is enabled only when native speech-to-text exists and writes transcript into the ordinary draft.
-- No remaining actionable P0, P1 or P2 visual findings after the second pass.
+## Implementation Checklist
 
-### PromptBox interaction and safety evidence
-
-- Prompt Library opens with `aria-expanded=true`, exposes all three templates and writes the selected prompt into the controlled textarea; Escape closes it and restores `aria-expanded=false`.
-- Shift+Enter creates a second line without creating a Run.
-- A generated non-sensitive `.txt` fixture appears as a 110 B pending chip; send becomes disabled and the Runtime limitation is visible. Removing it restores the normal state.
-- A generated `.svg` fixture is rejected with「不支持此文件类型」and creates no attachment chip.
-- File validation caps count, per-file bytes and total bytes; rejects empty, executable/HTML/SVG/unknown files and deduplicates stable file fingerprints.
-- Microphone permission was not triggered during QA. Unsupported browsers render an explicitly disabled voice control; the supported path has error recovery and releases recognition on unmount.
-
-## Extended content and navigation target
-
-- Official source visuals:
-  - `/tmp/languagegui-reference.zQuUb3/figma-dashboard.png` and `/tmp/languagegui-reference.zQuUb3/overview.png` for map/media/search composition.
-  - `/tmp/languagegui-reference.zQuUb3/sidebars.png` and `/tmp/languagegui-reference.zQuUb3/screens.png` for Chats/Library/Apps navigation.
-- Rendered implementation:
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-extended-pass1.png`
-  - `/tmp/languagegui-reference.zQuUb3/content-blocks-extended-pass2.png`
-  - `/tmp/languagegui-reference.zQuUb3/chat-sidebar-chat-focus.png`
-  - `/tmp/languagegui-reference.zQuUb3/chat-sidebar-library-focus.png`
-  - `/tmp/languagegui-reference.zQuUb3/chat-sidebar-apps-focus.png`
-- Combined sidebar comparison: `/tmp/languagegui-reference.zQuUb3/sidebar-comparison-pass1.png`.
-
-### Extended content evidence
-
-- `image` reuses a real repository asset with required alt text and caption; `audio` uses native controls, metadata preloading and no autoplay; both are bounded multi-item blocks.
-- `map` shows a truthful location/coordinate card and only renders static imagery or an external action when a safe URL is present. It does not fabricate a map canvas or use arbitrary iframe/embed content.
-- `search` renders ordered results with safe links, source labels and escaped plain-text snippets. HTML-like text remains text.
-- Parser and output-contract prompt now cover image/audio/map/search in addition to metric/table/chart/file/event; unknown or invalid media siblings are dropped without hiding surrounding prose.
-
-### Sidebar/navigation evidence and history
-
-- Chats now has explicit Chats/Library/Apps navigation, local title search, conversation count, new-chat action and Pinned/History groups while retaining Agent ownership and real run status.
-- Search narrowed 23 conversations to the one matching「协议验收」and restored the full set after clearing.
-- Pin/unpin moved the selected conversation into/out of the Pinned region and was restored after QA. Pin IDs are scoped per Agent in local storage.
-- Sidebar Library exposes the same three templates as PromptBox; selecting one opens a new unsent conversation, focuses the composer and preserves the user-editable prompt.
-- Sidebar Apps reports only real state: LanguageGUI v1 enabled, external Apps unconfigured, and a link to Agent tool-policy configuration.
-- No actionable P0/P1/P2 mismatch remained in the combined official/implementation comparison. The persistent outer Workbench rail and Agent selector are accepted product adaptations.
-
-## Domain templates and dark theme target
-
-- Official source visuals:
-  - `/tmp/languagegui-reference.zQuUb3/current-dashboard.png`
-  - `/tmp/languagegui-reference.zQuUb3/weather.png`
-  - `/tmp/languagegui-reference.zQuUb3/chart-detail.png`
-  - `/tmp/languagegui-reference.zQuUb3/overview.png`
-- Rendered templates:
-  - `/tmp/languagegui-reference.zQuUb3/domain-templates-pass1.png`
-  - `/tmp/languagegui-reference.zQuUb3/domain-stock-pass3.png`
-  - `/tmp/languagegui-reference.zQuUb3/domain-rating-pass1.png`
-- Dark Chat: `/tmp/languagegui-reference.zQuUb3/chat-dark-pass1.png` at the same 1500 × 1482 viewport as the accepted light Chat.
-
-### Domain template evidence and history
-
-- Currency, weather, stock and score are composition helpers over generic metric/table/chart blocks; they do not create duplicate domain wire schemas. Rating is the only added interaction block because it requires real radio semantics.
-- Currency renders two large-value cards with rates; weather combines current metrics and an hourly table; stock combines summary metrics with a lazily loaded line chart; score uses the same metric language for both teams.
-- P2: the first stock chart used a zero-based Y axis, flattening the narrow price movement.
-  - Fix: add `y_domain=auto` to generic charts and let the stock template opt in.
-- P2: automatic numeric padding initially exposed floating-point precision in axis labels.
-  - Fix: format chart ticks and accessible data-table values to two meaningful decimal places with prefix-aware currency units.
-- The new RatingBlock exposes five radios, keeps one checked value, and states that feedback remains local. Browser interaction selected four stars with exactly one `aria-checked=true` radio.
-
-### Dark theme evidence
-
-- Dark mode is one scoped semantic-token mapping on `.chat-languagegui-skin[data-theme=dark]`; no component-level `dark:` color fork or global theme mutation was added.
-- Primary/secondary/tertiary text, borders, surfaces, code tokens, status hues, chart series, Workflow, Sidebar and PromptBox remain readable and preserve hierarchy in the dark capture.
-- Theme control changes its accessible label and icon, persists `dark` across reload, and was returned to the user's accepted light theme after QA.
-- Bright brand surfaces use a dark inverse foreground in dark mode; body and tertiary text maintain high contrast against the dark base/raised surfaces.
-- No actionable P0/P1/P2 findings remain.
-
-## Developer code and review-summary target
-
-- Official code source: `/tmp/languagegui-reference.zQuUb3/javascript-code.png`.
-- User-provided review source: `/var/folders/gl/fpk3jftx5y50txjpk1k7zr280000gn/T/codex-clipboard-eb4d28b6-1c36-4cc7-b574-1e36bbf4bed4.png`.
-- Rendered code capture: `/tmp/languagegui-code-preview.png`.
-- Rendered review capture: `/tmp/languagegui-review-summary-preview.png`.
-- Comparison input: the two source images and two rendered captures were inspected together at their original aspect ratios.
-- Live route: `http://localhost:5180/languagegui`; production-build visual acceptance used the equivalent `http://127.0.0.1:5181/languagegui` preview to avoid development HMR affecting capture timing.
-
-### CodeBlock evidence
-
-- The toolbar follows the official hierarchy at Chat density: file path first, an independent language badge, visible「复制代码」action and a high-weight blue「导出」menu.
-- Every visible source line has a non-selectable line number. Fence meta `{4,7-9}` highlights exactly those rows without changing copied/downloaded source.
-- `filename=` and `title=` remain display metadata. Downloads take a sanitized basename only; unknown or invalid values fall back to a bounded language-derived name.
-- The Export control exposes only two real actions: download file and copy Markdown. Browser acceptance proved `aria-expanded=false → true → false`, two visible menu items and Escape close/focus recovery.
-- The code body preserves full-document highlight.js parsing, 13px/1.6 mono rhythm, horizontal overflow and the official pale selected-row treatment.
-
-### ReviewSummaryBlock evidence
-
-- The card turns review output into one scan path: verdict → visible statistics → severity-ordered findings → verification checks → next steps. It does not infer structure from ordinary Markdown headings.
-- Verdict, severity and verification status use a fixed parser enum and visible text/icon in addition to color. The first high-severity finding opens by default; later findings remain compact and expand with native details semantics.
-- File/line, evidence and suggestions remain plain bounded data. Only allow-listed URLs become links; model values cannot create CSS classes, HTML, styles or event handlers.
-- Browser acceptance found one `review-summary` block, one enhanced CodeBlock and no console errors. The second finding changed from closed to open and exposed its detail text.
-- The visible card matches the user's requested content hierarchy while intentionally using the accepted LanguageGUI card/surface system instead of reproducing the screenshot's red annotation rectangle.
-
-## Tool activity target
-
-- Official source visuals:
-  - `/tmp/languagegui-reference.zQuUb3/multi-prompt.png` — 816 × 857 px.
-  - `/tmp/languagegui-reference.zQuUb3/javascript-code.png` — 1620 × 1507 px.
-- Rendered implementation:
-  - `/tmp/languagegui-tool-demo-light.png` — 861 × 855 px.
-  - `/tmp/languagegui-tool-chat-light.png` — 876 × 870 px.
-  - `/tmp/languagegui-tool-chat-dark.png` — 876 × 870 px.
-- The browser capture is normalized to CSS-pixel dimensions at the app's current desktop viewport. Source and implementation were inspected in one comparison input without stretching.
-- States: Demo Bash/Read/Search/Edit/MCP fixture with Read selected; production two-action Search/Write group with Search selected; equivalent production dark theme.
-
-### Tool activity comparison evidence
-
-- The production Action cards preserve the official multi-prompt hierarchy: `Action N` and tool badges lead, the operation summary carries the main weight, and status/duration close each card. The horizontal rail is an intentional density adaptation for runs with many tool calls.
-- The ActivityGroup adds a truthful group header that the Figma editor pattern does not need: call counts, aggregate status, and one collapse control. Brand blue is limited to focus/selection; success, failure, running and stopped keep semantic color plus visible text.
-- Terminal, Read, Search, Diff and generic MCP IN/OUT bodies reuse the accepted code-panel treatment: light toolbar, raised body, bounded scrolling, line numbers where applicable and no fake execution controls.
-- Truncated Search output only shows「显示 X / 共 N」when the protocol supplies a trustworthy total; otherwise it says「已截断 · 显示 X」and never presents the retained count as the full result set.
-- Dark mode uses the same semantic-token mapping; no component-local dark color fork was added. Text, borders, selected cards, status pills and code/search detail remained readable in the focused capture.
-- The Demo fixture is explicitly labeled and reuses production `ActivityGroup`. Browser checks proved single-selection expansion, group collapse/expand, failed MCP detail, 5 Action cards, and zero console errors.
-
-### Production retention evidence
-
-- A real stored conversation with 148 tool calls initially lost every tool card because 500-frame tail truncation favored later `message.delta` events.
-- The cap still remains 500, but now retains structural transcript anchors and complete tool-call bundles before filling the remaining budget with noisy tail events.
-- Fresh browser history load rendered one collapsed group labeled「展开 148 个工具调用」. Expanding produced all 148 cards with a truthful summary of 142 completed, 5 failed and 1 stopped; no console errors occurred.
-- `/languagegui` is lazy-loaded: the production build keeps the base entry near 414 kB and isolates the Demo page plus shared tool renderer instead of moving Demo-only fixtures into every Workbench route.
-- No remaining actionable P0/P1/P2 tool-activity findings remain.
+- [x] Running Run defaults expanded.
+- [x] Successful Run defaults collapsed.
+- [x] Failed/interrupted Run defaults expanded.
+- [x] Tool batches default to a single collapsed command row.
+- [x] Tool rows follow the latest human-readable summary while collapsed.
+- [x] Every thinking phase defaults collapsed and follows the latest preview text.
+- [x] Interim assistant output is an independent ordinary Markdown sibling, never part of a thinking disclosure.
+- [x] Thinking, interim Markdown and tool batches preserve event order.
+- [x] Long capped histories fold reasoning back to the matching phase boundary.
+- [x] Final Markdown renders outside the work timeline.
+- [x] Live final Markdown renders outside the work timeline paragraph by paragraph.
+- [x] A small accessible loading icon follows the latest rendered paragraph while waiting.
+- [x] Tool `started` appears immediately and expands to its ordered call list.
+- [x] Tool and thinking disclosure rows share the same 44 px density.
+- [x] Terminal status closes immediately without a stale running window.
+- [x] Light, dark, 900 px and 720 px states verified.
+- [x] No browser console errors.
+- [x] Final answer can show a snapshot-derived edited-files card with aggregate and per-file line counts.
+- [x] Review opens a right-side per-file unified-diff drawer.
+- [x] Undo is guarded by whole-batch preflight, idempotency and a persisted reverted state.
 
 final result: passed

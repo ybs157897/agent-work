@@ -489,6 +489,39 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ArtifactList" } } } }
 
+  /runs/{run_id}/changes:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRunChanges
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunChanges" } } } }
+
+  /runs/{run_id}/changes/diff:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRunChangeDiff
+      parameters: [{ name: path, in: query, required: true, schema: { type: string } }]
+      responses: { "200": { content: { application/json: { schema: { type: object, required: [path, diff], properties: { path: { type: string }, diff: { type: string }, truncated: { type: boolean }, binary: { type: boolean } } } } } } }
+
+  /runs/{run_id}/commands/revert-changes:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      tags: [runs]
+      operationId: revertRunChanges
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotency_key]
+              properties: { idempotency_key: { type: string } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunChanges" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
   /workspaces/{workspace_id}/activities:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
@@ -1280,6 +1313,30 @@ components:
       type: object
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/ExecutionRun" } }
+
+    RunChanges:
+      type: object
+      required: [file_count, additions, deletions, files, state, can_revert, version]
+      properties:
+        file_count: { type: integer }
+        additions: { type: integer }
+        deletions: { type: integer }
+        files: { type: array, items: { $ref: "#/components/schemas/RunChangeFile" } }
+        state: { type: string, enum: [ready, unavailable, reverted] }
+        can_revert: { type: boolean }
+        reason: { type: string }
+        version: { type: integer }
+    RunChangeFile:
+      type: object
+      required: [path, kind, additions, deletions, write_count, last_turn_index]
+      properties:
+        path: { type: string }
+        kind: { type: string, enum: [added, modified, deleted, renamed] }
+        additions: { type: integer }
+        deletions: { type: integer }
+        write_count: { type: integer }
+        last_turn_index: { type: integer }
+        binary: { type: boolean }
 
     RunEventList:
       type: object

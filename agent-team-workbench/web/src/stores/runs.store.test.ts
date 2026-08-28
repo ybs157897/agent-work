@@ -3,6 +3,8 @@ import type { CanonicalEvent } from '../api/types';
 import { buildMessages } from './chat.store';
 import { useRunsStore } from './runs.store';
 import { clearOutputTrace, getOutputTrace } from '../utils/output-trace';
+import { buildTranscriptSegments } from '../utils/chronological-transcript';
+import { projectWorkActivityTimeline } from '../utils/work-activity-timeline';
 
 const runEvent = (seq: number, type: string, data?: Record<string, unknown>): CanonicalEvent => ({
   contract_version: 'events/v1',
@@ -21,9 +23,62 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+beforeEach(() => {
+  useRunsStore.getState().unwatchRun('run_1');
+  useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
+});
+
 describe('runs.store applyEvent', () => {
-  beforeEach(() => {
-    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
+  it('并发请求同一 run 快照时只发出一个 HTTP 请求', async () => {
+    let respond!: () => void;
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      respond = () => resolve(new Response(JSON.stringify({
+        id: 'run_1',
+        work_item_id: 'wi_1',
+        status: 'running',
+        version: 1,
+        created_at: '2026-08-21T00:00:00Z',
+        updated_at: '2026-08-21T00:00:00Z',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = useRunsStore.getState().fetchRun('run_1');
+    const second = useRunsStore.getState().fetchRun('run_1');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    respond();
+    await Promise.all([first, second]);
+    expect(useRunsStore.getState().runs.run_1?.status).toBe('running');
+  });
+
+  it('在途旧快照不会覆盖 SSE 终态，并在完成后追加一次权威刷新', async () => {
+    const responders: Array<(run: Record<string, unknown>) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
+      responders.push((run) => resolve(new Response(JSON.stringify(run), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })));
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    useRunsStore.setState({ watching: { run_1: 1 } });
+
+    const first = useRunsStore.getState().fetchRun('run_1');
+    useRunsStore.getState().applyEvent(runEvent(20, 'run.completed'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    responders[0]?.({
+      id: 'run_1', work_item_id: 'wi_1', status: 'running', version: 1,
+      created_at: '2026-08-21T00:00:00Z', updated_at: '2026-08-21T00:00:00Z',
+    });
+    await first;
+    expect(useRunsStore.getState().runs.run_1?.status).toBe('succeeded');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    responders[1]?.({
+      id: 'run_1', work_item_id: 'wi_1', status: 'succeeded', version: 2,
+      created_at: '2026-08-21T00:00:00Z', updated_at: '2026-08-21T00:00:02Z',
+    });
+    await vi.waitFor(() => expect(useRunsStore.getState().runs.run_1?.updated_at).toBe('2026-08-21T00:00:02Z'));
   });
 
   it('追加时间线并就地更新已缓存 run 的状态/进度', () => {
@@ -88,11 +143,50 @@ describe('runs.store applyEvent', () => {
     expect(run.usage_basis).toBe('per_run');
   });
 
+  it('run.completed/run.failed 到达时立即落终态，不等待异步快照刷新', () => {
+    const fetchRun = vi.fn(async () => undefined);
+    useRunsStore.setState((s) => ({
+      fetchRun,
+      runs: {
+        ...s.runs,
+        run_1: {
+          id: 'run_1',
+          work_item_id: 'wi_1',
+          status: 'running',
+          version: 1,
+          created_at: '2026-08-21T00:00:00Z',
+          updated_at: '2026-08-21T00:00:00Z',
+        },
+      },
+    }));
+
+    expect(useRunsStore.getState().applyEvent(runEvent(6, 'run.completed'))).toBe(true);
+    expect(useRunsStore.getState().runs.run_1).toMatchObject({
+      status: 'succeeded',
+      updated_at: '2026-08-21T00:00:00Z',
+    });
+
+    useRunsStore.setState((s) => ({
+      runs: { ...s.runs, run_1: { ...s.runs.run_1, status: 'running' } },
+    }));
+    expect(useRunsStore.getState().applyEvent({
+      ...runEvent(7, 'run.failed', { code: 'provider.api_error' }),
+      occurred_at: '2026-08-21T00:00:07Z',
+    })).toBe(true);
+    expect(useRunsStore.getState().runs.run_1).toMatchObject({
+      status: 'failed',
+      updated_at: '2026-08-21T00:00:07Z',
+    });
+    expect(fetchRun).toHaveBeenCalledTimes(2);
+  });
+
   it('SSE 重放同 run_seq 事件时按 run_seq 去重，不重复追加', () => {
     const { applyEvent } = useRunsStore.getState();
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
+    const firstTimeline = useRunsStore.getState().timelines.run_1;
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
     expect(useRunsStore.getState().timelines.run_1).toHaveLength(1);
+    expect(useRunsStore.getState().timelines.run_1).toBe(firstTimeline);
   });
 
   it('记录 timeline.applied 的重复与保留状态', () => {
@@ -185,6 +279,20 @@ describe('runs.store applyEvent', () => {
     expect(toolMessages.every((message) => message.tool === 'Bash')).toBe(true);
   });
 
+  it('容量超限时保留没有 call_id 的 tool.started 独立 running bundle', () => {
+    const { applyEvent } = useRunsStore.getState();
+    for (let seq = 1; seq <= 510; seq += 1) {
+      applyEvent(runEvent(seq, 'message.delta', { text: `frame-${seq}` }));
+    }
+    applyEvent(runEvent(511, 'tool.started', { tool: 'Read', args_summary: 'src/App.tsx' }));
+    applyEvent(runEvent(512, 'tool.started', { tool: 'Bash', args_summary: 'pnpm test' }));
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline.length).toBeLessThanOrEqual(500);
+    const starts = timeline.filter((entry) => entry.type === 'tool.started');
+    expect(starts).toHaveLength(2);
+    expect(starts.every((entry) => !entry.data?.call_id)).toBe(true);
+  });
+
   it('容量紧张时运行中的 call 保留 started 与最新 progress，并丢弃孤立 terminal', () => {
     const { applyEvent } = useRunsStore.getState();
     applyEvent(runEvent(1, 'tool.started', { tool: 'Read', call_id: 'live', args_summary: 'a.go' }));
@@ -220,6 +328,8 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
 
   const reasoningDelta = (seq: number, text: string): CanonicalEvent =>
     runEvent(seq, 'message.delta', { raw: { chunk: { text, type: 'reasoning-delta' } }, role: 'assistant' });
+  const textDelta = (seq: number, text: string): CanonicalEvent =>
+    runEvent(seq, 'message.delta', { raw: { chunk: { text, type: 'text-delta' } }, role: 'assistant' });
 
   it('推理帧前段被逐出后，completed 锚点携带尾部预算截断的折叠全量推理', () => {
     const { applyEvent } = useRunsStore.getState();
@@ -238,6 +348,8 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
     const folded = anchor?.data?.reasoning_folded;
     expect(typeof folded).toBe('string');
     expect(anchor?.data?.reasoning_folded_truncated).toBe(true);
+    expect(anchor?.data?.reasoning_folded_started_at).toBe('2026-08-21T00:00:00Z');
+    expect(anchor?.data?.reasoning_folded_completed_at).toBe('2026-08-21T00:00:00Z');
     expect((folded as string).length).toBe(4000);
     expect((folded as string).endsWith('推理片段-601-校验;')).toBe(true);
 
@@ -247,6 +359,38 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
     expect(thinking).toHaveLength(1);
     expect(thinking[0]?.text).toContain('早期推理已省略');
     expect(thinking[0]?.text).toContain('推理片段-601-校验;');
+    expect(thinking[0]?.startedAt).toBe('2026-08-21T00:00:00Z');
+    expect(thinking[0]?.completedAt).toBe('2026-08-21T00:00:00Z');
+  });
+
+  it('多阶段超帽时把逐出推理折回对应 tool.started，保持 thinking → tool 顺序', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 261; seq += 1) applyEvent(reasoningDelta(seq, `phase-1-${seq};`));
+    applyEvent(runEvent(262, 'tool.started', { tool: 'Read', call_id: 'c1' }));
+    applyEvent(runEvent(263, 'tool.completed', { call_id: 'c1', output: 'one' }));
+    for (let seq = 264; seq <= 523; seq += 1) applyEvent(reasoningDelta(seq, `phase-2-${seq};`));
+    applyEvent(runEvent(524, 'tool.started', { tool: 'Grep', call_id: 'c2' }));
+    applyEvent(runEvent(525, 'tool.completed', { call_id: 'c2', output: 'two' }));
+    for (let seq = 526; seq <= 545; seq += 1) applyEvent(reasoningDelta(seq, `phase-3-${seq};`));
+    applyEvent(runEvent(546, 'message.completed', { role: 'assistant', text: '最终答复' }));
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    const firstTool = timeline.find((entry) => entry.type === 'tool.started' && entry.data?.call_id === 'c1');
+    expect(firstTool?.data?.reasoning_folded).toContain('phase-1-2;');
+    expect(firstTool?.data?.reasoning_folded).toContain('phase-1-261;');
+    expect(firstTool?.data?.reasoning_folded).not.toContain('phase-2-');
+    expect(firstTool?.data?.reasoning_folded_phase_id).toBe('run-seq-2');
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    const visibleKinds = messages
+      .filter((message) => message.kind === 'thinking' || message.kind === 'tool' || message.kind === 'assistant')
+      .map((message) => message.kind);
+    expect(visibleKinds).toEqual(['thinking', 'tool', 'thinking', 'tool', 'thinking', 'assistant']);
+    const thinking = messages.filter((message) => message.kind === 'thinking');
+    expect(thinking[0]?.text).toContain('phase-1-2;');
+    expect(thinking[1]?.text).toContain('phase-2-264;');
+    expect(thinking[2]?.text).toContain('phase-3-526;');
   });
 
   it('增量路径：折叠钉住锚点到达时的存活窗口，后续淘汰不再侵蚀（粘滞）', () => {
@@ -317,6 +461,81 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
     expect(thinking[0]?.text).toBe(folded);
   });
 
+  it('长过程正文随边界完整折叠，且不使用推理尾部预算', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 601; seq += 1) applyEvent(textDelta(seq, `正文片段-${seq};`));
+    // run.created 与已被 cap 逐出的 delta 依次重放，也不得清空去重索引或
+    // 让旧片段再次进入折叠缓冲。
+    const beforeReplay = useRunsStore.getState().timelines.run_1;
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    expect(useRunsStore.getState().timelines.run_1).toBe(beforeReplay);
+    applyEvent(textDelta(300, '正文片段-300;'));
+    expect(useRunsStore.getState().timelines.run_1).toBe(beforeReplay);
+    applyEvent(runEvent(602, 'tool.started', { tool: 'Read', call_id: 'text-tool' }));
+
+    let timeline = useRunsStore.getState().timelines.run_1;
+    let anchor = timeline.find((e) => e.type === 'tool.started');
+    const folded = anchor?.data?.text_folded;
+    expect(typeof folded).toBe('string');
+    expect((folded as string).length).toBeGreaterThan(4000);
+    expect((folded as string)).toContain('正文片段-2;');
+    expect((folded as string)).toContain('正文片段-601;');
+    expect((folded as string).split('正文片段-300;')).toHaveLength(2);
+    expect(anchor?.data?.text_folded_started_at).toBe('2026-08-21T00:00:00Z');
+    expect(anchor?.data?.text_folded_phase_id).toBe('run-seq-2');
+
+    for (let seq = 603; seq <= 702; seq += 1) applyEvent(textDelta(seq, `后续-${seq};`));
+    timeline = useRunsStore.getState().timelines.run_1;
+    anchor = timeline.find((e) => e.type === 'tool.started');
+    expect(anchor?.data?.text_folded).toBe(folded);
+
+    // 同 run_seq 的原始边界重放不得抹掉客户端合成的粘滞正文。
+    applyEvent(runEvent(602, 'tool.started', { tool: 'Read', call_id: 'text-tool' }));
+    timeline = useRunsStore.getState().timelines.run_1;
+    anchor = timeline.find((e) => e.type === 'tool.started');
+    expect(anchor?.data?.text_folded).toBe(folded);
+  });
+
+  it('多阶段 reasoning 与正文分别折回各自可见边界', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 261; seq += 1) applyEvent(reasoningDelta(seq, `思考-${seq};`));
+    applyEvent(runEvent(262, 'tool.started', { tool: 'Read', call_id: 'phase-tool' }));
+    applyEvent(runEvent(263, 'tool.completed', { call_id: 'phase-tool', output: 'ok' }));
+    for (let seq = 264; seq <= 523; seq += 1) applyEvent(textDelta(seq, `正文-${seq};`));
+    applyEvent(runEvent(524, 'message.completed', { role: 'assistant', text: '最终结果' }));
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    const tool = timeline.find((e) => e.type === 'tool.started' && e.data?.call_id === 'phase-tool');
+    const final = timeline.find((e) => e.type === 'message.completed');
+    expect(tool?.data?.reasoning_folded).toContain('思考-2;');
+    expect(tool?.data?.reasoning_folded).toContain('思考-261;');
+    expect(final?.data?.text_folded).toContain('正文-264;');
+    expect(final?.data?.text_folded).toContain('正文-523;');
+    expect(final?.data?.text_folded_phase_id).toBe('run-seq-264');
+  });
+
+  it('同一阶段两类 delta 同时逐出时，同一 tool 边界保留两组折叠且不串内容', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 501; seq += 1) applyEvent(reasoningDelta(seq, `R${seq};`));
+    for (let seq = 502; seq <= 1001; seq += 1) applyEvent(textDelta(seq, `T${seq};`));
+    applyEvent(runEvent(1002, 'tool.started', { tool: 'Read', call_id: 'mixed' }));
+
+    const boundary = useRunsStore.getState().timelines.run_1.find((e) => e.type === 'tool.started');
+    const reasoning = boundary?.data?.reasoning_folded as string;
+    const text = boundary?.data?.text_folded as string;
+    expect(reasoning).toContain('R2;');
+    expect(reasoning).toContain('R501;');
+    expect(reasoning).not.toContain('T');
+    expect(text).toContain('T502;');
+    expect(text).toContain('T1001;');
+    expect(text).not.toContain('R');
+    expect(boundary?.data?.reasoning_folded_phase_id).toBe('run-seq-2');
+    expect(boundary?.data?.text_folded_phase_id).toBe('run-seq-502');
+  });
+
   it('未超帽时间线不折叠，纯文本/工具帧不产生折叠字段', () => {
     const { applyEvent } = useRunsStore.getState();
     applyEvent(runEvent(1, 'run.created', { status: 'running' }));
@@ -340,5 +559,69 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
     anchor = timeline.find((e) => e.type === 'message.completed');
     expect(anchor?.data?.reasoning_folded).toBeUndefined();
     expect(buildMessages(['run_1'], { run_1: timeline }).some((m) => m.kind === 'thinking')).toBe(false);
+  });
+});
+
+describe('长 Run 端到端 transcript 投影', () => {
+  beforeEach(() => {
+    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
+  });
+
+  it('超过 cap 后保留全部阶段正文，并只把最后阶段投影为 final', () => {
+    const { applyEvent } = useRunsStore.getState();
+    let seq = 1;
+    applyEvent(runEvent(seq++, 'run.created', { status: 'running', instruction: 'review architecture' }));
+    const interimTexts: string[] = [];
+    let cumulative = '';
+
+    for (let phase = 1; phase <= 10; phase += 1) {
+      for (let delta = 1; delta <= 45; delta += 1) {
+        applyEvent(runEvent(seq++, 'message.delta', {
+          raw: { chunk: { type: 'reasoning-delta', text: `R${phase}.${delta};` } },
+        }));
+      }
+      const stageText = phase === 10
+        ? 'FINAL_SENTINEL'
+        : `INTERIM_${phase}_${'x'.repeat(36)};`;
+      if (phase < 10) interimTexts.push(stageText);
+      cumulative += stageText;
+      for (const char of stageText) {
+        applyEvent(runEvent(seq++, 'message.delta', {
+          raw: { chunk: { type: 'text-delta', text: char } },
+        }));
+      }
+      if (phase < 10) {
+        const callID = `call-${phase}`;
+        applyEvent(runEvent(seq++, 'tool.started', { tool: 'Read', call_id: callID, args_summary: callID }));
+        applyEvent(runEvent(seq++, 'tool.completed', { call_id: callID, output: 'ok' }));
+      }
+    }
+    applyEvent(runEvent(seq++, 'message.completed', { role: 'assistant', text: cumulative }));
+    applyEvent(runEvent(seq++, 'run.completed', { status: 'succeeded' }));
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(seq).toBeGreaterThan(500);
+    expect(timeline.length).toBeLessThanOrEqual(500);
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    expect(messages.filter((message) => message.kind === 'thinking')).toHaveLength(10);
+    expect(messages.filter((message) => message.toolStatus !== undefined)).toHaveLength(9);
+    const assistants = messages.filter((message) => message.kind === 'assistant');
+    expect(assistants.slice(0, -1).map((message) => message.text)).toEqual(interimTexts);
+    expect(assistants.at(-1)?.text).toBe('FINAL_SENTINEL');
+
+    const presented = projectWorkActivityTimeline(buildTranscriptSegments(messages), {
+      runStatuses: { run_1: 'succeeded' },
+      timingByRun: { run_1: { createdAt: '2026-08-21T00:00:00Z', updatedAt: '2026-08-21T00:07:24Z' } },
+    });
+    expect(presented.map((segment) => segment.kind)).toEqual(['user', 'work-timeline', 'assistant']);
+    const work = presented[1];
+    expect(work.kind).toBe('work-timeline');
+    if (work.kind === 'work-timeline') {
+      expect(work.items.filter((item) => item.kind === 'thinking')).toHaveLength(10);
+      expect(work.items.filter((item) => item.kind === 'assistant').map((item) => item.kind === 'assistant' ? item.msg.text : '')).toEqual(interimTexts);
+      expect(work.items.some((item) => item.kind === 'assistant' && item.msg.text.includes('FINAL_SENTINEL'))).toBe(false);
+    }
+    expect(presented[2]?.kind === 'assistant' && presented[2].msg.text).toBe('FINAL_SENTINEL');
   });
 });

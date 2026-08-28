@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
-import React from 'react';
+import React, { useId } from 'react';
 import { createPortal } from 'react-dom';
 
 export function Modal({
@@ -16,6 +16,7 @@ export function Modal({
   children: React.ReactNode;
   width?: number;
 }) {
+  const titleId = useId();
   return createPortal(
     <AnimatePresence>
       {open && (
@@ -29,6 +30,9 @@ export function Modal({
           />
           <div className="fixed inset-0 z-50 flex items-center justify-center p-base pointer-events-none">
             <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby={titleId}
               initial={{ opacity: 0, y: 12, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: 12, scale: 0.98 }}
@@ -37,7 +41,7 @@ export function Modal({
               style={{ maxWidth: width }}
             >
               <div className="flex items-center justify-between mb-comfortable">
-                <h3 className="text-h3 text-text-primary">{title}</h3>
+                <h3 id={titleId} className="text-h3 text-text-primary">{title}</h3>
                 <button
                   onClick={onClose}
                   className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand-primary/30"

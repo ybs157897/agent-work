@@ -24,6 +24,20 @@ const TIMELINE_STICKY_GROUPS: ReadonlyArray<ReadonlySet<string>> = [
   new Set(['goal.updated', 'goal.create', 'goal.clear', 'session.goal.updated']),
 ];
 
+/** text-delta 在时间线 cap 前被逐帧淘汰时仍需保留完整的用户可见过程正文。 */
+const liveTextFoldBuffers = new Map<string, { text: string; startedAt: string; phaseId: string }>();
+const liveReasoningFoldBuffers = new Map<string, { text: string; startedAt: string; completedAt: string; phaseId: string }>();
+/** 已见 run 事件身份；防历史/SSE 重放重复渲染或把 delta 再次拼进折叠缓冲。 */
+const liveEventKeys = new Map<string, Set<string>>();
+/** run 快照 single-flight：长历史重放期间未知 run 只允许一个在途请求。 */
+const runSnapshotFetches = new Map<string, Promise<void>>();
+const runTerminalRefreshQueued = new Set<string>();
+const RUN_TERMINAL_STATUSES = new Set<ExecutionRun['status']>([
+  'succeeded', 'failed', 'cancelled', 'interrupted', 'lost',
+]);
+/** SSE 已观察到但快照可能尚未包含的终态；保护旧在途响应不倒退状态。 */
+const observedRunTerminals = new Map<string, { status: ExecutionRun['status']; occurredAt: string }>();
+
 interface RunsStore {
   runs: Record<string, ExecutionRun>;
   timelines: Record<string, TimelineEntry[]>;
@@ -100,6 +114,14 @@ function entryIdentity(entry: TimelineEntry): string {
   return entry.run_seq === undefined ? entry.event_id : `run:${entry.run_seq}`;
 }
 
+function entryPhaseId(entry: TimelineEntry): string {
+  return entry.run_seq === undefined ? entry.event_id : `run-seq-${entry.run_seq}`;
+}
+
+function eventIdentity(event: Pick<CanonicalEvent, 'event_id' | 'run_seq'>): string {
+  return event.run_seq === undefined ? event.event_id : `run:${event.run_seq}`;
+}
+
 function latestEntry(entries: TimelineEntry[], predicate: (entry: TimelineEntry) => boolean): TimelineEntry | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     if (predicate(entries[index])) return entries[index];
@@ -148,47 +170,84 @@ function selectToolBundles(entries: TimelineEntry[], budget: number): Set<string
 }
 
 /**
- * 推理折叠：reasoning-delta 与正文帧同池按尾填充，而推理永远先于正文产生——
+ * 推理/过程正文折叠：reasoning-delta 与正文帧同池按尾填充，而推理永远先于正文产生——
  * 长 run 超帽后推理帧必被整段淘汰，历史「思考过程」面板因此整层消失。
- * 截断落定后，把每个 message.completed 锚点之前未全程存活的推理文本聚合挂到
- * 锚点 data 上（`reasoning_folded`，合成投影字段、不上线），思考内容随结构锚点
- * 存活。尾部预算截断防内存回流；块内帧全部存活时不折叠（buildMessages 走原
- * reasoningBuf 路径，双源不重复出卡）。
+ * 截断落定后，把每个 tool.started / message.completed 阶段边界前未全程存活的
+ * 推理聚合挂到该边界 data 上（`reasoning_folded`，合成投影字段、不上线），过程正文
+ * 同样挂到 `text_folded`。这样历史回放仍保持 thinking → 正文 → tool → thinking，
+ * 而不是把过程正文挪到最终正文前。推理有尾部预算，正文不截断：它是用户可见内容，
+ * 还需要支持 final 前缀去重；块内帧全部存活时不折叠（buildMessages 走原缓冲）。
  */
 function foldEvictedReasoning(
   entries: readonly TimelineEntry[],
   retained: TimelineEntry[],
 ): TimelineEntry[] {
   const retainedIds = new Set(retained.map(entryIdentity));
-  const folds = new Map<string, { text: string; truncated: boolean }>();
-  let buf = '';
-  let sawDelta = false;
-  let sawEvicted = false;
+  const folds = new Map<string, {
+    reasoning?: { text: string; truncated: boolean; startedAt?: string; completedAt?: string; phaseId?: string };
+    text?: { text: string; startedAt?: string; phaseId?: string };
+  }>();
+  const buffers: Record<'reasoning' | 'text', { text: string; sawDelta: boolean; sawEvicted: boolean; startedAt: string; completedAt: string; phaseId: string }> = {
+    reasoning: { text: '', sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
+    text: { text: '', sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
+  };
   for (const entry of entries) {
     if (entry.type === 'message.delta') {
       const text = extractDeltaChunk(entry.data);
-      if (text?.type === 'reasoning-delta' && text.text) {
-        buf += text.text;
-        sawDelta = true;
-        if (!retainedIds.has(entryIdentity(entry))) sawEvicted = true;
+      const deltaKind = text?.type === 'reasoning-delta' ? 'reasoning' : text?.type === 'text-delta' ? 'text' : undefined;
+      if (deltaKind && text?.text) {
+        const buffer = buffers[deltaKind];
+        if (!buffer.sawDelta) {
+          buffer.startedAt = entry.occurred_at;
+          buffer.phaseId = entryPhaseId(entry);
+        }
+        buffer.text += text.text;
+        if (deltaKind === 'reasoning') buffer.completedAt = entry.occurred_at;
+        buffer.sawDelta = true;
+        if (!retainedIds.has(entryIdentity(entry))) buffer.sawEvicted = true;
       }
       continue;
     }
-    if (entry.type === 'message.completed') {
+    if (entry.type === 'tool.started' || entry.type === 'message.completed') {
+      // 未保留的工具边界在 UI 中也不可见：把它之前的逐出推理继续带到
+      // 下一个可见边界，避免旧阶段完全丢失；可见边界才真正关闭 fold。
+      if (!retainedIds.has(entryIdentity(entry))) continue;
       // 折叠粘滞：锚点已携带折叠时绝不重算覆盖——增量合并每来一个事件就重截断，
       // 扫描窗口随尾淘汰收窄，重算会让折叠越合越短（测试钉：部分逐出场景）。
       // 折叠在锚点定稿时生成，此后该块的推理不可能再有新增，保持原值即完整。
-      const alreadyFolded = typeof entry.data?.reasoning_folded === 'string';
-      if (!alreadyFolded && sawDelta && sawEvicted && retainedIds.has(entryIdentity(entry))) {
-        const truncated = buf.length > REASONING_FOLD_TAIL_CHARS;
-        folds.set(entryIdentity(entry), {
-          text: truncated ? buf.slice(-REASONING_FOLD_TAIL_CHARS) : buf,
-          truncated,
-        });
+      if (retainedIds.has(entryIdentity(entry))) {
+        const fold: { reasoning?: { text: string; truncated: boolean; startedAt?: string; completedAt?: string; phaseId?: string }; text?: { text: string; startedAt?: string; phaseId?: string } } = {};
+        const reasoning = buffers.reasoning;
+        if (typeof entry.data?.reasoning_folded !== 'string' && reasoning.sawDelta && reasoning.sawEvicted) {
+          const truncated = reasoning.text.length > REASONING_FOLD_TAIL_CHARS;
+          fold.reasoning = {
+            text: truncated ? reasoning.text.slice(-REASONING_FOLD_TAIL_CHARS) : reasoning.text,
+            truncated,
+            ...(reasoning.startedAt ? { startedAt: reasoning.startedAt } : {}),
+            ...(reasoning.completedAt ? { completedAt: reasoning.completedAt } : {}),
+            ...(reasoning.phaseId ? { phaseId: reasoning.phaseId } : {}),
+          };
+        }
+        const textBuffer = buffers.text;
+        if (typeof entry.data?.text_folded !== 'string' && textBuffer.sawDelta && textBuffer.sawEvicted) {
+          fold.text = {
+            text: textBuffer.text,
+            ...(textBuffer.startedAt ? { startedAt: textBuffer.startedAt } : {}),
+            ...(textBuffer.phaseId ? { phaseId: textBuffer.phaseId } : {}),
+          };
+        }
+        if (fold.reasoning || fold.text) folds.set(entryIdentity(entry), fold);
       }
-      buf = '';
-      sawDelta = false;
-      sawEvicted = false;
+      if (retainedIds.has(entryIdentity(entry))) {
+        for (const buffer of Object.values(buffers)) {
+          buffer.text = '';
+          buffer.sawDelta = false;
+          buffer.sawEvicted = false;
+          buffer.startedAt = '';
+          buffer.completedAt = '';
+          buffer.phaseId = '';
+        }
+      }
     }
   }
   if (folds.size === 0) return retained;
@@ -199,8 +258,18 @@ function foldEvictedReasoning(
       ...entry,
       data: {
         ...entry.data,
-        reasoning_folded: fold.text,
-        ...(fold.truncated ? { reasoning_folded_truncated: true } : {}),
+          ...(fold.reasoning ? {
+            reasoning_folded: fold.reasoning.text,
+            ...(fold.reasoning.startedAt ? { reasoning_folded_started_at: fold.reasoning.startedAt } : {}),
+            ...(fold.reasoning.completedAt ? { reasoning_folded_completed_at: fold.reasoning.completedAt } : {}),
+          ...(fold.reasoning.phaseId ? { reasoning_folded_phase_id: fold.reasoning.phaseId } : {}),
+          ...(fold.reasoning.truncated ? { reasoning_folded_truncated: true } : {}),
+        } : {}),
+        ...(fold.text ? {
+          text_folded: fold.text.text,
+          ...(fold.text.startedAt ? { text_folded_started_at: fold.text.startedAt } : {}),
+          ...(fold.text.phaseId ? { text_folded_phase_id: fold.text.phaseId } : {}),
+        } : {}),
       },
     };
   });
@@ -241,6 +310,15 @@ function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
   const toolSelected = selectToolBundles(toolEntries, toolBudget);
   for (const id of toolSelected) selected.add(id);
 
+  // Some adapters emit tool.started before a call id is available. Preserve
+  // each such event as its own live bundle; otherwise it is excluded from
+  // both bundle selection and the non-tool tail.
+  const unboundStarts = toolEntries
+    .filter((entry) => entry.type === 'tool.started' && !toolCallId(entry))
+    .sort((a, b) => entries.indexOf(b) - entries.indexOf(a));
+  const unboundBudget = Math.max(0, toolBudget - toolSelected.size);
+  for (const entry of unboundStarts.slice(0, unboundBudget)) selected.add(identity(entry));
+
   // Fill remaining capacity with newest non-structural, non-tool frames. This
   // preserves the visible tail without allowing it to evict a call lifecycle.
   const remaining = TIMELINE_CAP - selected.size;
@@ -274,12 +352,27 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       const watching = { ...s.watching };
       if (n <= 0) delete watching[runId];
       else watching[runId] = n;
+      if (n <= 0) liveTextFoldBuffers.delete(runId);
+      if (n <= 0) liveReasoningFoldBuffers.delete(runId);
+      if (n <= 0) liveEventKeys.delete(runId);
       return { watching };
     }),
 
   fetchRun: async (runId) => {
-    const run = await getRun(runId);
-    set((s) => ({ runs: { ...s.runs, [runId]: run } }));
+    const existing = runSnapshotFetches.get(runId);
+    if (existing) return existing;
+    const request = getRun(runId)
+      .then((run) => {
+        const observed = observedRunTerminals.get(runId);
+        const protectedRun = observed && !RUN_TERMINAL_STATUSES.has(run.status)
+          ? { ...run, status: observed.status, updated_at: observed.occurredAt }
+          : run;
+        set((s) => ({ runs: { ...s.runs, [runId]: protectedRun } }));
+        if (observed && RUN_TERMINAL_STATUSES.has(run.status)) observedRunTerminals.delete(runId);
+      })
+      .finally(() => runSnapshotFetches.delete(runId));
+    runSnapshotFetches.set(runId, request);
+    return request;
   },
 
   fetchApprovals: async (runId) => {
@@ -307,6 +400,9 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         text: typeof e.payload?.text === 'string' ? e.payload.text : undefined,
         data: e.payload,
       }));
+      const seenEvents = liveEventKeys.get(runId) ?? new Set<string>();
+      for (const entry of history) seenEvents.add(entryIdentity(entry));
+      liveEventKeys.set(runId, seenEvents);
       set((s) => ({
         timelines: { ...s.timelines, [runId]: mergeTimeline(history, s.timelines[runId] ?? []) },
       }));
@@ -322,35 +418,122 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
 
     if (runId) {
       const beforeTimeline = get().timelines[runId] ?? [];
-      const duplicate = beforeTimeline.some((entry) =>
+      const existingEntry = beforeTimeline.find((entry) =>
         ev.run_seq !== undefined && entry.run_seq !== undefined
           ? entry.run_seq === ev.run_seq
           : entry.event_id === ev.event_id,
       );
-      // 时间线追加（run.* / message.* / tool.* 都以 execution_run 聚合出现）。
-      set((s) => ({
-        timelines: {
-          ...s.timelines,
-          [runId]: mergeTimeline(s.timelines[runId] ?? [], [
-            {
-              event_id: ev.event_id,
-              stream_seq: ev.stream_seq,
-              run_seq: ev.run_seq,
-              type: ev.type,
-              occurred_at: ev.occurred_at,
-              role: entryRole(ev),
-              text: entryText(ev),
-              data: ev.data,
-            },
-          ]),
-        },
-      }));
+      const eventKey = eventIdentity(ev);
+      const seenEvents = liveEventKeys.get(runId) ?? new Set<string>();
+      const duplicate = existingEntry !== undefined || seenEvents.has(eventKey);
+      if (ev.type === 'run.created' && !duplicate) {
+        liveTextFoldBuffers.delete(runId);
+        liveReasoningFoldBuffers.delete(runId);
+        liveEventKeys.delete(runId);
+        observedRunTerminals.delete(runId);
+        runTerminalRefreshQueued.delete(runId);
+      }
+      const activeSeenEvents = liveEventKeys.get(runId) ?? new Set<string>();
+      activeSeenEvents.add(eventKey);
+      liveEventKeys.set(runId, activeSeenEvents);
+      const delta = ev.type === 'message.delta' ? extractDeltaChunk(ev.data) : null;
+      const duplicateDelta = Boolean(delta && duplicate);
+      if (!duplicateDelta && delta?.type === 'text-delta' && delta.text) {
+        const previous = liveTextFoldBuffers.get(runId);
+        liveTextFoldBuffers.set(runId, {
+          text: `${previous?.text ?? ''}${delta.text}`,
+          startedAt: previous?.startedAt ?? ev.occurred_at,
+          phaseId: previous?.phaseId ?? entryPhaseId({
+            event_id: ev.event_id,
+            stream_seq: ev.stream_seq,
+            run_seq: ev.run_seq,
+            type: ev.type,
+            occurred_at: ev.occurred_at,
+          }),
+        });
+      }
+      if (!duplicateDelta && delta?.type === 'reasoning-delta' && delta.text) {
+        const previous = liveReasoningFoldBuffers.get(runId);
+        liveReasoningFoldBuffers.set(runId, {
+          text: `${previous?.text ?? ''}${delta.text}`,
+          startedAt: previous?.startedAt ?? ev.occurred_at,
+          completedAt: ev.occurred_at,
+          phaseId: previous?.phaseId ?? entryPhaseId({
+            event_id: ev.event_id,
+            stream_seq: ev.stream_seq,
+            run_seq: ev.run_seq,
+            type: ev.type,
+            occurred_at: ev.occurred_at,
+          }),
+        });
+      }
+      const liveTextFold = (ev.type === 'tool.started' || ev.type === 'message.completed')
+        ? liveTextFoldBuffers.get(runId)
+        : undefined;
+      const liveReasoningFold = (ev.type === 'tool.started' || ev.type === 'message.completed')
+        ? liveReasoningFoldBuffers.get(runId)
+        : undefined;
+      const eventData = (liveTextFold || liveReasoningFold) && beforeTimeline.length >= TIMELINE_CAP
+        ? {
+            ...ev.data,
+            ...(liveReasoningFold ? {
+              reasoning_folded: liveReasoningFold.text.slice(-REASONING_FOLD_TAIL_CHARS),
+              ...(liveReasoningFold.text.length > REASONING_FOLD_TAIL_CHARS ? { reasoning_folded_truncated: true } : {}),
+              reasoning_folded_started_at: liveReasoningFold.startedAt,
+              reasoning_folded_completed_at: liveReasoningFold.completedAt,
+              reasoning_folded_phase_id: liveReasoningFold.phaseId,
+            } : {}),
+            ...(liveTextFold ? {
+              text_folded: liveTextFold.text,
+              text_folded_started_at: liveTextFold.startedAt,
+              text_folded_phase_id: liveTextFold.phaseId,
+            } : {}),
+          }
+        : ev.data;
+      const terminalEvent = ev.type === 'run.completed' || ev.type === 'run.failed' ||
+        (ev.type === 'run.status_changed' && ['succeeded', 'failed', 'cancelled', 'interrupted', 'lost'].includes(String(ev.data?.status)));
+      // A replay of the same boundary must not erase client-side sticky fold
+      // fields that were synthesized after the raw event first arrived.
+      const retainedEventData = existingEntry?.data
+        ? { ...eventData, ...existingEntry.data }
+        : eventData;
+      // 已由历史或实时流见过的事件不再制造同内容 store 更新；否则长 Run
+      // 会因数百次重复 React 投影冻结页面。首次事件才进入时间线。
+      if (!duplicate) {
+        set((s) => ({
+          timelines: {
+            ...s.timelines,
+            [runId]: mergeTimeline(s.timelines[runId] ?? [], [
+              {
+                event_id: ev.event_id,
+                stream_seq: ev.stream_seq,
+                run_seq: ev.run_seq,
+                type: ev.type,
+                occurred_at: ev.occurred_at,
+                role: entryRole(ev),
+                text: entryText(ev),
+                data: retainedEventData,
+              },
+            ]),
+          },
+        }));
+      }
       const appliedTimeline = get().timelines[runId] ?? [];
       const retained = appliedTimeline.some((entry) =>
         ev.run_seq !== undefined && entry.run_seq !== undefined
           ? entry.run_seq === ev.run_seq
           : entry.event_id === ev.event_id,
       );
+      if (!duplicate && (ev.type === 'tool.started' || ev.type === 'message.completed') && liveTextFold) {
+        if (retained || beforeTimeline.length < TIMELINE_CAP) liveTextFoldBuffers.delete(runId);
+      }
+      if (!duplicate && (ev.type === 'tool.started' || ev.type === 'message.completed') && liveReasoningFold) {
+        if (retained || beforeTimeline.length < TIMELINE_CAP) liveReasoningFoldBuffers.delete(runId);
+      }
+      if (terminalEvent && !duplicate) {
+        liveTextFoldBuffers.delete(runId);
+        liveReasoningFoldBuffers.delete(runId);
+      }
       if (isOutputTraceEnabled()) {
         traceOutput({
           stage: 'timeline.applied',
@@ -382,10 +565,23 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
 
       // 已加载的 run 快照做就地状态/进度/用量更新；watched 但未知时拉取快照。
       const cached = get().runs[runId];
-      const status = typeof ev.data?.status === 'string' ? (ev.data.status as ExecutionRun['status']) : undefined;
+      const lifecycleStatus: ExecutionRun['status'] | undefined = ev.type === 'run.completed'
+        ? 'succeeded'
+        : ev.type === 'run.failed'
+          ? 'failed'
+          : undefined;
+      const status = typeof ev.data?.status === 'string'
+        ? (ev.data.status as ExecutionRun['status'])
+        : lifecycleStatus;
       const progress = typeof ev.data?.progress === 'number' ? ev.data.progress : undefined;
       const usage = ev.type === 'usage.updated' ? parseUsagePatch(ev.data) : undefined;
-      if (cached && (status || progress !== undefined || usage)) {
+      if (
+        !duplicate && terminalEvent && status && RUN_TERMINAL_STATUSES.has(status)
+        && (Boolean(get().watching[runId]) || Boolean(cached) || runSnapshotFetches.has(runId))
+      ) {
+        observedRunTerminals.set(runId, { status, occurredAt: ev.occurred_at });
+      }
+      if (!duplicate && cached && (status || progress !== undefined || usage)) {
         set((s) => ({
           runs: {
             ...s.runs,
@@ -393,6 +589,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
               ...cached,
               status: status ?? cached.status,
               progress: progress ?? cached.progress,
+              ...(lifecycleStatus ? { updated_at: ev.occurred_at } : {}),
               ...usage,
             },
           },
@@ -401,12 +598,23 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         void get().fetchRun(runId);
       }
 
-      if (ev.type === 'run.status_changed' && status === 'waiting_approval' && get().watching[runId]) {
+      if (!duplicate && ev.type === 'run.status_changed' && status === 'waiting_approval' && get().watching[runId]) {
         void get().fetchApprovals(runId);
       }
-      if ((ev.type === 'run.completed' || ev.type === 'run.failed') && (get().watching[runId] || get().runs[runId])) {
-        void get().fetchRun(runId);
+      if (!duplicate && terminalEvent && (get().watching[runId] || get().runs[runId])) {
+        const pending = runSnapshotFetches.get(runId);
+        if (!pending) {
+          void get().fetchRun(runId);
+        } else if (!runTerminalRefreshQueued.has(runId)) {
+          runTerminalRefreshQueued.add(runId);
+          void pending
+            .catch(() => undefined)
+            .then(() => get().fetchRun(runId))
+            .catch(() => undefined)
+            .finally(() => runTerminalRefreshQueued.delete(runId));
+        }
       }
+      if (terminalEvent && !get().watching[runId]) liveEventKeys.delete(runId);
       return true;
     }
 

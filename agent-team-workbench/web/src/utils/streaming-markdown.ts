@@ -11,6 +11,13 @@ export interface StreamingMarkdownSlice {
   pendingKind?: StreamingMarkdownPendingKind;
 }
 
+export interface StreamingMarkdownBlocks {
+  completedBlocks: string[];
+  currentBlock: string;
+  unsafePending: string;
+  pendingKind?: StreamingMarkdownPendingKind;
+}
+
 interface OpenFence {
   marker: '`' | '~';
   length: number;
@@ -132,5 +139,45 @@ export function splitStreamingMarkdown(text: string): StreamingMarkdownSlice {
     visibleText: text.slice(0, pending.start),
     pendingText: text.slice(pending.start),
     pendingKind: pending.kind,
+  };
+}
+
+function canSplitAtBlankLine(before: string, after: string): boolean {
+  const previous = before.split(/\r?\n/).at(-1)?.trim() ?? '';
+  const next = after.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  // Keep list and quote continuations in one Markdown tree. Splitting these can
+  // change a single list/blockquote into several unrelated nodes.
+  const isListOrQuote = (line: string) => /^(?:[-+*]|\d+[.)]|>)(?:[ \t]|$)/.test(line);
+  // A blank line terminates a list/blockquote when the following block is a
+  // normal block; only continuation markers on both sides must stay joined.
+  return !isListOrQuote(next) || !isListOrQuote(previous);
+}
+
+/**
+ * Splits the safe Markdown prefix into append-only blocks. The final block is
+ * intentionally kept mutable so React can stream it without remounting the
+ * already-rendered blocks. The concatenation of all returned fields is the
+ * original input byte-for-byte; no trimming or normalization is performed.
+ */
+export function splitStreamingMarkdownBlocks(text: string): StreamingMarkdownBlocks {
+  const slice = splitStreamingMarkdown(text);
+  const safe = slice.visibleText;
+  const completedBlocks: string[] = [];
+  let blockStart = 0;
+  const blankLine = /(?:\r?\n[ \t]*){2,}/g;
+  let match: RegExpExecArray | null;
+  while ((match = blankLine.exec(safe)) !== null) {
+    const boundaryEnd = match.index + match[0].length;
+    if (!canSplitAtBlankLine(safe.slice(blockStart, match.index), safe.slice(boundaryEnd))) {
+      continue;
+    }
+    completedBlocks.push(safe.slice(blockStart, boundaryEnd));
+    blockStart = boundaryEnd;
+  }
+  return {
+    completedBlocks,
+    currentBlock: safe.slice(blockStart),
+    unsafePending: slice.pendingText,
+    pendingKind: slice.pendingKind,
   };
 }

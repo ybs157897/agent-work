@@ -9,7 +9,7 @@ import { MermaidDiagram } from "./mermaid-diagram";
 import { TableCard } from "./table-card";
 import { isSafeContentUrl } from "../../utils/content-blocks";
 import { LanguageGuiFence } from "./content-blocks/languagegui-fence";
-import { splitStreamingMarkdown, type StreamingMarkdownSlice } from "../../utils/streaming-markdown";
+import { splitStreamingMarkdownBlocks, type StreamingMarkdownBlocks } from "../../utils/streaming-markdown";
 import { isOutputTraceEnabled, outputTraceHash, traceOutputDeduped } from "../../utils/output-trace";
 
 const STREAMING_PARSE_INTERVAL_MS = 100;
@@ -221,13 +221,14 @@ export function MarkdownBody({
   messageId?: string;
 }) {
   const parsedText = useThrottledMarkdown(stripThinkTags(text), streaming);
-  const streamSlice = useMemo<StreamingMarkdownSlice>(
+  const streamSlice = useMemo<StreamingMarkdownBlocks>(
     () => streaming
-      ? splitStreamingMarkdown(parsedText)
-      : { visibleText: parsedText, pendingText: "" },
+      ? splitStreamingMarkdownBlocks(parsedText)
+      : { completedBlocks: [], currentBlock: parsedText, unsafePending: "" },
     [parsedText, streaming],
   );
-  const { visibleText, pendingText } = streamSlice;
+  const visibleText = streamSlice.completedBlocks.join("") + streamSlice.currentBlock;
+  const pendingText = streamSlice.unsafePending;
   const remarkPlugins = useMemo(
     () => [remarkGfm, remarkMath, remarkCallouts, remarkFenceMeta],
     [],
@@ -339,19 +340,27 @@ export function MarkdownBody({
       }) as unknown as Components,
     [messageId, runId, streaming],
   );
-  if (!visibleText.trim()) return null;
+  const markdownBlocks = streaming
+    ? [...streamSlice.completedBlocks, streamSlice.currentBlock].filter((block) => block.length > 0)
+    : [visibleText];
+  if (markdownBlocks.length === 0) return null;
   return (
-    <MarkdownErrorBoundary
-      resetKey={visibleText}
-      fallback={<pre className="whitespace-pre-wrap break-words">{visibleText}</pre>}
-    >
-      <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        components={components}
-      >
-        {visibleText}
-      </ReactMarkdown>
-    </MarkdownErrorBoundary>
+    <>
+      {markdownBlocks.map((block, index) => (
+        <MarkdownErrorBoundary
+          key={streaming ? `markdown-block-${index === markdownBlocks.length - 1 ? "current" : index}` : "markdown-final"}
+          resetKey={block}
+          fallback={<pre className="whitespace-pre-wrap break-words">{block}</pre>}
+        >
+          <ReactMarkdown
+            remarkPlugins={remarkPlugins}
+            rehypePlugins={rehypePlugins}
+            components={components}
+          >
+            {block}
+          </ReactMarkdown>
+        </MarkdownErrorBoundary>
+      ))}
+    </>
   );
 }

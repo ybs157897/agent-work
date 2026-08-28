@@ -2,6 +2,8 @@ import { BookOpen, Boxes, GitBranch, MessageSquare, Moon, PanelRight, Pin, PinOf
 import { useEffect, useInsertionEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
+import { FileChangesCard } from '../components/chat/file-changes-card';
+import { RunErrorBanner } from '../components/chat/run-error-banner';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
@@ -12,6 +14,7 @@ import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
+import { useChatPreferencesStore } from '../stores/chat-preferences.store';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
@@ -22,8 +25,12 @@ import {
   buildTranscriptSegments,
   injectPendingUsers,
   supplementUserFromTimeline,
-  type TranscriptSegment,
 } from '../utils/chronological-transcript';
+import {
+  projectWorkActivityTimeline,
+  type PresentedTranscriptSegment,
+  type WorkActivityItem,
+} from '../utils/work-activity-timeline';
 import { runHasVisibleOutput } from '../utils/run-timeline';
 import {
   isOutputTraceEnabled,
@@ -55,39 +62,69 @@ function messageTraceSnapshot(messages: readonly ChatMessage[]) {
     detail: message.detail,
     liveOutput: message.liveOutput,
     itemType: message.itemType,
+    phaseId: message.phaseId,
     contentBlocks: message.contentBlocks,
     toolStatus: message.toolStatus,
   }));
 }
 
-function segmentTraceSnapshot(segments: readonly TranscriptSegment[]) {
+function workItemTraceSnapshot(item: WorkActivityItem): Record<string, unknown> {
+  if (item.kind === 'activity') {
+    return {
+      kind: item.kind,
+      runId: item.runId,
+      items: item.items.map((tool) => ({
+        key: tool.key,
+        tool: tool.tool,
+        toolStatus: tool.toolStatus,
+        text: tool.text,
+        detail: tool.detail,
+        liveOutput: tool.liveOutput,
+      })),
+    };
+  }
+  if (item.kind === 'approval') {
+    return { kind: item.kind, id: item.approval.id, status: item.approval.status };
+  }
+  if (item.kind === 'thinking-placeholder') return { kind: item.kind, runId: item.runId };
+  return {
+    kind: item.kind,
+    key: item.kind === 'assistant' || item.kind === 'thinking'
+      ? item.renderKey ?? item.msg.key
+      : item.msg.key,
+    runId: item.msg.runId,
+    text: item.msg.text,
+    streaming: 'streaming' in item ? item.streaming === true : false,
+    contentBlocks: item.kind === 'assistant' ? item.msg.contentBlocks : undefined,
+  };
+}
+
+function segmentTraceSnapshot(segments: readonly PresentedTranscriptSegment[]) {
   return segments.map((segment) => {
-    if (segment.kind === 'assistant' || segment.kind === 'thinking' || segment.kind === 'user' || segment.kind === 'meta') {
+    if (segment.kind === 'thinking-placeholder') {
+      return { kind: segment.kind, runId: segment.runId };
+    }
+    if (segment.kind === 'assistant' || segment.kind === 'user') {
       return {
         kind: segment.kind,
-        key: segment.kind === 'assistant' ? segment.renderKey ?? segment.msg.key : segment.msg.key,
+        key: segment.kind === 'assistant'
+          ? segment.renderKey ?? segment.msg.key
+          : segment.msg.key,
         runId: segment.msg.runId,
         text: segment.msg.text,
         streaming: 'streaming' in segment ? segment.streaming === true : false,
         contentBlocks: segment.msg.contentBlocks,
       };
     }
-    if (segment.kind === 'activity') {
+    if (segment.kind === 'work-timeline') {
       return {
         kind: segment.kind,
         runId: segment.runId,
-        items: segment.items.map((item) => ({
-          key: item.key,
-          tool: item.tool,
-          toolStatus: item.toolStatus,
-          text: item.text,
-          detail: item.detail,
-          liveOutput: item.liveOutput,
-        })),
+        status: segment.status,
+        createdAt: segment.createdAt,
+        updatedAt: segment.updatedAt,
+        items: segment.items.map(workItemTraceSnapshot),
       };
-    }
-    if (segment.kind === 'approval') {
-      return { kind: segment.kind, id: segment.approval.id, status: segment.approval.status };
     }
     return segment;
   });
@@ -449,9 +486,14 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   const forkConversation = useChatStore((s) => s.forkConversation);
   const stopActiveRun = useChatStore((s) => s.stopActiveRun);
   const stoppingRunId = useChatStore((s) => s.stoppingRunId);
+  const retryRun = useChatStore((s) => s.retryRun);
   const runAlerts = useChatStore((s) => s.runAlerts);
   const pendingUsers = useChatStore((s) => s.pendingUsers);
   const agents = useAgentsStore((s) => s.agents);
+  const showReasoning = useChatPreferencesStore((state) => state.showReasoning);
+  const groupExploreTools = useChatPreferencesStore((state) => state.groupExploreTools);
+  const groupTerminalTools = useChatPreferencesStore((state) => state.groupTerminalTools);
+  const groupChangesTools = useChatPreferencesStore((state) => state.groupChangesTools);
 
   const timelines = useRunsStore((s) => s.timelines);
   const runSnapshots = useRunsStore((s) => s.runs);
@@ -482,6 +524,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   );
   const latestRunId = runIds[runIds.length - 1];
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
+  const latestRunNotice = latestRunId ? runAlerts[latestRunId] : undefined;
 
   // 订阅当前会话所有 run，确保历史轮次消息可回放。
   useEffect(() => {
@@ -492,16 +535,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   }, [runIds, watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
-  // 已到任何终态的 run：其内仍 running 的工具行按 stopped（中断/截断）展示，不再扫光--
-  // 覆盖中断/取消，也覆盖历史数据缺 completed 帧的挂起行（对齐 DSH 的 interruption 投影语义）。
-  const stoppedRuns = useMemo(() => {
-    const set = new Set<string>();
-    for (const id of runIds) {
-      const status = runSnapshots[id]?.status;
-      if (status && TERMINAL.has(status)) set.add(id);
-    }
-    return set;
-  }, [runIds, runSnapshots]);
   const liveStream = useMemo(
     () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
     [latestRunId, timelines],
@@ -568,12 +601,23 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   );
   const runStatuses = useMemo(() => {
     const map: Record<string, string> = {};
+    const listedRuns = new Map(runs.map((run) => [run.id, run]));
     for (const id of runIds) {
-      const status = runSnapshots[id]?.status;
+      const status = runSnapshots[id]?.status ?? listedRuns.get(id)?.status;
       if (status) map[id] = status;
     }
     return map;
-  }, [runIds, runSnapshots]);
+  }, [runIds, runSnapshots, runs]);
+  const runTimings = useMemo(() => {
+    const map: Record<string, { createdAt?: string; updatedAt?: string }> = {};
+    const listedRuns = new Map(runs.map((run) => [run.id, run]));
+    for (const id of runIds) {
+      const run = runSnapshots[id] ?? listedRuns.get(id);
+      if (!run) continue;
+      map[id] = { createdAt: run.created_at, updatedAt: run.updated_at };
+    }
+    return map;
+  }, [runIds, runSnapshots, runs]);
   const hasPendingApproval = runApprovals.some((a) => a.status === 'pending');
   const transcriptMessages = useMemo(() => {
     const supplemented = supplementUserFromTimeline(displayMessages, runIds, timelines);
@@ -589,8 +633,27 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         hasPendingApproval,
         pendingUsers,
         rawMessages: messages,
+        showReasoning,
+        toolGrouping: {
+          groupExplore: groupExploreTools,
+          groupExecute: groupTerminalTools,
+          groupChanges: groupChangesTools,
+        },
       }),
-    [transcriptMessages, runStatuses, latestRunId, liveStream, liveRunActive, hasPendingApproval, pendingUsers, messages],
+    [
+      transcriptMessages,
+      runStatuses,
+      latestRunId,
+      liveStream,
+      liveRunActive,
+      hasPendingApproval,
+      pendingUsers,
+      messages,
+      showReasoning,
+      groupExploreTools,
+      groupTerminalTools,
+      groupChangesTools,
+    ],
   );
 
   useEffect(() => {
@@ -620,12 +683,24 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     () => mergeApprovalSegments(baseSegments, runApprovals, approvalAnchors),
     [baseSegments, runApprovals, approvalAnchors],
   );
+  const presentedSegments = useMemo(
+    () => projectWorkActivityTimeline(transcriptSegments, {
+      runStatuses,
+      timingByRun: runTimings,
+    }),
+    [transcriptSegments, runStatuses, runTimings],
+  );
   const transcriptProjectionTrace = useMemo<ProjectionTrace | undefined>(() => {
     if (!isOutputTraceEnabled()) return undefined;
-    const snapshot = stableOutputTraceJson(segmentTraceSnapshot(transcriptSegments));
+    const snapshot = stableOutputTraceJson(segmentTraceSnapshot(presentedSegments));
     const hash = outputTraceHash(snapshot);
-    const latestAssistant = [...transcriptSegments].reverse().find((segment) => segment.kind === 'assistant');
-    const assistantMessages = transcriptSegments.filter((segment) => segment.kind === 'assistant');
+    const timelineItems = presentedSegments.flatMap((segment) => segment.kind === 'work-timeline' ? segment.items : []);
+    const assistantMessages = presentedSegments.flatMap((segment) => {
+      if (segment.kind === 'assistant') return [segment];
+      if (segment.kind === 'work-timeline') return segment.items.filter((item) => item.kind === 'assistant');
+      return [];
+    });
+    const latestAssistant = assistantMessages.at(-1);
     const contentBlockMessages = assistantMessages.filter((segment) => segment.msg.contentBlocks);
     return {
       signature: `${liveRunActive ? 'streaming' : 'final'}:${hash}`,
@@ -634,16 +709,15 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         mode: liveRunActive ? 'streaming' : 'final',
         source: 'projection',
         runId: latestRunId,
-        messageId: latestAssistant?.kind === 'assistant'
-          ? latestAssistant.renderKey ?? latestAssistant.msg.key
-          : undefined,
-        text: latestAssistant?.kind === 'assistant' ? latestAssistant.msg.text : undefined,
+        messageId: latestAssistant?.renderKey ?? latestAssistant?.msg.key,
+        text: latestAssistant?.msg.text,
         projection: {
-          messages: transcriptSegments.length,
+          messages: presentedSegments.length,
+          workTimelines: presentedSegments.filter((segment) => segment.kind === 'work-timeline').length,
           assistantMessages: assistantMessages.length,
-          thinkingMessages: transcriptSegments.filter((segment) => segment.kind === 'thinking').length,
-          toolMessages: transcriptSegments.reduce(
-            (total, segment) => total + (segment.kind === 'activity' ? segment.items.length : 0),
+          thinkingMessages: timelineItems.filter((item) => item.kind === 'thinking').length,
+          toolMessages: timelineItems.reduce(
+            (total, item) => total + (item.kind === 'activity' ? item.items.length : 0),
             0,
           ),
           contentBlocks: contentBlockMessages.reduce(
@@ -657,7 +731,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         },
       },
     };
-  }, [latestRunId, liveRunActive, transcriptSegments]);
+  }, [latestRunId, liveRunActive, presentedSegments]);
   useProjectionTrace(transcriptProjectionTrace);
   const dock = useMemo(
     () => deriveChatDock(transcriptMessages, latestRunId, timelines),
@@ -682,7 +756,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     [latestRunId, timelines],
   );
   // 最新 run 的全部审批：pending 渲染交互卡，已决议转完成态行留在流内。
-  const latestRunAlert = latestRunId ? runAlerts[latestRunId] : undefined;
 
   // 首响超时：活动 run 在 60s 内无任何可见输出（推理/正文/工具）则自动中断。
   useEffect(() => {
@@ -715,7 +788,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     const el = scrollRef.current;
     if (!el || !followStreamRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [transcriptSegments.length, liveStream.reasoning, liveStream.answerDraft, runApprovals.length]);
+  }, [presentedSegments.length, liveStream.reasoning, liveStream.answerDraft, runApprovals.length]);
 
   // 自动续发：最新 run「进入」succeeded 且队列非空时出队首条开新轮。
   // 只在状态边沿触发一次：drain 失败后 sending 复位也不会原地重试风暴；
@@ -791,7 +864,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         data-chat-scroll="transcript"
         className="chat-languagegui-transcript relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-comfortable"
       >
-        {messages.length === 0 && transcriptSegments.length === 0 && (
+        {messages.length === 0 && presentedSegments.length === 0 && (
           <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
             <p className="text-center text-caption text-text-tertiary">
               输入第一条消息，为 {agent?.name ?? 'Agent'} 创建任务并开始运行；或从建议开始：
@@ -812,22 +885,31 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         )}
         <div className="chat-thread space-y-3 pb-2">
           <TranscriptView
-            segments={transcriptSegments}
-            stoppedRuns={stoppedRuns}
+            segments={presentedSegments}
             onFork={(key) => void forkConversation(key)}
             agent={agent ? { name: agent.name, avatar: agent.avatar } : undefined}
           />
+          {latestRunId && latestRun && TERMINAL.has(latestRun.status) && (
+            <FileChangesCard runId={latestRunId} />
+          )}
         </div>
-        {latestRunAlert && (
-          <div className="chat-thread py-0.5 text-center text-caption text-status-error">
-            ✕ {latestRunAlert.message}
-          </div>
-        )}
       </div>
 
       {/* 底部固定：成果摘要 + 计划 / 目标 + 一体化输入卡 */}
       <div className="chat-bottom-region shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
         <div className="chat-composer-stack">
+          {latestRunNotice?.code === 'reply_timeout' && (
+            <div
+              className="rounded-button border border-status-warning/30 bg-status-warning/5 px-snug py-tight text-caption text-status-warning"
+              role="status"
+              aria-live="polite"
+            >
+              {latestRunNotice.message}
+            </div>
+          )}
+          {latestRun && latestRun.status === 'failed' && (
+            <RunErrorBanner run={latestRun} onRetry={retryRun} />
+          )}
           {conversationArtifacts.length > 0 && (
             <div className="mb-2">
               <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />

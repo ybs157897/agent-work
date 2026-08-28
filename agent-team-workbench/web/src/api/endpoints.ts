@@ -15,6 +15,8 @@ import type {
   Priority,
   ProbeResult,
   RunEvent,
+  RunChanges,
+  RunChangeDiff,
   RuntimeBinding,
   TaskSession,
   WakeResult,
@@ -261,6 +263,18 @@ export const listArtifacts = (runId: string) =>
 /** 回放 Run 事件历史（对话页；只读投影，按 run_seq 排序）。 */
 export const listRunEvents = (runId: string) =>
   apiFetch<{ items: RunEvent[] }>(`/runs/${runId}/events`);
+
+export const listRunChanges = (runId: string) => apiFetch<RunChanges>(`/runs/${runId}/changes`);
+
+export const getRunChangeDiff = (runId: string, path: string) =>
+  apiFetch<RunChangeDiff>(`/runs/${runId}/changes/diff?${new URLSearchParams({ path }).toString()}`);
+
+export const revertRunChanges = (runId: string, idempotencyKey: string) =>
+  apiFetch<RunChanges>(`/runs/${runId}/commands/revert-changes`, {
+    method: 'POST',
+    body: { idempotency_key: idempotencyKey },
+    idempotencyKey,
+  });
 
 /** 一个任务的全部 Run（对话轮次历史）。 */
 export const listWorkItemRuns = (workItemId: string) =>

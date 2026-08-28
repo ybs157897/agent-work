@@ -6,10 +6,10 @@ import {
   interruptRun,
   listWorkItemRuns,
   listWorkItems,
+  retryRun as retryRunRequest,
 } from '../api/endpoints';
 import type { ExecutionRun, WorkItem } from '../api/types';
 import { chatErrorMessage, logChatError, type ChatErrorCode } from '../utils/chat-errors';
-import { formatRunFailureMessage } from '../utils/format-run-failure';
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { extractDeltaChunk } from './delta-chunk';
 import { createRequestGuard } from './request-guard';
@@ -19,7 +19,17 @@ import { useWorkspaceStore } from './workspace.store';
 import { parseContentBlockDocument, type ContentBlockDocument } from '../utils/content-blocks';
 
 /** 工具行卡片状态：started 时 running，completed/failed 后落定。 */
-export type ToolStatus = 'running' | 'success' | 'failed';
+export type ToolStatus = 'running' | 'success' | 'failed' | 'stopped';
+
+/** Runtime-provided file change facts. Missing line counts stay missing; the UI must not estimate them. */
+export interface FileChangeStats {
+  files: number;
+  additions?: number;
+  deletions?: number;
+  bytes?: number;
+  operation?: 'create' | 'write' | 'edit' | 'delete' | 'changed';
+  path?: string;
+}
 
 /** run.plan_updated 的步骤视图（契约：data.steps=[{step,status}]，同 run 新帧替换旧帧）。 */
 export interface PlanStepView {
@@ -50,12 +60,16 @@ export interface ChatMessage {
   args?: string;
   /** tool.completed/failed 的 exit_code。 */
   exitCode?: number;
+  /** tool.completed.change_stats 的已校验文件变更事实。 */
+  changeStats?: FileChangeStats;
   /** tool.progress 流式输出的累计文本（运行中实时展示；completed 后被 detail 取代）。 */
   liveOutput?: string;
   /** message.completed 的 item_type（Codex：plan | agentMessage 等）。 */
   itemType?: string;
   /** canonical message.completed.data.content_blocks 的已校验 LanguageGUI 文档。 */
   contentBlocks?: ContentBlockDocument;
+  /** reasoning 阶段锚点；优先来自首个 delta 的 run_seq，供 live→settled 保持面板身份。 */
+  phaseId?: string;
   /** 会话运维元信息（session.decision / compacted）：不在对话正文展示。 */
   sessionMeta?: boolean;
 }
@@ -63,6 +77,9 @@ export interface ChatMessage {
 export interface RunStreamParts {
   reasoning: string;
   answerDraft: string;
+  phaseId?: string;
+  /** 当前可见阶段首个 delta 的时间，用于工作时间线的阶段耗时。 */
+  phaseStartedAt?: string;
 }
 
 /** 队列消息：text + 入队时生成的实体级幂等键（drain 重试安全）。 */
@@ -76,6 +93,35 @@ export function extractExitCode(data?: Record<string, unknown>): number | undefi
   const v = data?.exit_code;
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   return undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function parseFileChangeStats(data?: Record<string, unknown>): FileChangeStats | undefined {
+  const value = data?.change_stats;
+  if (typeof value !== 'object' || value === null) return undefined;
+  const raw = value as Record<string, unknown>;
+  const files = nonNegativeInteger(raw.files);
+  if (files === undefined || files < 1) return undefined;
+  const additions = nonNegativeInteger(raw.additions);
+  const deletions = nonNegativeInteger(raw.deletions);
+  const bytes = nonNegativeInteger(raw.bytes);
+  if (additions === undefined && deletions === undefined && bytes === undefined) return undefined;
+  const operation = typeof raw.operation === 'string'
+    && ['create', 'write', 'edit', 'delete', 'changed'].includes(raw.operation)
+    ? raw.operation as FileChangeStats['operation']
+    : undefined;
+  const path = typeof raw.path === 'string' && raw.path.trim() ? raw.path.trim() : undefined;
+  return {
+    files,
+    ...(additions !== undefined ? { additions } : {}),
+    ...(deletions !== undefined ? { deletions } : {}),
+    ...(bytes !== undefined ? { bytes } : {}),
+    ...(operation !== undefined ? { operation } : {}),
+    ...(path !== undefined ? { path } : {}),
+  };
 }
 
 /**
@@ -238,34 +284,49 @@ export function isRunLive(status: string | undefined): boolean {
   return status !== undefined && ACTIVE.has(status);
 }
 
-/** 聚合单个 run 时间线中的推理与回复草稿（message.completed 之后重置，仅保留当前段流式内容）。 */
+/** 聚合单个 run 时间线中的推理与回复草稿（message.completed/tool.started 后重置，仅保留当前段流式内容）。 */
 export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
   let reasoning = '';
   let answerDraft = '';
+  let phaseId = '';
+  let phaseStartedAt = '';
   for (const e of entries) {
     if (e.type === 'message.completed') {
       reasoning = '';
       answerDraft = '';
+      phaseId = '';
+      phaseStartedAt = '';
       continue;
     }
-    // 工具事件是可见时间线的阶段边界：工具前的草稿由 buildMessages
-    // 先落成 interim 消息，工具后的 delta 不能再并入同一段 live tail。
-    if (e.type.startsWith('tool.')) {
-      // tool.progress/completed 之间可能夹着仅推理 delta；没有正文时不切段，
-      // 否则会把一段连续思考拆成很多 1-2 词的 thinking 卡片。
-      if (answerDraft) {
-        reasoning = '';
-        answerDraft = '';
-      }
+    // 只有新的工具调用开启可见阶段边界。progress/completed/failed 可能夹着
+    // 推理 delta，不能清空当前 tail，否则工具执行期间的思考会被吞掉或碎片化。
+    if (e.type === 'tool.started') {
+      reasoning = '';
+      answerDraft = '';
+      phaseId = '';
+      phaseStartedAt = '';
       continue;
     }
     if (e.type !== 'message.delta') continue;
     const chunk = extractDeltaChunk(e.data);
     if (!chunk?.text) continue;
+    if (!phaseId && (chunk.type === 'reasoning-delta' || chunk.type === 'text-delta')) {
+      phaseId = timelinePhaseId(e);
+      phaseStartedAt = e.occurred_at;
+    }
     if (chunk.type === 'reasoning-delta') reasoning += chunk.text;
     if (chunk.type === 'text-delta') answerDraft += chunk.text;
   }
-  return { reasoning, answerDraft };
+  return {
+    reasoning,
+    answerDraft,
+    ...(phaseId ? { phaseId } : {}),
+    ...(phaseStartedAt ? { phaseStartedAt } : {}),
+  };
+}
+
+function timelinePhaseId(entry: TimelineEntry): string {
+  return entry.run_seq !== undefined ? `run-seq-${entry.run_seq}` : entry.event_id;
 }
 
 const TERMINAL: ReadonlySet<string> = new Set(['succeeded', 'interrupted', 'cancelled', 'lost', 'failed']);
@@ -291,23 +352,37 @@ function capLiveOutput(text: string): string {
   return text.length > LIVE_OUTPUT_LIMIT ? text.slice(text.length - LIVE_OUTPUT_LIMIT) : text;
 }
 
+function foldedText(entry: TimelineEntry): string {
+  return typeof entry.data?.text_folded === 'string' ? entry.data.text_folded : '';
+}
+
 /** 从 run 时间线推导对话气泡（user 右 / assistant 左 / tool·error·system 居中细行）。 */
 export function buildMessages(runIds: string[], timelines: Record<string, TimelineEntry[]>): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const runId of runIds) {
     const entries = timelines[runId] ?? [];
+    // Only the last completed assistant item is the formal answer. Earlier
+    // completed items are narration checkpoints and remain in the ordered
+    // work trace. Do this from the complete event list up front: relying on
+    // wording (or markdown headings) makes a cumulative adapter response
+    // impossible to project reliably.
+    const lastCompletedIndex = entries.reduce(
+      (last, entry, index) => entry.type === 'message.completed' ? index : last,
+      -1,
+    );
     let reasoningBuf = '';
     let answerBuf = '';
-    let flushedReasoning = '';
+    let phaseId = '';
+    let phaseStartedAt = '';
+    let reasoningLastAt = '';
     let flushedAnswer = '';
     let stageSeq = 0;
-    let hadToolBoundary = false;
-    const flushDraftBeforeTool = (boundary: TimelineEntry) => {
-      // 只有正文 delta 才构成可见的正文阶段边界。工具批次间的 reasoning
-      // 继续累积，等下一段正文或 message.completed 时一次性落下。
-      if (!answerBuf) return;
-      hadToolBoundary = true;
+    const flushDraftAtBoundary = (boundary: TimelineEntry) => {
+      // tool.started / run.failed 是可见阶段边界：无论当前只有思考、只有正文，
+      // 还是两者都有，都先落成独立消息。progress/terminal 工具帧不会进入这里。
+      if (!reasoningBuf && !answerBuf) return;
       stageSeq += 1;
+      const currentPhaseId = phaseId || timelinePhaseId(boundary);
       if (reasoningBuf) {
         out.push({
           key: `${runId}-thinking-stage-${stageSeq}`,
@@ -315,8 +390,10 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           kind: 'thinking',
           text: reasoningBuf,
           at: boundary.occurred_at,
+          ...(phaseStartedAt ? { startedAt: phaseStartedAt } : {}),
+          ...(reasoningLastAt ? { completedAt: reasoningLastAt } : {}),
+          phaseId: currentPhaseId,
         });
-        flushedReasoning += reasoningBuf;
       }
       if (answerBuf) {
         out.push({
@@ -325,42 +402,46 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           kind: 'assistant',
           text: answerBuf,
           at: boundary.occurred_at,
+          ...(phaseStartedAt ? { startedAt: phaseStartedAt } : {}),
         });
         flushedAnswer += answerBuf;
       }
       reasoningBuf = '';
       answerBuf = '';
+      phaseId = '';
+      phaseStartedAt = '';
+      reasoningLastAt = '';
     };
-    const unseenCanonicalAnswer = (
-      canonical: string,
-      currentStageAnswer = '',
-      previousFlushedAnswer = flushedAnswer,
-      currentStageWasPushed = false,
-    ): string => {
+    const canonicalSuffix = (canonical: string, currentStage: string): string => {
       if (!canonical) return '';
-      // 完成事件有时只携带当前工具阶段，而不是完整累计正文。当前阶段已经
-      // 在上面落成 interim 时，两种形态都只允许追加真正未展示的后缀。
-      if (currentStageWasPushed) {
-        const displayed = previousFlushedAnswer + currentStageAnswer;
-        if (canonical.startsWith(displayed)) return canonical.slice(displayed.length);
-        if (canonical.startsWith(currentStageAnswer)) return canonical.slice(currentStageAnswer.length);
-        if (canonical.startsWith(previousFlushedAnswer)) {
-          const suffix = canonical.slice(previousFlushedAnswer.length);
-          return suffix.startsWith(currentStageAnswer) ? suffix.slice(currentStageAnswer.length) : suffix;
-        }
-        if (canonical === currentStageAnswer || currentStageAnswer.startsWith(canonical)) return '';
-        return canonical;
+      // A canonical cumulative response is the already-rendered interim
+      // prefix followed by the new stage. Only strip when that relationship
+      // is proven; a current-only response must never be mistaken for a
+      // suffix of an unrelated previous stage.
+      if (flushedAnswer && canonical.startsWith(flushedAnswer)) {
+        return canonical.slice(flushedAnswer.length);
       }
-      // 没有工具边界时，delta 只是 live 草稿，completed 仍是权威正文，不能把它当成已落盘内容。
+      // If delta already rendered this exact current-only stage, an interim
+      // checkpoint does not need a second copy. For the final item the caller
+      // deliberately does not use this branch: the canonical answer is the
+      // authoritative formal output even when it equals the live draft.
+      if (currentStage && (canonical === currentStage || currentStage.startsWith(canonical))) return '';
+      return canonical;
+    };
+    const finalStageText = (canonical: string, currentStage: string): string => {
+      if (!canonical) return currentStage;
       if (!flushedAnswer) return canonical;
-      const displayed = flushedAnswer + answerBuf;
-      if (canonical.startsWith(displayed)) return canonical.slice(displayed.length);
-      if (canonical.startsWith(flushedAnswer)) {
+      if (canonical === flushedAnswer) return '';
+      // A shared string prefix alone cannot distinguish a cumulative response
+      // from a current-only final (for example interim "foo", final "foobar").
+      // Strip the already-rendered prefix only when live stage deltas prove the
+      // remaining canonical suffix belongs to this final stage.
+      if (currentStage && canonical !== currentStage && canonical.startsWith(flushedAnswer)) {
         const suffix = canonical.slice(flushedAnswer.length);
-        return suffix.startsWith(answerBuf) ? suffix.slice(answerBuf.length) : suffix;
+        if (suffix === currentStage || suffix.endsWith(currentStage) || currentStage.endsWith(suffix)) {
+          return suffix;
+        }
       }
-      // 某些 adapter 只在完成事件中回传当前阶段正文；它已经由 delta 展示时不再重复。
-      if (canonical === answerBuf || answerBuf.startsWith(canonical)) return '';
       return canonical;
     };
     let planIdx = -1; // 同 run 的 plan 快照在 out 中的位置：新帧原地替换
@@ -413,8 +494,17 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         }
         case 'message.delta': {
           const chunk = extractDeltaChunk(e.data);
+          if (
+            chunk?.text
+            && !phaseId
+            && (chunk.type === 'reasoning-delta' || chunk.type === 'text-delta')
+          ) {
+            phaseId = timelinePhaseId(e);
+            phaseStartedAt = e.occurred_at;
+          }
           if (chunk?.type === 'reasoning-delta' && chunk.text) {
             reasoningBuf += chunk.text;
+            reasoningLastAt = e.occurred_at;
           }
           if (chunk?.type === 'text-delta' && chunk.text) {
             answerBuf += chunk.text;
@@ -428,14 +518,20 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           // 超帽时间线的逐出推理由 runs.store 折叠回锚点（reasoning_folded）；
           // 折叠优先于残存 delta 缓冲——后者在同一块内可能只是尾部片段。
           const folded = typeof e.data?.reasoning_folded === 'string' ? e.data.reasoning_folded : '';
+          const foldedStartedAt = typeof e.data?.reasoning_folded_started_at === 'string'
+            ? e.data.reasoning_folded_started_at
+            : '';
+          const foldedCompletedAt = typeof e.data?.reasoning_folded_completed_at === 'string'
+            ? e.data.reasoning_folded_completed_at
+            : '';
+          const foldedPhaseId = typeof e.data?.reasoning_folded_phase_id === 'string'
+            ? e.data.reasoning_folded_phase_id
+            : '';
           const foldTruncated = e.data?.reasoning_folded_truncated === true;
           const reasoning = folded || reasoningBuf;
+          const reasoningStartedAt = folded ? foldedStartedAt : phaseStartedAt;
           if (reasoning) {
-            // 只有 runs.store 的 folded 是跨阶段全文；普通 reasoningBuf 只是当前阶段，
-            // 即使碰巧以旧阶段同文开头也不能按前缀裁掉。
-            const unseenReasoning = folded && flushedReasoning && folded.startsWith(flushedReasoning)
-              ? folded.slice(flushedReasoning.length)
-              : reasoning;
+            const unseenReasoning = reasoning;
             if (unseenReasoning) {
               out.push({
                 key: `${runId}-thinking-${e.event_id}`,
@@ -443,42 +539,41 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
                 kind: 'thinking',
                 text: foldTruncated ? `……（早期推理已省略）\n\n${unseenReasoning}` : unseenReasoning,
                 at: e.occurred_at,
+                ...(reasoningStartedAt ? { startedAt: reasoningStartedAt } : {}),
+                completedAt: foldedCompletedAt || reasoningLastAt || e.occurred_at,
+                phaseId: foldedPhaseId || phaseId || timelinePhaseId(e),
               });
             }
           }
           reasoningBuf = '';
-          // 工具之后的 live tail 在完成事件到达时也要落成独立正文段；否则
-          // 下方清空草稿会让这一段从时间线中消失。canonical 正文随后按已展示前缀去重。
-          const currentStageAnswer = answerBuf;
-          const previousFlushedAnswer = flushedAnswer;
-          const currentStageWasPushed = hadToolBoundary && currentStageAnswer.length > 0;
-          if (currentStageWasPushed) {
+          const currentStageAnswer = foldedText(e) || answerBuf;
+          const canonicalText = typeof e.text === 'string' ? e.text : '';
+          const isFinal = entries.indexOf(e) === lastCompletedIndex;
+          // Every completed item before the last one is an interim narration
+          // checkpoint. The last item alone owns content_blocks and formal
+          // answer rendering.
+          const unseenText = isFinal
+            ? finalStageText(canonicalText, currentStageAnswer)
+            : (currentStageAnswer || canonicalSuffix(canonicalText, currentStageAnswer));
+          if (!isFinal && unseenText) {
             stageSeq += 1;
             out.push({
               key: `${runId}-answer-stage-${stageSeq}`,
               runId,
               kind: 'assistant',
-              text: answerBuf,
+              text: unseenText,
               at: e.occurred_at,
             });
-            flushedAnswer += currentStageAnswer;
-            answerBuf = '';
+            flushedAnswer += unseenText;
           }
-          const canonicalText = typeof e.text === 'string' ? e.text : '';
-          const unseenText = unseenCanonicalAnswer(
-            canonicalText,
-            currentStageAnswer,
-            previousFlushedAnswer,
-            currentStageWasPushed,
-          );
           answerBuf = '';
-          flushedAnswer = '';
-          flushedReasoning = '';
-          hadToolBoundary = false;
+          phaseId = '';
+          phaseStartedAt = '';
+          reasoningLastAt = '';
           {
             const itemType = typeof e.data?.item_type === 'string' ? e.data.item_type : undefined;
             const contentBlocks = parseContentBlockDocument(e.data?.content_blocks);
-            if (unseenText || contentBlocks) {
+            if (isFinal && (unseenText || contentBlocks)) {
               out.push({
                 key: e.event_id,
                 runId,
@@ -493,7 +588,30 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'tool.started': {
-          flushDraftBeforeTool(e);
+          const folded = typeof e.data?.reasoning_folded === 'string' ? e.data.reasoning_folded : '';
+          if (folded) {
+            const truncated = e.data?.reasoning_folded_truncated === true;
+            reasoningBuf = truncated ? `……（早期推理已省略）\n\n${folded}` : folded;
+            phaseStartedAt = typeof e.data?.reasoning_folded_started_at === 'string'
+              ? e.data.reasoning_folded_started_at
+              : phaseStartedAt;
+            phaseId = typeof e.data?.reasoning_folded_phase_id === 'string'
+              ? e.data.reasoning_folded_phase_id
+              : phaseId;
+          }
+          const foldedTextValue = foldedText(e);
+          if (foldedTextValue) {
+            // text_folded is the complete stage captured before this tool
+            // boundary. It is authoritative over any surviving delta tail.
+            answerBuf = foldedTextValue;
+            phaseStartedAt = typeof e.data?.text_folded_started_at === 'string'
+              ? e.data.text_folded_started_at
+              : phaseStartedAt;
+            phaseId = typeof e.data?.text_folded_phase_id === 'string'
+              ? e.data.text_folded_phase_id
+              : phaseId;
+          }
+          flushDraftAtBoundary(e);
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
           const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';
           const args = typeof e.data?.args === 'string' ? e.data.args : undefined;
@@ -519,7 +637,6 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'tool.progress': {
-          flushDraftBeforeTool(e);
           // 流式工具输出：无 call_id 或空文本的帧无法挂行，忽略。
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
           const text = typeof e.data?.text === 'string' ? e.data.text : '';
@@ -547,9 +664,9 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         }
         case 'tool.completed':
         case 'tool.failed': {
-          flushDraftBeforeTool(e);
           const output = typeof e.data?.output === 'string' ? e.data.output.trim() : '';
           const exitCode = extractExitCode(e.data);
+          const changeStats = parseFileChangeStats(e.data);
           // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）；退出码本身由卡片层用 exitCode 字段渲染。
           const failedExit = exitCode !== undefined && exitCode !== 0;
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
@@ -557,25 +674,35 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           const idx = key ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
           const liveOutput = idx >= 0 ? out[idx].liveOutput : undefined;
           if (e.type === 'tool.failed') {
+            const interrupted = e.data?.status === 'interrupted';
+            const failureReason = typeof e.data?.failure_reason === 'string' ? e.data.failure_reason : '';
+            const existing = idx >= 0 ? out[idx] : undefined;
             const failed: ChatMessage = {
+              ...existing,
               key: key || e.event_id,
               runId,
-              kind: 'error',
-              text: idx >= 0 ? out[idx].text.replace(/^调用工具/, '工具失败') : '工具调用失败',
-              detail: output || liveOutput || undefined,
+              kind: interrupted ? 'tool' : 'error',
+              text: interrupted
+                ? existing?.text ?? '工具调用中断'
+                : existing?.text.replace(/^调用工具/, '工具失败') ?? '工具调用失败',
+              detail: output || liveOutput || (interrupted && failureReason
+                ? '父回合已结束，未收到工具结果'
+                : undefined),
               at: e.occurred_at,
-              tool: idx >= 0 ? out[idx].tool : undefined,
-              toolStatus: 'failed',
-              startedAt: idx >= 0 ? out[idx].startedAt : undefined,
+              tool: existing?.tool ?? (typeof e.data?.tool === 'string' ? e.data.tool : undefined),
+              toolStatus: interrupted ? 'stopped' : 'failed',
+              startedAt: existing?.startedAt,
               completedAt: e.occurred_at,
+              liveOutput: undefined,
               ...(exitCode !== undefined ? { exitCode } : {}),
+              ...(changeStats !== undefined ? { changeStats } : {}),
             };
             if (idx >= 0) out[idx] = failed;
             else out.push(failed);
             break;
           }
           // 无输出、无退出码、也无流式输出的完成不刷屏。
-          if (!output && exitCode === undefined && !liveOutput) break;
+          if (!output && exitCode === undefined && !liveOutput && changeStats === undefined) break;
           if (idx >= 0) {
             out[idx] = {
               ...out[idx],
@@ -587,6 +714,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               // 落定：流式输出并入 detail（output 优先），liveOutput 删除避免双份渲染。
               liveOutput: undefined,
               ...(exitCode !== undefined ? { exitCode } : {}),
+              ...(changeStats !== undefined ? { changeStats } : {}),
             };
           } else {
             out.push({
@@ -599,20 +727,15 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               toolStatus: failedExit ? 'failed' : 'success',
               completedAt: e.occurred_at,
               ...(exitCode !== undefined ? { exitCode } : {}),
+              ...(changeStats !== undefined ? { changeStats } : {}),
             });
           }
           break;
         }
         case 'run.failed': {
-          const msg = typeof e.data?.message === 'string' ? e.data.message : undefined;
-          const code = typeof e.data?.code === 'string' ? e.data.code : undefined;
-          out.push({
-            key: e.event_id,
-            runId,
-            kind: 'error',
-            text: formatRunFailureMessage(code, msg),
-            at: e.occurred_at,
-          });
+          flushDraftAtBoundary(e);
+          // Run 失败由 composer 上方的 RunErrorBanner 呈现；不要把运行级错误
+          // 伪装成 assistant transcript 行，避免与 tool.failed 混淆。
           break;
         }
         case 'run.recovery_started':
@@ -642,6 +765,9 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         kind: 'thinking',
         text: reasoningBuf,
         at: entries[entries.length - 1]?.occurred_at ?? '',
+        ...(phaseStartedAt ? { startedAt: phaseStartedAt } : {}),
+        ...(reasoningLastAt ? { completedAt: reasoningLastAt } : {}),
+        ...(phaseId ? { phaseId } : {}),
       });
     }
     if (answerBuf) {
@@ -758,6 +884,8 @@ interface ChatStore {
   drainQueue: () => Promise<void>;
   /** 中断活动 run（对话页「停止」/首响超时）。 */
   stopActiveRun: (runId: string, code: Exclude<ChatErrorCode, 'stop_failed'>) => Promise<void>;
+  /** 重试失败 Run：服务端创建新 Run，随后订阅并刷新当前会话。 */
+  retryRun: (runId: string) => Promise<void>;
   /** 从指定消息分叉新会话：上下文包写入新 work item 的 description，首发时注入。 */
   forkConversation: (atMessageKey: string) => Promise<void>;
 }
@@ -937,6 +1065,15 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       } finally {
         set((s) => (s.stoppingRunId === runId ? { stoppingRunId: null } : {}));
       }
+    },
+
+    retryRun: async (runId) => {
+      const next = await retryRunRequest(runId);
+      await get().refreshRuns();
+      useRunsStore.getState().watchRun(next.id);
+      await get().refreshConversations();
+      await get().refreshRuns();
+      await useTasksStore.getState().refresh();
     },
 
     forkConversation: async (atMessageKey) => {

@@ -4,6 +4,7 @@
 状态：implemented（LeAgent 展示骨架已落地并通过浏览器验收）
 配套文档：
 - `web/DESIGN.md` —— 全局 token 与组件契约（事实源）；
+- `references/zcode-desktop-interaction-report.md` —— 思考、工具与 final 的时间序交互基准；
 - `https://github.com/vixues/LeAgent/tree/1f16badc834abbd829d3cb7e9f8fcb5b2d57f443/frontend/src/components/chat` —— 消息骨架与 Markdown 交互基线（Apache-2.0）；
 - `references/zcode-desktop-interaction-report.md` —— ZCode 桌面思考/工具/final 交互逆向（给对齐 agent 用）；
 - `references/swarm-chat-body.md` —— 蜂群模式正文展示草案（静态 HTML，proposed）；
@@ -26,19 +27,60 @@
 |---|---|---|---|---|---|
 | user | 用户消息 | `article` 内右对齐紧凑白卡 `.chat-user-card`；LanguageGUI 浅色面、20px 圆角、`surface-raised`、细 `border-subtle`、12×16px；不显示用户角色头 | 正文 15px/1.6，保留换行；可访问名称仍为「你的消息」 | 悬停操作条 opacity 0.36→100 | transcript-view.tsx |
 | assistant | 助手文本 | `article` 内开放 `.chat-prose` Markdown 正文；不显示重复 assistant/模型角色头，不额外包白卡 | 正文 15px/1.75；身份不以重复可见头占位 | 流式：100ms Markdown 节流 + 2px caret；落定后静态 | assistant-turn.tsx |
-| thinking | reasoning 事件；超帽时间线走 `reasoning_folded` 折叠锚点（runs.store capTimeline 把逐出推理聚合回 message.completed，尾部 4000 字符预算截断，截断带「早期推理已省略」前缀） | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `max-h-52` 纵滚 `px-3 py-2.5`（motion 展开落定后留 inline height:auto，固定高度会被覆盖，故帽用 max-h） | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
+| thinking | 每个 reasoning 阶段独立成段；下一条 tool.started 或 message.completed 前落定当前段；超帽时间线把 `reasoning_folded` 挂回对应阶段边界 | WorkTimeline 内轻量左边线折叠行，不再单独生成大灰卡 | 折叠行显示「思考 · 持续了 X」与最后一个非空推理行；展开体最高 240px，2px 贴底阈值与上下 fade mask；不同阶段不合并 | 每段默认折叠且流式可开合；运行中标题扫光，ticker 横滚到尾；streaming→settled 自动收只在用户未操作时发生；折叠 300ms 后卸载 | work-activity-timeline.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
-| activity | 同 run、同一正文阶段内的连续工具行；正文 text-delta 会切断批次 | `ActivityGroup`；默认一条命令行摘要，点击后才出现纵向工具日志与详情 | 折叠行显示工具族、总数与状态；展开后逐行显示序号、工具、摘要、耗时和状态 | 默认折叠；仅 reasoning 不拆并行工具；后续工具批次另起一行 | tool-card.tsx |
+| activity | 同 run、同一阶段内的工具行；reasoning/text 是硬边界；展示层再按 Explore(Read/Search)、Execute(Bash/Code)、Changes(Write/Edit)、CUA、Agent 语义拆组 | WorkTimeline 内的 `ActivityGroup`；每组默认一条摘要，点击后才出现纵向工具日志与详情；默认合并 Explore/Execute、不合并 Changes | 摘要显示组别、工具族、总数、当前动宾动作与终态；展开后逐行显示序号、工具、摘要、耗时和状态 | 运行中动作扫光且可开合；running→terminal 自动收成摘要；progress/terminal 只更新原工具；无真实 CUA/subagent 子事件时不伪造嵌套 | tool-card.tsx |
+| work-timeline | 单个 run 的 thinking、过程正文、activity、approval 与错误证据 | 44px Run 摘要头 + 原序工作日志；成功时只留摘要头 | 「工作中/已工作/运行失败/已中断」+ 真实 Run 时长与阶段/工具数量 | 运行中展开；成功折叠；失败/中断展开；用户可覆盖默认展开态 | work-activity-timeline.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
 | turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
 
 段间距：`.chat-thread space-y-3`（12px）；正文与 composer 共用约 920px 居中阅读轨，窄屏吃满可用宽度。工具、审批、diff 仍在各自 segment 内部滚动，不搬 demo widget 协议。
 
+阶段顺序不变量：同一 run 必须按事件顺序呈现为
+`thinking → interim assistant/activity → thinking → interim assistant/activity → final assistant`。
+每个 `tool.started` 只在已有阶段内容时关闭前一阶段并开启新的 ActivityGroup；
+`tool.progress/completed/failed` 不得单独切段，避免一个并行工具批次生成几十个碎片思考卡。
+interim assistant 始终是普通 Markdown 正文的独立 sibling，不属于 thinking，也不嵌入工具详情。
+只有 Run 进入终态后，thinking、interim assistant、tools、approval 与错误证据才整体收进
+「已工作 X」WorkTimeline；真正的 final assistant 正文永远独立位于 WorkTimeline 外侧。
+最终正文不能把此前 interim assistant 的内容覆盖、拼接或挪到工具组后面。Run 的统一工作时间线契约如下：
+
+| Run 阶段 | 默认呈现 | 交互规则 |
+|---|---|---|
+| 运行中 | WorkTimeline 默认展开；其中每段 thinking 与每批工具默认折叠为可跟随更新的摘要行，interim assistant 以普通 Markdown sibling 显示 | 用户可收起 Run；可分别展开 thinking/工具批次；thinking 体滚动并跟随最新推理，同一批次内 progress 只更新原工具行 |
+| 成功完成 | WorkTimeline 收敛为「已工作 X」摘要行，内部 thinking/interim/tools 仍按事件顺序保留 | 点击 Run 摘要展开完整日志；最终正文保持独立、可连续阅读 |
+| 失败/中断 | WorkTimeline 默认展开，直接暴露失败工具、过程正文与错误状态；其内部 thinking/工具批次仍默认折叠 | 用户可收起 Run 或展开具体段；错误状态同时用图标、文字和 `aria-live` 语义表达 |
+
+ZCode 展示设置默认值：显示全部 reasoning；Explore/Execute 分组开启；Changes 分组关闭。
+用户可在设置页的「对话 · ZCode」中修改。关闭显示 reasoning 后，每个 Run 只保留第一段，
+不得把后续 reasoning 合并进第一段。设置只影响展示投影，不改变底层事件与历史台账。
+
+正文与工具的最小可读序列是 `thinking → interim assistant/tool → thinking → interim assistant/tool → final`；
+没有某种事件时跳过对应段，但不能为了简化 DOM 把多个阶段合并成一张大卡。
+
+长 Run 超过前端事件容量时，`reasoning-delta` 与 `text-delta` 都必须按阶段折回对应的
+`tool.started` / `message.completed` 边界。reasoning 允许显式尾部截断；用户可见的 interim text
+必须完整保留且保持粘滞，后续增量裁剪不得让已展示正文消失。最后一个 `message.completed` 的当前
+text 阶段是 final candidate：若 canonical text 是累计全文，只按完整 interim 前缀剥离；不得依赖
+Markdown 标题或内容形状猜 final 边界。较早的 completed message 仍作为 interim 留在 WorkTimeline。
+
+Adapter 必须按 `call_id` 关闭每个工具生命周期。Kimi parent `turn.ended` 到达时仍未收到 result 的
+pending 工具以 `tool.failed + status=interrupted` 收口；这只结束工具行，不把成功 Run 改成失败，
+也不允许前端把未观测结果伪装成 `tool.completed`。
+
+错误展示分三条通道：普通 `tool.failed` 只更新工具卡；`RunFailed` 的模型/供应商失败只在
+composer 上方 `RunErrorBanner` 展示，不再复制为 transcript 错误行；cancelled/interrupted/user stop
+只显示停止/信息语义。Banner 主文案上限 500 字符，可展开详情、复制、关闭；仅当后端
+`failure.retryable=true` 时调用真实 retry command。错误状态必须同时使用图标、文字与 ARIA，不只靠颜色。
+
 ---
 
 ## 2. Markdown 正文元素层（assistant 段内，LeAgent 基线）
+
+Final 正文默认完整展开，不按字符数或渲染高度裁切，也不提供「展开全文/收起全文」。
+流式期间按安全 Markdown 段落持续渲染；长文、代码块与结构化 ContentBlocks 始终保持完整展示。
 
 | 元素 | 格局规格 | 备注 |
 |---|---|---|
@@ -103,7 +145,9 @@ location.reload()
 ### 公共件（紧凑工具日志 + 本地专用详情体）
 | 件 | 规格 |
 |---|---|
-| ActivityGroup | 44px 单行摘要 button；每个连续工具批次独立成组并默认折叠；展开后才渲染纵向工具日志 |
+| ActivityGroup | 44px 单行摘要 button；每个阶段再按 Explore/Execute/Changes/CUA/Agent 语义成组并默认折叠；展开后才渲染纵向工具日志；running→terminal 自动收，Run 级默认展开态由 WorkTimeline 负责 |
+| Write/Edit 变更摘要 | canonical `change_stats` 或真实 unified diff 显示 `N 个文件已更改 +A −D`；仅有 `Wrote N bytes` 时显示 `N 个文件已更改 · X KB`，不得推算或补零增删行；折叠行与展开列表使用同一摘要 |
+| Run 文件变更卡 | Final Answer 后读取本 Run 的 write snapshot summary；头部 `已编辑 N 个文件 +A −D`，默认展示 3 个路径；审核打开右侧逐文件 Diff，撤销先确认再由服务端校验 after hash 后整批恢复；旧 Run/快照缺失不显示，reverted 显示终态且禁用撤销 |
 | ToolRow | 最小 44px 单行日志；序号/工具、单行摘要、耗时、图标+文字状态横向排列；选中用品牌蓝软底与细 ring |
 | 状态 | pending/running=Loader；success=Check；error=Alert；stopped=中断图标；图标之外有读屏文本，运行动画遵循 reduced-motion |
 | 展开体 | 同一时间只展开一条工具日志；详情紧跟该行，复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
@@ -158,7 +202,7 @@ Demo 页面若要演示工具调用，必须复用生产 `ActivityGroup`/`ToolRo
 
 | 件 | 表面 | 排版 | 动效 |
 |---|---|---|---|
-| ReasoningProcessPanel | `rounded-lg` 边 `border-subtle` 底 `surface-sunken/80`；体 `max-h-52` 纵滚 | 头 `caption` 悬停 `surface-sunken` | 流式扫光 2.6s（作用域 `.chat-reasoning-panel .chat-reasoning-sweep`）；`aria-expanded`；defaultExpanded 可控；流式期间同样允许手动折叠 |
+| ThinkingDisclosure | WorkTimeline 内轻量左边线，无第二套大灰卡 | 头为 caption + 最后非空行 ticker；体 `max-h-60` 纵滚、pre-wrap、上下 mask | 流式标题扫光；ticker 内容变化 160ms；折叠退场 300ms；`aria-expanded`；流式期间可手动折叠且 settled 尊重用户意图 |
 | ThinkingPlaceholder | 无容器 | 14px 扫光圆点 + 「Thinking」+ shimmer 文字（`text-tertiary`→`text-secondary` 80% 渐变裁字） | sweep 2.6s；shimmer 2s |
 
 ---

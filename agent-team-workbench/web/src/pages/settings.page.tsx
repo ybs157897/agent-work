@@ -12,7 +12,9 @@ import {
 import type { ProbeResult, RuntimeBinding } from '../api/types';
 import { Drawer } from '../components/drawer';
 import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
+import { Toggle } from '../components/toggle';
 import { Button, Card, EmptyState, Input, Skeleton } from '../components/ui';
+import { useChatPreferencesStore } from '../stores/chat-preferences.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { formatDateTime } from '../utils/format';
@@ -94,6 +96,8 @@ export default function SettingsPage() {
 
       <RuntimeBindingsSection workspaceId={workspace?.id} />
 
+      <ChatDisplayPreferencesSection />
+
       <Card padded className="!p-base">
         <div className="mb-snug flex items-center justify-between">
           <h3 className="text-h3 text-text-primary">当前用户</h3>
@@ -107,6 +111,72 @@ export default function SettingsPage() {
         </dl>
       </Card>
     </main>
+  );
+}
+
+function ChatDisplayPreferencesSection() {
+  const showReasoning = useChatPreferencesStore((state) => state.showReasoning);
+  const groupExploreTools = useChatPreferencesStore((state) => state.groupExploreTools);
+  const groupTerminalTools = useChatPreferencesStore((state) => state.groupTerminalTools);
+  const groupChangesTools = useChatPreferencesStore((state) => state.groupChangesTools);
+  const setPreference = useChatPreferencesStore((state) => state.setPreference);
+
+  return (
+    <Card padded className="!p-base">
+      <div className="mb-snug">
+        <p className="text-caption uppercase tracking-widest text-text-tertiary">对话 · ZCode</p>
+        <h3 className="mt-1 text-h3 text-text-primary">过程展示</h3>
+        <p className="mt-1 text-caption text-text-tertiary">控制思考可见性与工具的展示层分组；不改变底层事件。</p>
+      </div>
+      <div className="divide-y divide-border-subtle rounded-card border border-border-subtle bg-surface-base">
+        <PreferenceRow
+          label="显示全部思考"
+          description="关闭后每个 Run 只保留第一段思考，与 ZCode messageStreamShowReasoning 一致。"
+          checked={showReasoning}
+          onChange={(checked) => setPreference('showReasoning', checked)}
+        />
+        <PreferenceRow
+          label="合并探索工具"
+          description="把连续 Read/Search 调用收进 Explore 摘要。"
+          checked={groupExploreTools}
+          onChange={(checked) => setPreference('groupExploreTools', checked)}
+        />
+        <PreferenceRow
+          label="合并执行工具"
+          description="把连续 Bash/Code 调用收进 Execute 摘要。"
+          checked={groupTerminalTools}
+          onChange={(checked) => setPreference('groupTerminalTools', checked)}
+        />
+        <PreferenceRow
+          label="合并文件变更"
+          description="把连续 Write/Edit 调用收进 Changes 摘要；ZCode 默认关闭。"
+          checked={groupChangesTools}
+          onChange={(checked) => setPreference('groupChangesTools', checked)}
+        />
+      </div>
+    </Card>
+  );
+}
+
+function PreferenceRow({
+  label,
+  description,
+  checked,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex min-h-14 items-center justify-between gap-comfortable px-snug py-base">
+      <div className="min-w-0">
+        <p className="text-body font-medium text-text-primary">{label}</p>
+        <p className="mt-0.5 text-caption text-text-tertiary">{description}</p>
+      </div>
+      <Toggle checked={checked} onChange={onChange} ariaLabel={label} />
+    </div>
   );
 }
 
