@@ -44,12 +44,13 @@ C4Container
 
 ## 跨容器契约
 
-四份契约文件是容器间集成的权威定义（其中 contracts/runner/v1/schema.json 与 contracts/runtime/v1/schema.json 后者为前者的荷载规范）：
+三份契约文件是容器间集成的权威定义：
 
 - `contracts/web/openapi.yaml` —— Web ↔ Control Plane 的 REST 契约；
 - `contracts/events/asyncapi.yaml` —— Control Plane → Web 的 SSE 领域事件白名单；
-- `contracts/runner/v1/schema.json` —— Control Plane ↔ Runner Daemon 的 WebSocket 信封协议（连接端点 /runner/v1/connect，Bearer runner-service-token）；
-- `contracts/runtime/v1/schema.json` —— 通用 Runtime Bridge 统一信封契约（进程内 ModuleRunner 与外部 Runner 共用 canonical 事件与命令荷载）。
+- `contracts/runner/v1/schema.json` —— Control Plane ↔ Runner Daemon 的 WebSocket 信封协议（连接端点 /runner/v1/connect，Bearer runner-service-token）。
+
+Runtime 侧的 canonical 事件与命令荷载不在契约文件里，权威定义是代码：`internal/runtime/spi.go`（message.*/tool.*/run.* 白名单）与 `internal/runtime/adapter.go`（AdapterManifest/Probe 面）。原 `contracts/runtime/v1/schema.json` 从未接线，已退役（2026-08-28）。
 
 ## 图上未展开的设计要点
 

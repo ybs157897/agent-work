@@ -38,7 +38,7 @@ jobs:
       - name: validate JSON contracts
         working-directory: agent-team-workbench
         run: |
-          python3 -c "import json; [json.load(open(f)) for f in ['contracts/runner/v1/schema.json','contracts/runtime/v1/schema.json']]"
+          python3 -c "import json; [json.load(open(f)) for f in ['contracts/runner/v1/schema.json']]"
       - name: validate YAML contracts
         working-directory: agent-team-workbench
         run: |
