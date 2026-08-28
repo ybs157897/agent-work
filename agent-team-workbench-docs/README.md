@@ -24,6 +24,7 @@
 - references/codex-desktop-rendering-comparison.md：Codex 桌面端对话渲染逆向对照。
 - references/codex-desktop-markdown-tags-inventory.md：Codex markdown 标签清单逆向。
 - references/clawteam-openclaw-comparison.md：ClawTeam 与 OpenClaw 架构对照（F1–F5 借鉴来源）。
+- references/codex-appserver-official-protocol-reference.md：**codex app-server 官方协议锚点**——权威入口链接、schema 生成与版本钉死、生命周期/方法面/通知面/审批面速查、稳定性承诺与 vendored CLI 升级同步规程。
 
 ## 原型期归档材料（历史原件，现状以各 md 为准）
 

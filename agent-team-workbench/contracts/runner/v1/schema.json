@@ -59,7 +59,7 @@
         "fencing_token": { "type": "integer", "minimum": 1 },
         "run_spec": {
           "type": "object",
-          "description": "canonical runtime Start 请求，见 contracts/runtime/v1",
+          "description": "canonical runtime Start 请求，形态见 internal/runtime/adapter.go 与 internal/runtime/spi.go",
           "required": ["run_id", "adapter_id", "input"],
           "properties": {
             "run_id": { "type": "string" },
@@ -105,7 +105,7 @@
       "properties": {
         "runner_seq": { "type": "integer", "minimum": 1 },
         "provider_cursor": { "type": ["string", "null"] },
-        "event": { "type": "object", "description": "canonical candidate event，见 contracts/runtime/v1；run.session 事件的 data 形态见 $defs/SessionEventData", "$comment": "run.session 必须携带全量 SessionUpdate 语义（clear 墓碑 / params 私有参数），旧 runner 缺省 clear=false、params 为空" },
+        "event": { "type": "object", "description": "canonical candidate event（message.*/tool.*/run.* 白名单，见 internal/runtime/spi.go）；run.session 事件的 data 形态见 $defs/SessionEventData", "$comment": "run.session 必须携带全量 SessionUpdate 语义（clear 墓碑 / params 私有参数），旧 runner 缺省 clear=false、params 为空" },
         "raw_ref": { "type": ["string", "null"], "description": "Provider 原始载荷引用 raw://..." }
       }
     },
