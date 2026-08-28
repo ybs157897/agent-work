@@ -25,6 +25,7 @@
 - references/codex-desktop-markdown-tags-inventory.md：Codex markdown 标签清单逆向。
 - references/clawteam-openclaw-comparison.md：ClawTeam 与 OpenClaw 架构对照（F1–F5 借鉴来源）。
 - references/codex-appserver-official-protocol-reference.md：**codex app-server 官方协议锚点**——权威入口链接、schema 生成与版本钉死、生命周期/方法面/通知面/审批面速查、稳定性承诺与 vendored CLI 升级同步规程。
+- references/cli-prompt-engineering.md：**Codex / Kimi Code 提示词工程对照**——输出形态纪律条款对照表、提示词堆叠两种范式（消息层 vs 模板槽位）、我们三条 adapter 路径的提示词位置实测结论、languagegui/v1 契约补丁设计建议；原文资产在 references/prompt-library/。
 
 ## 原型期归档材料（历史原件，现状以各 md 为准）
 
