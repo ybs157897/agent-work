@@ -65,8 +65,15 @@
 为什么底座有格式纪律而长报告仍失控：通用底座对长任务是软约束（"可因复杂度放宽"），
 真正强硬的三档限额只在 GPT-5.2 家族模板里，kimi/deepseek 吃不到。
 
-kap 路径的人设注入位置（用户消息前缀）是三路径中最弱的，若该路径走向生产，
-应考虑推动 kap 侧支持 system_prompt 通道，或接受其作为"会话级约定"的弱约束力。
+kap 路径的人设注入位置（用户消息前缀）是三路径中最弱的。**注意 kimi_local 生产绑定
+  的就是这条路径**（runtime_bindings 实证 kimi_local → kimi-appserver）。
+
+改进通道（源码层已核实）：kimi-code 的 kap-server `start()` 支持 `hostIdentity`
+（productName + replyStyleGuide 两个模板槽位，packages/kap-server/src/start.ts），
+但 `kimi web` CLI 的 parseServerOptions 未暴露该参数——槽位只对编程式嵌入宿主开放。
+kimi-code 源码在本机 fork（~/Documents/ybs/code/kimi-code-2，ybs157897/kimi-code），
+可加一个 env/flag 透传 hostIdentity，让我们的输出纪律占住 replyStyleGuide 模板槽位
+（最强位置），替代当前的首条用户消息前缀注入。
 
 ## 5. 对 languagegui/v1 契约补丁的设计建议
 
