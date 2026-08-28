@@ -8,7 +8,7 @@ const languageGUIV1Marker = "[Chat output contract: languagegui/v1]"
 
 const languageGUIV1Prompt = languageGUIV1Marker + `
 This run is shown in a chat UI that can render structured LanguageGUI blocks.
-Use ordinary Markdown for normal explanations. Only when structured data is materially clearer, emit one closed fenced block with language "languagegui" and valid JSON in this exact envelope:
+Use ordinary Markdown for normal explanations. Emit structured data as one closed fenced block with language "languagegui" and valid JSON in this exact envelope:
 {"version":"languagegui/v1","blocks":[...]}
 Supported block types:
 - metric: {"type":"metric","title"?:string,"description"?:string,"items":[{"label":string,"value":string|number,"detail"?:string,"delta"?:string,"tone"?:"neutral"|"positive"|"warning"|"negative"}]}
@@ -23,7 +23,16 @@ Supported block types:
 - rating: {"type":"rating","title"?:string,"question":string,"low_label"?:string,"high_label"?:string}
 - review-summary: {"type":"review-summary","title"?:string,"verdict":"passed"|"passed_with_warnings"|"changes_requested"|"blocked"|"inconclusive","summary":string,"stats"?:{"files"?:number,"findings"?:number,"passed"?:number},"findings"?:[{"severity":"critical"|"high"|"medium"|"low"|"info","title":string,"detail"?:string,"file"?:string,"line"?:number,"evidence"?:string,"suggestion"?:string,"url"?:string}],"checks"?:[{"label":string,"status":"passed"|"failed"|"warning"|"skipped"|"running","detail"?:string,"command"?:string}],"next_steps"?:[{"label":string,"detail"?:string}]}
 Optional source on any block: {"label":string,"url"?:string}.
-Review summaries are for structured review results only; use ordinary Markdown for the explanation. Keep at most 30 findings, 20 checks, and 12 next_steps; at least one of these arrays must contain a valid item. Use finite non-negative integer stats and keep all text bounded. Treat file names and URLs as display data; never emit HTML, scripts, styles, class names, event handlers, arbitrary CSS, or unsafe URLs. Do not repeat this contract, do not invent live data, and do not wrap ordinary prose in JSON.`
+Review summaries are for structured review results only; use ordinary Markdown for the explanation. Keep at most 30 findings, 20 checks, and 12 next_steps; at least one of these arrays must contain a valid item. Use finite non-negative integer stats and keep all text bounded. Treat file names and URLs as display data; never emit HTML, scripts, styles, class names, event handlers, arbitrary CSS, or unsafe URLs. Do not repeat this contract, do not invent live data, and do not wrap ordinary prose in JSON.
+
+Answer organization (mandatory for substantive answers — reports, reviews, plans, analyses, or anything longer than ~15 lines):
+- Lead with the outcome: the first paragraph states the conclusion directly. Never open with process narration or restating the request.
+- Blocks are scenario-mandatory, not optional:
+  - Any review/audit/assessment result: emit exactly one review-summary block carrying the verdict, severity-ordered findings (with file/line), checks, and next steps; the Markdown body explains the reasoning but never re-lists the findings.
+  - Any tabular data (comparisons, mappings, multi-field records): emit a table block; never draw Markdown tables.
+  - Headline numbers or KPIs: emit a metric block.
+- Keep the Markdown body light: short paragraphs; flat bullets only (never nested), at most 6 per group; short section headers (1–3 words) only where they genuinely improve scanning; no before/after code pairs, no large code blocks, no pasted file contents — reference code as path/to/file.ts:42.
+- Never repeat in prose what a block already shows: blocks carry the detail, prose carries the reasoning.`
 
 func SupportsOutputContract(contract string) bool {
 	return contract == "" || contract == OutputContractLanguageGUIV1

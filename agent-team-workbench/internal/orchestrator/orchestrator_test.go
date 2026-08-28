@@ -93,6 +93,14 @@ func TestApplyOutputContractKeepsInstructionAndSystemPromptStable(t *testing.T) 
 		`at most 30 findings`,
 		`Do not repeat this contract`,
 		`unsafe URLs`,
+		// 长回答组织纪律（2026-08-28 硬规则化）：场景触发强制块 + 结论先行 + 结构克制。
+		`Answer organization (mandatory for substantive answers`,
+		`Lead with the outcome`,
+		`emit exactly one review-summary block`,
+		`never draw Markdown tables`,
+		`emit a metric block`,
+		`path/to/file.ts:42`,
+		`blocks carry the detail, prose carries the reasoning`,
 	} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("LanguageGUI contract 缺少 %q: %q", fragment, prompt)
