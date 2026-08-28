@@ -12,8 +12,12 @@ const MAX_SEARCH_RESULTS = 12;
 const MAX_REVIEW_FINDINGS = 30;
 const MAX_REVIEW_CHECKS = 20;
 const MAX_REVIEW_NEXT_STEPS = 12;
+const MAX_CANVAS_NODES = 24;
+const MAX_CANVAS_EDGES = 32;
 
 type Scalar = string | number | boolean | null;
+
+export type CanvasNodeKind = 'start' | 'end' | 'process' | 'decision' | 'actor' | 'system' | 'note';
 
 export interface ContentSource {
   label: string;
@@ -135,7 +139,28 @@ export interface ReviewSummaryBlock extends ContentBlockBase {
   nextSteps: Array<{ label: string; detail?: string }>;
 }
 
-export type ContentBlock = MetricBlock | TableBlock | ChartBlock | FileBlock | EventBlock | ImageBlock | AudioBlock | MapBlock | SearchBlock | RatingBlock | ReviewSummaryBlock;
+export interface CanvasNode {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: CanvasNodeKind;
+  x?: number;
+  y?: number;
+}
+
+export interface CanvasEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface CanvasBlock extends ContentBlockBase {
+  type: 'canvas';
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+}
+
+export type ContentBlock = MetricBlock | TableBlock | ChartBlock | FileBlock | EventBlock | ImageBlock | AudioBlock | MapBlock | SearchBlock | RatingBlock | ReviewSummaryBlock | CanvasBlock;
 
 export interface ContentBlockDocument {
   version: typeof CONTENT_BLOCK_VERSION;
@@ -481,6 +506,51 @@ function parseReviewSummary(value: Record<string, unknown>): ReviewSummaryBlock 
   return { type: 'review-summary', ...base(value), verdict, summary, ...(normalizedStats ? { stats: normalizedStats } : {}), findings, checks, nextSteps };
 }
 
+function canvasCoordinate(value: unknown, max: number): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= max ? value : undefined;
+}
+
+function parseCanvas(value: Record<string, unknown>): CanvasBlock | null {
+  if (!Array.isArray(value.nodes)) return null;
+  const nodeKinds = new Set<CanvasNodeKind>(['start', 'end', 'process', 'decision', 'actor', 'system', 'note']);
+  const nodes: CanvasNode[] = [];
+  const seenIds = new Set<string>();
+  for (const raw of value.nodes.slice(0, MAX_CANVAS_NODES)) {
+    const item = record(raw);
+    if (!item) continue;
+    const id = text(item.id, 40);
+    const label = text(item.label, 120);
+    if (!id || !label || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const kind = enumValue(item.kind, [...nodeKinds] as CanvasNodeKind[]) ?? 'process';
+    const detail = text(item.detail, 240);
+    const x = canvasCoordinate(item.x, 1_000);
+    const y = canvasCoordinate(item.y, 1_000);
+    nodes.push({
+      id,
+      label,
+      kind,
+      ...(detail ? { detail } : {}),
+      ...(x !== undefined ? { x } : {}),
+      ...(y !== undefined ? { y } : {}),
+    });
+  }
+  if (!nodes.length) return null;
+
+  const edges: CanvasEdge[] = [];
+  for (const raw of (Array.isArray(value.edges) ? value.edges : []).slice(0, MAX_CANVAS_EDGES)) {
+    const item = record(raw);
+    if (!item) continue;
+    const from = text(item.from, 40);
+    const to = text(item.to, 40);
+    if (!from || !to || !seenIds.has(from) || !seenIds.has(to) || from === to) continue;
+    const label = text(item.label, 120);
+    edges.push({ from, to, ...(label ? { label } : {}) });
+  }
+
+  return { type: 'canvas', ...base(value), nodes, edges };
+}
+
 function parseBlock(value: unknown): ContentBlock | null {
   const item = record(value);
   if (!item || typeof item.type !== 'string') return null;
@@ -507,6 +577,8 @@ function parseBlock(value: unknown): ContentBlock | null {
       return parseRating(item);
     case 'review-summary':
       return parseReviewSummary(item);
+    case 'canvas':
+      return parseCanvas(item);
     default:
       return null;
   }

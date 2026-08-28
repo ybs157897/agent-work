@@ -90,6 +90,8 @@ func TestApplyOutputContractKeepsInstructionAndSystemPromptStable(t *testing.T) 
 		`high`,
 		`running`,
 		`next_steps`,
+		`canvas`,
+		`at most 24 nodes`,
 		`at most 30 findings`,
 		`Do not repeat this contract`,
 		`unsafe URLs`,

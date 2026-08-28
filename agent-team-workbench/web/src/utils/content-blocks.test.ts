@@ -118,6 +118,39 @@ describe('parseContentBlockDocument', () => {
     expect(block?.type === 'review-summary' && block.nextSteps).toHaveLength(12);
   });
 
+  it('parses canvas blocks and rejects invalid edges or duplicate ids', () => {
+    const parsed = parseContentBlockDocument(envelope([
+      {
+        type: 'canvas',
+        title: '登录流程',
+        nodes: [
+          { id: 'start', label: '打开 App', kind: 'start' },
+          { id: 'login', label: '输入账号', kind: 'process', detail: '邮箱或手机号' },
+          { id: 'start', label: '重复 id', kind: 'note' },
+          { id: 'done', label: '进入首页', kind: 'end', x: 120, y: 80 },
+        ],
+        edges: [
+          { from: 'start', to: 'login', label: '提交' },
+          { from: 'login', to: 'missing' },
+          { from: 'login', to: 'done' },
+        ],
+      },
+    ]));
+    expect(parsed?.blocks[0]).toMatchObject({
+      type: 'canvas',
+      title: '登录流程',
+      nodes: [
+        { id: 'start', label: '打开 App', kind: 'start' },
+        { id: 'login', label: '输入账号', kind: 'process', detail: '邮箱或手机号' },
+        { id: 'done', label: '进入首页', kind: 'end', x: 120, y: 80 },
+      ],
+      edges: [
+        { from: 'start', to: 'login', label: '提交' },
+        { from: 'login', to: 'done' },
+      ],
+    });
+  });
+
   it('accepts JSON input, keeps valid siblings and rejects unsupported documents', () => {
     const parsed = parseContentBlockDocument(JSON.stringify(envelope([
       { type: 'unknown', text: 'drop me' },

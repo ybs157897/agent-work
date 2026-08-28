@@ -14,6 +14,7 @@ const DEFAULT_TITLES: Record<ContentBlock['type'], string> = {
   search: '搜索结果',
   rating: '反馈',
   'review-summary': '评审结果',
+  canvas: '流程画布',
 };
 
 export function ContentBlockShell({
