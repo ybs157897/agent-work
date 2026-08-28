@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
 import { buildMessages } from './chat.store';
 import { useRunsStore } from './runs.store';
+import { clearOutputTrace, getOutputTrace } from '../utils/output-trace';
 
 const runEvent = (seq: number, type: string, data?: Record<string, unknown>): CanonicalEvent => ({
   contract_version: 'events/v1',
@@ -13,6 +14,11 @@ const runEvent = (seq: number, type: string, data?: Record<string, unknown>): Ca
   type,
   occurred_at: '2026-08-21T00:00:00Z',
   data,
+});
+
+afterEach(() => {
+  clearOutputTrace();
+  vi.unstubAllGlobals();
 });
 
 describe('runs.store applyEvent', () => {
@@ -87,6 +93,42 @@ describe('runs.store applyEvent', () => {
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
     applyEvent(runEvent(10, 'message.completed', { role: 'assistant', text: '你好' }));
     expect(useRunsStore.getState().timelines.run_1).toHaveLength(1);
+  });
+
+  it('记录 timeline.applied 的重复与保留状态', () => {
+    vi.stubGlobal('window', {
+      location: { search: '?outputTrace=1&outputTraceContent=1' },
+      localStorage: { getItem: () => null },
+    });
+    clearOutputTrace();
+    const event = runEvent(10, 'message.delta', {
+      raw: { chunk: { type: 'text-delta', text: '# 标题' } },
+    });
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(event);
+    applyEvent(event);
+
+    const traces = getOutputTrace().filter((entry) => entry.stage === 'timeline.applied');
+    expect(traces).toHaveLength(2);
+    expect(traces[0]).toMatchObject({ duplicate: false, retained: true, text: { content: '# 标题' } });
+    expect(traces[1]).toMatchObject({ duplicate: true, retained: true });
+  });
+
+  it('工具终态用 lifecycle 区分，不冒充 assistant final', () => {
+    vi.stubGlobal('window', {
+      location: { search: '?outputTrace=1' },
+      localStorage: { getItem: () => null },
+    });
+    clearOutputTrace();
+    useRunsStore.getState().applyEvent(runEvent(11, 'tool.completed', {
+      call_id: 'call-1',
+      output: 'ok',
+    }));
+    expect(getOutputTrace().at(-1)).toMatchObject({
+      stage: 'timeline.applied',
+      mode: 'streaming',
+      metadata: { lifecycle: 'tool-terminal' },
+    });
   });
 
   it('高频事件超过时间线容量后仍保留最新 Plan 与 Goal 状态快照', () => {

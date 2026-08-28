@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -9,8 +9,11 @@ import { MermaidDiagram } from "./mermaid-diagram";
 import { TableCard } from "./table-card";
 import { isSafeContentUrl } from "../../utils/content-blocks";
 import { LanguageGuiFence } from "./content-blocks/languagegui-fence";
+import { splitStreamingMarkdown, type StreamingMarkdownSlice } from "../../utils/streaming-markdown";
+import { isOutputTraceEnabled, outputTraceHash, traceOutputDeduped } from "../../utils/output-trace";
 
 const STREAMING_PARSE_INTERVAL_MS = 100;
+const useCommitEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export function useThrottledMarkdown(text: string, streaming: boolean): string {
   const [value, setValue] = useState(text);
@@ -209,19 +212,47 @@ function extractCode(
 export function MarkdownBody({
   text,
   streaming = false,
+  runId,
+  messageId,
 }: {
   text: string;
   streaming?: boolean;
+  runId?: string;
+  messageId?: string;
 }) {
   const parsedText = useThrottledMarkdown(stripThinkTags(text), streaming);
+  const streamSlice = useMemo<StreamingMarkdownSlice>(
+    () => streaming
+      ? splitStreamingMarkdown(parsedText)
+      : { visibleText: parsedText, pendingText: "" },
+    [parsedText, streaming],
+  );
+  const { visibleText, pendingText } = streamSlice;
   const remarkPlugins = useMemo(
     () => [remarkGfm, remarkMath, remarkCallouts, remarkFenceMeta],
     [],
   );
-  const rehypePlugins = useMemo(
-    () => (streaming ? [] : [rehypeKatex]),
-    [streaming],
-  );
+  const rehypePlugins = useMemo(() => [rehypeKatex], []);
+  const lastCommitTrace = useRef("");
+  useCommitEffect(() => {
+    if (!isOutputTraceEnabled()) return;
+    const signature = `markdown.committed:${runId ?? ""}:${messageId ?? ""}:${streaming ? "streaming" : "final"}:${outputTraceHash(visibleText)}:${pendingText.length}`;
+    if (lastCommitTrace.current === signature) return;
+    lastCommitTrace.current = signature;
+    traceOutputDeduped(signature, {
+      stage: "markdown.committed",
+      mode: streaming ? "streaming" : "final",
+      source: "react-commit",
+      text: visibleText,
+      runId,
+      messageId,
+      projection: { pendingChars: pendingText.length },
+      metadata: {
+        sourceChars: parsedText.length,
+        pendingKind: streamSlice.pendingKind ?? "none",
+      },
+    });
+  }, [messageId, parsedText.length, pendingText.length, runId, streamSlice.pendingKind, streaming, visibleText]);
   const components = useMemo(
     () =>
       ({
@@ -259,13 +290,13 @@ export function MarkdownBody({
             const classes = classNames(code.properties?.className);
             const language = languageFromClassName(classes.join(" "));
             const meta = parseCodeFenceMeta(typeof code?.properties?.['data-fence-meta'] === 'string' ? code.properties['data-fence-meta'] : undefined);
-            if (streaming) return <pre {...rest}>{children}</pre>;
             if (language === "languagegui" || language === "lgui") {
               const fallback = <CodeBlock>{children}</CodeBlock>;
               return (
                 <LanguageGuiFence
                   source={extractCode(code.children).trim()}
                   fallback={fallback}
+                  trace={{ runId, messageId, mode: streaming ? "streaming" : "final" }}
                 />
               );
             }
@@ -306,20 +337,20 @@ export function MarkdownBody({
           return <input {...props} type={type} checked={checked} readOnly />;
         },
       }) as unknown as Components,
-    [streaming],
+    [messageId, runId, streaming],
   );
-  if (!text.trim()) return null;
+  if (!visibleText.trim()) return null;
   return (
     <MarkdownErrorBoundary
-      resetKey={text}
-      fallback={<pre className="whitespace-pre-wrap break-words">{text}</pre>}
+      resetKey={visibleText}
+      fallback={<pre className="whitespace-pre-wrap break-words">{visibleText}</pre>}
     >
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         components={components}
       >
-        {parsedText}
+        {visibleText}
       </ReactMarkdown>
     </MarkdownErrorBoundary>
   );

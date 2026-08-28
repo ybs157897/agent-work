@@ -1,4 +1,12 @@
 import { EVENT_NAMES, type CanonicalEvent } from './types';
+import {
+  isOutputTraceEnabled,
+  outputTraceEventText,
+  outputTraceHash,
+  stableOutputTraceJson,
+  traceOutput,
+  type OutputTraceProjection,
+} from '../utils/output-trace';
 
 export type SseStatus = 'connecting' | 'online' | 'reconnecting';
 
@@ -10,6 +18,22 @@ export interface SseHandlers {
 }
 
 const DEDUP_LIMIT = 1000;
+function contentBlockProjection(data?: Record<string, unknown>): OutputTraceProjection | undefined {
+  const document = data?.content_blocks;
+  if (!document || typeof document !== 'object') return undefined;
+  const blocks = (document as Record<string, unknown>).blocks;
+  const list = Array.isArray(blocks) ? blocks : [];
+  const serialized = stableOutputTraceJson(document);
+  return {
+    contentBlocks: list.length,
+    blockTypes: list.map((block) => {
+      if (!block || typeof block !== 'object') return 'unknown';
+      const type = (block as Record<string, unknown>).type;
+      return typeof type === 'string' ? type : 'unknown';
+    }),
+    hash: outputTraceHash(serialized),
+  };
+}
 
 /**
  * Workspace SSE 订阅（协议文档 §6）：
@@ -103,6 +127,38 @@ export class WorkspaceEventStream {
       }
     }
     if (ev.stream_seq > this.lastSeq) this.lastSeq = ev.stream_seq;
+    if (isOutputTraceEnabled()) {
+      const callId = typeof ev.data?.call_id === 'string' ? ev.data.call_id : undefined;
+      const messageId = typeof ev.data?.message_id === 'string'
+        ? ev.data.message_id
+        : typeof ev.data?.item_id === 'string'
+          ? ev.data.item_id
+          : undefined;
+      traceOutput({
+        stage: 'sse.received',
+        mode: ev.type === 'message.completed' ? 'final' : 'streaming',
+        source: 'sse',
+        runId: ev.aggregate.type === 'execution_run' ? ev.aggregate.id : undefined,
+        messageId,
+        eventId: ev.event_id,
+        correlationId: ev.correlation_id,
+        callId,
+        streamSeq: ev.stream_seq,
+        runSeq: ev.run_seq,
+        eventType: ev.type,
+        serverOccurredAt: ev.occurred_at,
+        text: outputTraceEventText(ev.type, ev.data),
+        projection: contentBlockProjection(ev.data),
+        status: typeof ev.data?.status === 'string' ? ev.data.status : undefined,
+        metadata: {
+          aggregateType: ev.aggregate.type,
+          aggregateVersion: ev.aggregate.version,
+          ...(ev.type === 'tool.completed' || ev.type === 'tool.failed'
+            ? { lifecycle: 'tool-terminal' }
+            : {}),
+        },
+      });
+    }
     this.handlers.onEvent(ev);
   }
 

@@ -4,12 +4,15 @@ import type { TranscriptSegment } from './chronological-transcript';
 export function transcriptSegmentKey(seg: TranscriptSegment): string {
   switch (seg.kind) {
     case 'user':
+      return seg.msg.key;
     case 'assistant':
+      return seg.renderKey ?? seg.msg.key;
     case 'thinking':
     case 'meta':
       return seg.msg.key;
     case 'activity':
-      return `activity:${seg.runId}:${seg.items.map((m) => m.key).join(',')}`;
+      // 同一批次追加后续工具时首条不变，避免 ActivityGroup 被 remount、丢失展开态。
+      return `activity:${seg.runId}:${seg.items[0]?.key ?? 'empty'}`;
     case 'thinking-placeholder':
       return `placeholder:${seg.runId}`;
     case 'turn-diff':

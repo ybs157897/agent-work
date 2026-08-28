@@ -32,14 +32,15 @@ const items: ChatMessage[] = [
   },
 ];
 
-describe('ActivityGroup · LanguageGUI render', () => {
-  it('展示组级状态、Action 卡、可见状态文字和选中工具详情', () => {
+describe('ActivityGroup · ordered compact tool log', () => {
+  it('展示组级状态、纵向工具行，并把选中详情紧跟在对应行后', () => {
     const html = renderToStaticMarkup(
-      <ActivityGroup items={items} defaultSelectedKey="bash" />,
+      <ActivityGroup items={items} defaultCollapsed={false} defaultSelectedKey="bash" />,
     );
 
     expect(html).toContain('data-state="error"');
     expect(html).toContain('工具执行');
+    expect(html).toContain('role="heading" aria-level="3"');
     expect(html).toContain('1 完成 · 1 失败');
     expect(html).toContain('执行失败');
     expect(html).toContain('role="list" aria-label="工具调用"');
@@ -48,23 +49,33 @@ describe('ActivityGroup · LanguageGUI render', () => {
     expect(html).toContain('已完成');
     expect(html).toContain('失败');
     expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-controls=');
+    expect(html).not.toContain('aria-pressed=');
     expect(html).toContain('pnpm test');
     expect(html).toContain('57 files passed');
     expect(html).toContain('role="region" aria-label="Bash 工具详情"');
+    expect(html.indexOf('role="region" aria-label="Bash 工具详情"')).toBeLessThan(html.indexOf('Action 2'));
   });
 
   it('历史大组可默认折叠但仍保留数量与终态，空组给出明确空态', () => {
     const collapsed = renderToStaticMarkup(
       <ActivityGroup items={items} defaultCollapsed />,
     );
-    expect(collapsed).toContain('aria-label="展开 2 个工具调用"');
+    expect(collapsed).toContain('aria-label="展开工具调用：共 2 次；Bash × 1 · Tool call × 1；1 完成 · 1 失败"');
     expect(collapsed).toContain('aria-expanded="false"');
     expect(collapsed).not.toContain('role="list" aria-label="工具调用"');
     // 折叠态 body 未挂载，aria-controls 不得悬空指向不存在的元素。
     expect(collapsed).not.toContain('aria-controls');
 
-    const expanded = renderToStaticMarkup(<ActivityGroup items={items} />);
+    const expanded = renderToStaticMarkup(<ActivityGroup items={items} defaultCollapsed={false} />);
     expect(expanded).toContain('aria-controls');
+
+    const defaultState = renderToStaticMarkup(<ActivityGroup items={items} />);
+    expect(defaultState).toContain('2 次调用');
+    expect(defaultState).toContain('Bash × 1 · Tool call × 1');
+    expect(defaultState).toContain('aria-expanded="false"');
+    expect(defaultState).toContain('aria-label="展开工具调用：共 2 次；Bash × 1 · Tool call × 1；1 完成 · 1 失败"');
+    expect(defaultState).not.toContain('role="list" aria-label="工具调用"');
 
     const empty = renderToStaticMarkup(<ActivityGroup items={[]} />);
     expect(empty).toContain('等待调用');
@@ -85,7 +96,7 @@ describe('ActivityGroup · LanguageGUI render', () => {
       at: '2026-08-27T08:00:00.000Z',
     };
     const waitingHtml = renderToStaticMarkup(
-      <ActivityGroup items={[waiting]} defaultSelectedKey="read-waiting" />,
+      <ActivityGroup items={[waiting]} defaultCollapsed={false} defaultSelectedKey="read-waiting" />,
     );
     expect(waitingHtml).toContain('等待工具输出…');
 
@@ -101,7 +112,7 @@ describe('ActivityGroup · LanguageGUI render', () => {
       at: '2026-08-27T08:00:01.000Z',
     };
     const suppressedHtml = renderToStaticMarkup(
-      <ActivityGroup items={[edit]} defaultSelectedKey="edit-diff" suppressDiff />,
+      <ActivityGroup items={[edit]} defaultCollapsed={false} defaultSelectedKey="edit-diff" suppressDiff />,
     );
     expect(suppressedHtml).toContain('变更内容已汇总到本轮 Diff');
     expect(suppressedHtml).not.toContain('class="chat-diff"');

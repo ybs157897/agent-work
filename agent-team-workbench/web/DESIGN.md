@@ -136,8 +136,8 @@ components:
     base: "LanguageGUI 工作流只读投影；同一 rounded {rounded.container} 容器内依次展示目标摘要、方案草稿与 Action 步骤链；步骤卡 rounded {rounded.card}; 连接线用 {colors.border.subtle}; 状态同时用图标和文字表达"
     behavior: "目标正文始终可扫读；方案草稿可折叠；Action 顺序来自真实 run.plan_updated；无真实 mutation 契约时不展示设置、删除、新增等伪编辑控件"
   chat-tool-activity:
-    base: "生产工具调用唯一入口 ActivityGroup：58px 汇总头 + 横向 232×88px LanguageGUI Action 卡轨；浅蓝/白色表面、细语义边框、品牌蓝选中态；bash/code/read/search/write/edit/mcp/other 详情体挂在同一组内"
-    behavior: "组与 chip 只由同一 run 的真实工具事件聚合；状态同时显示图标和文字，状态色只表达真实 pending/running/success/error/stopped；点击后单选展开详情，长输入/输出在详情体内渐进披露"
+    base: "生产工具调用唯一入口 ActivityGroup：每个连续工具批次默认只显示一条 44px 命令行摘要；同一行承载工具族摘要、总调用数、完成/运行/失败/中断状态和 chevron；展开后按事件顺序纵向列出紧凑工具日志，不使用横向 Action 大卡"
+    behavior: "正文 text-delta 会结束当前工具批次，后续工具另起 ActivityGroup；仅 reasoning 不拆分并行工具，避免零碎思考卡；所有非空组默认折叠，整行是语义 button，点击后纵向日志逐条可展开详情"
     demo-boundary: "Demo 只能复用生产 ActivityGroup/ToolRow/详情渲染器与可审计 fixture，不得从模型正文、Markdown 或静态 content block 伪造工具调用；无事件时显示空态"
   content-block:
     base: "LanguageGUI 结构化正文块；统一 rounded {rounded.container}、border {colors.border.subtle}、bg {colors.surface.raised} 与 {shadows.level-1}；metric/table/chart/file/event/image/audio/map/search/review-summary 共享标题、说明与来源栏"
@@ -154,6 +154,9 @@ components:
     ratio: "80% 静态 / 15% UI motion / 5% 氛围动画"
     transcript-intensity: "LeAgent 正文 3/10：完成态静态；流式 100ms 节流重排 + 末尾 caret；工具状态只做必要旋转/展开，禁止按 token 重播"
     ae-boundary: "AE/Lottie/WebM 只用于印章、墨迹、山雾等低频资产；实时交互由 Motion/CSS 驱动"
+  output-stream:
+    base: "正文只有一棵展示树：普通 Markdown 以 100ms 节流流式解析；已闭合 code fence 直接进入 CodeBlock；未闭合 languagegui/Mermaid/复杂 fence 先缓冲，闭合后原子渲染"
+    diagnostics: "DEV 下仅通过 outputTrace=1 或 localStorage 显式启用结构化 ring buffer；正文内容需额外 outputTraceContent=1；默认不写 console、不进入 Zustand、不改变渲染节奏"
 ---
 
 # DESIGN.md — agent-team-workbench 前端设计事实源
@@ -259,7 +262,7 @@ LanguageGUI 对话皮肤是局部视觉映射：只在 ChatPage 根将对话的 
 - Don't：为没有上传/音频/App 协议的输入控件伪造成功态，或静默丢弃用户选择的附件。
 - Don't：直接复制 Aceternity 的霓虹、光束、黑底和强 3D 默认样式。
 - Don't：在滚动容器上叠实时噪声滤镜；纸纹只用静态压缩位图。
-- Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具 Action 卡与正文必须保持同一套 LanguageGUI 阅读语法。
+- Don't：把 Tracing Beam、逐标签显影或标题打字动画叠回正文；角色标签、工具日志与正文必须保持同一套 LanguageGUI 阅读语法。
 - Don't：在生产 ActivityGroup 之外新增第二套工具调用展示，也不要把工具调用伪装成 assistant 正文或 LanguageGUI ContentBlock；工具状态色不得作为装饰色使用。
 
 ## Responsive Behavior

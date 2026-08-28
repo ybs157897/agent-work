@@ -58,6 +58,16 @@ describe('buildMessages', () => {
     expect(msgs[0].text).toContain('MISSING_CREDENTIAL');
   });
 
+  it('无工具时 completed 保留正常 text-delta 对应的 canonical 正文', () => {
+    const msgs = buildMessages(['run_plain'], {
+      run_plain: [
+        entry('run_plain', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '流式正文' } } }),
+        entry('run_plain', 2, 'message.completed', { role: 'assistant', text: '流式正文' }, 'assistant', '流式正文'),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([['assistant', '流式正文']]);
+  });
+
   it('message.completed 将 canonical content_blocks 校验后投影为 Assistant 正文块', () => {
     const contentBlocks = {
       version: 'languagegui/v1',
@@ -221,6 +231,112 @@ describe('buildMessages', () => {
       ['assistant', '先看下'],
       ['tool', '调用工具 shell：ls'],
       ['assistant', '目录如下'],
+    ]);
+  });
+
+  it('按 delta→工具批→delta→工具批→delta 顺序切成独立正文阶段', () => {
+    const msgs = buildMessages(['run_stages'], {
+      run_stages: [
+        entry('run_stages', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '先分析' } } }),
+        entry('run_stages', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_stages', 3, 'tool.completed', { call_id: 'c1', output: '文件内容' }),
+        entry('run_stages', 4, 'tool.started', { tool: 'Grep', call_id: 'c2' }),
+        entry('run_stages', 5, 'tool.completed', { call_id: 'c2', output: '匹配结果' }),
+        entry('run_stages', 6, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '继续结论' } } }),
+        entry('run_stages', 7, 'message.completed', { role: 'assistant', text: '先分析继续结论' }, 'assistant', '先分析继续结论'),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text, m.detail ?? ''])).toEqual([
+      ['assistant', '先分析', ''],
+      ['tool', '调用工具 Read', '文件内容'],
+      ['tool', '调用工具 Grep', '匹配结果'],
+      ['assistant', '继续结论', ''],
+    ]);
+  });
+
+  it('completed 包含已 flush 正文时只保留未显示后缀', () => {
+    const msgs = buildMessages(['run_dedupe'], {
+      run_dedupe: [
+        entry('run_dedupe', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '前缀' } } }),
+        entry('run_dedupe', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_dedupe', 3, 'tool.completed', { call_id: 'c1', output: 'ok' }),
+        entry('run_dedupe', 4, 'message.completed', { role: 'assistant', text: '前缀后缀' }, 'assistant', '前缀后缀'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['前缀', '后缀']);
+  });
+
+  it('completed 只携带当前工具阶段正文时，不重复已落下的第二段', () => {
+    const msgs = buildMessages(['run_current_stage'], {
+      run_current_stage: [
+        entry('run_current_stage', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第一段' } } }),
+        entry('run_current_stage', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_current_stage', 3, 'tool.completed', { call_id: 'c1', output: 'ok' }),
+        entry('run_current_stage', 4, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第二段' } } }),
+        entry('run_current_stage', 5, 'message.completed', { role: 'assistant', text: '第二段' }, 'assistant', '第二段'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['第一段', '第二段']);
+  });
+
+  it('工具后的 reasoning 与旧阶段同前缀时继续累积，不被工具事件拆段', () => {
+    const msgs = buildMessages(['run_reasoning_stages'], {
+      run_reasoning_stages: [
+        entry('run_reasoning_stages', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'a' } } }),
+        entry('run_reasoning_stages', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_reasoning_stages', 3, 'tool.completed', { call_id: 'c1', output: 'ok' }),
+        entry('run_reasoning_stages', 4, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'abc' } } }),
+        entry('run_reasoning_stages', 5, 'message.completed', { role: 'assistant', text: '完成' }, 'assistant', '完成'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['aabc']);
+  });
+
+  it('completed 后的新一轮无工具正文不复用上一阶段的 stage key', () => {
+    const msgs = buildMessages(['run_stage_reset'], {
+      run_stage_reset: [
+        entry('run_stage_reset', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '前段' } } }),
+        entry('run_stage_reset', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_stage_reset', 3, 'message.completed', { role: 'assistant', text: '前段' }, 'assistant', '前段'),
+        entry('run_stage_reset', 4, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '后段' } } }),
+        entry('run_stage_reset', 5, 'message.completed', { role: 'assistant', text: '后段' }, 'assistant', '后段'),
+      ],
+    });
+    const assistants = msgs.filter((m) => m.kind === 'assistant');
+    expect(assistants.map((m) => m.text)).toEqual(['前段', '后段']);
+    expect(new Set(assistants.map((m) => m.key)).size).toBe(2);
+  });
+
+  it('仅有 reasoning 穿过连续工具事件时不拆成 interim thinking 段', () => {
+    const msgs = buildMessages(['run_reasoning_tools'], {
+      run_reasoning_tools: [
+        entry('run_reasoning_tools', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '先判断' } } }),
+        entry('run_reasoning_tools', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_reasoning_tools', 3, 'tool.progress', { tool: 'Read', call_id: 'c1', text: '读取中' }),
+        entry('run_reasoning_tools', 4, 'tool.completed', { call_id: 'c1', output: '内容' }),
+        entry('run_reasoning_tools', 5, 'tool.started', { tool: 'Grep', call_id: 'c2' }),
+        entry('run_reasoning_tools', 6, 'tool.completed', { call_id: 'c2', output: '匹配' }),
+        entry('run_reasoning_tools', 7, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '再归纳' } } }),
+        entry('run_reasoning_tools', 8, 'message.completed', { role: 'assistant', text: '完成' }, 'assistant', '完成'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['先判断再归纳']);
+    expect(msgs.map((m) => m.kind)).toEqual(['tool', 'tool', 'thinking', 'assistant']);
+  });
+
+  it('reasoning 与正文同时存在时，下一工具前一起落成一个 interim 阶段', () => {
+    const msgs = buildMessages(['run_reasoning_answer'], {
+      run_reasoning_answer: [
+        entry('run_reasoning_answer', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '推理' } } }),
+        entry('run_reasoning_answer', 2, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '正文' } } }),
+        entry('run_reasoning_answer', 3, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_reasoning_answer', 4, 'tool.completed', { call_id: 'c1', output: 'ok' }),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['thinking', '推理'],
+      ['assistant', '正文'],
+      ['tool', '调用工具 Read'],
     ]);
   });
 
@@ -631,6 +747,28 @@ describe('aggregateRunStream', () => {
       entry('run_1', 3, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第二段' } } }),
     ];
     expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '第二段' });
+  });
+
+  it('tool.* 是流式阶段边界，只聚合最后一个工具之后的 delta', () => {
+    const entries = [
+      entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '工具前' } } }),
+      entry('run_1', 2, 'tool.started', { tool: 'Read' }),
+      entry('run_1', 3, 'tool.completed', { output: 'ok' }),
+      entry('run_1', 4, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '工具后' } } }),
+    ];
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '工具后' });
+  });
+
+  it('reasoning-only 穿过 tool.* 时继续累积，直到出现正文才切断', () => {
+    const entries = [
+      entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '先' } } }),
+      entry('run_1', 2, 'tool.started', { tool: 'Read' }),
+      entry('run_1', 3, 'tool.completed', { output: 'ok' }),
+      entry('run_1', 4, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '想' } } }),
+      entry('run_1', 5, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '答' } } }),
+      entry('run_1', 6, 'tool.started', { tool: 'Grep' }),
+    ];
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '' });
   });
 
   it('extractDeltaChunk 解析 raw.chunk', () => {

@@ -528,10 +528,39 @@ export function parseContentBlockDocument(input: unknown): ContentBlockDocument 
   return blocks.length ? { version: CONTENT_BLOCK_VERSION, blocks } : null;
 }
 
+function languageGuiFencePattern(): RegExp {
+  return /^ {0,3}(`{3,}|~{3,})(?:languagegui|lgui)(?:[ \t][^\r\n]*)?[ \t]*\r?\n[\s\S]*?^ {0,3}\1[ \t]*$/gim;
+}
+
+export function countLanguageGuiFences(markdown: string): number {
+  return [...markdown.matchAll(languageGuiFencePattern())].length;
+}
+
 /** canonical content_blocks 存在时移除同源 fenced JSON，避免双份 Widget。 */
 export function stripLanguageGuiFences(markdown: string): string {
   return markdown
-    .replace(/```(?:languagegui|lgui)[^\n]*\n[\s\S]*?```/gi, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+    .replace(languageGuiFencePattern(), '')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * 完成事件同时带 canonical content_blocks 与同源 fence 时，把 canonical JSON
+ * 放回第一处 fence 的原位置，其余同源 fence 删除。这样流式 widget → 完成态
+ * widget 沿用相同阅读位置，不会先移除正文中的块、再追加到回答末尾。
+ * 返回 null 表示正文里没有闭合 fence，调用方应把 canonical 文档作为独立块追加。
+ */
+export function embedCanonicalLanguageGuiFence(
+  markdown: string,
+  document: ContentBlockDocument,
+): string | null {
+  const matches = [...markdown.matchAll(languageGuiFencePattern())];
+  // languagegui/v1 输出契约要求每条消息只有一个结构化 fence。若运行时收到多个，
+  // 保留原文顺序交给 MarkdownBody，不猜测 canonical 文档应替换哪一处。
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  const start = match.index ?? 0;
+  const end = start + match[0].length;
+  const marker = match[1][0] === '~' ? '~~~' : '```';
+  const replacement = `${marker}languagegui\n${JSON.stringify(document)}\n${marker}`;
+  return markdown.slice(0, start) + replacement + markdown.slice(end);
 }

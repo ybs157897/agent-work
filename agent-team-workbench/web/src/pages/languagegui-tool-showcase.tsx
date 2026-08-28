@@ -90,7 +90,6 @@ export function LanguageGuiToolShowcase() {
       <p className="lgui-tool-showcase-copy">复用生产 Chat 的 ActivityGroup。点击任意工具查看真实的终端、文件、搜索、Diff 或 MCP IN / OUT 详情。</p>
       <ActivityGroup
         items={LANGUAGEGUI_TOOL_ITEMS}
-        defaultCollapsed={false}
         defaultSelectedKey="languagegui-tool-bash"
       />
     </section>

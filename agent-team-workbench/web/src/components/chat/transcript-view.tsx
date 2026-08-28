@@ -60,6 +60,8 @@ function TranscriptSegmentView({
           onFork={onFork}
           agentName={agent?.name}
           contentBlocks={seg.msg.contentBlocks}
+          runId={seg.msg.runId}
+          messageId={seg.renderKey ?? seg.msg.key}
         />
       );
     case 'thinking':
@@ -79,7 +81,6 @@ function TranscriptSegmentView({
         <ActivityGroup
           items={seg.items}
           stoppedRuns={stoppedRuns}
-          defaultCollapsed={(stoppedRuns?.has(seg.runId) ?? false) && seg.items.length > 4}
         />
       );
     case 'thinking-placeholder':

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkspaceEventStream, type SseStatus } from './sse';
 import type { CanonicalEvent } from './types';
+import { clearOutputTrace, getOutputTrace } from '../utils/output-trace';
 
 /** 模拟 EventSource：记录监听、手动触发 open/message/error。 */
 class FakeEventSource {
@@ -63,10 +64,12 @@ const makeEvent = (seq: number, type = 'work_item.updated'): CanonicalEvent => (
 describe('WorkspaceEventStream', () => {
   beforeEach(() => {
     FakeEventSource.instances = [];
+    clearOutputTrace();
     vi.stubGlobal('EventSource', FakeEventSource);
   });
 
   afterEach(() => {
+    clearOutputTrace();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -105,6 +108,39 @@ describe('WorkspaceEventStream', () => {
     es.emitEvent('work_item.updated', makeEvent(1)); // 重复 event_id
     es.emitEvent('work_item.updated', { ...makeEvent(2), contract_version: 'events/v0' });
     expect(events.map((e) => e.event_id)).toEqual(['evt_1']);
+    stream.stop();
+  });
+
+  it('只在协议校验和去重通过后记录 sse.received', () => {
+    vi.stubGlobal('window', {
+      location: { search: '?outputTrace=1&outputTraceContent=1' },
+      localStorage: { getItem: () => null },
+    });
+    const stream = new WorkspaceEventStream('ws_1', {
+      onEvent: () => undefined,
+      onStatus: () => undefined,
+      onCursorExpired: () => undefined,
+    });
+    stream.start(0);
+    const event: CanonicalEvent = {
+      ...makeEvent(1, 'message.delta'),
+      aggregate: { type: 'execution_run', id: 'run_1', version: 1 },
+      run_seq: 4,
+      data: { raw: { chunk: { type: 'text-delta', text: '**流式**' } } },
+    };
+    const source = FakeEventSource.instances[0];
+    source.emitEvent('message.delta', event);
+    source.emitEvent('message.delta', event);
+    source.emitEvent('message.delta', { ...event, event_id: 'bad', contract_version: 'events/v0' });
+
+    const traces = getOutputTrace().filter((entry) => entry.stage === 'sse.received');
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      runId: 'run_1',
+      eventId: 'evt_1',
+      runSeq: 4,
+      text: { content: '**流式**' },
+    });
     stream.stop();
   });
 

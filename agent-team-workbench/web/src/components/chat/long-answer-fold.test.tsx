@@ -107,7 +107,7 @@ describe('AssistantTurn · 长回答渐进披露', () => {
     expect(html).not.toContain('aria-expanded');
   });
 
-  it('contentBlocks 始终完整渲染，折叠只作用于 markdown 正文', () => {
+  it('带 contentBlocks 的回答保持正文与结构化块完整，不在落定时折走上下文', () => {
     const html = renderToStaticMarkup(
       <AssistantTurn
         text={LONG_MARKDOWN}
@@ -124,9 +124,8 @@ describe('AssistantTurn · 长回答渐进披露', () => {
       />,
     );
 
-    // 正文折叠照常，块不因折叠而消失。
-    expect(html).toContain('chat-long-answer-toggle');
-    expect(html).not.toContain('TAIL-MARKER');
+    expect(html).not.toContain('chat-long-answer-toggle');
+    expect(html).toContain('TAIL-MARKER');
     expect(html).toContain('data-content-block="metric"');
     expect(html).toContain('可用额度');
   });

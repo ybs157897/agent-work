@@ -101,6 +101,7 @@ export interface ActivityGroupModel {
   state: ActivityGroupState;
   summary: string;
   status: string;
+  toolSummary: string;
 }
 
 /** 同一 run 工具组的可见汇总；只消费真实工具消息，不从正文推断。 */
@@ -147,7 +148,15 @@ export function activityGroupModel(
         : state === 'ok'
           ? '执行完成'
           : '等待调用';
-  return { total, completed, running, failed, stopped, state, summary, status };
+  const familyCounts = new Map<ToolFamily, number>();
+  for (const item of items) {
+    const family = toolRowModel(item).family;
+    familyCounts.set(family, (familyCounts.get(family) ?? 0) + 1);
+  }
+  const toolSummary = [...familyCounts.entries()]
+    .map(([family, count]) => `${FAMILY_TITLES[family]} × ${count}`)
+    .join(' · ');
+  return { total, completed, running, failed, stopped, state, summary, status, toolSummary };
 }
 
 function ActivityStatusIcon({ state }: { state: ActivityGroupState }) {
@@ -159,19 +168,19 @@ function ActivityStatusIcon({ state }: { state: ActivityGroupState }) {
 }
 
 /**
- * 同 run 工具调用收敛成一个 LanguageGUI 活动卡；组级折叠控制扫描密度，
- * 单选 Action 卡在下方渐进披露真实工具详情。
+ * 同一阶段的连续工具调用收敛成一条活动摘要；正文会切断批次。
+ * 展开后按事件顺序纵向列出工具日志，单条详情就地渐进披露。
  */
 export function ActivityGroup({
   items,
   stoppedRuns,
-  defaultCollapsed = false,
+  defaultCollapsed = true,
   defaultSelectedKey,
   suppressDiff = false,
 }: {
   items: ChatMessage[];
   stoppedRuns?: ReadonlySet<string>;
-  /** 历史终态 run 默认只展示组级汇总。 */
+  /** 工具组默认只展示组级汇总；仅演示或明确交互场景可显式展开。 */
   defaultCollapsed?: boolean;
   /** Demo/验收可指定首个展开项；生产默认不抢占用户注意力。 */
   defaultSelectedKey?: string;
@@ -188,11 +197,6 @@ export function ActivityGroup({
   );
   const reduceMotion = useReducedMotion();
   const group = activityGroupModel(items, stoppedRuns);
-  const selected = selectedKey ? items.find((item) => item.key === selectedKey) : undefined;
-  const selectedStopped = selected ? stoppedRuns?.has(selected.runId) && selected.toolStatus === 'running' : false;
-  const selectedModel = selected ? toolRowModel(selected) : undefined;
-  const selectedState = selected ? toolChipModel(selected, selectedStopped).state : undefined;
-  const showDetails = Boolean(!collapsed && selectedModel && selectedState);
 
   return (
     <section
@@ -200,65 +204,91 @@ export function ActivityGroup({
       data-state={group.state}
       aria-labelledby={headingId}
     >
-      <header className={css.activityHeader}>
-        <span className={css.activityMark} aria-hidden><Wrench /></span>
-        <div className={css.activityHeading}>
-          <h3 id={headingId}>工具执行</h3>
-          <p>{group.summary}</p>
-        </div>
-        <span
-          className={css.groupStatus}
-          role={group.state === 'running' ? 'status' : undefined}
-          aria-atomic={group.state === 'running' ? 'true' : undefined}
+      {items.length > 0 ? (
+        <button
+          type="button"
+          className={css.activityHeader}
+          onClick={() => setCollapsed((value) => !value)}
+          aria-expanded={!collapsed}
+          aria-controls={collapsed ? undefined : bodyId}
+          aria-label={`${collapsed ? '展开' : '收起'}工具调用：共 ${group.total} 次；${group.toolSummary}；${group.summary}`}
         >
-          <ActivityStatusIcon state={group.state} />
-          <span>{group.status}</span>
-        </span>
-        {items.length > 0 && (
-          <button
-            type="button"
-            className={css.collapseButton}
-            onClick={() => setCollapsed((value) => !value)}
-            aria-expanded={!collapsed}
-            aria-controls={collapsed ? undefined : bodyId}
-            aria-label={collapsed ? `展开 ${group.total} 个工具调用` : '收起工具调用'}
+          <span className={css.activityMark} aria-hidden><Wrench /></span>
+          <span className={css.activityHeading}>
+            <span className={css.activityTitle}>
+              <span id={headingId} role="heading" aria-level={3}>工具执行</span>
+              <span className={css.activityCount}>{group.total} 次调用</span>
+            </span>
+            <span className={css.activityToolSummary}>{group.toolSummary}</span>
+            <span className={css.activitySummary}>{group.summary}</span>
+          </span>
+          <span
+            className={css.groupStatus}
+            role={group.state === 'running' ? 'status' : undefined}
+            aria-atomic={group.state === 'running' ? 'true' : undefined}
           >
-            {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}
-          </button>
-        )}
-      </header>
+            <ActivityStatusIcon state={group.state} />
+            <span>{group.status}</span>
+          </span>
+          <span className={css.collapseButton} aria-hidden>
+            {collapsed ? <ChevronRight /> : <ChevronDown />}
+          </span>
+        </button>
+      ) : (
+        <div className={css.activityHeader}>
+          <span className={css.activityMark} aria-hidden><Wrench /></span>
+          <div className={css.activityHeading}>
+            <h3 id={headingId}>工具执行</h3>
+            <p>{group.summary}</p>
+          </div>
+          <span className={css.groupStatus}>
+            <ActivityStatusIcon state={group.state} />
+            <span>{group.status}</span>
+          </span>
+        </div>
+      )}
 
       {items.length === 0 ? (
         <div className={css.emptyState}>当前回合没有工具调用</div>
       ) : !collapsed ? (
         <div id={bodyId} className={css.activityBody}>
           <div className={css.strip} role="list" aria-label="工具调用">
-            {items.map((m, index) => (
-              <ToolRow
-                key={m.key}
-                msg={m}
-                index={index + 1}
-                stopped={stoppedRuns?.has(m.runId) && m.toolStatus === 'running'}
-                selected={selectedKey === m.key}
-                onToggle={() => setSelectedKey((key) => key === m.key ? null : m.key)}
-              />
-            ))}
+            {items.map((m, index) => {
+              const stopped = Boolean(stoppedRuns?.has(m.runId) && m.toolStatus === 'running');
+              const selected = selectedKey === m.key;
+              const model = toolRowModel(m);
+              const state = toolChipModel(m, stopped).state;
+              const detailsId = `${bodyId}-tool-${index + 1}`;
+              return (
+                <div key={m.key} className={css.timelineItem} role="listitem">
+                  <ToolRow
+                    msg={m}
+                    index={index + 1}
+                    stopped={stopped}
+                    selected={selected}
+                    detailsId={detailsId}
+                    onToggle={() => setSelectedKey((key) => key === m.key ? null : m.key)}
+                  />
+                  <AnimatePresence initial={false}>
+                    {selected && (
+                      <motion.div
+                        id={detailsId}
+                        className={css.details}
+                        role="region"
+                        aria-label={`${toolChipModel(m, stopped).title} 工具详情`}
+                        initial={reduceMotion ? false : { opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                        transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                      >
+                        <ExpandedBody model={model} state={state} suppressDiff={suppressDiff} />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
           </div>
-          <AnimatePresence initial={false}>
-            {showDetails && selectedModel && selectedState && selected && (
-              <motion.div
-                className={css.details}
-                role="region"
-                aria-label={`${toolChipModel(selected, selectedStopped).title} 工具详情`}
-                initial={reduceMotion ? false : { opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                transition={reduceMotion ? { duration: 0 } : { duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
-              >
-                <ExpandedBody model={selectedModel} state={selectedState} suppressDiff={suppressDiff} />
-              </motion.div>
-            )}
-          </AnimatePresence>
         </div>
       ) : null}
     </section>
@@ -412,18 +442,20 @@ function stateStatus(state: ToolRowState): string {
   }
 }
 
-/** LanguageGUI Action 卡；详情由 ActivityGroup 在轨道外单选展开。 */
+/** 纵向工具日志行；详情由 ActivityGroup 紧跟当前行单选展开。 */
 export function ToolRow({
   msg,
   index,
   stopped = false,
   selected = false,
+  detailsId,
   onToggle,
 }: {
   msg: ChatMessage;
   index?: number;
   stopped?: boolean;
   selected?: boolean;
+  detailsId?: string;
   onToggle?: () => void;
 }) {
   const chip = toolChipModel(msg, stopped);
@@ -448,14 +480,14 @@ export function ToolRow({
     duration,
   ].filter(Boolean).join('，');
   return (
-    <div className={css.root} data-tool={msg.tool} data-state={state} role="listitem">
+    <div className={css.root} data-tool={msg.tool} data-state={state}>
       <button
         type="button"
         className={css.chip}
         data-selected={selected || undefined}
         onClick={onToggle}
         aria-expanded={selected}
-        aria-pressed={selected}
+        aria-controls={selected ? detailsId : undefined}
         aria-label={accessibleName}
       >
         <span className={css.chipMeta}>
@@ -469,6 +501,7 @@ export function ToolRow({
         <span className={css.chipFooter}>
           <span className={css.duration}>{duration ?? '—'}</span>
           <span className={css.status}>{statusIcon}<span>{status}</span></span>
+          <ChevronRight className={css.detailChevron} data-open={selected || undefined} aria-hidden />
         </span>
       </button>
     </div>

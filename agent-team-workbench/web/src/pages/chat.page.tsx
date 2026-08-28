@@ -1,5 +1,5 @@
 import { BookOpen, Boxes, GitBranch, MessageSquare, Moon, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useInsertionEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { TranscriptView } from '../components/chat/transcript-view';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
@@ -11,7 +11,7 @@ import { EmptyState } from '../components/ui';
 import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
-import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
@@ -22,8 +22,76 @@ import {
   buildTranscriptSegments,
   injectPendingUsers,
   supplementUserFromTimeline,
+  type TranscriptSegment,
 } from '../utils/chronological-transcript';
 import { runHasVisibleOutput } from '../utils/run-timeline';
+import {
+  isOutputTraceEnabled,
+  outputTraceHash,
+  stableOutputTraceJson,
+  traceOutput,
+  type OutputTraceInput,
+} from '../utils/output-trace';
+interface ProjectionTrace {
+  signature: string;
+  input: OutputTraceInput;
+}
+
+function useProjectionTrace(trace: ProjectionTrace | undefined): void {
+  const previous = useRef('');
+  useInsertionEffect(() => {
+    if (!trace || previous.current === trace.signature) return;
+    previous.current = trace.signature;
+    traceOutput(trace.input);
+  }, [trace]);
+}
+
+function messageTraceSnapshot(messages: readonly ChatMessage[]) {
+  return messages.map((message) => ({
+    key: message.key,
+    runId: message.runId,
+    kind: message.kind,
+    text: message.text,
+    detail: message.detail,
+    liveOutput: message.liveOutput,
+    itemType: message.itemType,
+    contentBlocks: message.contentBlocks,
+    toolStatus: message.toolStatus,
+  }));
+}
+
+function segmentTraceSnapshot(segments: readonly TranscriptSegment[]) {
+  return segments.map((segment) => {
+    if (segment.kind === 'assistant' || segment.kind === 'thinking' || segment.kind === 'user' || segment.kind === 'meta') {
+      return {
+        kind: segment.kind,
+        key: segment.kind === 'assistant' ? segment.renderKey ?? segment.msg.key : segment.msg.key,
+        runId: segment.msg.runId,
+        text: segment.msg.text,
+        streaming: 'streaming' in segment ? segment.streaming === true : false,
+        contentBlocks: segment.msg.contentBlocks,
+      };
+    }
+    if (segment.kind === 'activity') {
+      return {
+        kind: segment.kind,
+        runId: segment.runId,
+        items: segment.items.map((item) => ({
+          key: item.key,
+          tool: item.tool,
+          toolStatus: item.toolStatus,
+          text: item.text,
+          detail: item.detail,
+          liveOutput: item.liveOutput,
+        })),
+      };
+    }
+    if (segment.kind === 'approval') {
+      return { kind: segment.kind, id: segment.approval.id, status: segment.approval.status };
+    }
+    return segment;
+  });
+}
 
 /** 对话页：Agent 选择器 + 会话列表 + 气泡消息流 + 输入框（协议 §5.2/§5.3）。 */
 export default function ChatPage() {
@@ -439,6 +507,57 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     [latestRunId, timelines],
   );
   const liveRunActive = isRunLive(latestRun?.status);
+  const messagesProjectionTrace = useMemo<ProjectionTrace | undefined>(() => {
+    if (!isOutputTraceEnabled()) return undefined;
+    const snapshot = stableOutputTraceJson(messageTraceSnapshot(messages));
+    const hash = outputTraceHash(snapshot);
+    const latestAssistant = [...messages].reverse().find((message) => message.kind === 'assistant');
+    const contentBlockMessages = messages.filter((message) => message.contentBlocks);
+    return {
+      signature: `${liveRunActive ? 'streaming' : 'final'}:${hash}`,
+      input: {
+        stage: 'messages.projected',
+        mode: liveRunActive ? 'streaming' : 'final',
+        source: 'projection',
+        runId: latestRunId,
+        messageId: latestAssistant?.key,
+        text: latestAssistant?.text,
+        projection: {
+          messages: messages.length,
+          assistantMessages: messages.filter((message) => message.kind === 'assistant').length,
+          thinkingMessages: messages.filter((message) => message.kind === 'thinking').length,
+          toolMessages: messages.filter((message) => message.toolStatus !== undefined).length,
+          contentBlocks: contentBlockMessages.reduce((total, message) => total + (message.contentBlocks?.blocks.length ?? 0), 0),
+          blockTypes: contentBlockMessages.flatMap((message) => message.contentBlocks?.blocks.map((block) => block.type) ?? []),
+          hash,
+        },
+      },
+    };
+  }, [latestRunId, liveRunActive, messages]);
+  useProjectionTrace(messagesProjectionTrace);
+
+  const liveDraftProjectionTrace = useMemo<ProjectionTrace | undefined>(() => {
+    if (!isOutputTraceEnabled()) return undefined;
+    const liveSnapshot = stableOutputTraceJson(liveStream);
+    const liveHash = outputTraceHash(liveSnapshot);
+    return {
+      signature: `${liveRunActive ? 'streaming' : 'final'}:${liveHash}`,
+      input: {
+        stage: 'live.draft',
+        mode: liveRunActive ? 'streaming' : 'final',
+        source: 'projection',
+        runId: latestRunId,
+        text: liveStream.answerDraft,
+        projection: { hash: liveHash },
+        metadata: {
+          answerChars: liveStream.answerDraft.length,
+          reasoningChars: liveStream.reasoning.length,
+          reasoningHash: outputTraceHash(liveStream.reasoning),
+        },
+      },
+    };
+  }, [latestRunId, liveRunActive, liveStream]);
+  useProjectionTrace(liveDraftProjectionTrace);
   const displayMessages = useMemo(
     () => hideLiveRunDrafts(messages, latestRunId, liveRunActive),
     [messages, latestRunId, liveRunActive],
@@ -501,6 +620,45 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     () => mergeApprovalSegments(baseSegments, runApprovals, approvalAnchors),
     [baseSegments, runApprovals, approvalAnchors],
   );
+  const transcriptProjectionTrace = useMemo<ProjectionTrace | undefined>(() => {
+    if (!isOutputTraceEnabled()) return undefined;
+    const snapshot = stableOutputTraceJson(segmentTraceSnapshot(transcriptSegments));
+    const hash = outputTraceHash(snapshot);
+    const latestAssistant = [...transcriptSegments].reverse().find((segment) => segment.kind === 'assistant');
+    const assistantMessages = transcriptSegments.filter((segment) => segment.kind === 'assistant');
+    const contentBlockMessages = assistantMessages.filter((segment) => segment.msg.contentBlocks);
+    return {
+      signature: `${liveRunActive ? 'streaming' : 'final'}:${hash}`,
+      input: {
+        stage: 'transcript.projected',
+        mode: liveRunActive ? 'streaming' : 'final',
+        source: 'projection',
+        runId: latestRunId,
+        messageId: latestAssistant?.kind === 'assistant'
+          ? latestAssistant.renderKey ?? latestAssistant.msg.key
+          : undefined,
+        text: latestAssistant?.kind === 'assistant' ? latestAssistant.msg.text : undefined,
+        projection: {
+          messages: transcriptSegments.length,
+          assistantMessages: assistantMessages.length,
+          thinkingMessages: transcriptSegments.filter((segment) => segment.kind === 'thinking').length,
+          toolMessages: transcriptSegments.reduce(
+            (total, segment) => total + (segment.kind === 'activity' ? segment.items.length : 0),
+            0,
+          ),
+          contentBlocks: contentBlockMessages.reduce(
+            (total, segment) => total + (segment.msg.contentBlocks?.blocks.length ?? 0),
+            0,
+          ),
+          blockTypes: contentBlockMessages.flatMap(
+            (segment) => segment.msg.contentBlocks?.blocks.map((block) => block.type) ?? [],
+          ),
+          hash,
+        },
+      },
+    };
+  }, [latestRunId, liveRunActive, transcriptSegments]);
+  useProjectionTrace(transcriptProjectionTrace);
   const dock = useMemo(
     () => deriveChatDock(transcriptMessages, latestRunId, timelines),
     [transcriptMessages, latestRunId, timelines],
