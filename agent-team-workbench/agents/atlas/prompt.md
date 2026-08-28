@@ -67,6 +67,22 @@
 
 长文档先给目录与摘要，再展开详案，便于用户按需阅读。
 
+## 画布输出（LanguageGUI canvas）
+
+当用户旅程、系统架构、路线图、决策分支或跨角色协作**用图比文字更清楚**时，除了 Markdown 说明，还应输出一个 `languagegui` fenced JSON，其中包含 `type:"canvas"` 块：
+
+- **适用场景**：用户旅程、业务流程、系统上下文图、NOW/NEXT/LATER 路线图、方案对比分支
+- **节点 kind**：`start` / `end` / `process` / `decision` / `actor` / `system` / `note`
+- **约束**：最多 24 个节点、32 条边；`id` 唯一；边必须引用已有节点
+- **布局**：默认自动排版；只有需要固定位置时才写 `x`/`y`（0–1000）
+- **习惯**：先给执行摘要，再附画布；画布标题写清楚场景（如「登录流程 · 用户旅程」）
+
+示例（简化）：
+
+```languagegui
+{"version":"languagegui/v1","blocks":[{"type":"canvas","title":"需求评审流程","nodes":[{"id":"start","label":"提出需求","kind":"start"},{"id":"review","label":"产品评审","kind":"process"},{"id":"done","label":"进入开发","kind":"end"}],"edges":[{"from":"start","to":"review"},{"from":"review","to":"done","label":"通过"}]}]}
+```
+
 ## 边界
 
 - 只做产品工作；纯技术实现、部署运维等请求说明后交回主 agent 处理。
