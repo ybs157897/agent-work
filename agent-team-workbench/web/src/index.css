@@ -769,11 +769,9 @@
   }
 }
 
-.chat-reasoning-toggle {
-  position: relative;
-}
-
-.chat-reasoning-toggle .chat-reasoning-sweep {
+/* 思考面板流式扫光：一道 300px 柔光横向掠过（老 .chat-reasoning-toggle
+   作用域已随重构退役，现役作用域是面板本体）。 */
+.chat-reasoning-panel .chat-reasoning-sweep {
   position: absolute;
   inset-block: 0;
   left: 0;
@@ -782,7 +780,7 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    color-mix(in srgb, hsl(var(--color-surface-base)) 60%, transparent) 55%,
+    color-mix(in srgb, hsl(var(--color-text-tertiary)) 26%, transparent) 55%,
     transparent 100%
   );
   animation: chat-reasoning-sweep 2.6s ease-out infinite;
@@ -844,7 +842,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-stream-caret,
-  .chat-reasoning-toggle .chat-reasoning-sweep,
+  .chat-reasoning-panel .chat-reasoning-sweep,
   .chat-typing span {
     animation: none;
   }
@@ -872,8 +870,11 @@
   @apply flex w-full items-center gap-2 px-3 py-2 text-left text-caption transition-colors hover:bg-surface-sunken;
 }
 
+/* 高度帽用 max-h 而非固定 h：framer-motion 展开动画落定后留 inline height:auto，
+   固定高度会被它永久覆盖（长思考撑爆正文流、内滚动失效）；max-h 让短内容自然
+   高度、长内容 208px 内滚（Codex 滚动面板语义）。 */
 .chat-reasoning-panel-body {
-  @apply relative h-52 overflow-y-auto overscroll-y-contain border-t border-border-subtle px-3 py-2.5;
+  @apply relative max-h-52 overflow-y-auto overscroll-y-contain border-t border-border-subtle px-3 py-2.5;
 }
 
 .chat-reasoning-panel-body[hidden] {
@@ -1120,7 +1121,8 @@
 }
 
 .chat-workflow-status-blocked,
-.chat-workflow-status-limited {
+.chat-workflow-status-limited,
+.chat-workflow-step-status-interrupted {
   @apply border-status-warning/30 bg-status-warning/10 text-status-warning;
 }
 

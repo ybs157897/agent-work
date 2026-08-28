@@ -1,4 +1,5 @@
 import type { ChatMessage, PlanStepView } from '../stores/chat.store';
+import { TERMINAL } from '../stores/chat.store';
 import type { TimelineEntry } from '../stores/runs.store';
 
 /** Kimi transcript meta.goal / Codex thread goal 的 UI 投影（仅会话内显式启动后才有）。 */
@@ -17,6 +18,33 @@ export interface ChatWorkflowView {
 export interface ChatDockState {
   /** Goal、执行步骤与 Plan 模式正文的统一只读投影。 */
   workflow?: ChatWorkflowView;
+}
+
+/** dock 展示态步骤：run 终态后悬空 in_progress 投影为 interrupted，止住无限旋转。 */
+export type WorkflowStepStatus = PlanStepView['status'] | 'interrupted';
+
+export interface WorkflowStep {
+  step: string;
+  status: WorkflowStepStatus;
+}
+
+/**
+ * 展示层投影（不改数据）：run 未终态原样透传；succeeded 时模型未闭合的步骤
+ * 视为完成（run 已成功，悬空中断无意义）；其余终态把 in_progress 标为
+ * interrupted（中断），pending 保持待处理——用户看到的是可终扫的静态态，
+ * 而不是永远旋转的 LoaderCircle。
+ */
+export function projectWorkflowSteps(
+  steps: readonly PlanStepView[],
+  runStatus?: string,
+): WorkflowStep[] {
+  if (!runStatus || !TERMINAL.has(runStatus)) return steps.map((s) => ({ ...s }));
+  return steps.map((s) => {
+    if (s.status === 'completed') return { ...s };
+    if (runStatus === 'succeeded') return { ...s, status: 'completed' };
+    if (s.status === 'in_progress') return { ...s, status: 'interrupted' };
+    return { ...s };
+  });
 }
 
 const GOAL_INLINE = /^\/goal(?:\s+([\s\S]+))?$/i;

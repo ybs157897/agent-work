@@ -60,6 +60,11 @@ describe('ActivityGroup · LanguageGUI render', () => {
     expect(collapsed).toContain('aria-label="展开 2 个工具调用"');
     expect(collapsed).toContain('aria-expanded="false"');
     expect(collapsed).not.toContain('role="list" aria-label="工具调用"');
+    // 折叠态 body 未挂载，aria-controls 不得悬空指向不存在的元素。
+    expect(collapsed).not.toContain('aria-controls');
+
+    const expanded = renderToStaticMarkup(<ActivityGroup items={items} />);
+    expect(expanded).toContain('aria-controls');
 
     const empty = renderToStaticMarkup(<ActivityGroup items={[]} />);
     expect(empty).toContain('等待调用');

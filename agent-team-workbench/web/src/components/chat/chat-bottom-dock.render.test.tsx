@@ -54,4 +54,27 @@ describe('ChatBottomDock LanguageGUI workflow', () => {
   it('renders nothing without a workflow', () => {
     expect(renderToStaticMarkup(<ChatBottomDock />)).toBe('');
   });
+
+  it('run 终态后不再渲染永远旋转的进行中：succeeded 补齐完成，failed 标记已中断', () => {
+    const steps = [
+      { step: '核对设计原语', status: 'completed' as const },
+      { step: '实现工作流卡片', status: 'in_progress' as const },
+      { step: '完成视觉验收', status: 'pending' as const },
+    ];
+
+    const succeeded = renderToStaticMarkup(
+      <ChatBottomDock workflow={{ steps }} runStatus="succeeded" />,
+    );
+    expect(succeeded).toContain('3/3 已完成');
+    expect(succeeded).not.toContain('进行中');
+    expect(succeeded).not.toContain('aria-current="step"');
+
+    const failed = renderToStaticMarkup(
+      <ChatBottomDock workflow={{ steps }} runStatus="failed" />,
+    );
+    expect(failed).toContain('1/3 已完成');
+    expect(failed).toContain('已中断');
+    expect(failed).toContain('待处理');
+    expect(failed).not.toContain('进行中');
+  });
 });

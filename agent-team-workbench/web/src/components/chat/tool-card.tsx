@@ -220,7 +220,7 @@ export function ActivityGroup({
             className={css.collapseButton}
             onClick={() => setCollapsed((value) => !value)}
             aria-expanded={!collapsed}
-            aria-controls={bodyId}
+            aria-controls={collapsed ? undefined : bodyId}
             aria-label={collapsed ? `展开 ${group.total} 个工具调用` : '收起工具调用'}
           >
             {collapsed ? <ChevronRight aria-hidden /> : <ChevronDown aria-hidden />}

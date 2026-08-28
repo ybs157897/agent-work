@@ -28,7 +28,9 @@ export function AssistantTurn({
     <article className="chat-assistant-turn group" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
         {displayText ? (
-          <div key={streaming ? 'streaming' : 'settled'} className={streaming ? 'chat-streaming' : undefined}>
+          // key 切换强制 streaming→settled 重挂载（KaTeX/高亮落定后重处理）；
+          // 曾有 .chat-streaming 类但从未定义样式，按删除优先移除。
+          <div key={streaming ? 'streaming' : 'settled'}>
             <div className="chat-prose">
               <MarkdownBody text={displayText} streaming={streaming} />
               {streaming && <span className="chat-stream-caret" aria-hidden />}

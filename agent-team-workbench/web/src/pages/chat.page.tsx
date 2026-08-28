@@ -675,7 +675,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
               <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
             </div>
           )}
-          <ChatBottomDock workflow={dock.workflow} />
+          <ChatBottomDock workflow={dock.workflow} runStatus={latestRun?.status} />
           <PromptBox
             key={conversationId ?? 'new-conversation'}
             draft={draft}
