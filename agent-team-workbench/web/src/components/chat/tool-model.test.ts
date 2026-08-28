@@ -132,6 +132,12 @@ describe('toolRowModel · state', () => {
     expect(m.running).toBe(false);
   });
 
+  it('stopped toolStatus → stopped', () => {
+    const m = toolRowModel(msg({ ...base, text: '调用工具 Agent：Explore', tool: 'Agent', toolStatus: 'stopped' }));
+    expect(m.state).toBe('stopped');
+    expect(m.running).toBe(false);
+  });
+
   it('success 且 exitCode=0 → ok；无 toolStatus 也 → ok', () => {
     expect(toolRowModel(msg({ ...base, text: 'x', toolStatus: 'success', exitCode: 0 })).state).toBe('ok');
     expect(toolRowModel(msg({ ...base, text: 'x' })).state).toBe('ok');
@@ -146,6 +152,30 @@ describe('toolRowModel · state', () => {
 });
 
 describe('toolRowModel · body/output/errorSummary/filePath', () => {
+  it('Write 的统一 diff 提供可验证的文件与增删统计', () => {
+    const model = toolRowModel(msg({
+      key: 'diff', runId: 'r', kind: 'tool', at: '', tool: 'Write', text: 'x',
+      detail: 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-old\n+new\n+line',
+    }));
+    expect(model.changeStats).toEqual({ files: 1, additions: 2, deletions: 1, operation: 'changed' });
+  });
+
+  it('Write 的 Wrote bytes 只展示可靠的写入大小，不伪造增删行数', () => {
+    const model = toolRowModel(msg({
+      key: 'write', runId: 'r', kind: 'tool', at: '', tool: 'Write', text: 'x',
+      detail: 'Wrote 24,832 bytes to knowledge/prd/evolution-roadmap-next-phase.md',
+    }));
+    expect(model.changeStats).toEqual({ files: 1, bytes: 24832, operation: 'written' });
+  });
+
+  it('未来 canonical stats 优先于工具输出文本', () => {
+    const model = toolRowModel(msg({
+      key: 'edit', runId: 'r', kind: 'tool', at: '', tool: 'Edit', text: 'Wrote 10 bytes',
+      changeStats: { files: 3, additions: 8, deletions: 2 },
+    }));
+    expect(model.changeStats).toEqual({ files: 3, additions: 8, deletions: 2, operation: 'changed' });
+  });
+
   it('body：args pretty JSON；非 JSON 原文；缺失为 null', () => {
     const pretty = toolRowModel(
       msg({ key: 't', runId: 'r', kind: 'tool', at: '', tool: 'Write', text: 'x', args: '{"path":"a.ts","content":"x"}' }),

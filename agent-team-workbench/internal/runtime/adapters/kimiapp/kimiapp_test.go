@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -543,6 +545,134 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 }
 
+func pushPendingToolTurn(f *fakeKap, pid, reason string, calls ...map[string]any) {
+	f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 1, false))
+	for i, call := range calls {
+		f.push(kapEvent("s_1", "tool.call.started", call, int64(2+i), false))
+	}
+	f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": reason}, int64(2+len(calls)), false))
+}
+
+func TestPendingToolOnSuccessfulTurnIsInterruptedOnlyForDisplay(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			pushPendingToolTurn(f, pid, "completed", map[string]any{
+				"turnId": 1, "toolCallId": "tc_pending", "name": "shell",
+			})
+		})
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("pending tool 不应改变成功 turn outcome: %s (%+v)", res.Outcome, res.Failure)
+	}
+	failed, ok := cb.find(domain.EventToolFailed)
+	if !ok || failed.data["call_id"] != "tc_pending" || failed.data["tool"] != "shell" ||
+		failed.data["status"] != "interrupted" || failed.data["failure_reason"] != "turn_ended_before_tool_result" {
+		t.Fatalf("pending tool synthetic terminal 不符: %+v", failed)
+	}
+}
+
+func TestToolResultClosesPendingWithoutDuplicateTerminal(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 1, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_done", "name": "shell",
+			}, 2, false))
+			result := map[string]any{"turnId": 1, "toolCallId": "tc_done", "output": mustJSON("ok"), "isError": false}
+			f.push(kapEvent("s_1", "tool.result", result, 3, false))
+			f.push(kapEvent("s_1", "tool.result", result, 4, false))
+			f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 5, false))
+		})
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s", res.Outcome)
+	}
+	if got := cb.count(domain.EventToolCompleted); got != 1 {
+		t.Fatalf("重复 tool.result 不应重复 terminal，得到 %d", got)
+	}
+	if got := cb.count(domain.EventToolFailed); got != 0 {
+		t.Fatalf("已完成 tool 不应在 turn ended 被 synthetic failed，得到 %d", got)
+	}
+}
+
+func TestPendingToolsCloseAsFailedForFailedOrBlockedTurn(t *testing.T) {
+	for _, reason := range []string{"failed", "blocked"} {
+		t.Run(reason, func(t *testing.T) {
+			f := newFakeKap(t)
+			m := newTestModule(f)
+			cb := newRecordCallbacks()
+			res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+				func(pid string) {
+					pushPendingToolTurn(f, pid, reason, map[string]any{
+						"turnId": 1, "toolCallId": "tc_fail", "name": "read",
+					})
+				})
+			if res.Outcome != runtime.OutcomeFailed {
+				t.Fatalf("%s turn 应失败，得到 %s", reason, res.Outcome)
+			}
+			failed, ok := cb.find(domain.EventToolFailed)
+			if !ok || failed.data["status"] != "failed" || failed.data["tool"] != "read" {
+				t.Fatalf("%s pending tool terminal 不符: %+v", reason, failed)
+			}
+		})
+	}
+}
+
+func TestPendingToolCancelClosesAsInterrupted(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			pushPendingToolTurn(f, pid, "cancelled", map[string]any{
+				"turnId": 1, "toolCallId": "tc_cancel", "name": "shell",
+			})
+		})
+	if res.Outcome != runtime.OutcomeInterrupted {
+		t.Fatalf("cancelled turn 应中断，得到 %s", res.Outcome)
+	}
+	failed, ok := cb.find(domain.EventToolFailed)
+	if !ok || failed.data["status"] != "interrupted" {
+		t.Fatalf("cancelled pending tool terminal 不符: %+v", failed)
+	}
+}
+
+func TestMultiplePendingToolsEachCloseOnce(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			pushPendingToolTurn(f, pid, "completed",
+				map[string]any{"turnId": 1, "toolCallId": "tc_a", "name": "read"},
+				map[string]any{"turnId": 1, "toolCallId": "tc_b", "name": "grep"})
+		})
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s", res.Outcome)
+	}
+	if got := cb.count(domain.EventToolFailed); got != 2 {
+		t.Fatalf("两个 pending tool 应各自产生一次 terminal，得到 %d", got)
+	}
+	for _, id := range []string{"tc_a", "tc_b"} {
+		var found bool
+		cb.mu.Lock()
+		for _, event := range cb.events {
+			if event.kind == domain.EventToolFailed && event.data["call_id"] == id {
+				found = event.data["failure_reason"] == "turn_ended_before_tool_result"
+				break
+			}
+		}
+		cb.mu.Unlock()
+		if !found {
+			t.Fatalf("未找到 %s 的 synthetic terminal", id)
+		}
+	}
+}
+
 // 防回归：prompt 排队/resume 期间，同会话旧 turn 的 tool.*/approval 帧不得
 // 归入本 run（只放行 activeTurn 的帧）。
 func TestForeignTurnEventsDropped(t *testing.T) {
@@ -650,6 +780,90 @@ func TestToolStartedArgsPayload(t *testing.T) {
 		if _, has := byID[id].data["args"]; has {
 			t.Fatalf("%s 不应携带 args 键: %+v", id, byID[id].data)
 		}
+	}
+}
+
+func TestWriteToolResultCarriesReliableChangeStats(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f,
+		func(pid string) {
+			f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 1, false))
+			f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+				"turnId": 1, "toolCallId": "tc_write", "name": "Write",
+				"args": map[string]any{"path": "knowledge/prd/roadmap.md", "content": "body"},
+			}, 2, false))
+			f.push(kapEvent("s_1", "tool.result", map[string]any{
+				"turnId": 1, "toolCallId": "tc_write",
+				"output": mustJSON("Wrote 24,832 bytes to knowledge/prd/roadmap.md"), "isError": false,
+			}, 3, false))
+			f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 4, false))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	completed, ok := cb.find(domain.EventToolCompleted)
+	if !ok {
+		t.Fatal("未见 tool.completed")
+	}
+	stats, ok := completed.data["change_stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("Write tool.completed 缺少 change_stats: %+v", completed.data)
+	}
+	if stats["operation"] != "write" || stats["files"] != 1 || stats["bytes"] != int64(24832) || stats["path"] != "knowledge/prd/roadmap.md" {
+		t.Fatalf("change_stats 不符: %+v", stats)
+	}
+	if _, exists := stats["additions"]; exists {
+		t.Fatalf("没有真实 diff 时不得伪造 additions: %+v", stats)
+	}
+	if _, exists := stats["deletions"]; exists {
+		t.Fatalf("没有真实 diff 时不得伪造 deletions: %+v", stats)
+	}
+}
+
+func TestCaptureFileBeforeDistinguishesMissingAndExistingEmpty(t *testing.T) {
+	root := t.TempDir()
+	missing, ok := captureFileBefore(root, "Write", json.RawMessage(`{"path":"new.txt","content":"x"}`))
+	if !ok || missing.BeforeExists || missing.RelPath != "new.txt" || missing.Root != root {
+		t.Fatalf("missing snapshot: %+v ok=%v", missing, ok)
+	}
+	if err := os.WriteFile(filepath.Join(root, "empty.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty, ok := captureFileBefore(root, "Edit", json.RawMessage(`{"path":"empty.txt","old_string":"","new_string":"x"}`))
+	if !ok || !empty.BeforeExists || empty.Before != "" {
+		t.Fatalf("empty snapshot: %+v ok=%v", empty, ok)
+	}
+}
+
+func TestCaptureFileBeforeRejectsUnsafeAndUnpreviewableFiles(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := captureFileBefore(root, "Write", json.RawMessage(`{"path":"../outside.txt"}`)); ok {
+		t.Fatal("path traversal accepted")
+	}
+	if _, ok := captureFileBefore(root, "Write", json.RawMessage(`{"path":"link/out.txt"}`)); ok {
+		t.Fatal("parent symlink accepted")
+	}
+	large := filepath.Join(root, "large.txt")
+	if err := os.WriteFile(large, []byte(strings.Repeat("x", maxFileSnapshotBytes+1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := captureFileBefore(root, "Write", json.RawMessage(`{"path":"large.txt"}`)); ok {
+		t.Fatal("large file snapshot accepted")
+	}
+	binary := filepath.Join(root, "binary.dat")
+	if err := os.WriteFile(binary, []byte{'a', 0, 'b'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := captureFileBefore(root, "Edit", json.RawMessage(`{"path":"binary.dat"}`)); ok {
+		t.Fatal("binary snapshot accepted")
 	}
 }
 

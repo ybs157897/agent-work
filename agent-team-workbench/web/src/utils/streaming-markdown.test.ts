@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { splitStreamingMarkdown } from './streaming-markdown';
+import { splitStreamingMarkdown, splitStreamingMarkdownBlocks } from './streaming-markdown';
 
 describe('splitStreamingMarkdown', () => {
   it('passes ordinary Markdown and complete fences through unchanged', () => {
@@ -63,5 +63,48 @@ describe('splitStreamingMarkdown', () => {
     });
     const complete = `${incomplete}\n:::`;
     expect(splitStreamingMarkdown(complete)).toEqual({ visibleText: complete, pendingText: '' });
+  });
+});
+
+describe('splitStreamingMarkdownBlocks', () => {
+  it('commits completed paragraphs while keeping the latest block mutable', () => {
+    const text = '第一段 **已完成**。\n\n第二段正在输出';
+    const result = splitStreamingMarkdownBlocks(text);
+    expect(result.completedBlocks).toEqual(['第一段 **已完成**。\n\n']);
+    expect(result.currentBlock).toBe('第二段正在输出');
+    expect(result.unsafePending).toBe('');
+    expect(result.completedBlocks.join('') + result.currentBlock).toBe(text);
+  });
+
+  it('keeps a list in one Markdown tree across blank lines', () => {
+    const text = '- one\n- two\n\n- three\n\n正文';
+    const result = splitStreamingMarkdownBlocks(text);
+    expect(result.completedBlocks).toEqual(['- one\n- two\n\n- three\n\n']);
+    expect(result.currentBlock).toBe('正文');
+  });
+
+  it('does not expose an incomplete complex block and preserves exact text', () => {
+    const text = '说明\n\n```tsx\nconst answer = 42;';
+    const result = splitStreamingMarkdownBlocks(text);
+    expect(result.completedBlocks).toEqual(['说明\n\n']);
+    expect(result.currentBlock).toBe('');
+    expect(result.unsafePending).toBe('```tsx\nconst answer = 42;');
+    expect(result.completedBlocks.join('') + result.currentBlock + result.unsafePending).toBe(text);
+  });
+
+  it('releases a fence atomically, then starts a new mutable block', () => {
+    const text = '前文\n\n```ts\nconst answer = 42;\n```\n\n后文';
+    const result = splitStreamingMarkdownBlocks(text);
+    expect(result.completedBlocks).toEqual(['前文\n\n', '```ts\nconst answer = 42;\n```\n\n']);
+    expect(result.currentBlock).toBe('后文');
+    expect(result.unsafePending).toBe('');
+  });
+
+  it('retains math and callout pending tails byte-for-byte', () => {
+    for (const text of ['前文\n\n$$\nx + y', '前文\n\n:::warning\n小心']) {
+      const result = splitStreamingMarkdownBlocks(text);
+      expect(result.unsafePending).toBe(text.slice(text.indexOf('\n\n') + 2));
+      expect(result.completedBlocks.join('') + result.currentBlock + result.unsafePending).toBe(text);
+    }
   });
 });

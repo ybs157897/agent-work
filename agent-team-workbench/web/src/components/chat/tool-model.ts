@@ -10,6 +10,14 @@ export type ToolFamily = 'bash' | 'read' | 'write' | 'edit' | 'search' | 'code' 
 
 export type ToolRowState = 'running' | 'ok' | 'error' | 'stopped';
 
+export interface ToolChangeStats {
+  files: number;
+  additions?: number;
+  deletions?: number;
+  bytes?: number;
+  operation: 'changed' | 'written';
+}
+
 export const FAMILY_TITLES: Record<ToolFamily, string> = {
   bash: 'Bash',
   read: 'Read',
@@ -37,6 +45,8 @@ export interface ToolRowModel {
   state: ToolRowState;
   exitCode?: number | undefined;
   running: boolean;
+  /** 仅来自 canonical stats 或可验证 diff；Wrote bytes 只回退为 written。 */
+  changeStats?: ToolChangeStats;
 }
 
 /** 精确工具名表（小写化后命中）。 */
@@ -148,6 +158,56 @@ function deriveFilePath(family: ToolFamily, msg: ChatMessage): string | undefine
   return undefined;
 }
 
+function asNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value);
+  return undefined;
+}
+
+/** Consume already-validated canonical stats without estimating missing line counts. */
+function canonicalChangeStats(msg: ChatMessage): ToolChangeStats | undefined {
+  const data = msg.changeStats;
+  if (!data) return undefined;
+  const files = asNonNegativeInt(data.files);
+  if (files === undefined || files === 0) return undefined;
+  const additions = asNonNegativeInt(data.additions);
+  const deletions = asNonNegativeInt(data.deletions);
+  const bytes = asNonNegativeInt(data.bytes);
+  if (additions !== undefined || deletions !== undefined) {
+    return { files, additions, deletions, ...(bytes !== undefined ? { bytes } : {}), operation: 'changed' };
+  }
+  return bytes !== undefined ? { files, bytes, operation: 'written' } : undefined;
+}
+
+function diffChangeStats(text: string): ToolChangeStats | undefined {
+  if (!/^diff --git /m.test(text) && !/^@@ .* @@/m.test(text)) return undefined;
+  const files = [...text.matchAll(/^diff --git /gm)].length
+    || [...text.matchAll(/^--- (?!\/dev\/null)/gm)].length;
+  if (files === 0) return undefined;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) additions += 1;
+    else if (line.startsWith('-')) deletions += 1;
+  }
+  return { files, additions, deletions, operation: 'changed' };
+}
+
+function writtenBytesStats(text: string): ToolChangeStats | undefined {
+  const match = text.match(/\bWrote\s+([\d,]+)\s+bytes?\b/i);
+  if (!match) return undefined;
+  const bytes = Number(match[1].replaceAll(',', ''));
+  return Number.isFinite(bytes) ? { files: 1, bytes, operation: 'written' } : undefined;
+}
+
+function deriveChangeStats(msg: ChatMessage): ToolChangeStats | undefined {
+  const canonical = canonicalChangeStats(msg);
+  if (canonical) return canonical;
+  const output = [msg.detail, msg.liveOutput, msg.text].filter(Boolean).join('\n');
+  return diffChangeStats(output) ?? (classifyTool(msg.tool) === 'write' ? writtenBytesStats(output) : undefined);
+}
+
 function deriveBody(args: string | undefined): string | null {
   if (args === undefined || args === '') return null;
   try {
@@ -161,6 +221,7 @@ export function toolRowModel(msg: ChatMessage): ToolRowModel {
   const family = classifyTool(msg.tool);
   let state: ToolRowState;
   if (msg.toolStatus === 'running') state = 'running';
+  else if (msg.toolStatus === 'stopped') state = 'stopped';
   else if (msg.toolStatus === 'failed') state = 'error';
   else if (msg.exitCode !== undefined && msg.exitCode !== 0) {
     // 终端语义：事件是 completed/success 但 exit≠0 仍是失败行。
@@ -172,6 +233,7 @@ export function toolRowModel(msg: ChatMessage): ToolRowModel {
   const rawOutput = msg.detail?.trim() || msg.liveOutput || null;
   const output = rawOutput !== null ? tailTruncate(rawOutput).text : null;
   const filePath = deriveFilePath(family, msg);
+  const changeStats = deriveChangeStats(msg);
 
   return {
     family,
@@ -184,6 +246,7 @@ export function toolRowModel(msg: ChatMessage): ToolRowModel {
     state,
     exitCode: msg.exitCode,
     running: state === 'running',
+    changeStats,
   };
 }
 

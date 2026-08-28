@@ -3,13 +3,13 @@ import { ACTIVE } from '../stores/chat.store';
 import type { ApprovalRequest } from '../api/types';
 import type { TimelineEntry } from '../stores/runs.store';
 import { aggregateTurnDiff } from './turn-diff';
-import type { ActivitySegment } from '../components/chat/tool-card';
+import type { ActivitySegment, GroupActivityOptions } from '../components/chat/tool-card';
 import { groupActivity } from '../components/chat/tool-card';
 
 export type TranscriptSegment =
   | { kind: 'user'; msg: ChatMessage }
   | { kind: 'assistant'; msg: ChatMessage; streaming?: boolean; renderKey?: string }
-  | { kind: 'thinking'; msg: ChatMessage; streaming?: boolean }
+  | { kind: 'thinking'; msg: ChatMessage; streaming?: boolean; renderKey?: string }
   | { kind: 'meta'; msg: ChatMessage }
   | { kind: 'activity'; runId: string; items: ChatMessage[] }
   | { kind: 'thinking-placeholder'; runId: string }
@@ -26,6 +26,29 @@ export interface BuildTranscriptSegmentsOptions {
   /** runId → 已发送但 timeline 尚未出现 run.created 的用户文案 */
   pendingUsers?: Readonly<Record<string, string>>;
   rawMessages?: readonly ChatMessage[];
+  /** ZCode messageStreamShowReasoning: false 时每个 run 只保留第一段 reasoning。 */
+  showReasoning?: boolean;
+  /** ZCode 工具展示层分组开关；不改变底层 tool row。 */
+  toolGrouping?: GroupActivityOptions;
+}
+
+export interface OutputLoadingState {
+  runActive: boolean;
+  hasPendingApproval?: boolean;
+  hasRunningTool?: boolean;
+  streamingReasoning?: boolean;
+  /** Reasoning is still the latest phase, but no delta arrived recently. */
+  reasoningIdle?: boolean;
+  streamingAnswer?: boolean;
+}
+
+/** Whether the small post-output loader belongs at the end of the live run. */
+export function shouldShowOutputLoading(state: OutputLoadingState): boolean {
+  if (!state.runActive || state.hasPendingApproval || state.hasRunningTool) {
+    return false;
+  }
+  if (state.streamingReasoning && !state.reasoningIdle) return false;
+  return Boolean(state.streamingAnswer || state.reasoningIdle || (!state.streamingReasoning && !state.streamingAnswer));
 }
 
 function isTranscriptVisible(m: ChatMessage): boolean {
@@ -33,6 +56,20 @@ function isTranscriptVisible(m: ChatMessage): boolean {
   if (m.kind === 'plan') return false;
   if (m.kind === 'assistant' && m.itemType === 'plan') return false;
   return true;
+}
+
+function filterVisibleMessages(
+  messages: readonly ChatMessage[],
+  showReasoning: boolean | undefined,
+): ChatMessage[] {
+  const firstThinkingRuns = new Set<string>();
+  return messages.filter((message) => {
+    if (!isTranscriptVisible(message)) return false;
+    if (showReasoning !== false || message.kind !== 'thinking') return true;
+    if (firstThinkingRuns.has(message.runId)) return false;
+    firstThinkingRuns.add(message.runId);
+    return true;
+  });
 }
 
 function hasRunningTools(items: readonly ChatMessage[]): boolean {
@@ -213,19 +250,27 @@ function appendLiveTail(
     : answerFallback.trim()
       ? answerFallback
       : '';
+  // 正文一旦开始，前置 reasoning 阶段已经落定：仍保留同一 stable key，
+  // 但不再显示为「正在思考」，避免过程正文被视觉上误归入思考段。
+  const reasoningStreaming = !answerDraft;
 
   const runTools = segments.flatMap((s) =>
     s.kind === 'activity' && s.runId === liveRunId ? s.items : [],
   );
   const running = hasRunningTools(runTools);
 
-  if (reasoning) {
+  const reasoningVisible = opts.showReasoning !== false
+    || !out.some((segment) => segment.kind === 'thinking' && segment.msg.runId === liveRunId);
+  if (reasoning && reasoningVisible) {
     const last = lastThinkingForRun(out, liveRunId);
     const duplicateInline =
       last !== undefined &&
       last.text === reasoning &&
       !last.key.endsWith('-live-reasoning');
     if (!duplicateInline) {
+      const ordinal = out.filter((segment) =>
+        segment.kind === 'thinking' && segment.msg.runId === liveRunId,
+      ).length;
       out.push({
         kind: 'thinking',
         msg: {
@@ -234,8 +279,13 @@ function appendLiveTail(
           kind: 'thinking',
           text: reasoning,
           at: new Date().toISOString(),
+          ...(liveStream?.phaseStartedAt ? { startedAt: liveStream.phaseStartedAt } : {}),
+          ...(liveStream?.phaseId ? { phaseId: liveStream.phaseId } : {}),
         },
-        streaming: true,
+        streaming: reasoningStreaming,
+        renderKey: liveStream?.phaseId
+          ? `thinking:${liveRunId}:${liveStream.phaseId}`
+          : `thinking:${liveRunId}:${ordinal}`,
       });
     }
   }
@@ -258,7 +308,13 @@ function appendLiveTail(
     });
   }
 
-  if (runActive && !answerDraft && !running && !hasPendingApproval && !reasoning) {
+  if (shouldShowOutputLoading({
+    runActive,
+    hasPendingApproval,
+    hasRunningTool: running,
+    streamingReasoning: reasoningStreaming && Boolean(reasoning),
+    streamingAnswer: Boolean(answerDraft),
+  })) {
     out.push({ kind: 'thinking-placeholder', runId: liveRunId });
   }
 
@@ -273,11 +329,12 @@ export function buildTranscriptSegments(
   messages: readonly ChatMessage[],
   opts: BuildTranscriptSegmentsOptions = {},
 ): TranscriptSegment[] {
-  const visible = messages.filter(isTranscriptVisible);
+  const visible = filterVisibleMessages(messages, opts.showReasoning);
   const segments: TranscriptSegment[] = [];
   const assistantOrdinals = new Map<string, number>();
+  const thinkingOrdinals = new Map<string, number>();
 
-  for (const seg of groupActivity(visible) as ActivitySegment[]) {
+  for (const seg of groupActivity(visible, opts.toolGrouping) as ActivitySegment[]) {
     if (seg.kind === 'activity') {
       segments.push({ kind: 'activity', runId: seg.runId, items: seg.items });
       continue;
@@ -288,6 +345,13 @@ export function buildTranscriptSegments(
         const ordinal = assistantOrdinals.get(mapped.msg.runId) ?? 0;
         mapped.renderKey = `assistant:${mapped.msg.runId}:${ordinal}`;
         assistantOrdinals.set(mapped.msg.runId, ordinal + 1);
+      }
+      if (mapped.kind === 'thinking') {
+        const ordinal = thinkingOrdinals.get(mapped.msg.runId) ?? 0;
+        mapped.renderKey = mapped.msg.phaseId
+          ? `thinking:${mapped.msg.runId}:${mapped.msg.phaseId}`
+          : `thinking:${mapped.msg.runId}:${ordinal}`;
+        thinkingOrdinals.set(mapped.msg.runId, ordinal + 1);
       }
       segments.push(mapped);
     }

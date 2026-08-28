@@ -14,6 +14,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +26,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/filechanges"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -122,6 +127,22 @@ type turnState struct {
 	endReason     string           // turn.ended.reason
 	failure       *runtime.Failure // turn.ended.error 权威失败
 	sessionUpdate *runtime.SessionUpdate
+	// pendingTools tracks only identified tool calls. KAP can emit turn.ended
+	// before a result; those calls are closed synthetically at turn end.
+	pendingTools map[string]string
+	// toolResults makes tool.result terminal delivery idempotent. An empty ID
+	// cannot be correlated safely and is intentionally not tracked here.
+	toolResults   map[string]struct{}
+	fileSnapshots map[string]fileSnapshot
+}
+
+type fileSnapshot struct {
+	Path         string
+	Root         string
+	RelPath      string
+	Before       string
+	BeforeExists bool
+	BeforeHash   string
 }
 
 // Execute 阻塞执行一轮：确保 kap-server → 解析/创建会话 → WS 订阅 → prompt →
@@ -142,7 +163,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 			m.sup.recycle()
 		}
 	}
-	state := &turnState{}
+	state := &turnState{pendingTools: make(map[string]string), toolResults: make(map[string]struct{}), fileSnapshots: make(map[string]fileSnapshot)}
 	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
 	// 不得误报成 gateway_unavailable/io 失败（否则终态会变成 failed）。
 	ep, err := m.sup.Ensure(ex.Ctx)
@@ -519,6 +540,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 			return false
 		}
 		p.state.endReason = ev.Reason
+		p.closePendingTools(ev.Reason)
 		switch ev.Reason {
 		case "failed", "blocked":
 			p.state.failure = turnEndFailure(ev.Error)
@@ -580,12 +602,22 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if !p.myTurn(ev.TurnID) {
 			return false
 		}
+		if ev.ToolCallID != "" {
+			if _, terminal := p.state.toolResults[ev.ToolCallID]; !terminal {
+				p.state.pendingTools[ev.ToolCallID] = ev.Name
+			}
+		}
 		payload := map[string]any{"tool": ev.Name, "call_id": ev.ToolCallID}
 		if s := toolArgsSummary(ev.Description, ev.Args); s != "" {
 			payload["args_summary"] = s
 		}
 		if a := toolArgsJSON(ev.Args); a != "" {
 			payload["args"] = a
+		}
+		if ev.ToolCallID != "" {
+			if snap, ok := captureFileBefore(p.m.cfg.WorkspaceRoot, ev.Name, ev.Args); ok {
+				p.state.fileSnapshots[ev.ToolCallID] = snap
+			}
 		}
 		p.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
 	case "tool.result":
@@ -594,9 +626,30 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if !p.myTurn(ev.TurnID) {
 			return false
 		}
+		toolName := ""
+		if ev.ToolCallID != "" {
+			toolName = p.state.pendingTools[ev.ToolCallID]
+			if _, seen := p.state.toolResults[ev.ToolCallID]; seen {
+				return false
+			}
+			p.state.toolResults[ev.ToolCallID] = struct{}{}
+			delete(p.state.pendingTools, ev.ToolCallID)
+		}
 		payload := map[string]any{"call_id": ev.ToolCallID}
 		if out := toolOutputText(ev.Output); out != "" {
 			payload["output"] = out
+			if stats := toolChangeStats(toolName, out); stats != nil {
+				payload["change_stats"] = stats
+			}
+		}
+		if snap, ok := p.state.fileSnapshots[ev.ToolCallID]; ok && (ev.IsError == nil || !*ev.IsError) {
+			if after, afterExists, ok := readSnapshotFile(snap.Path); ok && afterExists && (!snap.BeforeExists || after != snap.Before) {
+				payload["file_change_snapshot"] = map[string]any{
+					"path": snap.RelPath, "workspace_root": snap.Root, "before_content": snap.Before, "after_content": after,
+					"before_exists": snap.BeforeExists, "after_exists": true,
+					"write_count": 1, "before_hash": snap.BeforeHash, "after_hash": filechanges.Hash(after),
+				}
+			}
 		}
 		if ev.IsError != nil && *ev.IsError {
 			p.ex.Callbacks.OnEvent(domain.EventToolFailed, payload)
@@ -628,6 +681,25 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		p.ex.Callbacks.OnLog("kimiapp", frame.Type+" "+truncate(string(frame.Payload), 400))
 	}
 	return false
+}
+
+// closePendingTools closes calls for which KAP ended the turn without a
+// terminal tool.result. This is presentation evidence only: turnEndResult
+// still derives the run outcome from turn.ended.reason.
+func (p *eventPump) closePendingTools(reason string) {
+	status := "failed"
+	if reason == "completed" || reason == "cancelled" {
+		status = "interrupted"
+	}
+	for callID, tool := range p.state.pendingTools {
+		p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{
+			"call_id":        callID,
+			"tool":           tool,
+			"status":         status,
+			"failure_reason": "turn_ended_before_tool_result",
+		})
+		delete(p.state.pendingTools, callID)
+	}
 }
 
 // myTurn 只放行本轮 turn 的事件：prompt 排队/resume 期间，同会话旧 turn 的
@@ -744,7 +816,7 @@ func permissionMode(policy runtime.PolicySnapshot) string {
 // ── 工具事件载荷整形（与 codexapp 对齐的 canonical 契约）────────────────
 //
 // tool.started: {tool, call_id, args_summary?, args?}；tool.completed/failed:
-// {call_id, output?}；tool.progress: {call_id, text, percent?}。输出统一截断，
+// {call_id, output?, change_stats?}；tool.progress: {call_id, text, percent?}。输出统一截断，
 // 防 run_events 膨胀（完整输出本就可达数 MB 级）。
 
 const (
@@ -752,6 +824,113 @@ const (
 	maxToolArgs        = 2000
 	maxToolOutput      = 2000
 )
+
+const maxFileSnapshotBytes = 400_000
+
+func captureFileBefore(root, tool string, args json.RawMessage) (fileSnapshot, bool) {
+	name := strings.ToLower(strings.TrimSpace(tool))
+	if name != "write" && name != "edit" && name != "apply_patch" {
+		return fileSnapshot{}, false
+	}
+	var values map[string]any
+	if json.Unmarshal(args, &values) != nil {
+		return fileSnapshot{}, false
+	}
+	var path string
+	for _, key := range []string{"path", "file_path", "filename", "target_file"} {
+		if v, ok := values[key].(string); ok && strings.TrimSpace(v) != "" {
+			path = v
+			break
+		}
+	}
+	if path == "" || root == "" {
+		return fileSnapshot{}, false
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return fileSnapshot{}, false
+	}
+	base, err := filepath.Abs(root)
+	if err != nil {
+		return fileSnapshot{}, false
+	}
+	if path != base && !strings.HasPrefix(path, base+string(filepath.Separator)) {
+		return fileSnapshot{}, false
+	}
+	for cur := path; ; cur = filepath.Dir(cur) {
+		if info, err := os.Lstat(cur); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fileSnapshot{}, false
+		}
+		next := filepath.Dir(cur)
+		if next == cur || cur == base {
+			break
+		}
+	}
+	before, exists, ok := readSnapshotFile(path)
+	if !ok {
+		return fileSnapshot{}, false
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fileSnapshot{}, false
+	}
+	return fileSnapshot{Path: path, Root: base, RelPath: rel, Before: before, BeforeExists: exists, BeforeHash: filechanges.Hash(before)}, true
+}
+
+func readSnapshotFile(path string) (string, bool, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, true
+		}
+		return "", false, false
+	}
+	if len(b) > maxFileSnapshotBytes || bytesIndexZero(b) {
+		return "", true, false
+	}
+	return string(b), true, true
+}
+
+func bytesIndexZero(b []byte) bool {
+	for _, c := range b {
+		if c == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var wroteBytesPattern = regexp.MustCompile(`(?i)^Wrote\s+([\d,]+)\s+bytes?\s+to\s+(.+)$`)
+
+// toolChangeStats only promotes facts already present in the runtime result.
+// Byte count and path are reliable; additions/deletions remain absent until
+// the executor provides an old/new snapshot or a real diff.
+func toolChangeStats(tool, output string) map[string]any {
+	if !strings.EqualFold(strings.TrimSpace(tool), "write") {
+		return nil
+	}
+	match := wroteBytesPattern.FindStringSubmatch(strings.TrimSpace(output))
+	if len(match) != 3 {
+		return nil
+	}
+	bytesWritten, err := strconv.ParseInt(strings.ReplaceAll(match[1], ",", ""), 10, 64)
+	if err != nil || bytesWritten < 0 {
+		return nil
+	}
+	path := strings.TrimSpace(match[2])
+	if path == "" {
+		return nil
+	}
+	return map[string]any{
+		"operation": "write",
+		"files":     1,
+		"bytes":     bytesWritten,
+		"path":      path,
+	}
+}
 
 // toolArgsSummary 给 UI 的一行输入摘要：优先服务端 description，其次
 // 命令/路径类参数，最后紧凑 JSON 截断。

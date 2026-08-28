@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { MarkdownBody } from './markdown-body';
-import { LongAnswerFold } from './long-answer-fold';
 import { MessageActions } from './message-actions';
 import type { ContentBlockDocument } from '../../utils/content-blocks';
 import {
@@ -78,25 +77,14 @@ export function AssistantTurn({
     <article className="chat-assistant-turn group" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
         {displayText ? (
-          <div>
-            <div className="chat-prose">
-              <LongAnswerFold
-                text={displayText}
-                streaming={streaming}
-                disabled={Boolean(contentBlocks)}
-                renderBody={(bodyText) => (
-                  <>
-                    <MarkdownBody
-                      text={bodyText}
-                      streaming={streaming}
-                      runId={runId}
-                      messageId={messageId}
-                    />
-                    {streaming && <span className="chat-stream-caret" aria-hidden />}
-                  </>
-                )}
-              />
-            </div>
+          <div className="chat-prose">
+            <MarkdownBody
+              text={displayText}
+              streaming={streaming}
+              runId={runId}
+              messageId={messageId}
+            />
+            {streaming && <span className="chat-stream-caret" aria-hidden />}
           </div>
         ) : null}
         {standaloneContentBlocks && (

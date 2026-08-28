@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FilePen, FileText, Plug, Search, Terminal, Wrench } from 'lucide-react';
 import type { ChatMessage } from '../../stores/chat.store';
-import { activityGroupModel, groupActivity, humanizeToolName, toolChipModel, toolIcon } from './tool-card';
+import { activityGroupModel, groupActivity, humanizeToolName, shouldAutoCollapseActivity, toolChipModel, toolIcon } from './tool-card';
 
 const msg = (over: Partial<ChatMessage> & Pick<ChatMessage, 'key' | 'runId' | 'kind' | 'text' | 'at'>): ChatMessage => over;
 
@@ -80,6 +80,16 @@ describe('activityGroupModel', () => {
   });
 });
 
+describe('shouldAutoCollapseActivity', () => {
+  it('只在 running 进入任一终态时自动收起', () => {
+    expect(shouldAutoCollapseActivity('running', 'ok')).toBe(true);
+    expect(shouldAutoCollapseActivity('running', 'error')).toBe(true);
+    expect(shouldAutoCollapseActivity('running', 'stopped')).toBe(true);
+    expect(shouldAutoCollapseActivity('ok', 'ok')).toBe(false);
+    expect(shouldAutoCollapseActivity(null, 'running')).toBe(false);
+  });
+});
+
 describe('groupActivity', () => {
   it('连续同 run 的工具行合成一个活动组；非工具消息切段', () => {
     const messages = [
@@ -103,5 +113,29 @@ describe('groupActivity', () => {
     ];
     const segs = groupActivity(messages);
     expect(segs.map((s) => s.kind)).toEqual(['activity', 'activity', 'single']);
+  });
+
+  it('按 ZCode 活动语义拆分 Explore/Execute，Write 默认保持独立', () => {
+    const messages = [
+      msg({ key: 'read', runId: 'r1', kind: 'tool', text: 'read', at: '', tool: 'read', toolStatus: 'success' }),
+      msg({ key: 'grep', runId: 'r1', kind: 'tool', text: 'grep', at: '', tool: 'grep', toolStatus: 'success' }),
+      msg({ key: 'bash', runId: 'r1', kind: 'tool', text: 'bash', at: '', tool: 'bash', toolStatus: 'success' }),
+      msg({ key: 'code', runId: 'r1', kind: 'tool', text: 'code', at: '', tool: 'run_code', toolStatus: 'success' }),
+      msg({ key: 'write-1', runId: 'r1', kind: 'tool', text: 'write', at: '', tool: 'write', toolStatus: 'success' }),
+      msg({ key: 'write-2', runId: 'r1', kind: 'tool', text: 'write', at: '', tool: 'write', toolStatus: 'success' }),
+    ];
+    expect(groupActivity(messages).map((segment) => segment.kind === 'activity' && segment.items.map((item) => item.key))).toEqual([
+      ['read', 'grep'], ['bash', 'code'], ['write-1'], ['write-2'],
+    ]);
+  });
+
+  it('分组开关是纯参数：关闭 Explore/Execute 后每次工具独立', () => {
+    const messages = [
+      msg({ key: 'read-1', runId: 'r1', kind: 'tool', text: 'read', at: '', tool: 'read', toolStatus: 'success' }),
+      msg({ key: 'read-2', runId: 'r1', kind: 'tool', text: 'read', at: '', tool: 'read', toolStatus: 'success' }),
+      msg({ key: 'bash-1', runId: 'r1', kind: 'tool', text: 'bash', at: '', tool: 'bash', toolStatus: 'success' }),
+      msg({ key: 'bash-2', runId: 'r1', kind: 'tool', text: 'bash', at: '', tool: 'bash', toolStatus: 'success' }),
+    ];
+    expect(groupActivity(messages, { groupExplore: false, groupExecute: false }).filter((segment) => segment.kind === 'activity')).toHaveLength(4);
   });
 });

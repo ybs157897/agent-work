@@ -45,7 +45,7 @@ describe('buildMessages', () => {
     ]);
   });
 
-  it('assistant 的 delta 不进气泡（completed 是权威）；run.failed 渲染错误行', () => {
+  it('assistant 的 delta 不进气泡（completed 是权威）；run.failed 不伪装成错误正文行', () => {
     const timelines = {
       run_2: [
         entry('run_2', 1, 'message.delta', { role: 'assistant', text: 'delta' }, 'assistant', 'delta'),
@@ -53,9 +53,7 @@ describe('buildMessages', () => {
       ],
     };
     const msgs = buildMessages(['run_2'], timelines);
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].kind).toBe('error');
-    expect(msgs[0].text).toContain('MISSING_CREDENTIAL');
+    expect(msgs).toHaveLength(0);
   });
 
   it('无工具时 completed 保留正常 text-delta 对应的 canonical 正文', () => {
@@ -79,14 +77,12 @@ describe('buildMessages', () => {
         entry('run_blocks', 2, 'message.completed', { role: 'assistant', text: 'invalid', content_blocks: { version: 'bad', blocks: [] } }, 'assistant', 'invalid'),
       ],
     });
-    expect(msgs).toHaveLength(2);
-    expect(msgs[0].kind).toBe('assistant');
-    expect(msgs[0].text).toBe('');
-    expect(msgs[0].contentBlocks).toEqual({
-      version: 'languagegui/v1',
-      blocks: [{ type: 'metric', items: [{ label: 'Revenue', value: '$42', tone: 'neutral' }] }],
-    });
-    expect(msgs[1].contentBlocks).toBeUndefined();
+    // Only the last completed item is formal final output. Interim
+    // checkpoints never own content blocks, even when they carry one.
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]?.kind).toBe('assistant');
+    expect(msgs[0]?.text).toBe('invalid');
+    expect(msgs[0]?.contentBlocks).toBeUndefined();
   });
 
   it('tool 事件按 call_id 折叠：args_summary 上标题，completed 输出挂 detail，failed 转 error', () => {
@@ -106,6 +102,52 @@ describe('buildMessages', () => {
       ['error', '工具失败 shell：rm x', 'permission denied'],
       ['tool', '工具输出', 'orphan'],
     ]);
+  });
+
+  it('tool.completed.change_stats 通过 store 投影到工具消息且不补造缺失行数', () => {
+    const messages = buildMessages(['run_change_stats'], {
+      run_change_stats: [
+        entry('run_change_stats', 1, 'tool.started', {
+          tool: 'Write', call_id: 'write-1', args_summary: 'Writing knowledge/prd/roadmap.md',
+        }),
+        entry('run_change_stats', 2, 'tool.completed', {
+          call_id: 'write-1',
+          output: 'Wrote 24832 bytes to knowledge/prd/roadmap.md',
+          change_stats: {
+            operation: 'write', files: 1, bytes: 24832, path: 'knowledge/prd/roadmap.md',
+          },
+        }),
+      ],
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.changeStats).toEqual({
+      operation: 'write', files: 1, bytes: 24832, path: 'knowledge/prd/roadmap.md',
+    });
+    expect(messages[0]?.changeStats?.additions).toBeUndefined();
+    expect(messages[0]?.changeStats?.deletions).toBeUndefined();
+  });
+
+  it('synthetic interrupted tool terminal 映射为 stopped，而不冒充失败', () => {
+    const msgs = buildMessages(['run_interrupted_tool'], {
+      run_interrupted_tool: [
+        entry('run_interrupted_tool', 1, 'tool.started', {
+          tool: 'Agent', call_id: 'agent-1', args_summary: 'Explore architecture',
+        }),
+        entry('run_interrupted_tool', 2, 'tool.failed', {
+          tool: 'Agent', call_id: 'agent-1', status: 'interrupted',
+          failure_reason: 'turn_ended_before_tool_result',
+        }),
+      ],
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      kind: 'tool',
+      tool: 'Agent',
+      toolStatus: 'stopped',
+      argsSummary: 'Explore architecture',
+      detail: '父回合已结束，未收到工具结果',
+    });
   });
 
   it('exit_code 落 exitCode 字段（text 不再拼后缀）；非零转 error 行（红色），零保持 tool，无输出也展示', () => {
@@ -254,13 +296,144 @@ describe('buildMessages', () => {
     ]);
   });
 
+  it('按 reasoning→tool→reasoning+正文→tool→reasoning→最终结果严格交错', () => {
+    const msgs = buildMessages(['run_ordered_phases'], {
+      run_ordered_phases: [
+        entry('run_ordered_phases', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'R1' } } }),
+        entry('run_ordered_phases', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_ordered_phases', 3, 'tool.progress', { call_id: 'c1', text: '进行中' }),
+        entry('run_ordered_phases', 4, 'tool.completed', { call_id: 'c1', output: '文件内容' }),
+        entry('run_ordered_phases', 5, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'R2' } } }),
+        entry('run_ordered_phases', 6, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '正文1' } } }),
+        entry('run_ordered_phases', 7, 'tool.started', { tool: 'Grep', call_id: 'c2' }),
+        entry('run_ordered_phases', 8, 'tool.completed', { call_id: 'c2', output: '匹配结果' }),
+        entry('run_ordered_phases', 9, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'R3' } } }),
+        entry('run_ordered_phases', 10, 'message.completed', { role: 'assistant', text: '最终结果' }, 'assistant', '最终结果'),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['thinking', 'R1'],
+      ['tool', '调用工具 Read'],
+      ['thinking', 'R2'],
+      ['assistant', '正文1'],
+      ['tool', '调用工具 Grep'],
+      ['thinking', 'R3'],
+      ['assistant', '最终结果'],
+    ]);
+  });
+
+  it('工具 progress/completed 不会把当前 reasoning 或正文拆碎', () => {
+    const msgs = buildMessages(['run_tool_updates'], {
+      run_tool_updates: [
+        entry('run_tool_updates', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '思考' } } }),
+        entry('run_tool_updates', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
+        entry('run_tool_updates', 3, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '中1' } } }),
+        entry('run_tool_updates', 4, 'tool.progress', { tool: 'Read', call_id: 'c1', text: '读取' }),
+        entry('run_tool_updates', 5, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '中2' } } }),
+        entry('run_tool_updates', 6, 'tool.progress', { tool: 'Read', call_id: 'c1', text: '继续读取' }),
+        entry('run_tool_updates', 7, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '答复' } } }),
+        entry('run_tool_updates', 8, 'tool.completed', { call_id: 'c1', output: '完成' }),
+        entry('run_tool_updates', 9, 'message.completed', { role: 'assistant', text: '最终' }, 'assistant', '最终'),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['thinking', '思考'],
+      ['tool', '调用工具 Read'],
+      ['thinking', '中1中2'],
+      ['assistant', '最终'],
+    ]);
+  });
+
+  it('折叠的 interim 正文与累计 final 正文正确分离', () => {
+    const msgs = buildMessages(['run_folded_text'], {
+      run_folded_text: [
+        entry('run_folded_text', 1, 'tool.started', {
+          tool: 'Read',
+          call_id: 'c1',
+          text_folded: '先检查项目结构',
+          text_folded_started_at: '2026-08-22T00:00:01Z',
+          text_folded_phase_id: 'phase-1',
+        }),
+        entry('run_folded_text', 2, 'tool.completed', { call_id: 'c1', output: 'ok' }),
+        entry('run_folded_text', 3, 'message.delta', {
+          raw: { chunk: { type: 'text-delta', text: '，然后给出结论' } },
+        }),
+        entry('run_folded_text', 4, 'message.completed', {
+          role: 'assistant',
+          text: '先检查项目结构，然后给出结论',
+        }, 'assistant', '先检查项目结构，然后给出结论'),
+      ],
+    });
+    expect(msgs.map((m) => [m.kind, m.text])).toEqual([
+      ['assistant', '先检查项目结构'],
+      ['tool', '调用工具 Read'],
+      ['assistant', '，然后给出结论'],
+    ]);
+  });
+
+  it('多个非 streaming interim completed 保留顺序，最后 completed 才是 final', () => {
+    const msgs = buildMessages(['run_non_streaming'], {
+      run_non_streaming: [
+        entry('run_non_streaming', 1, 'message.completed', { role: 'assistant', text: '阶段一' }, 'assistant', '阶段一'),
+        entry('run_non_streaming', 2, 'tool.started', { tool: 'Grep', call_id: 'c1' }),
+        entry('run_non_streaming', 3, 'tool.completed', { call_id: 'c1', output: '命中' }),
+        entry('run_non_streaming', 4, 'message.completed', { role: 'assistant', text: '阶段一阶段二' }, 'assistant', '阶段一阶段二'),
+        entry('run_non_streaming', 5, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '最终答案' } } }),
+        entry('run_non_streaming', 6, 'message.completed', { role: 'assistant', text: '阶段一阶段二最终答案' }, 'assistant', '阶段一阶段二最终答案'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual([
+      '阶段一', '阶段二', '最终答案',
+    ]);
+  });
+
+  it('canonical 等于已投影 interim 时不重复，current-only canonical 不误剥离', () => {
+    const cumulative = buildMessages(['run_same_canonical'], {
+      run_same_canonical: [
+        entry('run_same_canonical', 1, 'message.completed', { role: 'assistant', text: '已完成' }, 'assistant', '已完成'),
+        entry('run_same_canonical', 2, 'message.completed', { role: 'assistant', text: '已完成' }, 'assistant', '已完成'),
+      ],
+    });
+    expect(cumulative.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['已完成']);
+
+    const currentOnly = buildMessages(['run_current_only_final'], {
+      run_current_only_final: [
+        entry('run_current_only_final', 1, 'message.completed', { role: 'assistant', text: '前置' }, 'assistant', '前置'),
+        entry('run_current_only_final', 2, 'message.completed', { role: 'assistant', text: '最终' }, 'assistant', '最终'),
+      ],
+    });
+    expect(currentOnly.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['前置', '最终']);
+
+    const sharedPrefix = buildMessages(['run_current_only_shared_prefix'], {
+      run_current_only_shared_prefix: [
+        entry('run_current_only_shared_prefix', 1, 'message.completed', { role: 'assistant', text: 'foo' }, 'assistant', 'foo'),
+        entry('run_current_only_shared_prefix', 2, 'message.completed', { role: 'assistant', text: 'foobar' }, 'assistant', 'foobar'),
+      ],
+    });
+    expect(sharedPrefix.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['foo', 'foobar']);
+  });
+
+  it('content_blocks 只挂在最终 completed 消息', () => {
+    const blocks = { version: 'languagegui/v1', blocks: [{ type: 'metric', items: [{ label: '总数', value: '2' }] }] };
+    const msgs = buildMessages(['run_final_blocks'], {
+      run_final_blocks: [
+        entry('run_final_blocks', 1, 'message.completed', { role: 'assistant', text: '过程', content_blocks: blocks }, 'assistant', '过程'),
+        entry('run_final_blocks', 2, 'message.completed', { role: 'assistant', text: '最终', content_blocks: blocks }, 'assistant', '最终'),
+      ],
+    });
+    expect(msgs.filter((m) => m.kind === 'assistant').map((m) => [m.text, Boolean(m.contentBlocks)])).toEqual([
+      ['过程', false], ['最终', true],
+    ]);
+  });
+
   it('completed 包含已 flush 正文时只保留未显示后缀', () => {
     const msgs = buildMessages(['run_dedupe'], {
       run_dedupe: [
         entry('run_dedupe', 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '前缀' } } }),
         entry('run_dedupe', 2, 'tool.started', { tool: 'Read', call_id: 'c1' }),
         entry('run_dedupe', 3, 'tool.completed', { call_id: 'c1', output: 'ok' }),
-        entry('run_dedupe', 4, 'message.completed', { role: 'assistant', text: '前缀后缀' }, 'assistant', '前缀后缀'),
+        entry('run_dedupe', 4, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '后缀' } } }),
+        entry('run_dedupe', 5, 'message.completed', { role: 'assistant', text: '前缀后缀' }, 'assistant', '前缀后缀'),
       ],
     });
     expect(msgs.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['前缀', '后缀']);
@@ -279,7 +452,7 @@ describe('buildMessages', () => {
     expect(msgs.filter((m) => m.kind === 'assistant').map((m) => m.text)).toEqual(['第一段', '第二段']);
   });
 
-  it('工具后的 reasoning 与旧阶段同前缀时继续累积，不被工具事件拆段', () => {
+  it('工具前后的 reasoning 按工具边界拆成独立阶段', () => {
     const msgs = buildMessages(['run_reasoning_stages'], {
       run_reasoning_stages: [
         entry('run_reasoning_stages', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: 'a' } } }),
@@ -289,7 +462,7 @@ describe('buildMessages', () => {
         entry('run_reasoning_stages', 5, 'message.completed', { role: 'assistant', text: '完成' }, 'assistant', '完成'),
       ],
     });
-    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['aabc']);
+    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['a', 'abc']);
   });
 
   it('completed 后的新一轮无工具正文不复用上一阶段的 stage key', () => {
@@ -307,7 +480,7 @@ describe('buildMessages', () => {
     expect(new Set(assistants.map((m) => m.key)).size).toBe(2);
   });
 
-  it('仅有 reasoning 穿过连续工具事件时不拆成 interim thinking 段', () => {
+  it('仅有 reasoning 也会在每个新工具前按顺序落成 thinking 段', () => {
     const msgs = buildMessages(['run_reasoning_tools'], {
       run_reasoning_tools: [
         entry('run_reasoning_tools', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '先判断' } } }),
@@ -320,8 +493,8 @@ describe('buildMessages', () => {
         entry('run_reasoning_tools', 8, 'message.completed', { role: 'assistant', text: '完成' }, 'assistant', '完成'),
       ],
     });
-    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['先判断再归纳']);
-    expect(msgs.map((m) => m.kind)).toEqual(['tool', 'tool', 'thinking', 'assistant']);
+    expect(msgs.filter((m) => m.kind === 'thinking').map((m) => m.text)).toEqual(['先判断', '再归纳']);
+    expect(msgs.map((m) => m.kind)).toEqual(['thinking', 'tool', 'tool', 'thinking', 'assistant']);
   });
 
   it('reasoning 与正文同时存在时，下一工具前一起落成一个 interim 阶段', () => {
@@ -737,7 +910,7 @@ describe('aggregateRunStream', () => {
       entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '想' } } }),
       entry('run_1', 2, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '收' } } }),
     ];
-    expect(aggregateRunStream(entries)).toEqual({ reasoning: '想', answerDraft: '收' });
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '想', answerDraft: '收', phaseId: 'run-seq-1', phaseStartedAt: '2026-08-22T00:00:00Z' });
   });
 
   it('message.completed 之后仅聚合下一段 delta', () => {
@@ -746,7 +919,7 @@ describe('aggregateRunStream', () => {
       entry('run_1', 2, 'message.completed', { role: 'assistant', text: '第一段' }, 'assistant', '第一段'),
       entry('run_1', 3, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '第二段' } } }),
     ];
-    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '第二段' });
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '第二段', phaseId: 'run-seq-3', phaseStartedAt: '2026-08-22T00:00:00Z' });
   });
 
   it('tool.* 是流式阶段边界，只聚合最后一个工具之后的 delta', () => {
@@ -756,10 +929,23 @@ describe('aggregateRunStream', () => {
       entry('run_1', 3, 'tool.completed', { output: 'ok' }),
       entry('run_1', 4, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '工具后' } } }),
     ];
-    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '工具后' });
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '', answerDraft: '工具后', phaseId: 'run-seq-4', phaseStartedAt: '2026-08-22T00:00:00Z' });
   });
 
-  it('reasoning-only 穿过 tool.* 时继续累积，直到出现正文才切断', () => {
+  it('tool.progress/completed/failed 不重置当前 tail，只有 tool.started 开启新阶段', () => {
+    const entries = [
+      entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '思' } } }),
+      entry('run_1', 2, 'tool.started', { tool: 'Read' }),
+      entry('run_1', 3, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '考' } } }),
+      entry('run_1', 4, 'tool.progress', { tool: 'Read', text: '读取中' }),
+      entry('run_1', 5, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '答' } } }),
+      entry('run_1', 6, 'tool.completed', { output: '完成' }),
+      entry('run_1', 7, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '复' } } }),
+    ];
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '考', answerDraft: '答复', phaseId: 'run-seq-3', phaseStartedAt: '2026-08-22T00:00:00Z' });
+  });
+
+  it('reasoning-only 在 tool.started 后切到新阶段，连续工具不重复切尾', () => {
     const entries = [
       entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '先' } } }),
       entry('run_1', 2, 'tool.started', { tool: 'Read' }),
@@ -1309,5 +1495,50 @@ describe('forkConversation', () => {
     await useChatStore.getState().forkConversation('no-such-key');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(useChatStore.getState().conversationId).toBe('wi_1');
+  });
+});
+
+describe('retryRun', () => {
+  it('调用真实 retry endpoint，并订阅返回的新 Run 后刷新会话', async () => {
+    const json = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const nextRun = {
+      id: 'run_retry',
+      work_item_id: 'wi_1',
+      status: 'queued',
+      retry_of: 'run_failed',
+      version: 1,
+      created_at: '2026-08-28T00:00:01Z',
+      updated_at: '2026-08-28T00:00:01Z',
+    } as ExecutionRun;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if ((init?.method ?? 'GET') === 'POST' && url.endsWith('/runs/run_failed/commands/retry')) {
+        return Promise.resolve(json(nextRun));
+      }
+      if (url.endsWith('/work-items/wi_1/runs')) return Promise.resolve(json({ items: [nextRun] }));
+      if (url.includes('/workspaces/ws_1/work-items')) return Promise.resolve(json({ items: [], next_cursor: null }));
+      return Promise.resolve(json({ items: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkspaceStore.setState({ workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 } });
+    useChatStore.setState({
+      agentId: 'agent_1',
+      conversationId: 'wi_1',
+      conversations: [],
+      runs: [{ ...nextRun, id: 'run_failed', status: 'failed' }],
+    });
+    const watchRun = vi.fn();
+    useRunsStore.setState({ watchRun });
+
+    await useChatStore.getState().retryRun('run_failed');
+
+    expect(fetchMock.mock.calls.some(([url, init]) =>
+      String(url).endsWith('/runs/run_failed/commands/retry') && init?.method === 'POST')).toBe(true);
+    expect(watchRun).toHaveBeenCalledWith('run_retry');
+    expect(useChatStore.getState().runs.map((run) => run.id)).toEqual(['run_retry']);
+    vi.unstubAllGlobals();
   });
 });

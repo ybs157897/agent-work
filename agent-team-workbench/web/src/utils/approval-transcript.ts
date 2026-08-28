@@ -8,6 +8,7 @@ export function transcriptSegmentKey(seg: TranscriptSegment): string {
     case 'assistant':
       return seg.renderKey ?? seg.msg.key;
     case 'thinking':
+      return seg.renderKey ?? seg.msg.key;
     case 'meta':
       return seg.msg.key;
     case 'activity':

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -16,10 +17,12 @@ import (
 // Service 编排用例与事务边界。命令流程：
 // 校验 → 领域状态机 → 同事务写状态 + 事件 + outbox → 提交后通知 SSE / 分派 Runtime。
 type Service struct {
-	store      Store
-	dispatcher Dispatcher
-	notifier   Notifier
-	adapters   *runtime.Registry
+	changesMu       sync.Mutex
+	revertedChanges map[string]string
+	store           Store
+	dispatcher      Dispatcher
+	notifier        Notifier
+	adapters        *runtime.Registry
 	// ApprovalForwarder / ControlForwarder 把决定转发到 Runner WSS（M2）；
 	// 无 Runner 的内置 Mock 路径不需要。
 	ApprovalForwarder func(ctx context.Context, runID, approvalID string, approved bool)
@@ -35,7 +38,7 @@ type Service struct {
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {
-	return &Service{store: store, dispatcher: dispatcher, notifier: notifier, adapters: adapters}
+	return &Service{store: store, dispatcher: dispatcher, notifier: notifier, adapters: adapters, revertedChanges: make(map[string]string)}
 }
 
 // SetDispatcher 用于打破 Service ↔ Gateway/Adapter 的构造环（启动时一次性注入）。

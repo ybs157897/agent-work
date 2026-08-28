@@ -302,6 +302,37 @@ export interface RunEvent {
   occurred_at: string;
 }
 
+/** 文件变更投影：供回复尾部的 Codex 风格变更卡使用。 */
+export interface RunChange {
+  path: string;
+  additions: number;
+  deletions: number;
+  write_count: number;
+  last_turn_index: number;
+  kind: 'modified' | 'added' | 'deleted' | 'renamed';
+  binary: boolean;
+  can_revert?: boolean;
+  revert_reason?: string;
+}
+
+export interface RunChanges {
+  file_count: number;
+  additions: number;
+  deletions: number;
+  files: RunChange[];
+  state: 'ready' | 'reverted' | 'unavailable';
+  can_revert: boolean;
+  reason?: string;
+  version: number;
+}
+
+export interface RunChangeDiff {
+  path: string;
+  diff: string;
+  truncated?: boolean;
+  binary?: boolean;
+}
+
 /** SSE Canonical Event Envelope（contracts/events/asyncapi.yaml） */
 export interface CanonicalEvent {
   contract_version: string;

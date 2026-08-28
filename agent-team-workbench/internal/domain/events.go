@@ -53,10 +53,11 @@ const (
 	EventMessageDelta     = "message.delta"
 	EventMessageCompleted = "message.completed"
 
-	EventToolStarted   = "tool.started"
-	EventToolProgress  = "tool.progress"
-	EventToolCompleted = "tool.completed"
-	EventToolFailed    = "tool.failed"
+	EventToolStarted         = "tool.started"
+	EventToolProgress        = "tool.progress"
+	EventToolCompleted       = "tool.completed"
+	EventToolFailed          = "tool.failed"
+	EventFileChangesReverted = "file_changes.reverted"
 
 	EventApprovalRequested = "approval.requested"
 	EventApprovalResolved  = "approval.resolved"
@@ -90,7 +91,8 @@ var eventNameWhitelist = map[string]struct{}{
 	EventPlanFailed:   {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},
-	EventApprovalRequested: {}, EventApprovalResolved: {}, EventApprovalExpired: {},
+	EventFileChangesReverted: {},
+	EventApprovalRequested:   {}, EventApprovalResolved: {}, EventApprovalExpired: {},
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
 	EventRuntimeHealthChanged: {}, EventRunnerConnected: {}, EventRunnerDisconnected: {},
 	EventRunRecoveryStarted: {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},
