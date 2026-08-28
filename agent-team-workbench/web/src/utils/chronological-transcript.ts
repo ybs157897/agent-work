@@ -8,7 +8,7 @@ import { groupActivity } from '../components/chat/tool-card';
 
 export type TranscriptSegment =
   | { kind: 'user'; msg: ChatMessage }
-  | { kind: 'assistant'; msg: ChatMessage; streaming?: boolean }
+  | { kind: 'assistant'; msg: ChatMessage; streaming?: boolean; renderKey?: string }
   | { kind: 'thinking'; msg: ChatMessage; streaming?: boolean }
   | { kind: 'meta'; msg: ChatMessage }
   | { kind: 'activity'; runId: string; items: ChatMessage[] }
@@ -112,7 +112,26 @@ function segmentFromSingle(msg: ChatMessage): TranscriptSegment | undefined {
   }
 }
 
-function appendTurnDiffs(segments: TranscriptSegment[], messages: readonly ChatMessage[]): TranscriptSegment[] {
+function segmentRunId(segment: TranscriptSegment): string | undefined {
+  if (
+    segment.kind === 'user'
+    || segment.kind === 'assistant'
+    || segment.kind === 'thinking'
+    || segment.kind === 'meta'
+  ) return segment.msg.runId;
+  if (
+    segment.kind === 'activity'
+    || segment.kind === 'thinking-placeholder'
+    || segment.kind === 'turn-diff'
+  ) return segment.runId;
+  return undefined;
+}
+
+function appendTurnDiffs(
+  segments: TranscriptSegment[],
+  messages: readonly ChatMessage[],
+  opts: BuildTranscriptSegmentsOptions,
+): TranscriptSegment[] {
   const toolsByRun = new Map<string, ChatMessage[]>();
   for (const m of messages) {
     if (m.toolStatus === undefined) continue;
@@ -123,21 +142,19 @@ function appendTurnDiffs(segments: TranscriptSegment[], messages: readonly ChatM
 
   const out: TranscriptSegment[] = [];
   const inserted = new Set<string>();
+  const lastSegmentByRun = new Map<string, number>();
+  segments.forEach((segment, index) => {
+    const runId = segmentRunId(segment);
+    if (runId) lastSegmentByRun.set(runId, index);
+  });
 
-  for (const seg of segments) {
+  for (let index = 0; index < segments.length; index += 1) {
+    const seg = segments[index];
     out.push(seg);
-    const runId =
-      seg.kind === 'user' ||
-      seg.kind === 'assistant' ||
-      seg.kind === 'thinking' ||
-      seg.kind === 'meta'
-        ? seg.msg.runId
-        : seg.kind === 'activity' ||
-            seg.kind === 'thinking-placeholder' ||
-            seg.kind === 'turn-diff'
-          ? seg.runId
-          : undefined;
+    const runId = segmentRunId(seg);
     if (!runId || inserted.has(runId)) continue;
+    if (lastSegmentByRun.get(runId) !== index) continue;
+    if (opts.liveRunActive && opts.liveRunId === runId) continue;
 
     const isRunEnd =
       seg.kind === 'assistant' ||
@@ -187,8 +204,15 @@ function appendLiveTail(
   const status = runStatuses?.[liveRunId];
   const runActive = status !== undefined && ACTIVE.has(status);
   // 仅用 aggregateRunStream（message.completed 后重置）；不回退 thinking-tail，避免双源字数跳变。
-  const reasoning = liveStream?.reasoning?.trim() ?? '';
-  const answerDraft = liveStream?.answerDraft?.trim() || answerTailDraft(rawMessages, liveRunId);
+  const reasoningSource = liveStream?.reasoning ?? '';
+  const reasoning = reasoningSource.trim() ? reasoningSource : '';
+  const answerSource = liveStream?.answerDraft ?? '';
+  const answerFallback = answerTailDraft(rawMessages, liveRunId);
+  const answerDraft = answerSource.trim()
+    ? answerSource
+    : answerFallback.trim()
+      ? answerFallback
+      : '';
 
   const runTools = segments.flatMap((s) =>
     s.kind === 'activity' && s.runId === liveRunId ? s.items : [],
@@ -217,6 +241,9 @@ function appendLiveTail(
   }
 
   if (answerDraft) {
+    const ordinal = out.filter((segment) =>
+      segment.kind === 'assistant' && segment.msg.runId === liveRunId,
+    ).length;
     out.push({
       kind: 'assistant',
       msg: {
@@ -227,6 +254,7 @@ function appendLiveTail(
         at: new Date().toISOString(),
       },
       streaming: true,
+      renderKey: `assistant:${liveRunId}:${ordinal}`,
     });
   }
 
@@ -247,6 +275,7 @@ export function buildTranscriptSegments(
 ): TranscriptSegment[] {
   const visible = messages.filter(isTranscriptVisible);
   const segments: TranscriptSegment[] = [];
+  const assistantOrdinals = new Map<string, number>();
 
   for (const seg of groupActivity(visible) as ActivitySegment[]) {
     if (seg.kind === 'activity') {
@@ -254,8 +283,15 @@ export function buildTranscriptSegments(
       continue;
     }
     const mapped = segmentFromSingle(seg.item);
-    if (mapped) segments.push(mapped);
+    if (mapped) {
+      if (mapped.kind === 'assistant') {
+        const ordinal = assistantOrdinals.get(mapped.msg.runId) ?? 0;
+        mapped.renderKey = `assistant:${mapped.msg.runId}:${ordinal}`;
+        assistantOrdinals.set(mapped.msg.runId, ordinal + 1);
+      }
+      segments.push(mapped);
+    }
   }
 
-  return appendLiveTail(appendTurnDiffs(segments, messages), opts);
+  return appendLiveTail(appendTurnDiffs(segments, messages, opts), opts);
 }

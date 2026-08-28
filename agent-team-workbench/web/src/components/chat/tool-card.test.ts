@@ -58,6 +58,7 @@ describe('activityGroupModel', () => {
       state: 'running',
       summary: '1 完成 · 1 进行中 · 1 失败',
       status: '正在执行',
+      toolSummary: 'Tool call × 3',
     });
   });
 
@@ -74,6 +75,7 @@ describe('activityGroupModel', () => {
       state: 'empty',
       summary: '暂无工具调用',
       status: '等待调用',
+      toolSummary: '',
     });
   });
 });

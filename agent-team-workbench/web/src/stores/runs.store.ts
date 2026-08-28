@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { getRun, listApprovals, listArtifacts, listRunEvents } from '../api/endpoints';
 import type { ApprovalRequest, Artifact, CanonicalEvent, ExecutionRun } from '../api/types';
 import { extractDeltaChunk } from './delta-chunk';
+import { isOutputTraceEnabled, outputTraceEventText, traceOutput } from '../utils/output-trace';
 
 /** Run 时间线条目：来自 SSE 信封（协议 §6.2）或 run_seq 历史回放。 */
 export interface TimelineEntry {
@@ -320,6 +321,12 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
     const runId = aggType === 'execution_run' ? ev.aggregate.id : undefined;
 
     if (runId) {
+      const beforeTimeline = get().timelines[runId] ?? [];
+      const duplicate = beforeTimeline.some((entry) =>
+        ev.run_seq !== undefined && entry.run_seq !== undefined
+          ? entry.run_seq === ev.run_seq
+          : entry.event_id === ev.event_id,
+      );
       // 时间线追加（run.* / message.* / tool.* 都以 execution_run 聚合出现）。
       set((s) => ({
         timelines: {
@@ -338,6 +345,40 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
           ]),
         },
       }));
+      const appliedTimeline = get().timelines[runId] ?? [];
+      const retained = appliedTimeline.some((entry) =>
+        ev.run_seq !== undefined && entry.run_seq !== undefined
+          ? entry.run_seq === ev.run_seq
+          : entry.event_id === ev.event_id,
+      );
+      if (isOutputTraceEnabled()) {
+        traceOutput({
+          stage: 'timeline.applied',
+          mode: ev.type === 'message.completed' ? 'final' : 'streaming',
+          source: 'timeline',
+          runId,
+          messageId: typeof ev.data?.message_id === 'string'
+            ? ev.data.message_id
+            : typeof ev.data?.item_id === 'string'
+              ? ev.data.item_id
+              : undefined,
+          eventId: ev.event_id,
+          correlationId: ev.correlation_id,
+          callId: typeof ev.data?.call_id === 'string' ? ev.data.call_id : undefined,
+          streamSeq: ev.stream_seq,
+          runSeq: ev.run_seq,
+          eventType: ev.type,
+          serverOccurredAt: ev.occurred_at,
+          text: outputTraceEventText(ev.type, ev.data),
+          projection: { timelineEntries: appliedTimeline.length },
+          status: typeof ev.data?.status === 'string' ? ev.data.status : undefined,
+          duplicate,
+          retained,
+          metadata: ev.type === 'tool.completed' || ev.type === 'tool.failed'
+            ? { lifecycle: 'tool-terminal' }
+            : undefined,
+        });
+      }
 
       // 已加载的 run 快照做就地状态/进度/用量更新；watched 但未知时拉取快照。
       const cached = get().runs[runId];

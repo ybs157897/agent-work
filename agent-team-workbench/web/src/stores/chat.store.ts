@@ -248,6 +248,17 @@ export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
       answerDraft = '';
       continue;
     }
+    // 工具事件是可见时间线的阶段边界：工具前的草稿由 buildMessages
+    // 先落成 interim 消息，工具后的 delta 不能再并入同一段 live tail。
+    if (e.type.startsWith('tool.')) {
+      // tool.progress/completed 之间可能夹着仅推理 delta；没有正文时不切段，
+      // 否则会把一段连续思考拆成很多 1-2 词的 thinking 卡片。
+      if (answerDraft) {
+        reasoning = '';
+        answerDraft = '';
+      }
+      continue;
+    }
     if (e.type !== 'message.delta') continue;
     const chunk = extractDeltaChunk(e.data);
     if (!chunk?.text) continue;
@@ -287,6 +298,71 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
     const entries = timelines[runId] ?? [];
     let reasoningBuf = '';
     let answerBuf = '';
+    let flushedReasoning = '';
+    let flushedAnswer = '';
+    let stageSeq = 0;
+    let hadToolBoundary = false;
+    const flushDraftBeforeTool = (boundary: TimelineEntry) => {
+      // 只有正文 delta 才构成可见的正文阶段边界。工具批次间的 reasoning
+      // 继续累积，等下一段正文或 message.completed 时一次性落下。
+      if (!answerBuf) return;
+      hadToolBoundary = true;
+      stageSeq += 1;
+      if (reasoningBuf) {
+        out.push({
+          key: `${runId}-thinking-stage-${stageSeq}`,
+          runId,
+          kind: 'thinking',
+          text: reasoningBuf,
+          at: boundary.occurred_at,
+        });
+        flushedReasoning += reasoningBuf;
+      }
+      if (answerBuf) {
+        out.push({
+          key: `${runId}-answer-stage-${stageSeq}`,
+          runId,
+          kind: 'assistant',
+          text: answerBuf,
+          at: boundary.occurred_at,
+        });
+        flushedAnswer += answerBuf;
+      }
+      reasoningBuf = '';
+      answerBuf = '';
+    };
+    const unseenCanonicalAnswer = (
+      canonical: string,
+      currentStageAnswer = '',
+      previousFlushedAnswer = flushedAnswer,
+      currentStageWasPushed = false,
+    ): string => {
+      if (!canonical) return '';
+      // 完成事件有时只携带当前工具阶段，而不是完整累计正文。当前阶段已经
+      // 在上面落成 interim 时，两种形态都只允许追加真正未展示的后缀。
+      if (currentStageWasPushed) {
+        const displayed = previousFlushedAnswer + currentStageAnswer;
+        if (canonical.startsWith(displayed)) return canonical.slice(displayed.length);
+        if (canonical.startsWith(currentStageAnswer)) return canonical.slice(currentStageAnswer.length);
+        if (canonical.startsWith(previousFlushedAnswer)) {
+          const suffix = canonical.slice(previousFlushedAnswer.length);
+          return suffix.startsWith(currentStageAnswer) ? suffix.slice(currentStageAnswer.length) : suffix;
+        }
+        if (canonical === currentStageAnswer || currentStageAnswer.startsWith(canonical)) return '';
+        return canonical;
+      }
+      // 没有工具边界时，delta 只是 live 草稿，completed 仍是权威正文，不能把它当成已落盘内容。
+      if (!flushedAnswer) return canonical;
+      const displayed = flushedAnswer + answerBuf;
+      if (canonical.startsWith(displayed)) return canonical.slice(displayed.length);
+      if (canonical.startsWith(flushedAnswer)) {
+        const suffix = canonical.slice(flushedAnswer.length);
+        return suffix.startsWith(answerBuf) ? suffix.slice(answerBuf.length) : suffix;
+      }
+      // 某些 adapter 只在完成事件中回传当前阶段正文；它已经由 delta 展示时不再重复。
+      if (canonical === answerBuf || answerBuf.startsWith(canonical)) return '';
+      return canonical;
+    };
     let planIdx = -1; // 同 run 的 plan 快照在 out 中的位置：新帧原地替换
     for (const e of entries) {
       const instruction = typeof e.data?.instruction === 'string' ? e.data.instruction : '';
@@ -355,25 +431,59 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           const foldTruncated = e.data?.reasoning_folded_truncated === true;
           const reasoning = folded || reasoningBuf;
           if (reasoning) {
-            out.push({
-              key: `${runId}-thinking-${e.event_id}`,
-              runId,
-              kind: 'thinking',
-              text: foldTruncated ? `……（早期推理已省略）\n\n${reasoning}` : reasoning,
-              at: e.occurred_at,
-            });
+            // 只有 runs.store 的 folded 是跨阶段全文；普通 reasoningBuf 只是当前阶段，
+            // 即使碰巧以旧阶段同文开头也不能按前缀裁掉。
+            const unseenReasoning = folded && flushedReasoning && folded.startsWith(flushedReasoning)
+              ? folded.slice(flushedReasoning.length)
+              : reasoning;
+            if (unseenReasoning) {
+              out.push({
+                key: `${runId}-thinking-${e.event_id}`,
+                runId,
+                kind: 'thinking',
+                text: foldTruncated ? `……（早期推理已省略）\n\n${unseenReasoning}` : unseenReasoning,
+                at: e.occurred_at,
+              });
+            }
           }
           reasoningBuf = '';
+          // 工具之后的 live tail 在完成事件到达时也要落成独立正文段；否则
+          // 下方清空草稿会让这一段从时间线中消失。canonical 正文随后按已展示前缀去重。
+          const currentStageAnswer = answerBuf;
+          const previousFlushedAnswer = flushedAnswer;
+          const currentStageWasPushed = hadToolBoundary && currentStageAnswer.length > 0;
+          if (currentStageWasPushed) {
+            stageSeq += 1;
+            out.push({
+              key: `${runId}-answer-stage-${stageSeq}`,
+              runId,
+              kind: 'assistant',
+              text: answerBuf,
+              at: e.occurred_at,
+            });
+            flushedAnswer += currentStageAnswer;
+            answerBuf = '';
+          }
+          const canonicalText = typeof e.text === 'string' ? e.text : '';
+          const unseenText = unseenCanonicalAnswer(
+            canonicalText,
+            currentStageAnswer,
+            previousFlushedAnswer,
+            currentStageWasPushed,
+          );
           answerBuf = '';
+          flushedAnswer = '';
+          flushedReasoning = '';
+          hadToolBoundary = false;
           {
             const itemType = typeof e.data?.item_type === 'string' ? e.data.item_type : undefined;
             const contentBlocks = parseContentBlockDocument(e.data?.content_blocks);
-            if (e.text || contentBlocks) {
+            if (unseenText || contentBlocks) {
               out.push({
                 key: e.event_id,
                 runId,
                 kind: 'assistant',
-                text: e.text ?? '',
+                text: unseenText,
                 at: e.occurred_at,
                 itemType,
                 ...(contentBlocks ? { contentBlocks } : {}),
@@ -383,6 +493,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'tool.started': {
+          flushDraftBeforeTool(e);
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
           const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';
           const args = typeof e.data?.args === 'string' ? e.data.args : undefined;
@@ -408,6 +519,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'tool.progress': {
+          flushDraftBeforeTool(e);
           // 流式工具输出：无 call_id 或空文本的帧无法挂行，忽略。
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
           const text = typeof e.data?.text === 'string' ? e.data.text : '';
@@ -435,6 +547,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
         }
         case 'tool.completed':
         case 'tool.failed': {
+          flushDraftBeforeTool(e);
           const output = typeof e.data?.output === 'string' ? e.data.output.trim() : '';
           const exitCode = extractExitCode(e.data);
           // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）；退出码本身由卡片层用 exitCode 字段渲染。

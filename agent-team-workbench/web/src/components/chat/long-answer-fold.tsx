@@ -73,19 +73,22 @@ function fenceSafeCut(text: string, cut: number): number {
 export function LongAnswerFold({
   text,
   streaming = false,
+  disabled = false,
   renderBody,
 }: {
   text: string;
   streaming?: boolean;
+  /** 结构化正文等必须完整展示的回答禁用长度折叠。 */
+  disabled?: boolean;
   /** 渲染可见正文（预览或全文），markdown 渲染权留给调用方。 */
   renderBody: (visibleText: string) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const reduceMotion = useReducedMotion();
   const bodyId = useId();
-  // 流式永不折叠；落定后经 splitLongAnswer 判定。streaming→settled 由外层
-  // key 重挂载，展开态自然复位为默认收起。
-  const split = streaming ? null : splitLongAnswer(text);
+  // 流式永不折叠；落定后经 splitLongAnswer 判定。正文沿用同一组件实例，
+  // 不为 streaming→settled 强制重挂载整棵 Markdown 树。
+  const split = streaming || disabled ? null : splitLongAnswer(text);
   if (!split) return <>{renderBody(text)}</>;
 
   const collapsed = !expanded;

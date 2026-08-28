@@ -61,7 +61,7 @@ describe('MarkdownBody · LeAgent 内容覆盖', () => {
     expect(html).not.toContain('language-languagegui');
   });
 
-  it('坏 JSON 回落代码面板；流式阶段不提前生成 Widget', () => {
+  it('坏 JSON 回落代码面板；完整的流式 fence 直接生成 Widget', () => {
     const invalid = render('```languagegui\n{bad json}\n```');
     expect(invalid).toContain('chat-code-panel');
     expect(invalid).toContain('{bad json}');
@@ -72,8 +72,32 @@ describe('MarkdownBody · LeAgent 内容覆盖', () => {
         text={'```languagegui\n{"version":"languagegui/v1","blocks":[{"type":"metric","items":[{"label":"x","value":1}]}]}\n```'}
       />,
     );
-    expect(streaming).not.toContain('data-content-block="metric"');
-    expect(streaming).toContain('language-languagegui');
+    expect(streaming).toContain('data-content-block="metric"');
+    expect(streaming).not.toContain('language-languagegui');
+  });
+
+  it('流式阶段始终走 Markdown 树，并隐藏未闭合复杂尾部', () => {
+    const ordinary = renderToStaticMarkup(
+      <MarkdownBody
+        streaming
+        text={'# 已渲染标题\n\n**加粗正文**\n\n```ts\nconst answer = 42;\n```\n\n$$E=mc^2$$'}
+      />,
+    );
+    expect(ordinary).toContain('<h1>已渲染标题</h1>');
+    expect(ordinary).toContain('<strong>加粗正文</strong>');
+    expect(ordinary).toContain('chat-code-panel');
+    expect(ordinary).toContain('class="katex"');
+
+    const incomplete = renderToStaticMarkup(
+      <MarkdownBody
+        streaming
+        text={'可见 **前缀**。\n\n```languagegui\n{"version":"languagegui/v1","blocks":['}
+      />,
+    );
+    expect(incomplete).toContain('<strong>前缀</strong>');
+    expect(incomplete).not.toContain('language-languagegui');
+    expect(incomplete).not.toContain('"version"');
+    expect(incomplete).not.toContain('chat-code-panel');
   });
 
   it('读取 fence meta，展示文件名、行号与选中行', () => {

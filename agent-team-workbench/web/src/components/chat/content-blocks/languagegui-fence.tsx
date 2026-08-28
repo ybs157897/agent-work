@@ -1,8 +1,16 @@
 import type { ReactNode } from 'react';
 import { parseContentBlockDocument } from '../../../utils/content-blocks';
-import { ContentBlockList } from './content-block-renderer';
+import { ContentBlockList, type ContentBlockTraceContext } from './content-block-renderer';
 
-export function LanguageGuiFence({ source, fallback }: { source: string; fallback: ReactNode }) {
+export function LanguageGuiFence({
+  source,
+  fallback,
+  trace,
+}: {
+  source: string;
+  fallback: ReactNode;
+  trace?: ContentBlockTraceContext;
+}) {
   const document = parseContentBlockDocument(source);
-  return document ? <ContentBlockList document={document} /> : <>{fallback}</>;
+  return document ? <ContentBlockList document={document} trace={trace} /> : <>{fallback}</>;
 }
