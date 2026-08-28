@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractDeltaChunk, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, hideLiveRunDrafts, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
+import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, hideLiveRunDrafts, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
+import { extractDeltaChunk } from './delta-chunk';
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { useTasksStore } from './tasks.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -163,6 +164,45 @@ describe('buildMessages', () => {
       ['thinking', '分析中…'],
       ['assistant', '收到'],
     ]);
+  });
+
+  it('completed 携带折叠推理（runs.store 超帽折叠）时优先于残存 delta 缓冲出思考卡', () => {
+    const timelines = {
+      run_fold: [
+        entry('run_fold', 1, 'run.created', { instruction: '复盘' }),
+        // 截断后残存的推理尾部帧（cap 尾巴填充留下）：不完整，不得单独成卡。
+        entry('run_fold', 2, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '残存尾部' } } }),
+        entry('run_fold', 3, 'message.completed', {
+          role: 'assistant',
+          text: '答复',
+          reasoning_folded: '完整推理全文',
+          reasoning_folded_truncated: true,
+        }, 'assistant', '答复'),
+      ],
+    };
+    const msgs = buildMessages(['run_fold'], timelines);
+    const thinking = msgs.filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toContain('完整推理全文');
+    expect(thinking[0]?.text).not.toContain('残存尾部');
+    expect(thinking[0]?.text).toContain('早期推理已省略');
+    expect(msgs.map((m) => m.kind)).toEqual(['user', 'thinking', 'assistant']);
+  });
+
+  it('completed 携带未截断折叠推理时不加省略前缀', () => {
+    const timelines = {
+      run_fold2: [
+        entry('run_fold2', 1, 'message.completed', {
+          role: 'assistant',
+          text: '答复',
+          reasoning_folded: '完整推理',
+        }, 'assistant', '答复'),
+      ],
+    };
+    const msgs = buildMessages(['run_fold2'], timelines);
+    const thinking = msgs.filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toBe('完整推理');
   });
 
   it('工具调用后缺失 message.completed 时回落累积的 text-delta', () => {

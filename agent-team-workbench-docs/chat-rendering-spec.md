@@ -23,7 +23,7 @@
 |---|---|---|---|---|---|
 | user | 用户消息 | `article` 内右对齐紧凑白卡 `.chat-user-card`；LanguageGUI 浅色面、20px 圆角、`surface-raised`、细 `border-subtle`、12×16px；不显示用户角色头 | 正文 15px/1.6，保留换行；可访问名称仍为「你的消息」 | 悬停操作条 opacity 0.36→100 | transcript-view.tsx |
 | assistant | 助手文本 | `article` 内开放 `.chat-prose` Markdown 正文；不显示重复 assistant/模型角色头，不额外包白卡 | 正文 15px/1.75；身份不以重复可见头占位 | 流式：100ms Markdown 节流 + 2px caret；落定后静态 | assistant-turn.tsx |
-| thinking | reasoning 事件 | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `max-h-52` 纵滚 `px-3 py-2.5`（motion 展开落定后留 inline height:auto，固定高度会被覆盖，故帽用 max-h） | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
+| thinking | reasoning 事件；超帽时间线走 `reasoning_folded` 折叠锚点（runs.store capTimeline 把逐出推理聚合回 message.completed，尾部 4000 字符预算截断，截断带「早期推理已省略」前缀） | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `max-h-52` 纵滚 `px-3 py-2.5`（motion 展开落定后留 inline height:auto，固定高度会被覆盖，故帽用 max-h） | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
 | activity | 同 run 连续工具行 | LanguageGUI `ActivityGroup`；组头汇总，Action 卡点击后在轨道下展开详情 | `Action N` + 工具徽章 + 摘要 + 耗时 + 状态文字 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
