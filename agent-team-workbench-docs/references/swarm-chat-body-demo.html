@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>蜂群模式 · Chat 正文展示草案</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --canvas: #eef4fb;
+      --paper: #ffffff;
+      --ink: #142033;
+      --ink-2: #4a5a70;
+      --ink-3: #7a8799;
+      --line: #d7e2ef;
+      --line-strong: #b8c9dc;
+      --hive: #1f6feb;
+      --hive-soft: #dbeafe;
+      --hive-mid: #93c5fd;
+      --ok: #1a7f4b;
+      --ok-soft: #d9f5e5;
+      --warn: #b45309;
+      --warn-soft: #ffedd5;
+      --run: #1f6feb;
+      --err: #c0392b;
+      --err-soft: #fde8e6;
+      --rail: 720px;
+      --radius: 14px;
+      --shadow: 0 1px 0 rgba(20, 32, 51, 0.04), 0 10px 28px rgba(20, 32, 51, 0.06);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: "IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 500px at 50% -10%, #dceafb 0%, transparent 60%),
+        linear-gradient(180deg, var(--canvas), #e8eef6 100%);
+    }
+
+    .page {
+      max-width: calc(var(--rail) + 64px);
+      margin: 0 auto;
+      padding: 28px 20px 80px;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .eyebrow h1 {
+      margin: 0;
+      font-family: "Noto Serif SC", serif;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .eyebrow p {
+      margin: 4px 0 0;
+      color: var(--ink-2);
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 46ch;
+    }
+    .badge {
+      flex-shrink: 0;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--hive);
+      background: var(--hive-soft);
+      border: 1px solid #bfdbfe;
+      border-radius: 999px;
+      padding: 6px 10px;
+    }
+
+    .thread {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      padding: 28px 24px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .msg-user {
+      align-self: flex-end;
+      max-width: 88%;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 12px 16px;
+      font-size: 15px;
+      line-height: 1.6;
+      box-shadow: 0 1px 0 rgba(20,32,51,.03);
+    }
+
+    .turn { display: flex; flex-direction: column; gap: 12px; }
+
+    /* —— 思考面板 —— */
+    .think {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f7fafc;
+      overflow: hidden;
+    }
+    .think summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--ink-2);
+      user-select: none;
+    }
+    .think summary::-webkit-details-marker { display: none; }
+    .think summary .label { font-weight: 600; color: var(--ink-3); }
+    .think summary .meta { color: var(--ink-3); }
+    .think summary .chev {
+      margin-left: auto;
+      transition: transform .2s ease;
+      color: var(--ink-3);
+    }
+    .think[open] summary .chev { transform: rotate(90deg); }
+    .think .body {
+      padding: 0 12px 12px 28px;
+      border-left: 2px solid var(--line-strong);
+      margin: 0 12px 12px 18px;
+      color: var(--ink-2);
+      font-size: 13px;
+      line-height: 1.65;
+      max-height: 140px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .sweep {
+      background: linear-gradient(90deg, var(--ink-3), var(--hive), var(--ink-3));
+      background-size: 200% 100%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      animation: sweep 2.4s ease-in-out infinite;
+      font-weight: 600;
+    }
+    @keyframes sweep {
+      0% { background-position: 100% 0; }
+      100% { background-position: -100% 0; }
+    }
+
+    /* —— 蜂群巢：正文中的核心提案 —— */
+    .hive {
+      border: 1px solid #c7dbf5;
+      border-radius: 16px;
+      background:
+        linear-gradient(180deg, #f5f9ff 0%, #ffffff 42%),
+        repeating-linear-gradient(
+          135deg,
+          transparent 0 10px,
+          rgba(31, 111, 235, 0.025) 10px 11px
+        );
+      overflow: hidden;
+    }
+
+    .hive-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px 16px;
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid #d7e6f8;
+    }
+    .hive-kicker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--hive);
+      letter-spacing: 0.02em;
+    }
+    .hive-kicker .pulse {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--hive);
+      box-shadow: 0 0 0 0 rgba(31,111,235,.45);
+      animation: ping 1.6s ease-out infinite;
+    }
+    @keyframes ping {
+      0% { box-shadow: 0 0 0 0 rgba(31,111,235,.4); }
+      70% { box-shadow: 0 0 0 8px rgba(31,111,235,0); }
+      100% { box-shadow: 0 0 0 0 rgba(31,111,235,0); }
+    }
+    .hive-title {
+      margin: 4px 0 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .hive-sub {
+      margin: 4px 0 0;
+      font-size: 12.5px;
+      color: var(--ink-2);
+      line-height: 1.45;
+    }
+    .hive-stats {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      min-width: 120px;
+    }
+    .hive-count {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 20px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+      color: var(--ink);
+    }
+    .hive-count span { color: var(--ink-3); font-size: 13px; font-weight: 400; }
+    .progress {
+      width: 120px;
+      height: 6px;
+      border-radius: 999px;
+      background: #e2ebf5;
+      overflow: hidden;
+    }
+    .progress > i {
+      display: block;
+      height: 100%;
+      width: 62%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #60a5fa, #1f6feb);
+      transition: width .4s ease;
+    }
+
+    /* 蜂格网格：并行 agent 单元 */
+    .cells {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 12px;
+    }
+    @media (max-width: 640px) {
+      .cells { grid-template-columns: 1fr; }
+    }
+
+    .cell {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--paper);
+      overflow: hidden;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .cell[data-status="running"] { border-color: #93c5fd; box-shadow: inset 0 0 0 1px rgba(31,111,235,.08); }
+    .cell[data-status="done"] { border-color: #b7e4c7; }
+    .cell[data-status="waiting"] { opacity: .78; }
+    .cell[data-status="error"] { border-color: #f0b4ad; }
+
+    .cell > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 11px 12px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .cell > summary::-webkit-details-marker { display: none; }
+
+    .avatar {
+      width: 34px; height: 34px;
+      border-radius: 10px;
+      display: grid; place-items: center;
+      font-family: "Noto Serif SC", serif;
+      font-weight: 700;
+      font-size: 14px;
+      color: #0b3a7a;
+      background: linear-gradient(160deg, #dbeafe, #eff6ff);
+      border: 1px solid #bfdbfe;
+    }
+    .cell[data-status="done"] .avatar {
+      color: #14532d;
+      background: linear-gradient(160deg, #dcfce7, #f0fdf4);
+      border-color: #bbf7d0;
+    }
+    .cell[data-status="error"] .avatar {
+      color: #7f1d1d;
+      background: linear-gradient(160deg, #fee2e2, #fff1f2);
+      border-color: #fecaca;
+    }
+
+    .cell-main { min-width: 0; }
+    .cell-role {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 600;
+    }
+    .cell-role .tag {
+      font-size: 10px; font-weight: 600;
+      padding: 1px 6px; border-radius: 999px;
+      background: #f1f5f9; color: var(--ink-3);
+      border: 1px solid var(--line);
+    }
+    .cell-ticker {
+      margin-top: 3px;
+      font-size: 12px;
+      color: var(--ink-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cell[data-status="running"] .cell-ticker { color: var(--hive); }
+
+    .st {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+    .st-run { color: var(--run); background: var(--hive-soft); }
+    .st-done { color: var(--ok); background: var(--ok-soft); }
+    .st-wait { color: var(--ink-3); background: #f1f5f9; }
+    .st-err { color: var(--err); background: var(--err-soft); }
+
+    .cell-panel {
+      border-top: 1px solid var(--line);
+      background: #fbfcfe;
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .mini-think, .mini-tool {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--ink-2);
+    }
+    .mini-think .h, .mini-tool .h {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; font-weight: 600; color: var(--ink-3);
+      margin-bottom: 4px;
+    }
+    .mini-tool code {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 11px;
+      background: #f1f5f9;
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--ink);
+    }
+    .tool-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 4px 0;
+    }
+    .tool-row + .tool-row { border-top: 1px dashed var(--line); }
+    .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--ok); flex-shrink: 0;
+    }
+    .dot.run { background: var(--hive); animation: blink 1s ease infinite; }
+    .dot.err { background: var(--err); }
+    @keyframes blink { 50% { opacity: .35; } }
+
+    /* 合流条 */
+    .merge {
+      margin: 0 12px 12px;
+      border-radius: 10px;
+      border: 1px dashed #93c5fd;
+      background: rgba(219, 234, 254, 0.45);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12.5px;
+      color: var(--ink-2);
+    }
+    .merge strong { color: var(--ink); font-weight: 600; }
+    .merge .bars {
+      display: flex; gap: 3px; margin-left: auto;
+    }
+    .merge .bars span {
+      width: 14px; height: 14px; border-radius: 4px;
+      background: var(--ok-soft); border: 1px solid #86efac;
+    }
+    .merge .bars span.pending {
+      background: #eef2f7; border-color: var(--line);
+    }
+
+    /* 正文 final */
+    .answer {
+      font-size: 15px;
+      line-height: 1.75;
+      color: var(--ink);
+    }
+    .answer h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .answer ul { margin: 8px 0 0; padding-left: 1.15em; }
+    .answer li { margin: 4px 0; }
+    .answer .cite {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--hive);
+      background: var(--hive-soft);
+      border-radius: 999px;
+      padding: 1px 7px;
+      vertical-align: middle;
+      margin-left: 4px;
+    }
+
+    .legend {
+      margin-top: 22px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.65);
+      font-size: 12.5px;
+      color: var(--ink-2);
+      line-height: 1.65;
+    }
+    .legend strong { color: var(--ink); }
+    .legend ol { margin: 8px 0 0; padding-left: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="eyebrow">
+      <div>
+        <h1>蜂群模式 · Chat 正文草案</h1>
+        <p>想象：主 agent 调度一窝并行执行单元；正文里用「蜂巢格」承载状态，点开看各自思考与工具，合流后再出 final。</p>
+      </div>
+      <div class="badge">Static prototype</div>
+    </header>
+
+    <article class="thread" aria-label="对话正文示意">
+      <div class="msg-user">
+        帮我做一轮架构评审：耦合点、可删除垫片、以及 chat 渲染与 runner 的边界。要证据，不要空话。
+      </div>
+
+      <div class="turn">
+        <details class="think" open>
+          <summary>
+            <span class="sweep">思考中</span>
+            <span class="meta">· 先拆成可并行的调研面</span>
+            <span class="chev">›</span>
+          </summary>
+          <div class="body">任务跨「架构静态分析 / 运行时边界 / 前端渲染契约」三面，适合蜂群：atlas 看耦合，forge 看 runner 触面，pixel 看 chat 投影，sentinel 钉负向保证。我只做调度与合流，不自己啃全仓。</div>
+        </details>
+
+        <!-- ===== 蜂群巢 ===== -->
+        <section class="hive" aria-label="蜂群执行">
+          <header class="hive-head">
+            <div>
+              <div class="hive-kicker"><span class="pulse" aria-hidden="true"></span>蜂群执行中</div>
+              <h2 class="hive-title">架构评审 · 四路并行</h2>
+              <p class="hive-sub">主会话只保留调度骨架；每位 agent 有独立格，展开后是迷你时间线（思考 → 工具 → 摘要）。</p>
+            </div>
+            <div class="hive-stats">
+              <div class="hive-count">3<span> / 4 完成</span></div>
+              <div class="progress" aria-hidden="true"><i style="width:75%"></i></div>
+            </div>
+          </header>
+
+          <div class="cells">
+            <!-- Agent 1 done -->
+            <details class="cell" data-status="done">
+              <summary>
+                <div class="avatar" aria-hidden="true">览</div>
+                <div class="cell-main">
+                  <div class="cell-role">Atlas <span class="tag">explore</span></div>
+                  <div class="cell-ticker">耦合热点：application ↔ adapters 互相引用</div>
+                </div>
+                <span class="st st-done">已完成</span>
+              </summary>
+              <div class="cell-panel">
+                <div class="mini-think">
+                  <div class="h">思考 · 18s</div>
+                  先扫 import 图，再定位「加新 runtime 必须改 application」的硬耦合。
+                </div>
+                <div class="mini-tool">
+                  <div class="h">工具</div>
+                  <div class="tool-row"><span class="dot"></span><code>Grep</code> adapters 注册点 · 12 hits</div>
+                  <div class="tool-row"><span class="dot"></span><code>Read</code> application/modules.go</div>
+                </div>
+              </div>
+            </details>
+
+            <!-- Agent 2 running -->
+            <details class="cell" data-status="running" open>
+              <summary>
+                <div class="avatar" aria-hidden="true">锻</div>
+                <div class="cell-main">
+                  <div class="cell-role">Forge <span class="tag">coder</span></div>
+                  <div class="cell-ticker"><span class="sweep">正在读</span> ModuleRunner 状态机推进点…</div>
+                </div>
+                <span class="st st-run">执行中</span>
+              </summary>
+              <div class="cell-panel">
+                <div class="mini-think">
+                  <div class="h"><span class="sweep">思考中</span></div>
+                  Outcome 必须能落终态；resume 失败应报 session_unknown，不能静默 fresh。
+                </div>
+                <div class="mini-tool">
+                  <div class="h">工具</div>
+                  <div class="tool-row"><span class="dot"></span><code>Read</code> runtime/runner.go</div>
+                  <div class="tool-row"><span class="dot run"></span><code>Grep</code> session_unknown · 流式中</div>
+                </div>
+              </div>
+            </details>
+
+            <!-- Agent 3 done -->
+            <details class="cell" data-status="done">
+              <summary>
+                <div class="avatar" aria-hidden="true">绘</div>
+                <div class="cell-main">
+                  <div class="cell-role">Pixel <span class="tag">ui</span></div>
+                  <div class="cell-ticker">渲染清单与 LanguageGUI 皮肤边界清晰</div>
+                </div>
+                <span class="st st-done">已完成</span>
+              </summary>
+              <div class="cell-panel">
+                <div class="mini-think">
+                  <div class="h">思考 · 11s</div>
+                  工具活动不得伪装成 ContentBlock；思考面板要可折，长文另有 fold。
+                </div>
+                <div class="mini-tool">
+                  <div class="h">工具</div>
+                  <div class="tool-row"><span class="dot"></span><code>Read</code> chat-rendering-spec.md</div>
+                </div>
+              </div>
+            </details>
+
+            <!-- Agent 4 waiting / error example alternate: waiting -->
+            <details class="cell" data-status="waiting">
+              <summary>
+                <div class="avatar" aria-hidden="true">哨</div>
+                <div class="cell-main">
+                  <div class="cell-role">Sentinel <span class="tag">review</span></div>
+                  <div class="cell-ticker">等待上游三路摘要齐套后再钉负向保证</div>
+                </div>
+                <span class="st st-wait">排队中</span>
+              </summary>
+              <div class="cell-panel">
+                <div class="mini-think">
+                  <div class="h">待命</div>
+                  依赖 Atlas / Forge / Pixel 的合流笔记；不提前写空保证。
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="merge">
+            <strong>合流</strong>
+            <span>主 agent 将已完成格的摘要压成证据表；Sentinel 入场后补负向保证。</span>
+            <div class="bars" aria-hidden="true">
+              <span title="Atlas"></span>
+              <span title="Forge" class="pending"></span>
+              <span title="Pixel"></span>
+              <span title="Sentinel" class="pending"></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Final：蜂群收束后的正文（示意「若已全部完成」可把上面改成 settled 态） -->
+        <div class="answer">
+          <h3>初步合流（示意）</h3>
+          <p>
+            当前三路已回报：耦合集中在 runtime 注册面<span class="cite">览</span>；
+            chat 渲染契约与工具活动分层清楚<span class="cite">绘</span>；
+            Forge 仍在钉 runner 终态与 resume 自愈<span class="cite">锻</span>。
+            Sentinel 未启动——蜂群正文里用<strong>格状态</strong>表达依赖，而不是再开一条假「思考中」。
+          </p>
+          <ul>
+            <li>并行可见：一眼扫完谁在跑、谁完、谁堵。</li>
+            <li>细节下沉：展开格才露出思考 / 工具，避免正文被四路日志撑爆。</li>
+            <li>引用可追溯：final 用小徽章回指蜂格，而不是复制整段子 transcript。</li>
+          </ul>
+        </div>
+      </div>
+    </article>
+
+    <aside class="legend">
+      <strong>设计意图（给实现 agent）</strong>
+      <ol>
+        <li><strong>蜂巢格 = 子 agent 的正文投影</strong>，不是侧栏任务板；仍在同一条 chat 时间线里。</li>
+        <li><strong>默认摘要行</strong>（角色 · 一行 ticker · 状态）；展开才是迷你 Think + Tool 链。</li>
+        <li><strong>并行用网格，串行用合流条</strong>；依赖未满足用「排队」而非空转扫光。</li>
+        <li><strong>Final 不重放四路全文</strong>，用引用徽章链回蜂格；完整子会话可另开抽屉（本静态稿未做）。</li>
+        <li>与 ZCode <code>agentToolCall</code> 差：这里强调<strong>多路并排</strong>；与 Ant Design X ThoughtChain 差：这里是<strong>调度巢</strong>，不是单链节点。</li>
+      </ol>
+    </aside>
+  </div>
+
+  <script>
+    // 轻量示意：每隔几秒切换 Forge ticker，模拟蜂群仍在动
+    const tickers = [
+      "正在读 ModuleRunner 状态机推进点…",
+      "核对 Outcome → 终态落点…",
+      "搜索 session_unknown 自愈路径…",
+      "比对 adapter resume 失败面…"
+    ];
+    let i = 0;
+    const el = document.querySelector('.cell[data-status="running"] .cell-ticker');
+    if (el) {
+      setInterval(() => {
+        i = (i + 1) % tickers.length;
+        el.innerHTML = '<span class="sweep">正在</span> ' + tickers[i];
+      }, 2800);
+    }
+  </script>
+</body>
+</html>
