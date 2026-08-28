@@ -15,16 +15,19 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
-import type { PlanStepView } from '../../stores/chat.store';
-import type { ChatWorkflowView, SessionGoalView } from '../../utils/derive-chat-dock';
+import type { ChatWorkflowView, SessionGoalView, WorkflowStep } from '../../utils/derive-chat-dock';
+import { projectWorkflowSteps } from '../../utils/derive-chat-dock';
 import { MarkdownBody } from './markdown-body';
 
 const workflowSpring = { type: 'spring' as const, stiffness: 340, damping: 30, mass: 0.8 };
 
-export function ChatBottomDock({ workflow }: { workflow?: ChatWorkflowView }) {
+export function ChatBottomDock({ workflow, runStatus }: { workflow?: ChatWorkflowView; runStatus?: string }) {
   const reduceMotion = useReducedMotion();
   if (!workflow) return null;
-  const done = workflow.steps.filter((step) => step.status === 'completed').length;
+  // 步骤状态经 run 终态投影：succeeded 补齐完成、失败/中断标 interrupted——
+  // 数据层不补写，只在展示层止住永远旋转的进行中。
+  const steps = projectWorkflowSteps(workflow.steps, runStatus);
+  const done = steps.filter((step) => step.status === 'completed').length;
 
   return (
     <motion.section
@@ -36,12 +39,12 @@ export function ChatBottomDock({ workflow }: { workflow?: ChatWorkflowView }) {
       layout
     >
       {workflow.goal && (
-        <WorkflowGoal goal={workflow.goal} done={done} total={workflow.steps.length} />
+        <WorkflowGoal goal={workflow.goal} done={done} total={steps.length} />
       )}
       {workflow.proposedPlan && (
-        <WorkflowProposal text={workflow.proposedPlan} defaultOpen={workflow.steps.length === 0} />
+        <WorkflowProposal text={workflow.proposedPlan} defaultOpen={steps.length === 0} />
       )}
-      {workflow.steps.length > 0 && <WorkflowActions steps={workflow.steps} />}
+      {steps.length > 0 && <WorkflowActions steps={steps} />}
     </motion.section>
   );
 }
@@ -148,7 +151,7 @@ function WorkflowProposal({ text, defaultOpen }: { text: string; defaultOpen: bo
   );
 }
 
-function WorkflowActions({ steps }: { steps: PlanStepView[] }) {
+function WorkflowActions({ steps }: { steps: WorkflowStep[] }) {
   const headingId = useId();
   const done = steps.filter((step) => step.status === 'completed').length;
   const listRef = useRef<HTMLOListElement>(null);
@@ -182,12 +185,13 @@ function WorkflowActions({ steps }: { steps: PlanStepView[] }) {
   );
 }
 
-function WorkflowAction({ step, index }: { step: PlanStepView; index: number }) {
+function WorkflowAction({ step, index }: { step: WorkflowStep; index: number }) {
   const reduceMotion = useReducedMotion();
   const isDone = step.status === 'completed';
   const isActive = step.status === 'in_progress';
-  const statusLabel = isDone ? '已完成' : isActive ? '进行中' : '待处理';
-  const StatusIcon = isDone ? Check : isActive ? LoaderCircle : Circle;
+  const isInterrupted = step.status === 'interrupted';
+  const statusLabel = isDone ? '已完成' : isActive ? '进行中' : isInterrupted ? '已中断' : '待处理';
+  const StatusIcon = isDone ? Check : isActive ? LoaderCircle : isInterrupted ? CirclePause : Circle;
 
   return (
     <motion.li

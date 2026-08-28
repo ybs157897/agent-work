@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '../stores/chat.store';
 import type { TimelineEntry } from '../stores/runs.store';
-import { deriveChatDock, deriveChatWorkflow, deriveProposedPlan, deriveSessionGoal, deriveTodoPlan } from './derive-chat-dock';
+import { deriveChatDock, deriveChatWorkflow, deriveProposedPlan, deriveSessionGoal, deriveTodoPlan, projectWorkflowSteps } from './derive-chat-dock';
 
 const user = (text: string, key = text): ChatMessage => ({
   key,
@@ -144,5 +144,37 @@ describe('deriveChatDock', () => {
     expect(deriveChatDock(messages, 'r1')).toEqual({
       workflow: deriveChatWorkflow(messages, 'r1'),
     });
+  });
+});
+
+describe('projectWorkflowSteps · 终态步骤展示投影', () => {
+  const steps = [
+    { step: 'A', status: 'completed' as const },
+    { step: 'B', status: 'in_progress' as const },
+    { step: 'C', status: 'pending' as const },
+  ];
+
+  it('run 未终态（或状态未知）原样透传', () => {
+    expect(projectWorkflowSteps(steps, 'running')).toEqual(steps);
+    expect(projectWorkflowSteps(steps, 'waiting_approval')).toEqual(steps);
+    expect(projectWorkflowSteps(steps, undefined)).toEqual(steps);
+  });
+
+  it('succeeded 把未闭合步骤全部视为完成（不再永远进行中）', () => {
+    expect(projectWorkflowSteps(steps, 'succeeded')).toEqual([
+      { step: 'A', status: 'completed' },
+      { step: 'B', status: 'completed' },
+      { step: 'C', status: 'completed' },
+    ]);
+  });
+
+  it('失败/取消/中断类终态只把 in_progress 投影为 interrupted，pending 保持', () => {
+    for (const status of ['failed', 'cancelled', 'interrupted', 'lost']) {
+      expect(projectWorkflowSteps(steps, status)).toEqual([
+        { step: 'A', status: 'completed' },
+        { step: 'B', status: 'interrupted' },
+        { step: 'C', status: 'pending' },
+      ]);
+    }
   });
 });

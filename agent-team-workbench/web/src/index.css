@@ -1121,7 +1121,8 @@
 }
 
 .chat-workflow-status-blocked,
-.chat-workflow-status-limited {
+.chat-workflow-status-limited,
+.chat-workflow-step-status-interrupted {
   @apply border-status-warning/30 bg-status-warning/10 text-status-warning;
 }
 
