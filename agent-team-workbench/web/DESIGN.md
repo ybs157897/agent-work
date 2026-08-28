@@ -136,8 +136,8 @@ components:
     base: "LanguageGUI 工作流只读投影；同一 rounded {rounded.container} 容器内依次展示目标摘要、方案草稿与 Action 步骤链；步骤卡 rounded {rounded.card}; 连接线用 {colors.border.subtle}; 状态同时用图标和文字表达"
     behavior: "目标正文始终可扫读；方案草稿可折叠；Action 顺序来自真实 run.plan_updated；无真实 mutation 契约时不展示设置、删除、新增等伪编辑控件"
   chat-tool-activity:
-    base: "生产工具调用唯一入口 ActivityGroup：每个连续工具批次默认只显示一条 44px 命令行摘要；同一行承载工具族摘要、总调用数、完成/运行/失败/中断状态和 chevron；展开后按事件顺序纵向列出紧凑工具日志，不使用横向 Action 大卡"
-    behavior: "正文 text-delta 会结束当前工具批次，后续工具另起 ActivityGroup；仅 reasoning 不拆分并行工具，避免零碎思考卡；所有非空组默认折叠，整行是语义 button，点击后纵向日志逐条可展开详情"
+    base: "生产工具调用唯一入口 ActivityGroup：阶段内按 Explore/Execute/Changes/CUA/Agent 语义投影为 44px 命令行摘要；同一行承载组别、工具族、总调用数、当前动作、完成/运行/失败/中断状态和 chevron；展开后按事件顺序纵向列出紧凑工具日志，不使用横向 Action 大卡"
+    behavior: "reasoning/text delta 形成当前思考与正文阶段；下一条 tool.started 前先落下该阶段，工具再按 ZCode 默认 Explore/Execute 分组（Changes 默认逐条）；tool.progress/completed/failed 只更新当前工具、不制造阶段碎片；running→terminal 自动收成摘要；每段 thinking 默认折叠为最后非空行 ticker，streaming→settled 尊重用户开合；Run 级展开态由 WorkTimeline 管理"
     demo-boundary: "Demo 只能复用生产 ActivityGroup/ToolRow/详情渲染器与可审计 fixture，不得从模型正文、Markdown 或静态 content block 伪造工具调用；无事件时显示空态"
   content-block:
     base: "LanguageGUI 结构化正文块；统一 rounded {rounded.container}、border {colors.border.subtle}、bg {colors.surface.raised} 与 {shadows.level-1}；metric/table/chart/file/event/image/audio/map/search/review-summary 共享标题、说明与来源栏"
@@ -156,6 +156,7 @@ components:
     ae-boundary: "AE/Lottie/WebM 只用于印章、墨迹、山雾等低频资产；实时交互由 Motion/CSS 驱动"
   output-stream:
     base: "正文只有一棵展示树：普通 Markdown 以 100ms 节流流式解析；已闭合 code fence 直接进入 CodeBlock；未闭合 languagegui/Mermaid/复杂 fence 先缓冲，闭合后原子渲染"
+    chronology: "同一 run 严格投影为 thinking → assistant/activity → thinking → assistant/activity → final；每段 reasoning 使用独立稳定 key，禁止整轮汇总或按 tool.progress 切碎"
     diagnostics: "DEV 下仅通过 outputTrace=1 或 localStorage 显式启用结构化 ring buffer；正文内容需额外 outputTraceContent=1；默认不写 console、不进入 Zustand、不改变渲染节奏"
 ---
 
@@ -210,6 +211,21 @@ LanguageGUI 对话皮肤是局部视觉映射：只在 ChatPage 根将对话的 
 - **配置工作台**（智能体/模型页）：左栏 220–256px + 流式主区，主区内容再限 `max-w-6xl`。
 - **对话页**：生产 `/chat` 在 ChatPage 根挂更具体的 LanguageGUI scoped skin：浅蓝画布、白色内容面与蓝色强调；正文和底部 composer 共用约 920px 居中阅读轨，窄屏吃满可用空间。旧 `.tx-scope` 保留为 fallback，不影响其他页面；SSE 连接态仍在对话页头，非对话页继续走宣纸壳。本次皮肤迁移不新增 `<1024px` 或 mobile 断点承诺。
 - **对话工作流**：Goal、Plan 模式方案正文与本轮执行步骤只占一个工作流区域。Goal 是 Workbench 自有语义；Action 卡只读展示真实步骤状态，不复制 LanguageGUI multi-prompt 的编辑器按钮。
+
+## LanguageGUI Work Timeline
+
+Chat 的正文工作流采用单一、按事件顺序的 Run 时间线：`thinking → interim assistant/tool → thinking → interim assistant/tool → final`。每个 reasoning 阶段、interim assistant 和连续工具批次都是独立 sibling；interim assistant 始终按普通 Markdown 正文渲染，不属于 thinking。只有终态才将 thinking、interim、tools、approval 和错误证据整体收进「已工作 X」WorkTimeline，真正 final answer 始终独立在外，不覆盖或吸收之前的 interim 输出。
+
+- 视觉：ActivityGroup 使用浅色 raised/sunken 表面、语义边框和 44px 单行摘要；展开后才出现纵向 ToolRow 与对应详情。工具调用不使用横向 Action 卡墙，也不以黑色终端面作为默认外壳。
+- 文件变更：Write/Edit 有真实统计时使用 `N 个文件已更改 +A −D` 紧凑摘要，增删数字分别使用 success/error token；只有字节数时显示灰色文件数与大小，不伪造行数。
+- Run 变更卡：Final Answer 后使用写盘前后快照展示「已编辑 N 个文件」与逐文件增删行；默认列 3 项并提供可操作的剩余项 disclosure。「审核」打开右侧文件列表 + DiffCard，「撤销」必须经 Modal 确认、服务端 hash 预检和整批恢复；已撤销状态禁用再次撤销。该卡不读取全局 Git dirty，也不复用 Artifact accepted 语义。
+- 状态：运行中 WorkTimeline 默认展开，成功 Run 默认折叠，失败或中断 Run 默认展开；内部每段 thinking 与每个工具组仍默认折叠成可跟随更新的摘要行。状态颜色只表达真实状态，状态文字与图标同时保留。
+- 顺序：正文或 thinking 到达后形成当前阶段；新的 `tool.started` 先落下当前阶段，再开始新的 ActivityGroup。`tool.progress/completed/failed` 只更新对应工具行，不制造碎片 segment。
+- 交互：摘要行是完整的 `button`，使用 `aria-expanded`/`aria-controls`；展开后每行详情独立控制，同一批次最多展开一条详情。用户手动收起/展开不因普通流式重渲染而丢失。
+- 可访问性：焦点态使用 brand ring；运行状态使用 `role=status` 与 `aria-atomic`，失败状态提供可读错误文本；chevron 仅为装饰，按钮本身有完整的中英文语义标签；`prefers-reduced-motion` 下取消扫光/旋转而保留状态信息。
+- 流式折叠：thinking 摘要行显示最后非空行并横滚到尾，运行中标题扫光；展开体最高 240px，仅在 2px 贴底范围内跟随并显示上下 fade mask，折叠 300ms 后卸载；工具摘要实时更新当前动作与批次状态，running→terminal 自动收起。
+- Final 正文：默认完整展开并持续按 Markdown 段落流式渲染，不提供「展开全文/收起全文」或高度帽；长文、代码块与 ContentBlocks 均保持直接可读。
+- 错误三通道：`tool.failed` 只在 ActivityGroup/ToolRow 标错；模型/供应商 `RunFailed` 只在 composer 上方 RunErrorBanner 展示（详情/复制/可重试时真实 Retry）；cancelled/interrupted/user stop 使用停止或 info 语义，不显示模型错误 Banner，也不把运行错误复制成 assistant/transcript 行。
 
 ## Elevation & Depth
 
