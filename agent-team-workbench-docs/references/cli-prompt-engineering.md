@@ -75,6 +75,20 @@ kimi-code 源码在本机 fork（~/Documents/ybs/code/kimi-code-2，ybs157897/ki
 可加一个 env/flag 透传 hostIdentity，让我们的输出纪律占住 replyStyleGuide 模板槽位
 （最强位置），替代当前的首条用户消息前缀注入。
 
+## 4.5 交叉验证（Cursor CLI agent 独立分析，2026-08-28）
+
+用 Cursor CLI headless（`agent -p`）对 kimi-code 仓库做了第二轮独立源码分析，结论与本文 §2/§4
+全部一致，并补充以下细节：
+
+- kap API 的 `agent_config.system_prompt`：schema 接受但 handler 不应用（忽略）——非注释推断，
+  是代码行为确认。
+- `kimi web` 启动的 kap 进程不传 `agentFiles`（仅 skillDirs）——`--agent-file` 只对 CLI 直连引擎
+  路径生效，对 kap 路径无效；我们的 kimi CLI 适配器（print mode）走的是前者，不受影响。
+- agentfile 覆盖同名内置 profile 需 frontmatter `override: true`，否则 warn 并忽略；
+  profile 优先级 explicit(40) > workspace(30) > extra(20) > user(10) > plugin(5) > builtin(0)。
+- 插件段与 AGENTS.md 在模板里被明文标注为不可覆盖 system instructions 的非特权通道。
+- wire 层四端全部单条 system（Anthropic 是单元素 system 数组包装，不是多段）。
+
 ## 5. 对 languagegui/v1 契约补丁的设计建议
 
 1. **补"长回答组织纪律"一节**（契约现在只声明块的存在）：结论先行（首段 TL;DR）；
