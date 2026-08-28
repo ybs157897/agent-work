@@ -39,8 +39,9 @@ If Agent prompt, model, mode, sandbox, approval policy, or Runtime changes, the 
 | `policy.approval_policy=manual` | `approvalPolicy=untrusted` |
 | `policy.sandbox` | `sandbox` (`read-only`, `workspace-write`, `danger-full-access`) |
 | `mode=plan` | experimental `turn/start.collaborationMode` |
+| Workbench reasoning effort | `turn/start.effort`, always sent; default `medium` |
 
-An empty Codex model means “use the current Codex CLI default”. Non-Codex provider models are rejected before dispatch.
+An empty Codex model means “use the current Codex CLI default”; in plan mode the default is discovered with `model/list` before `turn/start`. Non-Codex provider models are rejected before dispatch.
 
 Workbench sets `CODEX_HOME` to `.agent-work/codex` under the control-plane working directory so Codex auth, config, and thread history stay project-local (not `~/.codex`).
 
@@ -57,7 +58,7 @@ Workbench sets `CODEX_HOME` to `.agent-work/codex` under the control-plane worki
 | completed tool item | `tool.completed` or `tool.failed` |
 | `item/commandExecution/outputDelta` | `tool.progress` |
 | `turn/completed.status=completed` | `succeeding` then `succeeded` |
-| `turn/completed.status=interrupted` | `interrupted` or `cancelled` according to the control command |
+| `turn/completed.status=interrupted` | `cancelled`; `interrupted` only while a control-plane cancel is in flight |
 | `turn/completed.status=failed` | `failed` with the provider error message |
 
 `item/completed` is authoritative for final item state; deltas are display-only and never determine terminal success.
@@ -87,3 +88,6 @@ Binary existence alone is not considered healthy. Probe never starts a thread or
 - The adapter uses local stdio. Remote WebSocket app-server transport is not exposed by this binding.
 - Workbench tool allowlists are rejected because the stable built-in-tool restriction surface is not equivalent to the Workbench whitelist. Sandbox and approval policies remain enforced.
 - MCP elicitation and `item/tool/requestUserInput` are not yet represented in the Workbench interaction domain; unexpected server requests receive JSON-RPC `-32601` rather than being silently accepted.
+- The `error` notification is projected as its raw params string; `error.message`, `codexErrorInfo`, and `will_retry` are not yet interpreted.
+- `turn/diff/updated` and `fileChange.changes[].diff` are not consumed; tool cards carry no diff payload.
+- Dynamic tools are not wired: `thread/start.dynamicTools` is never sent and a server-initiated `item/tool/call` is rejected with `-32601`.
