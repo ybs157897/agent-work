@@ -1,4 +1,5 @@
 import { MarkdownBody } from './markdown-body';
+import { LongAnswerFold } from './long-answer-fold';
 import { MessageActions } from './message-actions';
 import type { ContentBlockDocument } from '../../utils/content-blocks';
 import { stripLanguageGuiFences } from '../../utils/content-blocks';
@@ -28,12 +29,21 @@ export function AssistantTurn({
     <article className="chat-assistant-turn group" aria-label={`${name} 的消息`}>
       <div className="w-full min-w-0">
         {displayText ? (
-          // key 切换强制 streaming→settled 重挂载（KaTeX/高亮落定后重处理）；
-          // 曾有 .chat-streaming 类但从未定义样式，按删除优先移除。
+          // key 切换强制 streaming→settled 重挂载（KaTeX/高亮落定后重处理；
+          // 同时让长回答折叠复位为默认收起）。曾有 .chat-streaming 类但从未
+          // 定义样式，按删除优先移除。
           <div key={streaming ? 'streaming' : 'settled'}>
             <div className="chat-prose">
-              <MarkdownBody text={displayText} streaming={streaming} />
-              {streaming && <span className="chat-stream-caret" aria-hidden />}
+              <LongAnswerFold
+                text={displayText}
+                streaming={streaming}
+                renderBody={(bodyText) => (
+                  <>
+                    <MarkdownBody text={bodyText} streaming={streaming} />
+                    {streaming && <span className="chat-stream-caret" aria-hidden />}
+                  </>
+                )}
+              />
             </div>
           </div>
         ) : null}
