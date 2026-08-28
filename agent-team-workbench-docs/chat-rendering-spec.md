@@ -11,7 +11,7 @@
 **真相源约定**：本文是渲染清单与视觉规格；数值生效值以
 `web/src/index.css`（`.chat-*` 区）、`web/src/components/chat/*.module.css`、
 `web/tailwind.config.js` 为准。文档与代码漂移时以代码为准修本文。
-几何来源：消息、正文与 Callout 保留 LeAgent 扫描节奏；代码面板和工具 Action 卡对齐 LanguageGUI，Terminal/Read/Search/Diff 内容体保留 DSH 几何。生产 `/chat` 的展示层采用已验收的 LanguageGUI 浅蓝/白/蓝强调 scoped skin；颜色全部改走本项目语义 token。真实 TranscriptSegment、Markdown、队列、usage、stop/send、SSE、审批、artifact 与 dock 行为不因换肤改变。
+几何来源：消息、正文与 Callout 保留 LeAgent 扫描节奏；代码面板对齐 LanguageGUI，工具活动采用 Codex 式紧凑时间线，Terminal/Read/Search/Diff 内容体保留 DSH 几何。生产 `/chat` 的展示层采用已验收的 LanguageGUI 浅蓝/白/蓝强调 scoped skin；颜色全部改走本项目语义 token。真实 TranscriptSegment、Markdown、队列、usage、stop/send、SSE、审批、artifact 与 dock 行为不因换肤改变。
 
 主题：生产 Chat 根使用 `data-theme=light|dark` 切换 LanguageGUI scoped 语义 token；默认 light，用户显式选择后本地记忆。组件禁止自行写 `dark:` 颜色分支。
 
@@ -26,7 +26,7 @@
 | thinking | reasoning 事件；超帽时间线走 `reasoning_folded` 折叠锚点（runs.store capTimeline 把逐出推理聚合回 message.completed，尾部 4000 字符预算截断，截断带「早期推理已省略」前缀） | `.chat-reasoning-panel`：`rounded-lg`(12) 边 `border-subtle` 底 `surface-sunken/80` | 头 `caption`；体 `max-h-52` 纵滚 `px-3 py-2.5`（motion 展开落定后留 inline height:auto，固定高度会被覆盖，故帽用 max-h） | 流式扫光带 300px 2.6s ease-out | reasoning-activity-row.tsx |
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
-| activity | 同 run 连续工具行 | LanguageGUI `ActivityGroup`；组头汇总，Action 卡点击后在轨道下展开详情 | `Action N` + 工具徽章 + 摘要 + 耗时 + 状态文字 | 单选展开；运行态 Loader；横向滚动 | tool-card.tsx |
+| activity | 同 run、同一正文阶段内的连续工具行；正文 text-delta 会切断批次 | `ActivityGroup`；默认一条命令行摘要，点击后才出现纵向工具日志与详情 | 折叠行显示工具族、总数与状态；展开后逐行显示序号、工具、摘要、耗时和状态 | 默认折叠；仅 reasoning 不拆并行工具；后续工具批次另起一行 | tool-card.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
 | turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
 | approval | 审批请求 | `rounded-xl`(16) 边 `status-warning/25` 底 `surface-raised` `shadow-sm` | 见 §6 | 容器查询 <28rem 动作纵排 | approval-card.tsx |
@@ -52,12 +52,33 @@
 | 分割线 hr | `border-subtle` 1px；margin 1.6em | — |
 | 强调族 | strong=650；del=tertiary；mark=brand/18 软底；kbd=凹面+边框+底边 2px | sub/sup=.75em；abbr dotted underline |
 | Callout | `> [!TYPE]` 与 `:::type ... :::` | note/info/tip/success/warning/caution/danger/important；3px 语义色条、7% 软底、标题标记 |
-| 数学 | `remark-math` + KaTeX | 流式期显示原文，落定后排版；display math 横向滚动 |
-| Mermaid | `mermaid` fenced code | 动态加载、落定后渲染；失败回落源码而非丢内容 |
+| 数学 | `remark-math` + KaTeX | 普通正文继续流式；未闭合 `$$` 块级数学尾部缓冲，闭合后即排版；display math 横向滚动 |
+| Mermaid | `mermaid` fenced code | 未闭合 fence 不展示源码；闭合后即可动态加载并原子渲染，失败回落源码 |
 | 图片 | 标准 Markdown image | 最大宽度 100%、8px 圆角；无效 src 显示可读占位 |
-| LanguageGUI ContentBlock | `languagegui` fenced JSON 或 canonical `content_blocks` | 统一走 `chat-content-blocks-v1.md`；落定后渲染 metric/table/chart/file/event/review-summary，流式期与解析失败回落源码 |
+| LanguageGUI ContentBlock | 每条消息至多一个 `languagegui` fenced JSON，或 canonical `content_blocks` | 统一走 `chat-content-blocks-v1.md`；未闭合 JSON 不展示源码，闭合且合法即原子渲染；canonical 完成态在同源 fence 原位置接管；多 fence 违反输出契约时保留原始顺序，不猜测重排 |
 | details | 边框 + 凹面软底，summary 可聚焦/可展开 | 不开放危险 raw HTML；只消费解析器产生的安全节点 |
 | 崩溃兜底 | MarkdownErrorBoundary 内联 fallback（`<pre>` mono 13 纯文本块，`resetKey` 复位） | 按 resetKey 清错误态重试 |
+
+流式正文遵循“单一展示树”：已安全闭合的 Markdown 前缀每 100ms 进入同一个
+`ReactMarkdown` 渲染器，未闭合的 fence / JSON / Mermaid / 数学尾部先留在缓冲区；
+结构闭合后直接替换为最终组件。禁止先把结构源码作为普通正文展示，再在
+`message.completed` 后换成另一棵渲染树。
+
+临时输出追踪仅在 DEV 且显式开启时运行。推荐用 localStorage 保持切换会话后仍生效：
+
+```js
+localStorage.setItem('agent-workbench:output-trace', '1')
+localStorage.setItem('agent-workbench:output-trace-content', '1') // 只有分析正文差异时才开
+location.reload()
+```
+
+随后用 `window.__LANGUAGEGUI_OUTPUT_TRACE__.get()` 查看内存记录，或用
+`window.__LANGUAGEGUI_OUTPUT_TRACE__.export()` 导出 `languagegui/output-trace-v1` JSON；
+`clear()` 清空。记录固定保留最近 1000 条，默认只有长度与 hash；console 还需额外
+设置 `agent-workbench:output-trace-console=1`。排查结束后删除以上 localStorage 项并刷新。
+同一页面生命周期的节点顺序与耗时只比较单调递增的 `perfMs`；`capturedAt` 供人工对时，
+`serverOccurredAt` 是服务端参考时间，不能直接拿它减客户端时间。工具 completed/failed
+仍属于流式生命周期，并用 `metadata.lifecycle=tool-terminal` 标识，不冒充正文 final。
 
 ---
 
@@ -76,18 +97,18 @@
 
 ## 4. 工具块层（activity 组内）
 
-### 公共件（LanguageGUI Action 卡 + 本地专用详情体）
+### 公共件（紧凑工具日志 + 本地专用详情体）
 | 件 | 规格 |
 |---|---|
-| ActivityGroup | 58px 汇总头；历史大组可折叠；横向 Action 卡轨，8px 间距、细滚动条 |
-| ToolRow | 约 232×88px；`Action N` 与工具徽章在首行，双行摘要居中，耗时与图标+文字状态收尾；选中用品牌蓝边与 ring |
+| ActivityGroup | 44px 单行摘要 button；每个连续工具批次独立成组并默认折叠；展开后才渲染纵向工具日志 |
+| ToolRow | 最小 44px 单行日志；序号/工具、单行摘要、耗时、图标+文字状态横向排列；选中用品牌蓝软底与细 ring |
 | 状态 | pending/running=Loader；success=Check；error=Alert；stopped=中断图标；图标之外有读屏文本，运行动画遵循 reduced-motion |
-| 展开体 | 同一时间只展开一个 chip；复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
+| 展开体 | 同一时间只展开一条工具日志；详情紧跟该行，复用 Terminal/Read/Search/Diff/IN-OUT 专用体，max-height 22rem 纵滚 |
 
 **实现不变量**：`ActivityGroup` 是生产环境工具调用的唯一渲染入口。它只由
 真实 transcript/run 事件聚合而成，工具数量、顺序、名称、参数摘要、耗时与终态都必须
 来自同一个 run 的事件；不得根据助手正文、Markdown 或模型声称的“已调用工具”创建
-工具卡。`tool-card.tsx` 负责组装组与 Action 卡，族渲染器只负责详情体，二者之间不允许再
+工具日志。`tool-card.tsx` 负责组装批次与纵向日志行，族渲染器只负责详情体，二者之间不允许再
 出现 demo 专用的第二套工具协议。
 
 历史回放仍受 500 帧预算约束，但裁剪必须先保留正文结构锚点与完整工具 bundle：
@@ -102,8 +123,9 @@ LanguageGUI 范式在这里落成四条可验收规则：
   pending/running/success/error/stopped 状态。
 - **可读**：状态必须同时输出图标和文字；动画只是运行态辅助，`prefers-reduced-motion`
   下仍保留静态状态文字。
-- **披露**：首屏只展示可扫描的工具 Action 卡；点击一张卡才展开对应详情体，同一组
-  同时只展开一个，长输入/输出在各自滚动区域内截断而不撑破阅读轨。
+- **披露**：首屏只展示单行命令摘要；点击该行才渲染对应的纵向工具日志，再点击一行
+  展开详情体。同一批次同时只展开一个详情；正文一旦出现，当前批次结束，后续工具必须
+  另起一条摘要，长输入/输出不得把阅读轨撑破。
 
 Demo 页面若要演示工具调用，必须复用生产 `ActivityGroup`/`ToolRow` 与详情渲染器，
 并使用可审计的 fixture 事件；禁止在 demo 内直接拼接 `content_blocks` 或用模型文本
