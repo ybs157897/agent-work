@@ -4,6 +4,7 @@
 > 对照对象：本仓 `agent-team-workbench/web`（React + zustand + react-markdown）。
 > 方法：纯静态分析（asar 索引解析 + minified bundle 字符串/CSS 证据抽取），未运行、未修改任何专有软件；本文只描述行为与极小示意片段，不复制其源码。
 > 日期：2026-08-24；**二次核对**：同日对本机 `/Applications/ChatGPT.app` asar 重抽 `local-conversation-turn-*.js` 与 CSS，修正回合展示顺序与 Reasoning 归属（见 §0.3）。
+> 姊妹文档（ZCode 时间序 row 模型，勿与本文槽位模型混抄）：[zcode-desktop-interaction-report.md](./zcode-desktop-interaction-report.md)。
 
 ---
 

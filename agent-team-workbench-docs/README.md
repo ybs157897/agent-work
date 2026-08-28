@@ -15,6 +15,10 @@
 - references/design-resource-library.md：**Web 设计素材库**——外部设计资源站检索入口（AICSS/ohwow/Curated 核验条目 + 候选池），做前端设计先查这里选站再进站搜。
 - references/design-asset-index.md：**素材级索引**——AICSS 14 组件全量与 Curated 分类/区块的地址、描述、适用场景明细（配套上一条的选站库单）。
 
+## 待实现（方向已确认、尚未落地）
+
+- [待实现/README.md](./待实现/README.md)：待办索引（Obsidian 个人便携约定、蜂群 Chat 正文草案等）；单条正文与 `notes/proposed/` 决策 note 成对。
+
 ## 时点快照（定格留痕，不随后续实现更新）
 
 - design-audit-2026-08-25.md：redesign-skill 设计审计问题单（通过项 / P1 / P2）。问题项已并入 frontend-design-md-redesign.md 的路线消化，落实情况以该文档与 git log 为准。

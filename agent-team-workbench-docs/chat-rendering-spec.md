@@ -5,6 +5,9 @@
 配套文档：
 - `web/DESIGN.md` —— 全局 token 与组件契约（事实源）；
 - `https://github.com/vixues/LeAgent/tree/1f16badc834abbd829d3cb7e9f8fcb5b2d57f443/frontend/src/components/chat` —— 消息骨架与 Markdown 交互基线（Apache-2.0）；
+- `references/zcode-desktop-interaction-report.md` —— ZCode 桌面思考/工具/final 交互逆向（给对齐 agent 用）；
+- `references/swarm-chat-body.md` —— 蜂群模式正文展示草案（静态 HTML，proposed）；
+- `references/codex-desktop-rendering-comparison.md` —— Codex 桌面回合槽位对照；
 - `references/codex-desktop-markdown-tags-inventory.md` —— 历史 Markdown 格局来源，不再是当前视觉基线；
 - `frontend-design-md-redesign.md` —— 重设计方案与路线。
 
