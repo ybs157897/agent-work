@@ -11,6 +11,7 @@ import type { ExecutionRun, WorkItem } from '../api/types';
 import { chatErrorMessage, logChatError, type ChatErrorCode } from '../utils/chat-errors';
 import { formatRunFailureMessage } from '../utils/format-run-failure';
 import { useRunsStore, type TimelineEntry } from './runs.store';
+import { extractDeltaChunk } from './delta-chunk';
 import { createRequestGuard } from './request-guard';
 import { useTasksStore } from './tasks.store';
 import { toast } from './toast.store';
@@ -68,19 +69,6 @@ export interface RunStreamParts {
 export interface QueuedMessage {
   text: string;
   clientKey: string;
-}
-
-/** 从 DSH message.delta 的 raw.chunk 提取流式块（reasoning-delta / text-delta）。 */
-export function extractDeltaChunk(data?: Record<string, unknown>): { type?: string; text?: string } | null {
-  const raw = data?.raw;
-  if (!raw || typeof raw !== 'object') return null;
-  const chunk = (raw as Record<string, unknown>).chunk;
-  if (!chunk || typeof chunk !== 'object') return null;
-  const c = chunk as Record<string, unknown>;
-  return {
-    type: typeof c.type === 'string' ? c.type : undefined,
-    text: typeof c.text === 'string' ? c.text : undefined,
-  };
 }
 
 /** 从 tool.completed/failed 载荷提取 exit_code（仅有限数值，其余形态忽略）。 */
@@ -360,17 +348,22 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           }
           break;
         }
-        case 'message.completed':
-          if (reasoningBuf) {
+        case 'message.completed': {
+          // 超帽时间线的逐出推理由 runs.store 折叠回锚点（reasoning_folded）；
+          // 折叠优先于残存 delta 缓冲——后者在同一块内可能只是尾部片段。
+          const folded = typeof e.data?.reasoning_folded === 'string' ? e.data.reasoning_folded : '';
+          const foldTruncated = e.data?.reasoning_folded_truncated === true;
+          const reasoning = folded || reasoningBuf;
+          if (reasoning) {
             out.push({
               key: `${runId}-thinking-${e.event_id}`,
               runId,
               kind: 'thinking',
-              text: reasoningBuf,
+              text: foldTruncated ? `……（早期推理已省略）\n\n${reasoning}` : reasoning,
               at: e.occurred_at,
             });
-            reasoningBuf = '';
           }
+          reasoningBuf = '';
           answerBuf = '';
           {
             const itemType = typeof e.data?.item_type === 'string' ? e.data.item_type : undefined;
@@ -388,6 +381,7 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             }
           }
           break;
+        }
         case 'tool.started': {
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
           const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';

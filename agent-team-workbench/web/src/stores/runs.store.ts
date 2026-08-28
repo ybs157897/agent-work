@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { getRun, listApprovals, listArtifacts, listRunEvents } from '../api/endpoints';
 import type { ApprovalRequest, Artifact, CanonicalEvent, ExecutionRun } from '../api/types';
+import { extractDeltaChunk } from './delta-chunk';
 
 /** Run 时间线条目：来自 SSE 信封（协议 §6.2）或 run_seq 历史回放。 */
 export interface TimelineEntry {
@@ -15,6 +16,8 @@ export interface TimelineEntry {
 }
 
 const TIMELINE_CAP = 500;
+/** 推理折叠预算：每个 message.completed 锚点上保留的逐出推理文本尾部上限（字符）。 */
+const REASONING_FOLD_TAIL_CHARS = 4000;
 const TIMELINE_STICKY_GROUPS: ReadonlyArray<ReadonlySet<string>> = [
   new Set(['run.plan_updated']),
   new Set(['goal.updated', 'goal.create', 'goal.clear', 'session.goal.updated']),
@@ -144,6 +147,65 @@ function selectToolBundles(entries: TimelineEntry[], budget: number): Set<string
 }
 
 /**
+ * 推理折叠：reasoning-delta 与正文帧同池按尾填充，而推理永远先于正文产生——
+ * 长 run 超帽后推理帧必被整段淘汰，历史「思考过程」面板因此整层消失。
+ * 截断落定后，把每个 message.completed 锚点之前未全程存活的推理文本聚合挂到
+ * 锚点 data 上（`reasoning_folded`，合成投影字段、不上线），思考内容随结构锚点
+ * 存活。尾部预算截断防内存回流；块内帧全部存活时不折叠（buildMessages 走原
+ * reasoningBuf 路径，双源不重复出卡）。
+ */
+function foldEvictedReasoning(
+  entries: readonly TimelineEntry[],
+  retained: TimelineEntry[],
+): TimelineEntry[] {
+  const retainedIds = new Set(retained.map(entryIdentity));
+  const folds = new Map<string, { text: string; truncated: boolean }>();
+  let buf = '';
+  let sawDelta = false;
+  let sawEvicted = false;
+  for (const entry of entries) {
+    if (entry.type === 'message.delta') {
+      const text = extractDeltaChunk(entry.data);
+      if (text?.type === 'reasoning-delta' && text.text) {
+        buf += text.text;
+        sawDelta = true;
+        if (!retainedIds.has(entryIdentity(entry))) sawEvicted = true;
+      }
+      continue;
+    }
+    if (entry.type === 'message.completed') {
+      // 折叠粘滞：锚点已携带折叠时绝不重算覆盖——增量合并每来一个事件就重截断，
+      // 扫描窗口随尾淘汰收窄，重算会让折叠越合越短（测试钉：部分逐出场景）。
+      // 折叠在锚点定稿时生成，此后该块的推理不可能再有新增，保持原值即完整。
+      const alreadyFolded = typeof entry.data?.reasoning_folded === 'string';
+      if (!alreadyFolded && sawDelta && sawEvicted && retainedIds.has(entryIdentity(entry))) {
+        const truncated = buf.length > REASONING_FOLD_TAIL_CHARS;
+        folds.set(entryIdentity(entry), {
+          text: truncated ? buf.slice(-REASONING_FOLD_TAIL_CHARS) : buf,
+          truncated,
+        });
+      }
+      buf = '';
+      sawDelta = false;
+      sawEvicted = false;
+    }
+  }
+  if (folds.size === 0) return retained;
+  return retained.map((entry) => {
+    const fold = folds.get(entryIdentity(entry));
+    if (!fold) return entry;
+    return {
+      ...entry,
+      data: {
+        ...entry.data,
+        reasoning_folded: fold.text,
+        ...(fold.truncated ? { reasoning_folded_truncated: true } : {}),
+      },
+    };
+  });
+}
+
+/**
  * 高频 delta 只保留尾部，但结构事件、Plan/Goal 快照和工具生命周期有更高保留优先级。
  * 工具按完整 call bundle 从新到旧选择，绝不保留没有 started 的 terminal。
  */
@@ -170,7 +232,7 @@ function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
   if (selected.size > TIMELINE_CAP) {
     const anchors = entries.filter((entry) => selected.has(identity(entry)));
     const newest = anchors.slice(-TIMELINE_CAP);
-    return newest.sort((a, b) => entries.indexOf(a) - entries.indexOf(b));
+    return foldEvictedReasoning(entries, newest.sort((a, b) => entries.indexOf(a) - entries.indexOf(b)));
   }
 
   const toolBudget = TIMELINE_CAP - selected.size;
@@ -186,7 +248,7 @@ function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
     for (const entry of tail.slice(-remaining)) selected.add(identity(entry));
   }
 
-  return entries.filter((entry) => selected.has(identity(entry)));
+  return foldEvictedReasoning(entries, entries.filter((entry) => selected.has(identity(entry))));
 }
 
 export const useRunsStore = create<RunsStore>()((set, get) => ({

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
 import { buildMessages } from './chat.store';
 import { useRunsStore } from './runs.store';
@@ -168,5 +168,135 @@ describe('runs.store applyEvent', () => {
       aggregate: { type: 'workspace', id: 'ws_1', version: 1 },
     };
     expect(useRunsStore.getState().applyEvent(ev)).toBe(false);
+  });
+});
+
+describe('runs.store 推理折叠（超帽时间线）', () => {
+  beforeEach(() => {
+    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
+  });
+
+  const reasoningDelta = (seq: number, text: string): CanonicalEvent =>
+    runEvent(seq, 'message.delta', { raw: { chunk: { text, type: 'reasoning-delta' } }, role: 'assistant' });
+
+  it('推理帧前段被逐出后，completed 锚点携带尾部预算截断的折叠全量推理', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    // 600 条推理 delta（约 6.6KB，超 4000 截断预算）；尾部填充只留最新约 498 条，
+    // 最早期帧被逐出 → 触发折叠。
+    for (let seq = 2; seq <= 601; seq += 1) applyEvent(reasoningDelta(seq, `推理片段-${seq}-校验;`));
+    applyEvent(runEvent(602, 'message.completed', { role: 'assistant', text: '答复' }));
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline.length).toBeLessThanOrEqual(500);
+    // 尾部填充留下的是最新推理帧；最早期的 seq=2 已被逐出。
+    expect(timeline.some((e) => e.run_seq === 2)).toBe(false);
+
+    const anchor = timeline.find((e) => e.type === 'message.completed');
+    const folded = anchor?.data?.reasoning_folded;
+    expect(typeof folded).toBe('string');
+    expect(anchor?.data?.reasoning_folded_truncated).toBe(true);
+    expect((folded as string).length).toBe(4000);
+    expect((folded as string).endsWith('推理片段-601-校验;')).toBe(true);
+
+    // 端到端：折叠锚点经 buildMessages 产出思考卡（带省略前缀），不再整层消失。
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    const thinking = messages.filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toContain('早期推理已省略');
+    expect(thinking[0]?.text).toContain('推理片段-601-校验;');
+  });
+
+  it('增量路径：折叠钉住锚点到达时的存活窗口，后续淘汰不再侵蚀（粘滞）', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    // 600 条短推理 delta 逐帧到达：超帽后前段在锚点到达前已被淘汰，
+    // 锚点到达时窗口前沿约 d103 ——折叠覆盖「当时仍存活」的全量窗口。
+    for (let seq = 2; seq <= 601; seq += 1) applyEvent(reasoningDelta(seq, `d${seq};`));
+    applyEvent(runEvent(602, 'message.completed', { role: 'assistant', text: '答复' }));
+    // 锚点定稿后再来 100 条正文帧：继续淘汰更老的推理帧，但折叠必须粘滞不动。
+    for (let seq = 603; seq <= 702; seq += 1) applyEvent(runEvent(seq, 'message.delta', { text: `tail-${seq}` }));
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline.length).toBeLessThanOrEqual(500);
+    // 时间线里 seq≤150 的推理帧已被后续正文帧挤出（对照组）。
+    expect(timeline.some((e) => e.run_seq === 150)).toBe(false);
+    const anchor = timeline.find((e) => e.type === 'message.completed');
+    const folded = anchor?.data?.reasoning_folded;
+    expect(typeof folded).toBe('string');
+    // 折叠保住锚点到达时的窗口（含现已被逐出的 d103 前沿），未被后续合并重算缩短。
+    expect(folded).toContain('d103;');
+    expect(folded).toContain('d601;');
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    const thinking = messages.filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toBe(folded);
+  });
+
+  it('历史回放一次性合并：全量推理随锚点折叠存活（本 bug 的实际场景）', async () => {
+    // 用户场景：打开历史会话 → loadHistory 一次拉回全量事件 → 单次截断。
+    // 折叠扫描覆盖完整事件集，600 段推理（含最早 d2）全量入锚。
+    const items: Array<Record<string, unknown>> = [
+      { run_seq: 1, event_type: 'run.created', occurred_at: '2026-08-28T00:00:00Z', payload: { status: 'running' } },
+    ];
+    for (let seq = 2; seq <= 601; seq += 1) {
+      items.push({
+        run_seq: seq,
+        event_type: 'message.delta',
+        occurred_at: '2026-08-28T00:00:00Z',
+        payload: { raw: { chunk: { text: `d${seq};`, type: 'reasoning-delta' } }, role: 'assistant' },
+      });
+    }
+    items.push({ run_seq: 602, event_type: 'message.completed', occurred_at: '2026-08-28T00:00:01Z', payload: { role: 'assistant', text: '答复' } });
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve(new Response(JSON.stringify({ items }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    ));
+
+    await useRunsStore.getState().loadHistory('run_1');
+    const timeline = useRunsStore.getState().timelines.run_1;
+    expect(timeline.length).toBeLessThanOrEqual(500);
+    expect(timeline.some((e) => e.run_seq === 2)).toBe(false);
+
+    const anchor = timeline.find((e) => e.type === 'message.completed');
+    const folded = anchor?.data?.reasoning_folded;
+    expect(typeof folded).toBe('string');
+    // 600 段约 2.6KB 未超 4000 预算：全量保留、无截断标记。
+    expect(anchor?.data?.reasoning_folded_truncated).toBeUndefined();
+    expect(folded).toContain('d2;');
+    expect(folded).toContain('d601;');
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    const thinking = messages.filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toBe(folded);
+  });
+
+  it('未超帽时间线不折叠，纯文本/工具帧不产生折叠字段', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 40; seq += 1) applyEvent(reasoningDelta(seq, '短推理;'));
+    applyEvent(runEvent(41, 'message.completed', { role: 'assistant', text: '答复' }));
+
+    let timeline = useRunsStore.getState().timelines.run_1;
+    let anchor = timeline.find((e) => e.type === 'message.completed');
+    expect(anchor?.data?.reasoning_folded).toBeUndefined();
+    // 原 reasoningBuf 路径不受影响。
+    const thinking = buildMessages(['run_1'], { run_1: timeline }).filter((m) => m.kind === 'thinking');
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]?.text).toContain('短推理;');
+
+    // 无推理帧的超帽时间线：锚点不挂折叠字段。
+    useRunsStore.setState({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, watching: {}, historyLoaded: {} });
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 601; seq += 1) applyEvent(runEvent(seq, 'message.delta', { text: `正文-${seq}` }));
+    applyEvent(runEvent(602, 'message.completed', { role: 'assistant', text: '答复' }));
+    timeline = useRunsStore.getState().timelines.run_1;
+    anchor = timeline.find((e) => e.type === 'message.completed');
+    expect(anchor?.data?.reasoning_folded).toBeUndefined();
+    expect(buildMessages(['run_1'], { run_1: timeline }).some((m) => m.kind === 'thinking')).toBe(false);
   });
 });
