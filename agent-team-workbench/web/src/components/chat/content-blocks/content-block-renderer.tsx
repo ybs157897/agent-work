@@ -10,6 +10,7 @@ import { MapBlock } from './map-block';
 import { SearchBlock } from './search-block';
 import { RatingBlock } from './rating-block';
 import { ReviewSummaryBlock } from './review-summary-block';
+import { CanvasBlock } from './canvas-block';
 
 const LazyChartBlock = lazy(() => import('./chart-block').then((module) => ({ default: module.ChartBlock })));
 
@@ -57,5 +58,7 @@ export function ContentBlockRenderer({ block }: { block: ContentBlock }) {
       return <RatingBlock block={block} />;
     case 'review-summary':
       return <ReviewSummaryBlock block={block} />;
+    case 'canvas':
+      return <CanvasBlock block={block} />;
   }
 }

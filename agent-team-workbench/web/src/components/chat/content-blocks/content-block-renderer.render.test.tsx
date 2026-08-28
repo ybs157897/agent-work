@@ -58,13 +58,23 @@ describe('ContentBlockList', () => {
           checks: [{ label: 'Tests', status: 'passed' }, { label: 'CI', status: 'warning' }],
           next_steps: [{ label: '继续复核' }],
         },
+        {
+          type: 'canvas',
+          title: 'Onboarding',
+          nodes: [
+            { id: 'start', label: 'Sign up', kind: 'start' },
+            { id: 'verify', label: 'Verify email', kind: 'process' },
+            { id: 'done', label: 'Dashboard', kind: 'end' },
+          ],
+          edges: [{ from: 'start', to: 'verify' }, { from: 'verify', to: 'done', label: 'ok' }],
+        },
       ],
     });
     if (!document) throw new Error('fixture must parse');
     const html = renderToStaticMarkup(<ContentBlockList document={document} />);
 
     expect(html).toContain('data-content-block-version="languagegui/v1"');
-    for (const type of ['metric', 'table', 'chart', 'file', 'event', 'image', 'audio', 'map', 'search', 'rating', 'review-summary']) {
+    for (const type of ['metric', 'table', 'chart', 'file', 'event', 'image', 'audio', 'map', 'search', 'rating', 'review-summary', 'canvas']) {
       expect(html).toContain(`data-content-block="${type}"`);
     }
     expect(html).toContain('<dl class="chat-content-metric-grid">');
@@ -84,6 +94,8 @@ describe('ContentBlockList', () => {
     expect(html).toContain('1/2 通过');
     expect(html).toContain('验证结果');
     expect(html).toContain('下一步');
+    expect(html).toContain('chat-content-canvas');
+    expect(html).toContain('Sign up');
     expect(html.match(/role="radio"/g)).toHaveLength(5);
     expect(html).toContain('&lt;script&gt;plain text&lt;/script&gt;');
     expect(html).toContain('target="_blank" rel="noreferrer noopener"');

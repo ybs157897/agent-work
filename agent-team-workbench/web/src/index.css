@@ -1403,6 +1403,110 @@
   @apply rounded-none border-x-0 border-b-0;
 }
 
+.chat-content-canvas {
+  @apply relative overflow-hidden rounded-card border border-border-subtle bg-surface-base/50;
+}
+
+.chat-content-canvas-svg {
+  @apply pointer-events-none absolute inset-0 h-full w-full;
+}
+
+.chat-content-canvas-edge-line {
+  fill: none;
+  stroke: hsl(var(--color-border-strong));
+  stroke-width: 2;
+}
+
+.chat-content-canvas-edge-guide {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 0;
+}
+
+.chat-content-canvas-arrow-head {
+  fill: hsl(var(--color-text-tertiary));
+}
+
+.chat-content-canvas-edge-label {
+  fill: hsl(var(--color-text-secondary));
+  font-size: 11px;
+}
+
+.chat-content-canvas-stage {
+  @apply relative min-h-[220px] w-full;
+}
+
+.chat-content-canvas-node {
+  @apply absolute flex min-w-0 flex-col gap-micro rounded-card border border-border-subtle bg-surface-raised px-snug py-tight shadow-card;
+}
+
+.chat-content-canvas-node-start,
+.chat-content-canvas-node-end {
+  @apply border-brand-primary/35 bg-brand-muted/25;
+}
+
+.chat-content-canvas-node-decision {
+  @apply rotate-45 items-center justify-center rounded-sm border-status-warning/35 bg-status-warning/10 px-tight py-tight text-center;
+}
+
+.chat-content-canvas-node-decision .chat-content-canvas-node-kind,
+.chat-content-canvas-node-decision .chat-content-canvas-node-label,
+.chat-content-canvas-node-decision .chat-content-canvas-node-detail {
+  @apply -rotate-45;
+}
+
+.chat-content-canvas-node-actor {
+  @apply rounded-full border-border-strong bg-surface-sunken/70;
+}
+
+.chat-content-canvas-node-system {
+  @apply border-dashed border-brand-primary/40 bg-surface-sunken/60;
+}
+
+.chat-content-canvas-node-note {
+  @apply border-dashed border-border-subtle bg-surface-base/80 italic;
+}
+
+.chat-content-canvas-node-kind {
+  @apply text-micro font-medium uppercase tracking-wide text-text-tertiary;
+}
+
+.chat-content-canvas-node-label {
+  @apply break-words text-caption font-semibold leading-5 text-text-primary;
+}
+
+.chat-content-canvas-node-detail {
+  @apply break-words text-micro leading-4 text-text-secondary;
+}
+
+.chat-content-canvas-data {
+  @apply mt-tight rounded-card border border-border-subtle bg-surface-base/50;
+}
+
+.chat-content-canvas-data > summary {
+  @apply cursor-pointer px-snug py-tight text-caption font-medium text-text-secondary transition-colors hover:text-brand-primary;
+}
+
+.chat-content-canvas-list {
+  @apply space-y-tight px-snug pb-snug text-caption text-text-secondary;
+}
+
+.chat-content-canvas-list li {
+  @apply flex flex-wrap items-baseline gap-x-2 gap-y-1;
+}
+
+.chat-content-canvas-list-kind {
+  @apply rounded-button border border-border-subtle bg-surface-sunken px-tight py-micro text-micro text-text-tertiary;
+}
+
+.chat-content-canvas-list-label {
+  @apply font-medium text-text-primary;
+}
+
+.chat-content-canvas-list-detail {
+  @apply text-text-tertiary;
+}
+
 .chat-content-image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
