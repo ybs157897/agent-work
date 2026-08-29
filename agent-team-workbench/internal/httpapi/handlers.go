@@ -144,7 +144,11 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.enrichWorkItem(r, wi))
+	dto := s.enrichWorkItem(r, wi)
+	// 台账摘要只在详情响应携带（S2）：enrichWorkItem 被列表路径共用，
+	// 4KB 级摘要不得进列表/bootstrap 载荷。
+	dto.RollingDigest = wi.RollingDigest
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // enrichWorkItem 附带 blocker 与 run 计数（只读投影）。

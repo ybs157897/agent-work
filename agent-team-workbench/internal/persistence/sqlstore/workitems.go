@@ -13,14 +13,15 @@ import (
 type WorkItemRepo struct{ store *Store }
 
 const workItemCols = `id, workspace_id, parent_id, title, description, status, phase, priority,
-	due_date, agent_profile_id, client_key, locked_by_run_id, locked_at, version, created_at, updated_at`
+	due_date, agent_profile_id, client_key, locked_by_run_id, locked_at, rolling_digest,
+	version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
 	var parent, phase, dueDate, assignee, clientKey, lockedBy *string
 	var created, updated, lockedAt scanTime
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &parent, &w.Title, &w.Description, &w.Status, &phase,
 		&w.Priority, &dueDate, &assignee, &clientKey, &lockedBy, &lockedAt,
-		&w.Version, &created, &updated); err != nil {
+		&w.RollingDigest, &w.Version, &created, &updated); err != nil {
 		return err
 	}
 	if parent != nil {
@@ -55,10 +56,10 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 		due = wi.DueDate.Format("2006-01-02")
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		wi.ID, wi.WorkspaceID, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
 		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey),
-		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.Version,
+		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.RollingDigest, wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -159,12 +160,30 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE work_items SET title=?, description=?, status=?, phase=?, priority=?,
-			due_date=?, agent_profile_id=?, locked_by_run_id=?, locked_at=?,
+			due_date=?, agent_profile_id=?, locked_by_run_id=?, locked_at=?, rolling_digest=?,
 			version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
 		wi.Title, wi.Description, wi.Status, nullString(string(wi.Phase)), wi.Priority,
 		due, nullString(wi.AgentProfileID), nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt),
+		wi.RollingDigest,
 		d.TimeParam(timeNow()), wi.ID, expectedVersion)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.ErrVersionConflict
+	}
+	return nil
+}
+
+// UpdateRollingDigest 台账摘要的守卫写（会话元模型 S2）：仅 rolling_digest 列 +
+// version 乐观锁——并发终态钩子读改写互斥，冲突方重读重算收敛；不 bump
+// updated_at，摘要刷新不是任务编辑，不得扰动 CompletedToday 的 updated_at 口径
+// 与前端 updated_at 展示。
+func (r *WorkItemRepo) UpdateRollingDigest(ctx context.Context, workItemID, digest string, expectedVersion int) error {
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE work_items SET rolling_digest=?, version=version+1 WHERE id=? AND version=?`,
+		digest, workItemID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}

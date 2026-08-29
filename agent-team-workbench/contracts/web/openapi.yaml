@@ -380,6 +380,25 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DispatchCardList" } } } }
 
+  /work-items/{work_item_id}/decisions:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItemDecisions
+      summary: 决策台账（用户原话引文；创建时间升序；只读投影）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionList" } } } }
+    post:
+      tags: [work-items]
+      operationId: recordWorkItemDecision
+      description: 决策原话落台账（S2）。quote 必填且 trim 后非空；source_run_id 可选但必须属于该 work item。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DecisionCreate" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionEntry" } } } }
+        "422": { description: quote 为空 / source_run_id 不存在或不属于该任务, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "404": { description: 任务不存在, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
   /runs/{run_id}:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     get:
@@ -1178,9 +1197,34 @@ components:
             created_at: { type: string, format: date-time }
         runs_count: { type: integer }
         latest_run_id: { type: string, nullable: true }
+        rolling_digest: { type: string, description: 任务台账滚动摘要（S2 确定性生成，无 LLM；仅详情响应携带，列表省略） }
         version: { type: integer }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    DecisionCreate:
+      type: object
+      required: [quote]
+      properties:
+        quote: { type: string, description: 用户原话（必填，trim 后非空；禁止 LLM 转述进 quote） }
+        source_run_id: { type: string, description: 可选钉出来源轮次；必须属于该 work item }
+        source_ref: { type: string, description: 可选链回片段内位置（消息序号等） }
+
+    DecisionEntry:
+      type: object
+      description: 决策台账行（S2）：任务级共享记忆的用户原话引文。
+      properties:
+        id: { type: string, description: "dec_ 前缀" }
+        work_item_id: { type: string }
+        quote: { type: string }
+        source_run_id: { type: string, description: 缺省时未钉来源 }
+        source_ref: { type: string }
+        created_at: { type: string, format: date-time }
+
+    DecisionList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DecisionEntry" } }
 
     RunCreate:
       type: object
@@ -1457,6 +1501,7 @@ components:
         display_id: { type: string, description: provider 侧人类可读会话 id }
         runs_count: { type: integer, description: 本代会话已被多少 Run 使用（轮换阈值输入；轮换后清零重起） }
         input_tokens_cum: { type: integer, format: int64, description: 本代累计输入 token（轮换阈值输入） }
+        segment_seq: { type: integer, description: 参与线片段序号——同一 task_key 下第 N 段会话（轮换代际 +1，缺省 1） }
         created_at: { type: string, format: date-time, description: 本代会话代际起点（72h 轮换阈值基准） }
         updated_at: { type: string, format: date-time }
 

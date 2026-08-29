@@ -761,6 +761,8 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	s.maybeProcessVerdict(ctx, r)
 	// M2 lead-as-planner：从 lead 最终文本提取 plan（source_run_id 唯一索引兜底幂等）。
 	s.maybeExtractPlan(ctx, r)
+	// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
+	s.maybeSummarizeSegment(ctx, r)
 	return nil
 }
 

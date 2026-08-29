@@ -49,6 +49,9 @@ var workItemTransitions = map[WorkItemStatus][]WorkItemStatus{
 // （防同一任务双跑）。锁归属 run 而非 agent——属主活性复用 run 状态/lease
 // 判定面，不引入第二套判定；属主 run 落终态即死锁可抢占。锁是并发原语，
 // 不参与 version 乐观锁比较，但读写必须与状态变更同一事务。
+//
+// RollingDigest 是任务台账滚动摘要（会话元模型 S2）：确定性生成（无 LLM），
+// 终态钩子全量重算覆盖写；转述只允许进这里，决策原话走 decision_entries。
 type WorkItem struct {
 	ID             string
 	WorkspaceID    string
@@ -63,6 +66,7 @@ type WorkItem struct {
 	ClientKey      string
 	LockedByRunID  string
 	LockedAt       *time.Time
+	RollingDigest  string
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

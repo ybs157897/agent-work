@@ -70,9 +70,12 @@ type workItemDTO struct {
 	Blocker       *blockerDTO `json:"blocker,omitempty"`
 	RunsCount     int         `json:"runs_count"`
 	LatestRunID   string      `json:"latest_run_id,omitempty"`
-	Version       int         `json:"version"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	// RollingDigest 任务台账滚动摘要（S2，确定性生成）。仅详情响应携带
+	//（enrichWorkItem 填充）；列表/bootstrap 不带，防 4KB 级摘要撑爆列表载荷。
+	RollingDigest string    `json:"rolling_digest,omitempty"`
+	Version       int       `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
@@ -279,8 +282,10 @@ type taskSessionDTO struct {
 	DisplayID      string         `json:"display_id,omitempty"`
 	RunsCount      int            `json:"runs_count"`
 	InputTokensCum int64          `json:"input_tokens_cum"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// SegmentSeq 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际 +1）。
+	SegmentSeq int       `json:"segment_seq"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // toTaskSessionDTO 输出锚点投影；SessionParams 保留 __ref/__fingerprint 供诊断。
@@ -288,7 +293,7 @@ func toTaskSessionDTO(t *domain.TaskSession) taskSessionDTO {
 	return taskSessionDTO{
 		ID: t.ID, AgentProfileID: t.AgentProfileID, AdapterID: t.AdapterID, TaskKey: t.TaskKey,
 		SessionRef: t.SessionRef(), SessionParams: t.SessionParams, DisplayID: t.DisplayID,
-		RunsCount: t.RunsCount, InputTokensCum: t.InputTokensCum,
+		RunsCount: t.RunsCount, InputTokensCum: t.InputTokensCum, SegmentSeq: t.SegmentSeq,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 }
@@ -415,6 +420,33 @@ func toDispatchCardDTO(d *domain.Dispatch, runs []*domain.ExecutionRun, trigger 
 		card.TriggerMessage = &dispatchExcerptDTO{RunID: trigger.ID, Excerpt: runInstructionExcerpt(trigger)}
 	}
 	return card
+}
+
+// ── Decision（决策台账，会话元模型 S2）────────────────────────────────
+
+type decisionEntryDTO struct {
+	ID string `json:"id"`
+	// WorkItemID 台账归属任务；决策不属于任何会话。
+	WorkItemID string `json:"work_item_id"`
+	// Quote 用户原话（引文保真；服务端只 trim，不改写）。
+	Quote string `json:"quote"`
+	// SourceRunID/SourceRef 可选：钉出来源轮次与片段内位置。
+	SourceRunID string    `json:"source_run_id,omitempty"`
+	SourceRef   string    `json:"source_ref,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func toDecisionEntryDTO(e *domain.DecisionEntry) decisionEntryDTO {
+	return decisionEntryDTO{
+		ID: e.ID, WorkItemID: e.WorkItemID, Quote: e.Quote,
+		SourceRunID: e.SourceRunID, SourceRef: e.SourceRef, CreatedAt: e.CreatedAt,
+	}
+}
+
+type createDecisionRequest struct {
+	Quote       string `json:"quote"`
+	SourceRunID string `json:"source_run_id"`
+	SourceRef   string `json:"source_ref"`
 }
 
 // createPlanRequest steps 为动词原文（verb 键 + 动词专属字段），弹 verb 后余量为 payload。

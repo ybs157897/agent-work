@@ -45,7 +45,7 @@ components:
           type: object
           required: [type, id, version]
           properties:
-            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch] }
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision] }
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
@@ -77,6 +77,8 @@ components:
             # Dispatch（会话元模型 S1；updated 的发布点随 S3 状态收口接入）
             - dispatch.created
             - dispatch.updated
+            # Decision（会话元模型 S2：决策台账写入）
+            - decision.created
             # Run
             - run.created
             - run.started

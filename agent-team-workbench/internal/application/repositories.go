@@ -29,6 +29,8 @@ type Store interface {
 	ApprovalGrants() ApprovalGrantRepo
 	// Dispatches 派发批次仓储（会话元模型 S1）。
 	Dispatches() DispatchRepo
+	// DecisionEntries 决策台账仓储（会话元模型 S2）。
+	DecisionEntries() DecisionRepo
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store
@@ -78,6 +80,9 @@ type WorkItemRepo interface {
 	// ReleaseStaleLocks 回收兜底：清空 locked_at 早于 olderThan 且属主 run 已终态的
 	// 执行锁，返回释放行数（调度循环低频扫描用）。
 	ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error)
+	// UpdateRollingDigest 任务台账滚动摘要的守卫写（S2）：version 乐观锁互斥
+	// 并发终态钩子，不 bump updated_at（摘要刷新不是任务编辑）。
+	UpdateRollingDigest(ctx context.Context, workItemID, digest string, expectedVersion int) error
 	// BoardCounts / CompletedToday 供 Dashboard Read Model 服务端聚合。
 	BoardCounts(ctx context.Context, workspaceID string) (map[domain.WorkItemStatus]int, error)
 	CompletedToday(ctx context.Context, workspaceID string, day time.Time) (int, error)
@@ -270,6 +275,14 @@ type TaskSessionRepo interface {
 	// StartGeneration 轮换换代：params 整体替换、计数覆盖重起、created_at 重置。
 	StartGeneration(ctx context.Context, t *domain.TaskSession) error
 	ListByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error)
+}
+
+// DecisionRepo 决策台账存储（会话元模型 S2）。quote 是用户原话（禁止 LLM
+// 转述）；Create 与 decision.created 事件同事务。
+type DecisionRepo interface {
+	Create(ctx context.Context, e *domain.DecisionEntry) error
+	// ListByWorkItem 按创建时间升序返回任务台账的决策原话。
+	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.DecisionEntry, error)
 }
 
 // DispatchRepo 派发批次存储（会话元模型 S1）。Create 必须在创建成员 run 的
