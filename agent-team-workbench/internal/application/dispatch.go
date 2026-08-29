@@ -1,6 +1,6 @@
 // dispatch.go 会话元模型 S1 的派发路由面：用户消息 @直达/接诊解析、批次创建
 // 事件、plan 派生子 run 的批次归属解析（契约见
-// .agent-work/session-meta-model/plan.md「路由」节）。
+// notes/implemented/architecture/2026-08-29-session-meta-model.md）。
 package application
 
 import (
