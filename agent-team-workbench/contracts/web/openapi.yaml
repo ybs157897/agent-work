@@ -559,6 +559,21 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ActivityList" } } } }
 
+  /workspaces/{workspace_id}/search:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: searchWorkspace
+      summary: FTS 检索（片段摘要/决策台账/产物标题；snippet 带 [] 高亮标记）
+      description: 索引为派生存储（定点重写），q 为空或纯符号返回空 items；不发 SSE 事件。
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string }, description: 检索词（空格分词 AND 语义） }
+        - { name: work_item_id, in: query, schema: { type: string }, description: 可选，限定单任务 }
+        - { name: kind, in: query, schema: { type: string, enum: [segment_summary, decision, artifact] } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/SearchList" } } } }
+
   /workspaces/{workspace_id}/runtime-bindings:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
@@ -1225,6 +1240,21 @@ components:
       type: object
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/DecisionEntry" } }
+
+    SearchList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/SearchItem" } }
+
+    SearchItem:
+      type: object
+      description: 检索命中项（S4）；索引为派生存储，定点重写幂等，不发 SSE 事件。
+      properties:
+        kind: { type: string, enum: [segment_summary, decision, artifact] }
+        work_item_id: { type: string }
+        source_id: { type: string, description: 决策 id / work item id（segment_summary）/ artifact id }
+        title: { type: string, description: 任务标题 / quote 前 80 字 / logical_path }
+        snippet: { type: string, description: "正文命中摘录，[] 包裹命中词、… 省略号" }
 
     RunCreate:
       type: object

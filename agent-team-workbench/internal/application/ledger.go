@@ -73,6 +73,14 @@ func (s *Service) refreshRollingDigest(ctx context.Context, workItemID string) e
 		return err
 	}
 	digest := buildRollingDigest(wi, history, len(runs), lastTerminalAt(runs))
+	// S4 检索索引：segment_summary 条目（source_id=work item id），定点重写——
+	// 摘要刷新后旧快照被整体替换，搜索恒命中最新内容。
+	if err := s.store.Search().IndexEntry(ctx, &SearchEntry{
+		WorkItemID: workItemID, Kind: SearchKindSegmentSummary, SourceID: workItemID,
+		Title: wi.Title, Body: digest,
+	}); err != nil {
+		return err
+	}
 	return s.store.WorkItems().UpdateRollingDigest(ctx, workItemID, digest, wi.Version)
 }
 
@@ -179,6 +187,14 @@ func (s *Service) RecordDecision(ctx context.Context, workItemID string, p Recor
 		}
 		if err := s.emit(ctx, workspaceID, domain.EventDecisionCreated,
 			domain.AggregateDecision, entry.ID, 1, nil, data); err != nil {
+			return err
+		}
+		// S4 检索索引：decision 条目（title=quote 前 80 字，body=quote 全文），
+		// 与台账行同事务。
+		if err := s.store.Search().IndexEntry(ctx, &SearchEntry{
+			WorkItemID: wi.ID, Kind: SearchKindDecision, SourceID: entry.ID,
+			Title: truncateRunes(quote, 80), Body: quote,
+		}); err != nil {
 			return err
 		}
 		return s.activityFor(ctx, workspaceID, wi.ID, "decision.created",

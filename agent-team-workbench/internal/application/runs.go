@@ -856,6 +856,15 @@ func (s *Service) projectArtifactEvent(ctx context.Context, r *domain.ExecutionR
 	}
 	if err := s.store.Runs().CreateArtifact(ctx, art); err != nil {
 		log.Printf("artifact: run %s artifact.created 投影失败: %v", r.ID, err)
+		return
+	}
+	// S4 检索索引：artifact 条目（title=logical_path，body 空）；与投影同为
+	// 尽力而为——索引失败不阻塞 run 事件流，且可由任意后续写入定点重写。
+	if err := s.store.Search().IndexEntry(ctx, &SearchEntry{
+		WorkItemID: r.WorkItemID, Kind: SearchKindArtifact, SourceID: art.ID,
+		Title: path, Body: "",
+	}); err != nil {
+		log.Printf("artifact: run %s 检索索引写入失败（artifact %s）: %v", r.ID, art.ID, err)
 	}
 }
 

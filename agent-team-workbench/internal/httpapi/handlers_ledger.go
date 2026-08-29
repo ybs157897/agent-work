@@ -1,12 +1,35 @@
-// handlers_ledger.go 会话元模型 S2 任务台账的 HTTP 面：决策原话写入与列表
-// （rolling_digest 随 work item 详情响应携带，见 enrichWorkItem）。
+// handlers_ledger.go 会话元模型 S2/S4 的 HTTP 面：决策原话写入与列表、
+// FTS 检索端点（rolling_digest 随 work item 详情响应携带，见 handleGetWorkItem）。
 package httpapi
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 )
+
+// handleSearch GET /workspaces/{id}/search：FTS 检索（S4）。q 为空/纯符号返回
+// 空 items（FTS 语法敏感，不 500）；work_item_id/kind 可选过滤；limit 1-100 缺省 20。
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	wsID := r.PathValue("workspace_id")
+	if _, err := s.store.Workspaces().Get(r.Context(), wsID); err != nil {
+		fail(w, r, err)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.store.Search().Search(r.Context(), wsID,
+		r.URL.Query().Get("q"), r.URL.Query().Get("work_item_id"), r.URL.Query().Get("kind"), limit)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	out := make([]searchItemDTO, 0, len(items))
+	for _, item := range items {
+		out = append(out, toSearchItemDTO(item))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
 
 // handleRecordDecision POST /work-items/{id}/decisions（写命令，幂等键必带）：
 // quote 必填（trim 后非空），source_run_id 可选且必须属于该 work item。

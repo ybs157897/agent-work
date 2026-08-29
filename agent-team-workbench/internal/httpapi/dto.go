@@ -449,6 +449,25 @@ type createDecisionRequest struct {
 	SourceRef   string `json:"source_ref"`
 }
 
+// ── Search（FTS 检索，会话元模型 S4）────────────────────────────────
+
+type searchItemDTO struct {
+	Kind       string `json:"kind"`
+	WorkItemID string `json:"work_item_id"`
+	SourceID   string `json:"source_id"`
+	Title      string `json:"title"`
+	// Snippet 正文命中摘录：[] 包裹命中词、… 省略号（SQLite snippet() /
+	// PG ts_headline 生成，高亮语义两端一致）。
+	Snippet string `json:"snippet"`
+}
+
+func toSearchItemDTO(s *application.SearchResult) searchItemDTO {
+	return searchItemDTO{
+		Kind: s.Kind, WorkItemID: s.WorkItemID, SourceID: s.SourceID,
+		Title: s.Title, Snippet: s.Snippet,
+	}
+}
+
 // createPlanRequest steps 为动词原文（verb 键 + 动词专属字段），弹 verb 后余量为 payload。
 type createPlanRequest struct {
 	WorkItemID     string                 `json:"work_item_id"`

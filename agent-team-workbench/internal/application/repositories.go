@@ -31,6 +31,8 @@ type Store interface {
 	Dispatches() DispatchRepo
 	// DecisionEntries 决策台账仓储（会话元模型 S2）。
 	DecisionEntries() DecisionRepo
+	// Search FTS 检索索引仓储（会话元模型 S4）。
+	Search() SearchRepo
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store
@@ -275,6 +277,41 @@ type TaskSessionRepo interface {
 	// StartGeneration 轮换换代：params 整体替换、计数覆盖重起、created_at 重置。
 	StartGeneration(ctx context.Context, t *domain.TaskSession) error
 	ListByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error)
+}
+
+// SearchKind 检索索引条目三类（会话元模型 S4；schema CHECK 同闭集）。
+const (
+	SearchKindSegmentSummary = "segment_summary"
+	SearchKindDecision       = "decision"
+	SearchKindArtifact       = "artifact"
+)
+
+// SearchEntry 索引写入条目（定点重写键 = kind + source_id）。
+type SearchEntry struct {
+	WorkItemID string
+	Kind       string
+	SourceID   string
+	Title      string
+	Body       string
+}
+
+// SearchResult 检索命中项；Snippet 是带 [] 高亮标记、… 省略号的正文摘录
+// （SQLite snippet() / PG ts_headline 生成，标记语义两端一致）。
+type SearchResult struct {
+	WorkItemID string
+	Kind       string
+	SourceID   string
+	Title      string
+	Snippet    string
+}
+
+// SearchRepo FTS 检索索引（会话元模型 S4）：索引是派生存储，可随时全量重建，
+// 不发 SSE 事件；PG 用 tsv 生成列 + GIN，SQLite 用 FTS5 虚表。
+type SearchRepo interface {
+	// IndexEntry 定点重写（delete by (kind, source_id) + insert），天然幂等。
+	IndexEntry(ctx context.Context, e *SearchEntry) error
+	// Search workspace 隔离；query 为空/纯符号返回空结果；workItemID/kind 可选过滤。
+	Search(ctx context.Context, workspaceID, query, workItemID, kind string, limit int) ([]*SearchResult, error)
 }
 
 // DecisionRepo 决策台账存储（会话元模型 S2）。quote 是用户原话（禁止 LLM

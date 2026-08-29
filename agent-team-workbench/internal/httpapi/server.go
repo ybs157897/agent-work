@@ -87,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/bootstrap", s.guard(security.PermRead, s.handleBootstrap))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/dashboard", s.guard(security.PermRead, s.handleDashboard))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/activities", s.guard(security.PermRead, s.handleActivities))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/search", s.guard(security.PermRead, s.handleSearch))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/events", s.guard(security.PermRead, s.handleSSE))
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/agent-profiles", s.guard(security.PermRead, s.handleListAgents))
