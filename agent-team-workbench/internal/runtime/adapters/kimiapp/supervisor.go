@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
 // endpoint 是 Ensure 产物：REST/WS 基址 + Bearer token。
@@ -120,7 +122,10 @@ func (s *Supervisor) spawnLocked(ctx context.Context, host, base string) error {
 	if len(args) == 0 {
 		args = []string{"web", "--host", host, "--port", strconv.Itoa(s.port), "--no-open"}
 	}
-	cmd := exec.Command(bin, args...)
+	cmd, err := runtime.TrustedCommand(bin, args...)
+	if err != nil {
+		return fmt.Errorf("spawn %s: %w", bin, err)
+	}
 	cmd.Env = append(os.Environ(), "KIMI_CODE_HOME="+s.cfg.Home)
 	cmd.Stdout = &logWriter{prefix: "kimiapp: kap-server:"}
 	cmd.Stderr = &logWriter{prefix: "kimiapp: kap-server:"}

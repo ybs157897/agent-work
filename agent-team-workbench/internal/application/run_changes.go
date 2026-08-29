@@ -206,8 +206,26 @@ func (s *Service) RunChanges(ctx context.Context, runID string) (RunChanges, err
 	return out, nil
 }
 
+// validChangePath 校验 diff 查询路径必须是干净的相对路径。path 只用于回放
+// 记录的等值查找（从不触盘——触盘场景走 secureJoin），因此这里用纯字符串
+// 判定：拒绝空串、绝对路径、Windows 盘符、".." 段与 NUL。
+func validChangePath(path string) bool {
+	if path == "" || strings.HasPrefix(path, "/") || strings.HasPrefix(path, "\\") || strings.ContainsRune(path, 0) {
+		return false
+	}
+	if len(path) >= 2 && path[1] == ':' {
+		return false
+	}
+	for _, seg := range strings.FieldsFunc(path, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Service) RunChangeDiff(ctx context.Context, runID, path string) (RunChangeDiff, error) {
-	if path == "" || filepath.IsAbs(path) || filepath.Clean(path) == ".." || strings.HasPrefix(filepath.Clean(path), ".."+string(filepath.Separator)) {
+	if !validChangePath(path) {
 		return RunChangeDiff{}, fmt.Errorf("%w: invalid path", ErrRunChangesInvalid)
 	}
 	_, turns, _, err := s.runSnapshots(ctx, runID)

@@ -165,8 +165,7 @@ export function splitStreamingMarkdownBlocks(text: string): StreamingMarkdownBlo
   const completedBlocks: string[] = [];
   let blockStart = 0;
   const blankLine = /(?:\r?\n[ \t]*){2,}/g;
-  let match: RegExpExecArray | null;
-  while ((match = blankLine.exec(safe)) !== null) {
+  for (const match of safe.matchAll(blankLine)) {
     const boundaryEnd = match.index + match[0].length;
     if (!canSplitAtBlankLine(safe.slice(blockStart, match.index), safe.slice(boundaryEnd))) {
       continue;

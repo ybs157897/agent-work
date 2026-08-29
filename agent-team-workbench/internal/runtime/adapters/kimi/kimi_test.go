@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	runlib "runtime"
 	"strconv"
@@ -632,7 +631,10 @@ func TestSignalGroupUsesCachedPGIDAfterLeaderReaped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.Command(bin)
+	cmd, err := atwruntime.TrustedCommand(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	setProcGroup(cmd)

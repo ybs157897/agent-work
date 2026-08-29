@@ -118,7 +118,10 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 	}
 
-	cmd := exec.Command(m.cfg.BinPath, args...) // 终止走 watchCancel 的进程组语义
+	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, args...) // 终止走 watchCancel 的进程组语义
+	if err != nil {
+		return spawnFailure(err)
+	}
 	cmd.Dir = m.cfg.WorkspaceRoot
 	cmd.Env = os.Environ()
 	setProcGroup(cmd)

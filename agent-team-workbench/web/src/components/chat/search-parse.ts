@@ -23,7 +23,7 @@ export function parseGrepOutput(text: string): { files: SearchFileGroup[]; trunc
   const groups = new Map<string, SearchFileGroup>();
   let hits = 0;
   for (const line of nonEmpty) {
-    const match = GREP_LINE.exec(line);
+    const match = line.match(GREP_LINE);
     if (match === null) continue;
     hits += 1;
     const entry = { lineNumber: Number(match[2]), line: match[3] };

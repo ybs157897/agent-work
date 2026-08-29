@@ -12,7 +12,7 @@ import (
 
 func TestApplyWritesProviderAndModel(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("MOONSHOT_API_KEY", "sk-test-kimi")
+	t.Setenv("MOONSHOT_API_KEY", "placeholder")
 	spec := orchestrator.ModelSpec{
 		Ref: "kimi-2-7", ProviderID: "prov-kimi", ProviderLabel: "Kimi",
 		Provider: "moonshot", API: "openai-completions", Model: "kimi-k2.7-code",
@@ -31,7 +31,7 @@ func TestApplyWritesProviderAndModel(t *testing.T) {
 		`default_model = "kimi-2-7"`,
 		`type = "kimi"`,
 		`base_url = "https://api.kimi.com/coding/v1"`,
-		`api_key = "sk-test-kimi"`,
+		`api_key = "placeholder"`,
 		`model = "kimi-k2.7-code"`,
 		`max_context_size = 256000`,
 	} {
@@ -46,7 +46,7 @@ func TestApplyWritesProviderAndModel(t *testing.T) {
 
 func TestApplySnapshotIfChangedSkipsRewrite(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("MOONSHOT_API_KEY", "sk-test-kimi")
+	t.Setenv("MOONSHOT_API_KEY", "placeholder")
 	spec := orchestrator.ModelSpec{
 		Ref: "kimi-2-7", ProviderID: "prov-kimi", Provider: "moonshot",
 		Model: "kimi-k2.7-code", APIKeyEnv: "MOONSHOT_API_KEY",

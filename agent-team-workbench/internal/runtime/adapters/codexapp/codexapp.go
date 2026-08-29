@@ -122,7 +122,10 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 	}
 
-	cmd := exec.Command(m.cfg.BinPath, m.commandArgs()...)
+	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs()...)
+	if err != nil {
+		return failedResult(configFailure("spawn_failed", err.Error()))
+	}
 	cmd.Dir = m.cfg.WorkspaceRoot
 	cmd.Env = m.processEnv()
 	setProcGroup(cmd)

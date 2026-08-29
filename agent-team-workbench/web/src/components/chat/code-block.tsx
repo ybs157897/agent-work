@@ -66,7 +66,7 @@ export function safeCodeFilename(value: string): string | undefined {
 
 export function languageFromClassName(className?: string | null): string | null {
   if (!className) return null;
-  const match = /(?:^|\s)language-([\w#+.-]+)/.exec(className);
+  const match = className.match(/(?:^|\s)language-([\w#+.-]+)/);
   return match ? match[1].toLowerCase() : null;
 }
 
