@@ -27,6 +27,8 @@ type Store interface {
 	Caps() CapabilitySnapshotRepo
 	TaskSessions() TaskSessionRepo
 	ApprovalGrants() ApprovalGrantRepo
+	// Dispatches 派发批次仓储（会话元模型 S1）。
+	Dispatches() DispatchRepo
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store
@@ -102,6 +104,8 @@ type RunRepo interface {
 	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.ExecutionRun, error)
 	Update(ctx context.Context, r *domain.ExecutionRun, expectedVersion int) error
 	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.ExecutionRun, error)
+	// ListByDispatch 按创建时间升序返回派发批次的成员 run（会话组查询键）。
+	ListByDispatch(ctx context.Context, dispatchID string) ([]*domain.ExecutionRun, error)
 	ActiveByAgent(ctx context.Context, agentProfileID string) ([]*domain.ExecutionRun, error)
 	// LeaselessActive 无任何 lease 行且非终态的 run（进程内执行孤儿，启动对账用）。
 	LeaselessActive(ctx context.Context) ([]*domain.ExecutionRun, error)
@@ -266,4 +270,14 @@ type TaskSessionRepo interface {
 	// StartGeneration 轮换换代：params 整体替换、计数覆盖重起、created_at 重置。
 	StartGeneration(ctx context.Context, t *domain.TaskSession) error
 	ListByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error)
+}
+
+// DispatchRepo 派发批次存储（会话元模型 S1）。Create 必须在创建成员 run 的
+// 同一事务内、且先于成员行（execution_runs.dispatch_id 外键）。批次状态流转
+// 的写入随 S3 回流收口一并接入。
+type DispatchRepo interface {
+	Create(ctx context.Context, d *domain.Dispatch) error
+	Get(ctx context.Context, id string) (*domain.Dispatch, error)
+	// ListByWorkItem 按创建时间升序返回任务的全部批次（卡片端点倒序展示）。
+	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.Dispatch, error)
 }

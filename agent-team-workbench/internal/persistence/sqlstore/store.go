@@ -93,6 +93,7 @@ type Store struct {
 	tasks      *TaskSessionRepo
 	wakeups    *WakeupRepo
 	grants     *ApprovalGrantRepo
+	dispatches *DispatchRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -114,6 +115,7 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	s.tasks = &TaskSessionRepo{store: s}
 	s.wakeups = &WakeupRepo{store: s}
 	s.grants = &ApprovalGrantRepo{store: s}
+	s.dispatches = &DispatchRepo{store: s}
 	return s
 }
 
@@ -130,6 +132,7 @@ func (s *Store) Audit() application.AuditRepo                  { return s.audit 
 func (s *Store) Caps() application.CapabilitySnapshotRepo      { return s.caps }
 func (s *Store) TaskSessions() application.TaskSessionRepo     { return s.tasks }
 func (s *Store) ApprovalGrants() application.ApprovalGrantRepo { return s.grants }
+func (s *Store) Dispatches() application.DispatchRepo          { return s.dispatches }
 
 // Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
 func (s *Store) Wakeups() scheduling.Store { return s.wakeups }

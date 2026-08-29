@@ -24,8 +24,11 @@ type TaskSession struct {
 	RunsCount int
 	// InputTokensCum 会话累计输入 token（per_run 用量累加而来；轮换阈值输入）。
 	InputTokensCum int64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// SegmentSeq 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际时 +1，
+	// 缺省 1），片段边界显式化。
+	SegmentSeq int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // SessionRef 返回会话句柄（无则空串）。

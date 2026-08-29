@@ -27,6 +27,7 @@ const (
 	PrefixBinding   = "rb_"
 	PrefixCaps      = "caps_"
 	PrefixTaskSess  = "ts_"
+	PrefixDispatch  = "disp_"
 )
 
 // NewID 生成带类型前缀的 ULID。

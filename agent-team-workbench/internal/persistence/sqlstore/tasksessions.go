@@ -9,7 +9,7 @@ import (
 type TaskSessionRepo struct{ store *Store }
 
 const taskSessionCols = `id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
-	session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at`
+	session_params, display_id, runs_count, input_tokens_cum, segment_seq, created_at, updated_at`
 
 func (r *TaskSessionRepo) scan(row interface{ Scan(...any) error }) (*domain.TaskSession, error) {
 	t := &domain.TaskSession{}
@@ -17,7 +17,8 @@ func (r *TaskSessionRepo) scan(row interface{ Scan(...any) error }) (*domain.Tas
 	var params string
 	var created, updated scanTime
 	if err := row.Scan(&t.ID, &t.WorkspaceID, &t.AgentProfileID, &t.AdapterID, &t.TaskKey,
-		&parentAnchor, &params, &displayID, &t.RunsCount, &t.InputTokensCum, &created, &updated); err != nil {
+		&parentAnchor, &params, &displayID, &t.RunsCount, &t.InputTokensCum, &t.SegmentSeq,
+		&created, &updated); err != nil {
 		return nil, err
 	}
 	if parentAnchor != nil {
@@ -43,14 +44,23 @@ func (r *TaskSessionRepo) Get(ctx context.Context, workspaceID, agentProfileID, 
 	return t, nil
 }
 
+// segmentSeq 应用层片段序号归一：构造方（锚点写点）不感知序号，零值按首段 1 落库。
+func segmentSeq(t *domain.TaskSession) int {
+	if t.SegmentSeq < 1 {
+		return 1
+	}
+	return t.SegmentSeq
+}
+
 // Upsert：params/display_id/parent_anchor_id 整体替换；计数列按 delta 累加
 // （见接口注释）。parent_anchor_id 由应用层在每次锚点写入前解析。
+// segment_seq 非冲突路径按传入值（首段 1）落库，冲突（续接）路径保持不变。
 func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
-			session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+			session_params, display_id, runs_count, input_tokens_cum, segment_seq, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(workspace_id, agent_profile_id, adapter_id, task_key) DO UPDATE SET
 			parent_anchor_id=excluded.parent_anchor_id,
 			session_params=excluded.session_params,
@@ -60,29 +70,31 @@ func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) err
 			updated_at=excluded.updated_at`,
 		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID),
-		t.RunsCount, t.InputTokensCum, d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		t.RunsCount, t.InputTokensCum, segmentSeq(t), d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
 // StartGeneration 轮换换代：params/display/parent 整体替换，计数按传入值覆盖重起、
 // created_at 重置（新代际的轮换阈值从零计量；仅轮换 run 首次会话上报时调用）。
+// segment_seq 在冲突路径 +1（轮换代际 = 参与线新片段），插入路径按首段 1 落库。
 func (r *TaskSessionRepo) StartGeneration(ctx context.Context, t *domain.TaskSession) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
-			session_params, display_id, runs_count, input_tokens_cum, created_at, updated_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+			session_params, display_id, runs_count, input_tokens_cum, segment_seq, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(workspace_id, agent_profile_id, adapter_id, task_key) DO UPDATE SET
 			parent_anchor_id=excluded.parent_anchor_id,
 			session_params=excluded.session_params,
 			display_id=excluded.display_id,
 			runs_count=excluded.runs_count,
 			input_tokens_cum=excluded.input_tokens_cum,
+			segment_seq=task_sessions.segment_seq+1,
 			created_at=excluded.created_at,
 			updated_at=excluded.updated_at`,
 		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID),
-		t.RunsCount, t.InputTokensCum, d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		t.RunsCount, t.InputTokensCum, segmentSeq(t), d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
