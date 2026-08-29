@@ -278,6 +278,9 @@ type TaskSessionRepo interface {
 type DispatchRepo interface {
 	Create(ctx context.Context, d *domain.Dispatch) error
 	Get(ctx context.Context, id string) (*domain.Dispatch, error)
+	// SetLeadRun 接诊批次回填接诊 run id：dispatch↔run 互指（lead_run_id ↔
+	// dispatch_id）无法单语句成环，落成员 run 行后同事务补写。
+	SetLeadRun(ctx context.Context, id, leadRunID string) error
 	// ListByWorkItem 按创建时间升序返回任务的全部批次（卡片端点倒序展示）。
 	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.Dispatch, error)
 }

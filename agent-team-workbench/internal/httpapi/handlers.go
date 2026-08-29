@@ -319,6 +319,9 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Instruction:        req.Input.Instruction,
 			AcceptanceCriteria: req.Input.AcceptanceCriteria,
 			ClientKey:          req.ClientKey,
+			// HTTP 建 run 即用户消息入口：同事务落派发批次并做 @直达/接诊路由
+			//（会话元模型 S1）。
+			DispatchTrigger: domain.DispatchTriggerUserMessage,
 		}
 		if req.RuntimePreference != nil {
 			p.RuntimePreference = &domain.RuntimePreference{

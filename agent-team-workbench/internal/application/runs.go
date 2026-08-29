@@ -35,6 +35,13 @@ type CreateRunParams struct {
 	// Evaluation 表示本 run 是 plan finish{evaluation:true} 触发的评估 run；
 	// 固化进 input.evaluation（verdict 提取以此门控），对齐 wakeup/auto_heal_of 惯例。
 	Evaluation bool
+	// DispatchTrigger 非空（当前仅 user_message）表示本 run 是「用户消息入口」：
+	// 同事务创建 trigger=user_message 的派发批次，并按 @名字 前缀做直达/接诊
+	// 路由（会话元模型 S1）。内部路径（wakeup/评估/自愈重试）不设置。
+	DispatchTrigger domain.DispatchTrigger
+	// DispatchID 非空表示挂到既有批次（plan 执行器 dispatch verb 派生的子 run
+	// 继承父批次）；与 DispatchTrigger 互斥使用。
+	DispatchID string
 	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有 run
 	// （队列 drain 重试等场景；撞键时事务整体回滚，不产生重复事件与重复分派）。
 	ClientKey string
@@ -162,6 +169,20 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	if wi.Status.IsTerminal() {
 		return nil, fmt.Errorf("%w: work item is terminal", domain.ErrValidation)
+	}
+	// 会话元模型 S1 用户消息路由：instruction 以 @名字 开头且命中本 workspace
+	// agent（大小写不敏感）→ 直达该 agent；未命中/无 @ 保持既有 assignee 行为
+	//（接诊）。必须在 agent 校验与 runtime 选择之前改写目标。
+	atMention := ""
+	if p.DispatchTrigger == domain.DispatchTriggerUserMessage {
+		var err error
+		atMention, err = s.resolveAtMentionAgent(ctx, wi.WorkspaceID, p.Instruction)
+		if err != nil {
+			return nil, err
+		}
+		if atMention != "" {
+			p.AgentProfileID = atMention
+		}
 	}
 	var agent *domain.AgentProfile
 	if p.AgentProfileID != "" {
@@ -344,8 +365,40 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, historyTier, stats); err != nil {
 		return nil, err
 	}
+	// 派发批次同事务落库（先于成员 run 行：dispatch_id 外键指向本表）。
+	// 接诊批次与 run 互指（lead_run_id ↔ dispatch_id）：建批时 lead_run_id 落
+	// NULL，run 行落库后同事务回填；@直达批次 lead_run_id 恒为 NULL。
+	var newDispatch *domain.Dispatch
+	leadRunID := ""
+	if p.DispatchTrigger == domain.DispatchTriggerUserMessage {
+		newDispatch = &domain.Dispatch{
+			ID: domain.NewID(domain.PrefixDispatch), WorkItemID: wi.ID,
+			Trigger: domain.DispatchTriggerUserMessage, Status: domain.DispatchRunning,
+			CreatedAt: now,
+		}
+		if atMention == "" {
+			leadRunID = runID
+		}
+		if err := s.store.Dispatches().Create(ctx, newDispatch); err != nil {
+			return nil, err
+		}
+		r.DispatchID = newDispatch.ID
+	} else if p.DispatchID != "" {
+		r.DispatchID = p.DispatchID
+	}
 	if err := s.store.Runs().Create(ctx, r); err != nil {
 		return nil, err
+	}
+	if newDispatch != nil {
+		if leadRunID != "" {
+			newDispatch.LeadRunID = leadRunID
+			if err := s.store.Dispatches().SetLeadRun(ctx, newDispatch.ID, leadRunID); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.emitDispatchCreated(ctx, wi.WorkspaceID, newDispatch); err != nil {
+			return nil, err
+		}
 	}
 	if caps != nil {
 		if err := s.store.Caps().Create(ctx, caps); err != nil {

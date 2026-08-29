@@ -26,6 +26,10 @@ const (
 	EventWorkItemLocked        = "work_item.locked"
 	EventWorkItemLockPreempted = "work_item.lock_preempted"
 
+	// EventDispatchCreated 派发批次创建（会话元模型 S1）：用户消息 / lead plan
+	// 派生形成执行批次时发布；状态收口类行变更（S3）走 dispatch.updated。
+	EventDispatchCreated = "dispatch.created"
+
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
@@ -83,7 +87,8 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemCreated: {}, EventWorkItemUpdated: {}, EventWorkItemMoved: {},
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {}, EventWorkItemLocked: {}, EventWorkItemLockPreempted: {},
-	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
+	EventDispatchCreated: {},
+	EventRunCreated:      {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventSessionCompacted: {},
@@ -115,6 +120,7 @@ const (
 	AggregateArtifact       = "artifact"
 	AggregateRuntimeBinding = "runtime_binding"
 	AggregateRunner         = "runner"
+	AggregateDispatch       = "dispatch"
 )
 
 // CanonicalEvent 是工作台投影事实源（asyncapi CanonicalEventEnvelope）。

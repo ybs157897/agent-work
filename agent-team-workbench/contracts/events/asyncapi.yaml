@@ -45,7 +45,7 @@ components:
           type: object
           required: [type, id, version]
           properties:
-            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan] }
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch] }
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
@@ -74,6 +74,8 @@ components:
             - work_item.completed
             - work_item.locked
             - work_item.lock_preempted
+            # Dispatch（会话元模型 S1；状态收口类行变更事件随 S3 接入）
+            - dispatch.created
             # Run
             - run.created
             - run.started

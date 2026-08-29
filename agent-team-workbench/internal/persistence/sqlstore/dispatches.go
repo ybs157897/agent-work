@@ -63,3 +63,10 @@ func (r *DispatchRepo) ListByWorkItem(ctx context.Context, workItemID string) ([
 	}
 	return out, rows.Err()
 }
+
+// SetLeadRun 接诊批次回填接诊 run id（成员 run 行落库后同事务调用）。
+func (r *DispatchRepo) SetLeadRun(ctx context.Context, id, leadRunID string) error {
+	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE dispatches SET lead_run_id=? WHERE id=?`, leadRunID, id)
+	return r.store.mapErr(err)
+}

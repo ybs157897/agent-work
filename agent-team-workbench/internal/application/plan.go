@@ -271,6 +271,9 @@ func (s *Service) annotateDispatchSteps(ctx context.Context, workspaceID string,
 // finish 落终态；全部执行完无 defer/finish 也落 finished。
 func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem, plan *domain.Plan,
 	tasks []planTask, from, skipGate int, createdRuns *[]*domain.ExecutionRun, deferWakeAt **time.Time) error {
+	// 本批次派生子 run 的批次归属（会话元模型 S1）：首个 dispatch 步骤时解析，
+	// 其后共享——同一 plan 的派发同批。
+	planDispatchID := ""
 	for i := from; i < len(plan.Steps); i++ {
 		st := &plan.Steps[i]
 		t := tasks[i]
@@ -318,10 +321,20 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				map[string]any{"parent_id": wi.ID, "title": child.Title}); err != nil {
 				return err
 			}
+			// 子 run 继承批次：优先 source run 的 dispatch，否则 lead_plan 兜底批
+			//（同事务创建，见 resolvePlanDispatchID）。
+			if planDispatchID == "" {
+				id, err := s.resolvePlanDispatchID(ctx, plan)
+				if err != nil {
+					return err
+				}
+				planDispatchID = id
+			}
 			run, err := s.createRunLocked(ctx, child.ID, CreateRunParams{
 				AgentProfileID:     t.agentID,
 				Instruction:        t.instruction + knowledgeAppendix(plan.Step(t.knowledgeFrom)),
 				AcceptanceCriteria: t.acceptance,
+				DispatchID:         planDispatchID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch step %q 创建 run: %w", t.title, err)
