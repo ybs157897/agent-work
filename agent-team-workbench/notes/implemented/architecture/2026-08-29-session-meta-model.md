@@ -1,8 +1,8 @@
 # 会话元模型：任务 / 派发 / 会话组（Session Meta-Model）
 
 > 日期：2026-08-29
-> 版本：v1.0（待实现提案）
-> 状态：proposed —— 模型已与需求方逐轮对齐，未动工
+> 版本：v1.0
+> 状态：implemented —— 2026-08-30 于分支 `kimi/session-meta-model` 全四期落地（S1–S4）
 > 范围：agent-team-workbench 单 agent 执行打通之后的上一层架构；会话层的统一管理与多 agent 协作形态
 
 ---
@@ -209,3 +209,40 @@ S1 不依赖 lead 智能（可用规则路由先跑）；S3 依赖编排 M1–M4
 3. **痛点揭示**：真实动机是会话碎片化（每次新开、找不到、难管理）。→ 定性为对象层级错位，work_items 升格为事项层，会话降级为片段。
 4. **多 agent 维度补全**：任务下多 agent、每 agent 多会话、会话内开子代理。→ 定型一根两轴；此时委派边仍在工作台层面。
 5. **两次纠偏定稿**：(a) harness 子代理收回会话内部，工作台不建实体；(b) 用户注意力单位是"与本次发送相关的会话组"，底层收敛机制全部下沉。→ 三层模型定稿，lead 主线（旗舰模型）+ worker 参与线的执行形态确认，"等待"修正为事件驱动唤醒。
+
+---
+
+## 落地记录（2026-08-30，分支 `kimi/session-meta-model`）
+
+实施刀法（每刀独立可回滚）：`6ee7c85` 迁移 0015+domain+sqlstore → `2954bc5` dispatch 关联与 @路由 → `0e94c14` 派发卡片端点 → `0fed865` 前端派发时间线+@提及 → `674e257` 迁移 0016 台账+自动摘要 → `195ff77` 前端台账区+钉为决策 → `b4b2cf0` S3 回流唤醒与降级收口 → `96dcc8b` 迁移 0017 FTS5+检索端点 → `6ee1d58` 前端搜索入口。
+
+### 实施期的取舍与偏差（相对提案文本）
+
+- **接诊批落库顺序**：`lead_run_id`↔`dispatch_id` 互指成环，实现为同事务三步（建批 lead_run_id=NULL → 落 run → SetLeadRun 回填），语义不变。
+- **lead_plan 继承语义**：plan 子 run 优先继承 source run 的既有批次；仅当 source run 无批次（手动提交 plan/存量 run）才落 trigger=lead_plan 兜底批，同 source run 幂等复用。
+- **@直达边界**：@ 命中停用 agent 不回退（响亮失败走既有校验）；名字含空白的 agent 无法经 @ 指名（取首词），前端弹层已同步过滤。
+- **rolling_digest = 全量重算覆盖写**（非增量追加）：run 终态即片段关闭，整段重算后以 work_items.version 乐观锁覆盖、有界重试收敛；同一 run 重放终态输出逐字节不变，天然幂等。摘要不 bump updated_at（避免扰动按 updated_at 的统计口径），不发 SSE（每终态一条会打爆事件流），前端详情打开时自取。
+- **决策台账 v1 只经显式端点写入**（POST /work-items/{id}/decisions，幂等键必带），不做启发式抽取；补了契约外的 GET 读端点（SSE 只有增量，冷启动需要全量）。校验失败按平台惯例落 422。
+- **汇总 run 识别**：run 表无 trigger 列，以 `input.wakeup.settle_dispatch_id` 标记；存量 wakeup 路径（timer/assignment/on_demand）无此键、不挂批，零影响。
+- **「只唤醒一次」的硬保证 = MarkCollecting CAS**：存储层原子迁移，成功方才 enqueue——并发终态、唤醒重放、collecting 下迟到成员全部 no-op。
+- **enqueue 与 collecting 迁移同事务**（有意偏离 maybeAdvancePlans 的事务外先例）：消灭「迁移成功但入队失败 → 批卡 collecting 且不再有事件」的死缝；enqueue 失败整体回滚，下个终态事件重试。
+- **全取消→cancelled 的成员集合只含 worker**：若含汇总 run，汇总 succeeded 永远破坏全员 cancelled，规则成死代码；「整批喊停非部分失败」只在 worker 侧成立。汇总 run 自身失败仍落 degraded。
+- **接诊批全取消仍会唤醒 lead**（collecting→汇总→cancelled），不跳过唤醒。
+- **automation 唤醒受心跳门控**：lead agent 未开心跳时批次停在 collecting（唤醒被 coalesce 不重投）。这是配置契约——部署/产品侧须保证 lead 开心跳，代码不静默降级。
+- **汇总材料 = 各成员 instruction 摘录（120 rune）**，不含助手最终文本；更高质量汇总素材属后续增强。
+- **FTS 的 CJK 限制**：unicode61 把连续中文整段成一个 token，中文按词检索命中率低；改善路径（trigram/ICU/jieba 预处理）留后续刀。搜索结果无 created_at 列（v1 省略，需要时加 indexed_at）。
+- **前端两处计划偏差**：tasks 页 Header 本无搜索框，S4 前端是纯新增而非「替换纯前端过滤」；检索服务不可用时回退本地标题匹配并在面板标注。chat 页 ⌘K 本地会话过滤保留不动。
+
+### 负向保证（本模型不做）
+
+- **不设独立 dispatch 超时器**：成员必落终态由 run 层 lease/超时保证，dispatch 跟随收口；唯一的卡死缝（enqueue 失败）已被同事务入队封死。
+- **dispatch 终态后迟到成员不复活批次**：已 completed/degraded/cancelled 的批，后落终态的 lead_plan 成员一律 no-op，其结果不进任何汇总（v1 已知限制）。
+- **collecting 不回 running**：收口是单向的，防汇总循环。
+- **decision_entries.quote 永不存 LLM 转述**：转述只允许进 rolling_digest；原话保真是台账的存在理由。
+- **收件箱主题归置 grooming 不做**：留给产品 agent（schedules/grooming 回路就位后再议）。
+- **搜索索引是派生存储**：不发 SSE、不做实时推送；前端搜索纯请求-响应。
+
+### 悬而未决项的落地态
+
+- Open Question 4（lead 跨派发身份）按倾向解落地：汇总 run 落 lead 在主任务的参与线，task_sessions 谱系长期续接，无新机制。
+- 其余三问（任务锁放开、主题 split/merge、滚动摘要刷新策略）维持开放，不随本次落地收编。
