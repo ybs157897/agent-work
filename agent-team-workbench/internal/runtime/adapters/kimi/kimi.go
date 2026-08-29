@@ -146,7 +146,12 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		defer func() { _ = os.RemoveAll(agentDir) }()
 	}
 
-	cmd := exec.Command(a.cfg.BinPath, args...)
+	cmd, err := runtime.TrustedCommand(a.cfg.BinPath, args...)
+	if err != nil {
+		// CLI 缺失/不可执行属于环境配置问题。
+		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
+			Failure: configFailure("spawn_failed", err.Error())}
+	}
 	cmd.Dir = a.cfg.WorkspaceRoot
 	cmd.Env = a.processEnv()
 	setProcGroup(cmd)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
 const defaultSessionTimeout = 8 * time.Second
@@ -35,7 +36,11 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 		ctx, cancel = context.WithTimeout(ctx, defaultSessionTimeout)
 	}
 
-	cmd := exec.CommandContext(ctx, m.cfg.BinPath, m.commandArgs()...)
+	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs()...)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	cmd.Dir = m.cfg.WorkspaceRoot
 	cmd.Env = m.processEnv()
 	setProcGroup(cmd)
@@ -62,6 +67,17 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 	go io.Copy(io.Discard, stderr)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	// 超时终止由看门狗承担：ctx 到点向整个进程组发 SIGKILL
+	// （CommandContext 默认只杀单进程，会留下组内孤儿）。
+	// 退出走独立 watchdog 通道：done 的唯一消费者是 closeFn。
+	watchdog := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			signalGroup(cmd, pgid, sigKill)
+		case <-watchdog:
+		}
+	}()
 
 	reader := bufio.NewReaderSize(stdout, 64*1024)
 	frames := make(chan *rpcFrame)
@@ -81,6 +97,7 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 	}()
 
 	closeFn := func() {
+		close(watchdog)
 		signalGroup(cmd, pgid, sigTerm)
 		select {
 		case <-done:

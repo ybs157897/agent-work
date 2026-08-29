@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
 // Supervisor 管理一个网关进程（或只探活一个外部网关）。
@@ -99,7 +100,10 @@ func (s *Supervisor) spawnLocked() error {
 	if len(s.cfg.BinArgs) > 0 {
 		args = s.cfg.BinArgs
 	}
-	cmd := exec.Command(s.cfg.nodeBin(), args...)
+	cmd, err := runtime.TrustedCommand(s.cfg.nodeBin(), args...)
+	if err != nil {
+		return fmt.Errorf("拉起 dsh 网关失败: %w", err)
+	}
 	cmd.Dir = s.cfg.RepoDir
 	cmd.Env = s.processEnv()
 	cmd.Stdout = logWriter{prefix: "dsh-gateway"}
