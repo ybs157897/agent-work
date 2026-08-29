@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
+import { useDispatchesStore } from './dispatches.store';
 import { createDebounced, routeEvent, SSE_REFRESH_DEBOUNCE_MS } from './events';
 import { usePlansStore } from './plans.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -118,6 +119,56 @@ describe('routeEvent plan 域路由', () => {
     });
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls).toEqual(['/api/v1/plans/plan_1']); // 看板刷新由 dispatch 建子任务的 work_item.created 承担
+  });
+});
+
+describe('routeEvent dispatch 域路由（会话元模型）', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    useDispatchesStore.setState({ byWorkItem: {} });
+  });
+
+  it('dispatch.created 按载荷 work_item_id 失效重取派发卡片（窗口内合并为一次）', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        json({
+          items: [
+            { id: 'disp_1', work_item_id: 'wi_1', trigger: 'user_message', status: 'running', runs: [], created_at: '' },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('dispatch.created');
+    ev.aggregate = { type: 'dispatch', id: 'disp_1', version: 1 };
+    ev.data = { work_item_id: 'wi_1', trigger: 'user_message', status: 'running' };
+    routeEvent(ev);
+    routeEvent(ev);
+    expect(fetchMock).not.toHaveBeenCalled(); // trailing-edge：窗口内尚未触发
+
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls).toEqual(['/api/v1/work-items/wi_1/dispatches']);
+    expect(useDispatchesStore.getState().byWorkItem['wi_1']).toHaveLength(1);
+  });
+
+  it('无 work_item_id 线索的 dispatch 事件已消费但不发请求', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('dispatch.updated');
+    ev.aggregate = { type: 'dispatch', id: 'disp_9', version: 1 };
+    routeEvent(ev);
+
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -166,6 +166,42 @@ export interface Plan {
   updated_at: string;
 }
 
+// ── Dispatch（会话元模型 S1：一次发送形成的执行批次）──────────────────
+
+export type DispatchTrigger = 'user_message' | 'lead_plan' | 'wakeup';
+export type DispatchStatus = 'running' | 'collecting' | 'completed' | 'degraded' | 'cancelled';
+
+/** 派发成员 run 摘要（会话组；服务端按 created_at 升序）。 */
+export interface DispatchRun {
+  id: string;
+  work_item_id: string;
+  agent_profile_id?: string;
+  agent_name?: string;
+  status: RunStatus;
+  /** 一行摘要（S1 为 run 指令摘录，确定性生成）。 */
+  summary?: string;
+}
+
+/** 触发消息摘录（锚回来源 run）。 */
+export interface DispatchTriggerMessage {
+  run_id?: string;
+  excerpt: string;
+}
+
+/** GET /work-items/{id}/dispatches 的卡片（新→旧）。 */
+export interface DispatchCard {
+  id: string;
+  work_item_id: string;
+  trigger: DispatchTrigger;
+  /** 接诊 run / plan source run；@直达批次省略。 */
+  lead_run_id?: string;
+  status: DispatchStatus;
+  trigger_message?: DispatchTriggerMessage;
+  runs: DispatchRun[];
+  created_at: string;
+  closed_at?: string;
+}
+
 export interface RunFailure {
   code: string;
   message: string;
@@ -371,6 +407,9 @@ export const EVENT_NAMES = [
   'plan.waiting',
   'plan.finished',
   'plan.failed',
+  // dispatch 域（会话元模型 S1）；updated 的生产者随 S3 状态收口接入，先行进白名单。
+  'dispatch.created',
+  'dispatch.updated',
   'session.decision',
   'session.compacted',
   'run.created',

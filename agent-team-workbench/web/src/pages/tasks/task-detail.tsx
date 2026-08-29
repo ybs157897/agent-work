@@ -3,7 +3,14 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
 import { assignWorkItem, getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
-import type { Plan, PlanStep, Priority, WorkItem, WorkItemStatus } from '../../api/types';
+import type {
+  DispatchRun,
+  Plan,
+  PlanStep,
+  Priority,
+  WorkItem,
+  WorkItemStatus,
+} from '../../api/types';
 import { Drawer } from '../../components/drawer';
 import { PriorityBadge } from '../../components/priority-badge';
 import { useAgentsStore } from '../../stores/agents.store';
@@ -14,6 +21,7 @@ import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
 import { evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
 import { sortTasksTree } from '../../utils/task-tree';
+import { DispatchTimeline } from './dispatch-timeline';
 import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 
@@ -147,6 +155,12 @@ export function TaskDetail({
   const openChildChat = (child: WorkItem) => {
     if (!child.agent_profile_id) return;
     navigate(`/chat?agent=${encodeURIComponent(child.agent_profile_id)}&c=${encodeURIComponent(child.id)}`);
+  };
+
+  // 派发时间线成员行：会话锚 = 成员 run 所在任务 + 该成员 agent（openChildChat 同款）。
+  const openRunChat = (run: DispatchRun) => {
+    if (!run.agent_profile_id) return;
+    navigate(`/chat?agent=${encodeURIComponent(run.agent_profile_id)}&c=${encodeURIComponent(run.work_item_id)}`);
   };
 
   const onAssign = async (agentProfileId: string) => {
@@ -309,6 +323,9 @@ export function TaskDetail({
                 <p className="text-body text-text-tertiary">暂无编排计划</p>
               )}
             </section>
+
+            {/* 派发时间线（会话元模型：一次发送 = 一个执行批次） */}
+            <DispatchTimeline taskId={task.id} onOpenRunChat={openRunChat} />
 
             {/* 阻塞信息 */}
             {task.status === 'blocked' && task.blocker && (

@@ -2,6 +2,7 @@ import type { CanonicalEvent } from '../api/types';
 import { useAgentsStore } from './agents.store';
 import { useChatStore } from './chat.store';
 import { useDashboardStore } from './dashboard.store';
+import { useDispatchesStore } from './dispatches.store';
 import { useLogsStore } from './logs.store';
 import { usePlansStore } from './plans.store';
 import { useRunsStore } from './runs.store';
@@ -59,6 +60,12 @@ export function routeEvent(ev: CanonicalEvent): void {
     // plan 域事件就地更新 plans store（按主任务覆盖）；dispatch 建出的子任务
     // 会另行发 work_item.created，看板刷新由那条事件触发。
     usePlansStore.getState().applyEvent(ev);
+    return;
+  }
+  if (ev.type.startsWith('dispatch.')) {
+    // 派发批次事件（会话元模型）：按 work item 失效重取派发卡片
+    //（详情抽屉时间线消费）；批次建出的子任务仍由 work_item.created 刷看板。
+    useDispatchesStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type === 'activity.appended') {

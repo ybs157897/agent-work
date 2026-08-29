@@ -1,0 +1,5 @@
+# pnpm 11 设置入口（package.json 的 pnpm 字段已不再读取）。
+# esbuild 的 postinstall 只做平台二进制校验/下载，放行以免每次脚本运行被
+# ERR_PNPM_IGNORED_BUILDS 挡成 exit 1。
+allowBuilds:
+  esbuild: true

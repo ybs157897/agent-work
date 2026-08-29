@@ -7,6 +7,7 @@ import type {
   Artifact,
   Bootstrap,
   Dashboard,
+  DispatchCard,
   DSHCatalog,
   ExecutionRun,
   Me,
@@ -279,6 +280,10 @@ export const revertRunChanges = (runId: string, idempotencyKey: string) =>
 /** 一个任务的全部 Run（对话轮次历史）。 */
 export const listWorkItemRuns = (workItemId: string) =>
   apiFetch<{ items: ExecutionRun[] }>(`/work-items/${workItemId}/runs`);
+
+/** 派发卡片列表（会话元模型 S1；一次发送 = 一个执行批次，新→旧）。 */
+export const listWorkItemDispatches = (workItemId: string) =>
+  apiFetch<{ items: DispatchCard[] }>(`/work-items/${workItemId}/dispatches`);
 
 // ── Agent 配置（agents/ 目录为真相源）──────────────────────────────
 
