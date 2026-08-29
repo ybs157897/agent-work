@@ -763,6 +763,8 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	s.maybeExtractPlan(ctx, r)
 	// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
 	s.maybeSummarizeSegment(ctx, r)
+	// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
+	s.maybeSettleDispatch(ctx, r)
 	return nil
 }
 

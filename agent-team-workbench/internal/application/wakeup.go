@@ -25,11 +25,18 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 	if strings.TrimSpace(instruction) == "" {
 		return "", fmt.Errorf("%w: wakeup instruction empty", domain.ErrValidation)
 	}
-	run, err := s.CreateRun(ctx, taskKey, CreateRunParams{
+	p := CreateRunParams{
 		AgentProfileID: agentProfileID,
 		Instruction:    instruction,
 		WakeContext:    wakeContext,
-	})
+	}
+	// S3 回流：settle 唤醒产生的汇总 run 挂回原批次（dispatch_id=原批，
+	// input.wakeup 固化 settle 标记供终态钩子识别收口主体）；存量 wakeup
+	// 路径（timer/assignment/on_demand）不带该键，dispatch_id 保持为空。
+	if settleID, _ := wakeContext[settleDispatchContextKey].(string); settleID != "" {
+		p.DispatchID = settleID
+	}
+	run, err := s.CreateRun(ctx, taskKey, p)
 	if err != nil {
 		return "", err
 	}

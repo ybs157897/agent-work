@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -69,4 +70,33 @@ func (r *DispatchRepo) SetLeadRun(ctx context.Context, id, leadRunID string) err
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE dispatches SET lead_run_id=? WHERE id=?`, leadRunID, id)
 	return r.store.mapErr(err)
+}
+
+// MarkCollecting 回流前置迁移（会话元模型 S3）：running→collecting 的 CAS。
+// 只有把批从 running 迁到 collecting 的触发方获得「唤醒 lead」资格；
+// collecting 下的重复触发（并发终态事件、唤醒重放）一律 0 行 no-op——
+// 这是「只唤醒一次」的存储层硬保证。返回是否真正迁移。
+func (r *DispatchRepo) MarkCollecting(ctx context.Context, id string) (bool, error) {
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE dispatches SET status='collecting' WHERE id=? AND status='running'`, id)
+	if err != nil {
+		return false, r.store.mapErr(err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// CloseStatus 批次收口 CAS：running/collecting → 终态（completed/degraded/
+// cancelled），单向写入（终态行不可再被本路径改写）。0 行 = 已被并发方收口
+// → 调用方 no-op。返回是否真正收口。
+func (r *DispatchRepo) CloseStatus(ctx context.Context, id string, to domain.DispatchStatus, closedAt time.Time) (bool, error) {
+	d := r.store.dialect
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE dispatches SET status=?, closed_at=? WHERE id=? AND status IN ('running','collecting')`,
+		to, d.TimeParam(closedAt), id)
+	if err != nil {
+		return false, r.store.mapErr(err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }

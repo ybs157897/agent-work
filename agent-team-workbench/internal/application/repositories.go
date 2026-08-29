@@ -294,6 +294,12 @@ type DispatchRepo interface {
 	// SetLeadRun 接诊批次回填接诊 run id：dispatch↔run 互指（lead_run_id ↔
 	// dispatch_id）无法单语句成环，落成员 run 行后同事务补写。
 	SetLeadRun(ctx context.Context, id, leadRunID string) error
+	// MarkCollecting 回流前置迁移（S3）：running→collecting 的 CAS，成功方获得
+	// 唤醒 lead 的资格；collecting 下重复触发 0 行——只唤醒一次的存储层硬保证。
+	MarkCollecting(ctx context.Context, id string) (bool, error)
+	// CloseStatus 批次收口 CAS：running/collecting → 终态，单向写（终态行不可
+	// 再改写）；0 行 = 并发方已收口，调用方 no-op。
+	CloseStatus(ctx context.Context, id string, to domain.DispatchStatus, closedAt time.Time) (bool, error)
 	// ListByWorkItem 按创建时间升序返回任务的全部批次（卡片端点倒序展示）。
 	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.Dispatch, error)
 }
