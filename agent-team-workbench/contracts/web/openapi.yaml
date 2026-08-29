@@ -371,6 +371,15 @@ paths:
       responses:
         "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
 
+  /work-items/{work_item_id}/dispatches:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItemDispatches
+      summary: 派发卡片时间线（批次 + 成员 runs 摘要 + 触发消息摘录；新→旧）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DispatchCardList" } } } }
+
   /runs/{run_id}:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     get:
@@ -1313,6 +1322,41 @@ components:
       type: object
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/ExecutionRun" } }
+
+    DispatchCardList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DispatchCard" } }
+
+    DispatchCard:
+      type: object
+      description: 派发卡片（会话元模型 S1）：一次发送形成的执行批次 + 成员会话组摘要。
+      properties:
+        id: { type: string, description: "disp_ 前缀" }
+        work_item_id: { type: string }
+        trigger: { type: string, enum: [user_message, lead_plan, wakeup] }
+        lead_run_id: { type: string, description: 接诊 run / plan source run；@直达批次省略 }
+        status: { type: string, enum: [running, collecting, completed, degraded, cancelled] }
+        trigger_message:
+          type: object
+          description: 触发消息摘录（接诊/lead_plan 取 lead run 指令；@直达取最早成员 run）
+          properties:
+            run_id: { type: string }
+            excerpt: { type: string }
+        runs:
+          type: array
+          description: 成员 runs（会话组；created_at 升序）
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              work_item_id: { type: string }
+              agent_profile_id: { type: string }
+              agent_name: { type: string }
+              status: { type: string }
+              summary: { type: string, description: 一行摘要（S1 为 run 指令摘录，确定性生成） }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time, nullable: true }
 
     RunChanges:
       type: object

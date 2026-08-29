@@ -74,8 +74,9 @@ components:
             - work_item.completed
             - work_item.locked
             - work_item.lock_preempted
-            # Dispatch（会话元模型 S1；状态收口类行变更事件随 S3 接入）
+            # Dispatch（会话元模型 S1；updated 的发布点随 S3 状态收口接入）
             - dispatch.created
+            - dispatch.updated
             # Run
             - run.created
             - run.started

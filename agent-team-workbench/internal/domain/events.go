@@ -26,9 +26,11 @@ const (
 	EventWorkItemLocked        = "work_item.locked"
 	EventWorkItemLockPreempted = "work_item.lock_preempted"
 
-	// EventDispatchCreated 派发批次创建（会话元模型 S1）：用户消息 / lead plan
-	// 派生形成执行批次时发布；状态收口类行变更（S3）走 dispatch.updated。
+	// EventDispatchCreated / EventDispatchUpdated 派发批次（会话元模型 S1）：
+	// 批次创建与行变更。S1 生产者只有 created；updated 的发布点随 S3 状态收口
+	//（running→collecting→终态）接入。
 	EventDispatchCreated = "dispatch.created"
+	EventDispatchUpdated = "dispatch.updated"
 
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
@@ -87,8 +89,8 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemCreated: {}, EventWorkItemUpdated: {}, EventWorkItemMoved: {},
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {}, EventWorkItemLocked: {}, EventWorkItemLockPreempted: {},
-	EventDispatchCreated: {},
-	EventRunCreated:      {}, EventRunStarted: {}, EventRunStatusChanged: {},
+	EventDispatchCreated: {}, EventDispatchUpdated: {},
+	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventSessionCompacted: {},

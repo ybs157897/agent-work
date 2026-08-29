@@ -386,6 +386,63 @@ func (s *Server) handleListWorkItemRuns(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// handleListWorkItemDispatches 派发卡片时间线（会话元模型 S1）：任务全部批次
+// 新→旧；卡片 = 批次 + 成员 runs（会话组）摘要 + 触发消息摘录。
+func (s *Server) handleListWorkItemDispatches(w http.ResponseWriter, r *http.Request) {
+	wiID := r.PathValue("work_item_id")
+	ctx := r.Context()
+	wi, err := s.store.WorkItems().Get(ctx, wiID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, wiID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	agentList, err := s.store.Agents().List(ctx, wi.WorkspaceID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	agentNames := make(map[string]string, len(agentList))
+	for _, a := range agentList {
+		agentNames[a.ID] = a.Name
+	}
+	items := make([]dispatchCardDTO, 0, len(dispatches))
+	// ListByWorkItem 升序，时间线倒序输出（新→旧）。
+	for i := len(dispatches) - 1; i >= 0; i-- {
+		d := dispatches[i]
+		runs, err := s.store.Runs().ListByDispatch(ctx, d.ID)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		// 触发消息：接诊/lead_plan 批次取 lead run（不在成员列时单独读取，
+		// 如 lead_plan 兜底批的 source run）；@直达批次取最早成员 run。
+		var trigger *domain.ExecutionRun
+		if d.LeadRunID != "" {
+			for _, run := range runs {
+				if run.ID == d.LeadRunID {
+					trigger = run
+					break
+				}
+			}
+			if trigger == nil {
+				if lead, err := s.store.Runs().Get(ctx, d.LeadRunID); err == nil {
+					trigger = lead
+				}
+			}
+		}
+		if trigger == nil && len(runs) > 0 {
+			trigger = runs[0]
+		}
+		items = append(items, toDispatchCardDTO(d, runs, trigger, agentNames))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (s *Server) handleInterruptRun(w http.ResponseWriter, r *http.Request) {
 	s.controlRun(w, r, "interrupt")
 }

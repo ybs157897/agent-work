@@ -346,6 +346,77 @@ func toPlanDTO(p *domain.Plan) planDTO {
 	}
 }
 
+// ── Dispatch（派发卡片，会话元模型 S1）────────────────────────────────
+
+type dispatchRunDTO struct {
+	ID             string `json:"id"`
+	WorkItemID     string `json:"work_item_id"`
+	AgentProfileID string `json:"agent_profile_id,omitempty"`
+	AgentName      string `json:"agent_name,omitempty"`
+	Status         string `json:"status"`
+	// Summary 成员一行摘要（S1 确定性生成：run 指令摘录；不引入 LLM 转述）。
+	Summary string `json:"summary,omitempty"`
+}
+
+// dispatchExcerptDTO 触发消息摘录（锚回来源 run）。
+type dispatchExcerptDTO struct {
+	RunID   string `json:"run_id,omitempty"`
+	Excerpt string `json:"excerpt"`
+}
+
+type dispatchCardDTO struct {
+	ID         string `json:"id"`
+	WorkItemID string `json:"work_item_id"`
+	Trigger    string `json:"trigger"`
+	// LeadRunID 接诊 run / plan source run；@直达批次省略。
+	LeadRunID string `json:"lead_run_id,omitempty"`
+	Status    string `json:"status"`
+	// TriggerMessage 触发消息摘录：接诊/lead_plan 批次取 lead run 指令
+	//（不在成员列时单独读取）；@直达批次取最早成员 run。
+	TriggerMessage *dispatchExcerptDTO `json:"trigger_message,omitempty"`
+	// Runs 成员 runs（会话组），created_at 升序。
+	Runs      []dispatchRunDTO `json:"runs"`
+	CreatedAt time.Time        `json:"created_at"`
+	ClosedAt  *time.Time       `json:"closed_at,omitempty"`
+}
+
+// dispatchExcerptMaxRunes 触发消息与成员摘要的截断宽度（一行卡片可读）。
+const dispatchExcerptMaxRunes = 200
+
+// runInstructionExcerpt run 的一行摘要：instruction 摘录（按 rune 截断）。
+func runInstructionExcerpt(run *domain.ExecutionRun) string {
+	instr, _ := run.Input["instruction"].(string)
+	runes := []rune(instr)
+	if len(runes) <= dispatchExcerptMaxRunes {
+		return instr
+	}
+	return string(runes[:dispatchExcerptMaxRunes]) + "…"
+}
+
+// toDispatchCardDTO 组装派发卡片：成员 runs 摘要 + 触发消息摘录。
+func toDispatchCardDTO(d *domain.Dispatch, runs []*domain.ExecutionRun, trigger *domain.ExecutionRun,
+	agentNames map[string]string) dispatchCardDTO {
+	members := make([]dispatchRunDTO, 0, len(runs))
+	for _, run := range runs {
+		members = append(members, dispatchRunDTO{
+			ID: run.ID, WorkItemID: run.WorkItemID,
+			AgentProfileID: run.AgentProfileID,
+			AgentName:      agentNames[run.AgentProfileID],
+			Status:         string(run.Status),
+			Summary:        runInstructionExcerpt(run),
+		})
+	}
+	card := dispatchCardDTO{
+		ID: d.ID, WorkItemID: d.WorkItemID, Trigger: string(d.Trigger),
+		LeadRunID: d.LeadRunID, Status: string(d.Status),
+		Runs: members, CreatedAt: d.CreatedAt, ClosedAt: d.ClosedAt,
+	}
+	if trigger != nil {
+		card.TriggerMessage = &dispatchExcerptDTO{RunID: trigger.ID, Excerpt: runInstructionExcerpt(trigger)}
+	}
+	return card
+}
+
 // createPlanRequest steps 为动词原文（verb 键 + 动词专属字段），弹 verb 后余量为 payload。
 type createPlanRequest struct {
 	WorkItemID     string                 `json:"work_item_id"`
