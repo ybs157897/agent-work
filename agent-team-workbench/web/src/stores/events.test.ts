@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
 import { useDispatchesStore } from './dispatches.store';
+import { useDecisionsStore } from './decisions.store';
 import { createDebounced, routeEvent, SSE_REFRESH_DEBOUNCE_MS } from './events';
 import { usePlansStore } from './plans.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -165,6 +166,52 @@ describe('routeEvent dispatch 域路由（会话元模型）', () => {
 
     const ev = envelope('dispatch.updated');
     ev.aggregate = { type: 'dispatch', id: 'disp_9', version: 1 };
+    routeEvent(ev);
+
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('routeEvent decision 域路由（会话元模型 S2）', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    useDecisionsStore.setState({ byWorkItem: {} });
+  });
+
+  it('decision.created 按载荷 work_item_id 失效重取决策台账（窗口内合并为一次）', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        json({ items: [{ id: 'dec_1', work_item_id: 'wi_1', quote: '以周会结论为准', created_at: '' }] }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('decision.created');
+    ev.aggregate = { type: 'decision', id: 'dec_1', version: 1 };
+    ev.data = { work_item_id: 'wi_1', quote: '以周会结论为准' };
+    routeEvent(ev);
+    routeEvent(ev);
+    expect(fetchMock).not.toHaveBeenCalled(); // trailing-edge：窗口内尚未触发
+
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls).toEqual(['/api/v1/work-items/wi_1/decisions']);
+    expect(useDecisionsStore.getState().byWorkItem['wi_1']).toHaveLength(1);
+  });
+
+  it('无 work_item_id 线索的 decision 事件已消费但不发请求', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('decision.created');
+    ev.aggregate = { type: 'decision', id: 'dec_9', version: 1 };
     routeEvent(ev);
 
     await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);

@@ -7,6 +7,7 @@ import type {
   Artifact,
   Bootstrap,
   Dashboard,
+  DecisionEntry,
   DispatchCard,
   DSHCatalog,
   ExecutionRun,
@@ -284,6 +285,29 @@ export const listWorkItemRuns = (workItemId: string) =>
 /** 派发卡片列表（会话元模型 S1；一次发送 = 一个执行批次，新→旧）。 */
 export const listWorkItemDispatches = (workItemId: string) =>
   apiFetch<{ items: DispatchCard[] }>(`/work-items/${workItemId}/dispatches`);
+
+// ── 决策台账（会话元模型 S2）────────────────────────────────────────
+
+/** 决策原话列表（创建时间升序；只读投影）。 */
+export const listWorkItemDecisions = (workItemId: string) =>
+  apiFetch<{ items: DecisionEntry[] }>(`/work-items/${workItemId}/decisions`);
+
+export interface CreateDecisionInput {
+  /** 用户原话（必填，trim 后非空；禁止转述进 quote）。 */
+  quote: string;
+  /** 钉出来源轮次；必须属于该 work item，否则 422。 */
+  source_run_id?: string;
+  /** 链回片段内位置（消息序号等）。 */
+  source_ref?: string;
+}
+
+/** 钉为决策（201 回显）；幂等键照 createRun client_key 惯例由调用方按意图生成。 */
+export const createDecision = (workItemId: string, input: CreateDecisionInput, idempotencyKey?: string) =>
+  apiFetch<DecisionEntry>(`/work-items/${workItemId}/decisions`, {
+    method: 'POST',
+    body: input,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  });
 
 // ── Agent 配置（agents/ 目录为真相源）──────────────────────────────
 

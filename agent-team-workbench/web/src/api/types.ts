@@ -61,6 +61,8 @@ export interface TaskSession {
   display_id?: string;
   runs_count: number;
   input_tokens_cum: number;
+  /** 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际 +1）。 */
+  segment_seq: number;
   created_at: string;
   updated_at: string;
 }
@@ -127,6 +129,8 @@ export interface WorkItem {
   blocker?: Blocker;
   runs_count: number;
   latest_run_id?: string;
+  /** 任务台账滚动摘要（S2 确定性生成）：仅详情响应携带，列表/bootstrap 省略。 */
+  rolling_digest?: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -200,6 +204,21 @@ export interface DispatchCard {
   runs: DispatchRun[];
   created_at: string;
   closed_at?: string;
+}
+
+// ── 决策台账（会话元模型 S2：任务级共享记忆的用户原话引文）────────────
+
+/** GET/POST /work-items/{id}/decisions 的台账行。 */
+export interface DecisionEntry {
+  id: string;
+  work_item_id: string;
+  /** 用户原话（引文保真；服务端只 trim，不改写）。 */
+  quote: string;
+  /** 钉出来源轮次；缺省时未钉来源。 */
+  source_run_id?: string;
+  /** 链回片段内位置（消息序号等）。 */
+  source_ref?: string;
+  created_at: string;
 }
 
 export interface RunFailure {
@@ -410,6 +429,8 @@ export const EVENT_NAMES = [
   // dispatch 域（会话元模型 S1）；updated 的生产者随 S3 状态收口接入，先行进白名单。
   'dispatch.created',
   'dispatch.updated',
+  // 决策台账（会话元模型 S2）：用户原话钉为决策时发布。
+  'decision.created',
   'session.decision',
   'session.compacted',
   'run.created',

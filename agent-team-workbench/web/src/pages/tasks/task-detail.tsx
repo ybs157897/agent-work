@@ -24,6 +24,7 @@ import { sortTasksTree } from '../../utils/task-tree';
 import { DispatchTimeline } from './dispatch-timeline';
 import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
+import { TaskLedger } from './task-ledger';
 
 const STATUS_TEXT: Record<string, string> = {
   todo: '待办',
@@ -326,6 +327,9 @@ export function TaskDetail({
 
             {/* 派发时间线（会话元模型：一次发送 = 一个执行批次） */}
             <DispatchTimeline taskId={task.id} onOpenRunChat={openRunChat} />
+
+            {/* 任务台账（S2：滚动摘要 + 决策原话，任务级共享记忆） */}
+            <TaskLedger taskId={task.id} agentProfileId={task.agent_profile_id} />
 
             {/* 阻塞信息 */}
             {task.status === 'blocked' && task.blocker && (
