@@ -221,6 +221,23 @@ export interface DecisionEntry {
   created_at: string;
 }
 
+// ── FTS 检索（会话元模型 S4：索引为派生存储，纯请求-响应，无 SSE）────
+
+export type SearchKind = 'segment_summary' | 'decision' | 'artifact';
+
+/** GET /workspaces/{id}/search 的命中项。 */
+export interface SearchItem {
+  kind: SearchKind;
+  /** 命中归属任务（decision/artifact 也定位到其 work item）。 */
+  work_item_id: string;
+  /** 决策 id / work item id（segment_summary）/ artifact id。 */
+  source_id: string;
+  /** 任务标题 / quote 前 80 字 / logical_path。 */
+  title: string;
+  /** 正文命中摘录：[] 包裹命中词、… 截断省略。 */
+  snippet: string;
+}
+
 export interface RunFailure {
   code: string;
   message: string;

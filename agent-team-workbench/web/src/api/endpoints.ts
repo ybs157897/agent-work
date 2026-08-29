@@ -20,6 +20,8 @@ import type {
   RunChanges,
   RunChangeDiff,
   RuntimeBinding,
+  SearchKind,
+  SearchItem,
   TaskSession,
   WakeResult,
   WorkItem,
@@ -308,6 +310,28 @@ export const createDecision = (workItemId: string, input: CreateDecisionInput, i
     body: input,
     ...(idempotencyKey ? { idempotencyKey } : {}),
   });
+
+// ── FTS 检索（会话元模型 S4）────────────────────────────────────────
+
+export interface WorkspaceSearchFilter {
+  /** 检索词（空格分词 AND 语义）；空/纯符号服务端返回空 items。 */
+  q: string;
+  /** 可选，限定单任务。 */
+  workItemId?: string;
+  kind?: SearchKind;
+  /** 服务端缺省 20、上限 100。 */
+  limit?: number;
+}
+
+/** FTS 检索（片段摘要/决策台账/产物标题）；读命令，无幂等键。 */
+export const searchWorkspace = (workspaceId: string, filter: WorkspaceSearchFilter) => {
+  const params = new URLSearchParams();
+  params.set('q', filter.q);
+  if (filter.workItemId) params.set('work_item_id', filter.workItemId);
+  if (filter.kind) params.set('kind', filter.kind);
+  if (filter.limit != null) params.set('limit', String(filter.limit));
+  return apiFetch<{ items: SearchItem[] }>(`/workspaces/${workspaceId}/search?${params.toString()}`);
+};
 
 // ── Agent 配置（agents/ 目录为真相源）──────────────────────────────
 

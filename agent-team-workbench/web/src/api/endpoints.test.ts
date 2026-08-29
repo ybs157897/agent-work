@@ -13,6 +13,7 @@ import {
   listWorkItems,
   returnWorkItem,
   revertRunChanges,
+  searchWorkspace,
 } from './endpoints';
 
 const json = (body: unknown, status = 200) =>
@@ -223,6 +224,27 @@ describe('decision ledger endpoints（会话元模型 S2）', () => {
     expect(url).toBe('/api/v1/work-items/wi_1/decisions');
     expect(init.method).toBe('GET');
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeUndefined();
+  });
+});
+
+describe('workspaces FTS search endpoint（会话元模型 S4）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('searchWorkspace: GET /workspaces/{id}/search，q 必带、可选参数按需拼接', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await searchWorkspace('ws_1', { q: '上线窗口', workItemId: 'wi_1', kind: 'decision', limit: 50 });
+    await searchWorkspace('ws_1', { q: '上线窗口' });
+    const [full, minimal] = fetchMock.mock.calls as [[string, RequestInit], [string, RequestInit]];
+    expect(decodeURIComponent(String(full[0]))).toBe(
+      '/api/v1/workspaces/ws_1/search?q=上线窗口&work_item_id=wi_1&kind=decision&limit=50',
+    );
+    expect(decodeURIComponent(String(minimal[0]))).toBe('/api/v1/workspaces/ws_1/search?q=上线窗口');
+    expect(minimal[1].method).toBe('GET');
+    expect((minimal[1].headers as Record<string, string>)['Idempotency-Key']).toBeUndefined(); // 读命令不带幂等键
   });
 });
 
