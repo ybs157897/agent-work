@@ -324,6 +324,27 @@ func TestCommandArgsChooseProviderCompatibleMultiAgentProtocol(t *testing.T) {
 	}
 }
 
+func TestShouldApplyCodexModelSnapshotAllowsLocalDefaultModel(t *testing.T) {
+	tests := []struct {
+		name string
+		snap atwruntime.ModelSnapshot
+		want bool
+	}{
+		{name: "empty snapshot", snap: atwruntime.ModelSnapshot{}, want: false},
+		{name: "local codex account", snap: atwruntime.ModelSnapshot{Provider: "codex", ReasoningEffort: "high"}, want: false},
+		{name: "local openai account", snap: atwruntime.ModelSnapshot{Provider: "openai"}, want: false},
+		{name: "explicit local model", snap: atwruntime.ModelSnapshot{Provider: "codex", Model: "gpt-test"}, want: true},
+		{name: "invalid custom provider remains visible", snap: atwruntime.ModelSnapshot{Provider: "custom"}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldApplyCodexModelSnapshot(tt.snap); got != tt.want {
+				t.Fatalf("shouldApplyCodexModelSnapshot() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProbePerformsHandshakeAuthAndModelChecks(t *testing.T) {
 	m := newTestModule(t)
 	result, err := m.Probe(context.Background(), atwruntime.ProbeRequest{WorkspaceID: "ws_test"})

@@ -453,6 +453,26 @@ func newTestModule(f *fakeKap) *Module {
 	})
 }
 
+func TestShouldApplyKimiModelSnapshotAllowsLocalDefaultModel(t *testing.T) {
+	tests := []struct {
+		name string
+		snap runtime.ModelSnapshot
+		want bool
+	}{
+		{name: "empty snapshot", snap: runtime.ModelSnapshot{}, want: false},
+		{name: "local kimi account", snap: runtime.ModelSnapshot{Provider: "kimi"}, want: false},
+		{name: "explicit local model", snap: runtime.ModelSnapshot{Provider: "kimi", Model: "kimi-test"}, want: true},
+		{name: "invalid custom provider remains visible", snap: runtime.ModelSnapshot{Provider: "custom"}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldApplyKimiModelSnapshot(tt.snap); got != tt.want {
+				t.Fatalf("shouldApplyKimiModelSnapshot() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // runKapExecute 起 Execute，prompt 到达后执行 script（可推帧/发控制），再收结果。
 func runKapExecute(t *testing.T, m *Module, ex *runtime.ExecContext, f *fakeKap, script func(pid string)) runtime.ExecResult {
 	t.Helper()
