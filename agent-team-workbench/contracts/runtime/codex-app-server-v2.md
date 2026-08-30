@@ -39,11 +39,25 @@ If Agent prompt, model, mode, sandbox, approval policy, or Runtime changes, the 
 | `policy.approval_policy=manual` | `approvalPolicy=untrusted` |
 | `policy.sandbox` | `sandbox` (`read-only`, `workspace-write`, `danger-full-access`) |
 | `mode=plan` | experimental `turn/start.collaborationMode` |
-| Workbench reasoning effort | `turn/start.effort`, always sent; default `medium` |
+| 默认子 Agent | 始终显式启用稳定 `multi_agent`；原生 OpenAI/Codex provider 额外启用 `multi_agent_v2`，第三方 Responses provider 显式关闭 v2；未显式配置时 `turn/start.effort=ultra`（显式 effort 保留，废弃 `multiAgentMode` 不发送） |
+| Workbench reasoning effort | `turn/start.effort`, always sent; explicit value preserved, otherwise default `ultra` |
 
-An empty Codex model means “use the current Codex CLI default”; in plan mode the default is discovered with `model/list` before `turn/start`. Non-Codex provider models are rejected before dispatch.
+An empty Codex model means “use the current Codex CLI default”; in plan mode the default is discovered with `model/list` before `turn/start`. A custom provider is accepted only when its registry entry explicitly declares `api=openai-responses`; completion-only providers are rejected before dispatch rather than being rewritten into a Responses configuration.
 
 Workbench sets `CODEX_HOME` to `.agent-work/codex` under the control-plane working directory so Codex auth, config, and thread history stay project-local (not `~/.codex`).
+
+### Child Agent transcript
+
+`collabAgentToolCall.receiverThreadIds` is the stable identity source for Codex children. Workbench
+projects lifecycle as `subagent.updated(runtime=codex, role=child)` and uses the child thread id as
+canonical `agent_id`. After the parent turn reaches a terminal notification, the adapter keeps the
+app-server alive long enough to call `thread/list(ancestorThreadId)` and paginated
+`thread/turns/list(itemsView=full, sortDirection=asc)`, then maps child reasoning, messages, and tools
+to the same canonical event types used by the main transcript. It never scans rollout JSONL.
+
+Normal process cleanup closes stdin and waits for app-server to exit before escalating to SIGINT and
+SIGKILL. This preserves the provider's completed turn and child history; cancellation still uses the
+control-plane interrupt path and cached process group.
 
 ## Event projection
 

@@ -139,6 +139,14 @@ components:
     base: "生产工具调用唯一入口 ActivityGroup：阶段内按 Explore/Execute/Changes/CUA/Agent 语义投影为 44px 命令行摘要；同一行承载组别、工具族、总调用数、当前动作、完成/运行/失败/中断状态和 chevron；展开后按事件顺序纵向列出紧凑工具日志，不使用横向 Action 大卡"
     behavior: "reasoning/text delta 形成当前思考与正文阶段；下一条 tool.started 前先落下该阶段，工具再按 ZCode 默认 Explore/Execute 分组（Changes 默认逐条）；tool.progress/completed/failed 只更新当前工具、不制造阶段碎片；running→terminal 自动收成摘要；每段 thinking 默认折叠为最后非空行 ticker，streaming→settled 尊重用户开合；Run 级展开态由 WorkTimeline 管理"
     demo-boundary: "Demo 只能复用生产 ActivityGroup/ToolRow/详情渲染器与可审计 fixture，不得从模型正文、Markdown 或静态 content block 伪造工具调用；无事件时显示空态"
+  chat-swarm:
+    base: "Kimi AgentSwarm 的生产正文投影；WorkTimeline 内一个 rounded container，巢头显示任务与真实进度，两列蜂格默认显示 1-based 题号、原始任务、短结果 ticker 与文字状态；点击蜂格在 Chat 右侧 SwarmMemberWorkspace 用唯一 AgentTranscriptReader 展示与主正文一致的 thinking、ActivityGroup、Markdown/KaTeX 与 final，底部合流条说明结果是否齐套"
+    behavior: "仅消费 adapter 明示的 Kimi swarm 父工具元数据与 subagent.updated(role=member, swarm_index)；父 items 的原始任务不被通用 lifecycle description 覆盖；右栏 selection 用 runId+swarmId+memberId 并从实时 messages 派生，按 agent_id scope 投影且和 ArtifactWorkspace 互斥；无 agent-scoped 历史时明确回退生命周期摘要；普通 Kimi Agent 不因并发成为蜂巢，Codex child 走独立 chat-subagent 卡片语义"
+    a11y: "组级只保留一个 role=status aria-atomic 进度播报；蜂格用原生 button + aria-pressed 暴露选中态并有完整身份+状态 label；右栏有可读标题和关闭按钮；状态同时用图标和文字；reduced-motion 取消运行旋转而保留信息"
+  chat-subagent:
+    base: "普通子 Agent 的单卡投影；Codex collaboration child 在 WorkTimeline 内使用紧凑 CodexAgentCard，显示真实身份、状态、任务/结果 ticker 和右栏入口，不伪装成 Kimi 蜂巢"
+    behavior: "只消费 adapter 明示的 subagent.updated(runtime=codex, role=child) 与相同 subagent_id 的 agent_id transcript；点击后把 lifecycle description 投影成 user segment，并与 child thinking、tools、interim、final 一起交给唯一 AgentTranscriptReader，形成用户靠右、Agent 靠左的同源对话；与 Kimi selection、ArtifactWorkspace 互斥"
+    a11y: "整张卡使用原生 button、aria-pressed 与完整身份/状态/摘要 label；状态同时使用 Lucide 图标和文字；右栏标题明确使用 Codex 子 Agent 语义，运行标识只保留在内部 selection 与事件 scope，不在正文侧栏展示"
   content-block:
     base: "LanguageGUI 结构化正文块；统一 rounded {rounded.container}、border {colors.border.subtle}、bg {colors.surface.raised} 与 {shadows.level-1}；metric/table/chart/file/event/image/audio/map/search/review-summary 共享标题、说明与来源栏"
     behavior: "只消费 languagegui/v1 白名单字段；review-summary 用固定 verdict/severity/check 状态同时表达结论、问题与验证证据；图表颜色由语义序列决定；安全 URL 才产生链接；无效 fenced JSON 回落 CodeBlock，不吞原文"
