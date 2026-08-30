@@ -94,6 +94,25 @@ describe('WorkspaceEventStream', () => {
     stream.stop();
   });
 
+  it('订阅 subagent.updated，使 Kimi 蜂群成员更新进入 run 时间线', () => {
+    const events: CanonicalEvent[] = [];
+    const stream = new WorkspaceEventStream('ws_1', {
+      onEvent: (event) => events.push(event),
+      onStatus: () => undefined,
+      onCursorExpired: () => undefined,
+    });
+    stream.start(0);
+    const event: CanonicalEvent = {
+      ...makeEvent(1, 'subagent.updated'),
+      aggregate: { type: 'execution_run', id: 'run_1', version: 1 },
+      run_seq: 2,
+      data: { runtime: 'kimi', role: 'member', subagent_id: 'member-1' },
+    };
+    FakeEventSource.instances[0].emitEvent('subagent.updated', event);
+    expect(events).toEqual([event]);
+    stream.stop();
+  });
+
   it('event_id 去重；非 events/v1 与未知类型不进入回调', () => {
     const events: CanonicalEvent[] = [];
     const stream = new WorkspaceEventStream('ws_1', {

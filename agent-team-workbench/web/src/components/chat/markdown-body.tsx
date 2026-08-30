@@ -56,6 +56,34 @@ export function stripThinkTags(text: string): string {
     : text;
 }
 
+/** Convert Kimi's LaTeX delimiters to the delimiters understood by remark-math.
+ * Fenced and inline code are copied byte-for-byte so examples and source code
+ * cannot accidentally become executable math nodes.
+ */
+export function normalizeKimiMathDelimiters(text: string): string {
+  const replaceMath = (value: string): string => value
+    .replace(/(^|[^\\])\\\[/g, (_match, prefix: string) => `${prefix}$$`)
+    .replace(/(^|[^\\])\\\]/g, (_match, prefix: string) => `${prefix}$$`)
+    .replace(/(^|[^\\])\\\(/g, (_match, prefix: string) => `${prefix}$`)
+    .replace(/(^|[^\\])\\\)/g, (_match, prefix: string) => `${prefix}$`);
+  const lines = text.split(/(\r?\n)/);
+  let fence: string | undefined;
+  return lines.map((line) => {
+    if (/^\r?\n$/.test(line)) return line;
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      if (fenceMatch?.[1]?.[0] === fence[0] && fenceMatch[1].length >= fence.length) fence = undefined;
+      return line;
+    }
+    if (fenceMatch) {
+      fence = fenceMatch[1];
+      return line;
+    }
+    const parts = line.split(/(`+[^`]*`+)/g);
+    return parts.map((part, index) => index % 2 === 1 ? part : replaceMath(part)).join("");
+  }).join("");
+}
+
 export const CALLOUT_TITLES: Record<string, string> = {
   note: "Note",
   info: "Info",
@@ -220,7 +248,7 @@ export function MarkdownBody({
   runId?: string;
   messageId?: string;
 }) {
-  const parsedText = useThrottledMarkdown(stripThinkTags(text), streaming);
+  const parsedText = useThrottledMarkdown(normalizeKimiMathDelimiters(stripThinkTags(text)), streaming);
   const streamSlice = useMemo<StreamingMarkdownBlocks>(
     () => streaming
       ? splitStreamingMarkdownBlocks(parsedText)

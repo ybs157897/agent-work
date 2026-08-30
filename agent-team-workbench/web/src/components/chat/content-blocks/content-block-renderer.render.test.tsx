@@ -3,8 +3,24 @@ import { describe, expect, it } from 'vitest';
 import { parseContentBlockDocument } from '../../../utils/content-blocks';
 import { ContentBlockList } from './content-block-renderer';
 import { ChartBlock } from './chart-block';
+import { LanguageGuiFence } from './languagegui-fence';
 
 describe('ContentBlockList', () => {
+  it('renders a valid explicit languagegui fence when only the redundant version is omitted', () => {
+    const source = JSON.stringify({
+      blocks: [{
+        type: 'table', title: '十道题汇总',
+        columns: [{ key: 'id', label: '题号' }, { key: 'answer', label: '答案' }],
+        rows: [{ id: '1', answer: 'x = 3' }],
+      }],
+    });
+    const html = renderToStaticMarkup(<LanguageGuiFence source={source} fallback={<code>raw-json</code>} />);
+    expect(html).toContain('data-content-block-version="languagegui/v1"');
+    expect(html).toContain('十道题汇总');
+    expect(html).toContain('<table class="chat-content-table">');
+    expect(html).not.toContain('raw-json');
+  });
+
   it('renders metric, table, chart, file and event with semantic markup', () => {
     const document = parseContentBlockDocument({
       version: 'languagegui/v1',

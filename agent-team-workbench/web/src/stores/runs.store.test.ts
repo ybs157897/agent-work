@@ -6,7 +6,7 @@ import { clearOutputTrace, getOutputTrace } from '../utils/output-trace';
 import { buildTranscriptSegments } from '../utils/chronological-transcript';
 import { projectWorkActivityTimeline } from '../utils/work-activity-timeline';
 
-const runEvent = (seq: number, type: string, data?: Record<string, unknown>): CanonicalEvent => ({
+const runEvent = (seq: number, type: string, data?: Record<string, unknown>, agent_id?: string): CanonicalEvent => ({
   contract_version: 'events/v1',
   event_id: `evt_${seq}`,
   workspace_id: 'ws_1',
@@ -16,6 +16,7 @@ const runEvent = (seq: number, type: string, data?: Record<string, unknown>): Ca
   type,
   occurred_at: '2026-08-21T00:00:00Z',
   data,
+  agent_id,
 });
 
 afterEach(() => {
@@ -29,6 +30,25 @@ beforeEach(() => {
 });
 
 describe('runs.store applyEvent', () => {
+  it('按 Agent scope 隔离交错 delta 的折叠缓冲与相邻 boundary', () => {
+    const { applyEvent } = useRunsStore.getState();
+    const seed = Array.from({ length: 500 }, (_, index) => runEvent(index + 1, 'message.delta', { raw: { chunk: { type: 'text-delta', text: `main-${index}` } } }, 'main'));
+    const childSeed = Array.from({ length: 500 }, (_, index) => runEvent(index + 1001, 'message.delta', { raw: { chunk: { type: 'text-delta', text: `child-${index}` } } }, 'child-1'));
+    useRunsStore.setState({ timelines: { run_1: [...seed, ...childSeed].map((event) => ({ event_id: event.event_id, stream_seq: event.stream_seq, run_seq: event.run_seq, type: event.type, occurred_at: event.occurred_at, agent_id: event.agent_id, data: event.data })) } });
+    applyEvent(runEvent(3001, 'message.delta', { raw: { chunk: { type: 'text-delta', text: 'MAIN-SEED' } } }, 'main'));
+    applyEvent(runEvent(3002, 'message.delta', { raw: { chunk: { type: 'text-delta', text: 'CHILD-SEED' } } }, 'child-1'));
+    applyEvent(runEvent(2001, 'message.delta', { raw: { chunk: { type: 'text-delta', text: 'MAIN-TAIL' } } }, 'main'));
+    applyEvent(runEvent(2002, 'message.delta', { raw: { chunk: { type: 'text-delta', text: 'CHILD-TAIL' } } }, 'child-1'));
+    applyEvent(runEvent(2003, 'message.completed', { role: 'assistant', text: 'main done' }, 'main'));
+    applyEvent(runEvent(2004, 'message.completed', { role: 'assistant', text: 'child done' }, 'child-1'));
+    const entries = useRunsStore.getState().timelines.run_1 ?? [];
+    const mainBoundary = entries.find((entry) => entry.run_seq === 2003);
+    const childBoundary = entries.find((entry) => entry.run_seq === 2004);
+    expect(mainBoundary?.data?.text_folded).toContain('MAIN-TAIL');
+    expect(mainBoundary?.data?.text_folded).not.toContain('CHILD-TAIL');
+    expect(childBoundary?.data?.text_folded).toContain('CHILD-TAIL');
+    expect(childBoundary?.data?.text_folded).not.toContain('MAIN-TAIL');
+  });
   it('并发请求同一 run 快照时只发出一个 HTTP 请求', async () => {
     let respond!: () => void;
     const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
@@ -244,6 +264,40 @@ describe('runs.store applyEvent', () => {
       objective: '保留目标',
       status: 'active',
     });
+  });
+
+  it('时间线超帽后每个蜂群成员只保留最新自包含快照', () => {
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'tool.started', {
+      tool: 'AgentSwarm', call_id: 'swarm-1',
+      swarm: {
+        runtime: 'kimi', id: 'swarm-1', title: '并行检查', total: 1,
+        items: [{ index: 1, description: '检查后端' }],
+      },
+    }));
+    applyEvent(runEvent(2, 'subagent.updated', {
+      runtime: 'kimi', role: 'member', subagent_id: 'member-1',
+      parent_tool_call_id: 'swarm-1', swarm_index: 1, name: 'explore',
+      description: '检查后端', status: 'queued',
+    }));
+    applyEvent(runEvent(3, 'subagent.updated', {
+      runtime: 'kimi', role: 'member', subagent_id: 'member-1',
+      parent_tool_call_id: 'swarm-1', swarm_index: 1, name: 'explore',
+      description: '检查后端', status: 'completed', summary: '契约正常',
+    }));
+    for (let seq = 4; seq <= 520; seq += 1) {
+      applyEvent(runEvent(seq, 'message.delta', { text: `tail-${seq}` }));
+    }
+
+    const timeline = useRunsStore.getState().timelines.run_1;
+    const snapshots = timeline.filter((entry) => entry.type === 'subagent.updated');
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.data).toMatchObject({ subagent_id: 'member-1', status: 'completed', summary: '契约正常' });
+
+    const messages = buildMessages(['run_1'], { run_1: timeline });
+    expect(messages.find((message) => message.kind === 'swarm')?.swarm?.members).toMatchObject([
+      { id: 'member-1', status: 'completed', summary: '契约正常' },
+    ]);
   });
 
   it('146 个工具调用被尾部 delta 挤压时仍保留 started/terminal 成对生命周期', () => {

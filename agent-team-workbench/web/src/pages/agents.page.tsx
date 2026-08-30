@@ -54,16 +54,17 @@ const ROLE_LABEL: Record<string, string> = Object.fromEntries(ROLE_OPTIONS.map((
 const REASONING_EFFORT_OPTIONS = [
   { value: 'minimal', label: '最低' },
   { value: 'low', label: '低' },
-  { value: 'medium', label: '中（默认）' },
+  { value: 'medium', label: '中' },
   { value: 'high', label: '高' },
   { value: 'xhigh', label: '极高' },
+  { value: 'ultra', label: 'Ultra · 主动子 Agent（默认）' },
 ] as const;
 
 type ReasoningEffort = (typeof REASONING_EFFORT_OPTIONS)[number]['value'];
 
-function normalizeReasoningEffort(value?: string): ReasoningEffort {
-  const v = (value ?? 'medium').trim().toLowerCase();
-  return REASONING_EFFORT_OPTIONS.some((o) => o.value === v) ? (v as ReasoningEffort) : 'medium';
+export function normalizeReasoningEffort(value?: string): ReasoningEffort {
+  const v = (value ?? 'ultra').trim().toLowerCase();
+  return REASONING_EFFORT_OPTIONS.some((o) => o.value === v) ? (v as ReasoningEffort) : 'ultra';
 }
 
 const DEFAULT_RUNTIME = 'dsh_local';

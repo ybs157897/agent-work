@@ -3,19 +3,22 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { MarkdownBody } from './markdown-body';
 import { ActivityGroup } from './tool-card';
 import { ApprovalCard } from './approval-card';
+import { CodexAgentCard, SwarmChatBlock } from './swarm-chat-block';
 import { ACTIVE } from '../../stores/chat.store';
+import type { SwarmMemberProjection } from '../../stores/chat.store';
 import type { WorkActivityItem, WorkTimelineSegment } from '../../utils/work-activity-timeline';
 import { shouldShowOutputLoading } from '../../utils/chronological-transcript';
 import css from './work-activity-timeline.module.css';
 
 const OUTPUT_LOADING_IDLE_MS = 700;
 
-function elapsed(createdAt: string, updatedAt: string, now: number, live: boolean): string | undefined {
+export function workElapsed(createdAt: string, updatedAt: string, now: number, live: boolean): string | undefined {
   const start = Date.parse(createdAt);
   const end = Date.parse(updatedAt);
   if (!Number.isFinite(start)) return undefined;
-  const ms = Math.max(0, (live ? now : Number.isFinite(end) && end > start ? end : now) - start);
-  if (ms > 0 && ms < 1000) return '<1 秒';
+  const stop = live ? now : Number.isFinite(end) ? Math.max(start, end) : start;
+  const ms = Math.max(0, stop - start);
+  if (ms < 1000) return '<1 秒';
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds} 秒`;
   const minutes = Math.floor(seconds / 60);
@@ -50,6 +53,8 @@ function itemStartedAt(item: WorkActivityItem): string | undefined {
     return item.msg.startedAt ?? item.msg.at;
   }
   if (item.kind === 'activity') return item.items[0]?.startedAt ?? item.items[0]?.at;
+  if (item.kind === 'swarm') return item.msg.swarm?.startedAt ?? item.msg.at;
+  if (item.kind === 'subagent') return item.msg.at;
   if (item.kind === 'approval') return item.approval.resolved_at;
   return undefined;
 }
@@ -58,15 +63,19 @@ function workSummary(items: readonly WorkActivityItem[]): string {
   const thinking = items.filter((item) => item.kind === 'thinking').length;
   const tools = items.reduce((total, item) => total + (item.kind === 'activity' ? item.items.length : 0), 0);
   const narration = items.filter((item) => item.kind === 'assistant').length;
+  const swarms = items.filter((item) => item.kind === 'swarm').length;
   return [
     thinking ? `${thinking} 段思考` : '',
     tools ? `${tools} 次工具` : '',
+    swarms ? `${swarms} 个蜂群` : '',
     narration ? `${narration} 段过程正文` : '',
   ].filter(Boolean).join(' · ');
 }
 
 function workItemKey(item: WorkActivityItem, index: number): string {
   if (item.kind === 'activity') return `activity:${item.runId}:${item.items[0]?.key ?? index}`;
+  if (item.kind === 'swarm') return `swarm:${item.runId}:${item.msg.swarm?.id ?? item.msg.key}`;
+  if (item.kind === 'subagent') return `subagent:${item.runId}:${item.msg.childAgent?.id ?? item.msg.key}`;
   if (item.kind === 'thinking-placeholder') return `placeholder:${item.runId}`;
   if (item.kind === 'approval') return `approval:${item.approval.id}`;
   if (item.kind === 'thinking' || item.kind === 'assistant') return item.renderKey ?? item.msg.key;
@@ -224,6 +233,8 @@ function Item({
   now,
   running,
   stoppedRuns,
+  onSelectSwarmMember,
+  selectedSwarmMemberKey,
 }: {
   item: WorkActivityItem;
   nextItem?: WorkActivityItem;
@@ -231,16 +242,22 @@ function Item({
   now: number;
   running: boolean;
   stoppedRuns?: ReadonlySet<string>;
+  onSelectSwarmMember?: (runId: string, swarmId: string, member: SwarmMemberProjection) => void;
+  selectedSwarmMemberKey?: string;
 }) {
   switch (item.kind) {
     case 'activity':
       return <ActivityGroup items={item.items} stoppedRuns={stoppedRuns} variant="timeline" defaultCollapsed />;
+    case 'swarm':
+      return item.msg.swarm ? <SwarmChatBlock projection={item.msg.swarm} selectedMemberKey={selectedSwarmMemberKey} selectionPrefix={item.runId} onSelectMember={(member) => onSelectSwarmMember?.(item.runId, item.msg.swarm!.id, member)} /> : null;
+    case 'subagent':
+      return item.msg.childAgent ? <CodexAgentCard agent={item.msg.childAgent} selected={selectedSwarmMemberKey === `${item.runId}:${item.msg.childAgent.parentThreadId ?? 'codex'}:${item.msg.childAgent.id}`} onSelect={(agent) => onSelectSwarmMember?.(item.runId, agent.parentThreadId ?? 'codex', agent)} /> : null;
     case 'thinking': {
       const start = item.msg.startedAt ?? item.msg.at;
       const nextStartedAt = nextItem ? itemStartedAt(nextItem) : undefined;
       const end = item.msg.completedAt
         ?? (item.streaming && running ? new Date(now).toISOString() : nextStartedAt ?? timelineUpdatedAt);
-      const duration = start === end ? undefined : elapsed(start, end, now, false);
+      const duration = start === end ? undefined : workElapsed(start, end, now, false);
       return <ThinkingDisclosure item={item} duration={duration} />;
     }
     case 'thinking-placeholder':
@@ -260,7 +277,7 @@ function Item({
   }
 }
 
-export function WorkActivityTimeline({ segment }: { segment: WorkTimelineSegment }) {
+export function WorkActivityTimeline({ segment, onSelectSwarmMember, selectedSwarmMemberKey }: { segment: WorkTimelineSegment; onSelectSwarmMember?: (runId: string, swarmId: string, member: SwarmMemberProjection) => void; selectedSwarmMemberKey?: string }) {
   const headingId = useId();
   const bodyId = useId();
   const visibleItems = useMemo(() => segment.items.filter(isVisibleWorkItem), [segment.items]);
@@ -269,6 +286,8 @@ export function WorkActivityTimeline({ segment }: { segment: WorkTimelineSegment
     || (item.kind === 'assistant' && item.streaming)
     || item.kind === 'thinking-placeholder'
     || (item.kind === 'activity' && item.items.some((tool) => tool.toolStatus === 'running'))
+    || (item.kind === 'swarm' && item.msg.swarm?.status === 'running')
+    || (item.kind === 'subagent' && item.msg.childAgent?.status === 'running')
     || (item.kind === 'approval' && item.approval.status === 'pending'),
   );
   const running = (segment.status !== undefined && ACTIVE.has(segment.status)) || inferredRunning;
@@ -286,7 +305,11 @@ export function WorkActivityTimeline({ segment }: { segment: WorkTimelineSegment
   const renderedItems = useMemo(() => {
     if (!running || visibleItems.some((item) => item.kind === 'thinking-placeholder')) return visibleItems;
     const hasPendingApproval = segment.status === 'waiting_approval' || visibleItems.some((item) => item.kind === 'approval');
-    const hasRunningTool = visibleItems.some((item) => item.kind === 'activity' && item.items.some((tool) => tool.toolStatus === 'running'));
+    const hasRunningTool = visibleItems.some((item) =>
+      (item.kind === 'activity' && item.items.some((tool) => tool.toolStatus === 'running'))
+      || (item.kind === 'swarm' && item.msg.swarm?.status === 'running')
+      || (item.kind === 'subagent' && item.msg.childAgent?.status === 'running'),
+    );
     const latestThinking = [...visibleItems].reverse().find((item) => item.kind === 'thinking' && item.streaming);
     if (!latestThinking) return visibleItems;
     const lastDeltaAt = latestThinking?.kind === 'thinking'
@@ -330,7 +353,7 @@ export function WorkActivityTimeline({ segment }: { segment: WorkTimelineSegment
     }
     if (!previous && segment.status && ACTIVE.has(segment.status)) setExpanded(true);
   }, [running, segment.status]);
-  const duration = useMemo(() => elapsed(segment.createdAt, segment.updatedAt, now, running), [segment.createdAt, segment.updatedAt, now, running]);
+  const duration = useMemo(() => workElapsed(segment.createdAt, segment.updatedAt, now, running), [segment.createdAt, segment.updatedAt, now, running]);
   const status = statusCopy(effectiveStatus, duration);
   const summary = workSummary(visibleItems);
   const stoppedRuns = useMemo<ReadonlySet<string> | undefined>(
@@ -374,6 +397,8 @@ export function WorkActivityTimeline({ segment }: { segment: WorkTimelineSegment
                 now={now}
                 running={running}
                 stoppedRuns={stoppedRuns}
+                onSelectSwarmMember={onSelectSwarmMember}
+                selectedSwarmMemberKey={selectedSwarmMemberKey}
               />
             </div>
           ))}

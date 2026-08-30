@@ -2,6 +2,8 @@ import type { TranscriptSegment } from './chronological-transcript';
 
 type ThinkingSegment = Extract<TranscriptSegment, { kind: 'thinking' }>;
 type ActivitySegment = Extract<TranscriptSegment, { kind: 'activity' }>;
+type SwarmSegment = Extract<TranscriptSegment, { kind: 'swarm' }>;
+type SubagentSegment = Extract<TranscriptSegment, { kind: 'subagent' }>;
 type PlaceholderSegment = Extract<TranscriptSegment, { kind: 'thinking-placeholder' }>;
 type AssistantSegment = Extract<TranscriptSegment, { kind: 'assistant' }>;
 type MetaSegment = Extract<TranscriptSegment, { kind: 'meta' }>;
@@ -11,6 +13,8 @@ type ApprovalSegment = Extract<TranscriptSegment, { kind: 'approval' }>;
 export type WorkActivityItem =
   | ThinkingSegment
   | ActivitySegment
+  | SwarmSegment
+  | SubagentSegment
   | PlaceholderSegment
   | AssistantSegment
   | MetaSegment
@@ -46,7 +50,7 @@ function segmentRunId(segment: TranscriptSegment): string | undefined {
   if (segment.kind === 'user' || segment.kind === 'assistant' || segment.kind === 'thinking' || segment.kind === 'meta') {
     return segment.msg.runId;
   }
-  if (segment.kind === 'activity' || segment.kind === 'thinking-placeholder' || segment.kind === 'turn-diff') {
+  if (segment.kind === 'activity' || segment.kind === 'swarm' || segment.kind === 'subagent' || segment.kind === 'thinking-placeholder' || segment.kind === 'turn-diff') {
     return segment.runId;
   }
   if (segment.kind === 'approval') return segment.approval.run_id;
@@ -58,6 +62,8 @@ function segmentAt(segment: TranscriptSegment): string | undefined {
     return segment.msg.at;
   }
   if (segment.kind === 'turn-diff') return undefined;
+  if (segment.kind === 'swarm') return segment.msg.at;
+  if (segment.kind === 'subagent') return segment.msg.at;
   if (segment.kind === 'approval') return segment.approval.resolved_at ?? undefined;
   if (segment.kind === 'activity') {
     return segment.items.reduce<string | undefined>((value, item) => value ?? item.at, undefined);

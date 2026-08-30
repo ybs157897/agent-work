@@ -3,20 +3,25 @@ import { MessageActions } from './message-actions';
 import { TurnDiffCard } from './turn-diff-card';
 import { OutputLoadingIndicator, WorkActivityTimeline } from './work-activity-timeline';
 import type { ChatMessage } from '../../stores/chat.store';
+import type { SwarmMemberProjection } from '../../stores/chat.store';
 import {
   presentedTranscriptSegmentKey,
   type PresentedTranscriptSegment,
 } from '../../utils/work-activity-timeline';
 
-export function TranscriptView({
+export function AgentTranscriptReader({
   segments,
   onFork,
   agent,
+  onSelectSwarmMember,
+  selectedSwarmMemberKey,
 }: {
   segments: PresentedTranscriptSegment[];
   onFork?: (key: string) => void;
   /** 当前会话归属的 Agent（助手回合头展示身份）。 */
   agent?: { name: string; avatar?: string };
+  onSelectSwarmMember?: (runId: string, swarmId: string, member: SwarmMemberProjection) => void;
+  selectedSwarmMemberKey?: string;
 }) {
   return (
     <>
@@ -26,6 +31,8 @@ export function TranscriptView({
           seg={seg}
           onFork={onFork}
           agent={agent}
+          onSelectSwarmMember={onSelectSwarmMember}
+          selectedSwarmMemberKey={selectedSwarmMemberKey}
         />
       ))}
     </>
@@ -36,10 +43,14 @@ function TranscriptSegmentView({
   seg,
   onFork,
   agent,
+  onSelectSwarmMember,
+  selectedSwarmMemberKey,
 }: {
   seg: PresentedTranscriptSegment;
   onFork?: (key: string) => void;
   agent?: { name: string; avatar?: string };
+  onSelectSwarmMember?: (runId: string, swarmId: string, member: SwarmMemberProjection) => void;
+  selectedSwarmMemberKey?: string;
 }) {
   switch (seg.kind) {
     case 'user':
@@ -58,7 +69,7 @@ function TranscriptSegmentView({
         />
       );
     case 'work-timeline':
-      return <WorkActivityTimeline segment={seg} />;
+      return <WorkActivityTimeline segment={seg} onSelectSwarmMember={onSelectSwarmMember} selectedSwarmMemberKey={selectedSwarmMemberKey} />;
     case 'thinking-placeholder':
       return <OutputLoadingIndicator />;
     case 'turn-diff':

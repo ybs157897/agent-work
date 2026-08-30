@@ -26,6 +26,19 @@ const entry = (
 });
 
 describe('buildMessages', () => {
+  it('projects Codex subagent.updated as a clickable child-agent card', () => {
+    const messages = buildMessages(['run_codex'], {
+      run_codex: [
+        entry('run_codex', 1, 'subagent.updated', {
+          runtime: 'codex', role: 'child', subagent_id: 'child-1', parent_thread_id: 'thread-child',
+          name: 'explore', description: '检查依赖', status: 'running', summary: '正在扫描',
+        }),
+      ],
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ kind: 'subagent', childAgent: { id: 'child-1', runtime: 'codex', parentThreadId: 'thread-child' } });
+  });
+
   it('run.created 的 instruction 渲染为用户气泡；user 输入与 assistant 完成文本分侧', () => {
     const timelines = {
       run_1: [
@@ -101,6 +114,149 @@ describe('buildMessages', () => {
       ['tool', '调用工具 shell：ls -la', 'file.go'],
       ['error', '工具失败 shell：rm x', 'permission denied'],
       ['tool', '工具输出', 'orphan'],
+    ]);
+  });
+
+  it('只有显式 Kimi swarm 元数据与 member 事件生成蜂巢，普通 child 不混入', () => {
+    const messages = buildMessages(['run_swarm'], {
+      run_swarm: [
+        entry('run_swarm', 1, 'tool.started', {
+          tool: 'AgentSwarm',
+          call_id: 'swarm-1',
+          swarm: {
+            runtime: 'kimi',
+            id: 'swarm-1',
+            title: '并行检查两个模块',
+            total: 2,
+            items: [
+              { index: 1, description: '检查后端' },
+              { index: 2, description: '检查前端' },
+            ],
+          },
+        }),
+        entry('run_swarm', 2, 'subagent.updated', {
+          runtime: 'kimi', role: 'child', subagent_id: 'ordinary-child',
+          parent_tool_call_id: 'agent-1', status: 'running', name: 'coder',
+        }),
+        entry('run_swarm', 3, 'subagent.updated', {
+          runtime: 'kimi', role: 'member', subagent_id: 'member-1',
+          parent_tool_call_id: 'swarm-1', swarm_index: 1, status: 'running',
+          name: 'explore', description: '并行检查两个模块 #1 (explore)', run_in_background: false,
+        }),
+        entry('run_swarm', 4, 'subagent.updated', {
+          runtime: 'kimi', role: 'member', subagent_id: 'member-1',
+          parent_tool_call_id: 'swarm-1', swarm_index: 1, status: 'completed',
+          name: 'explore', description: '并行检查两个模块 #1 (explore)', summary: '后端契约完整',
+        }),
+        entry('run_swarm', 5, 'subagent.updated', {
+          runtime: 'kimi', role: 'member', subagent_id: 'member-2',
+          parent_tool_call_id: 'swarm-1', swarm_index: 2, status: 'failed',
+          name: 'coder', description: '检查前端', error: '类型检查失败',
+        }),
+        entry('run_swarm', 6, 'tool.completed', { call_id: 'swarm-1', output: 'aggregate' }),
+      ],
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: 'swarm',
+      text: '并行检查两个模块',
+      swarm: {
+        id: 'swarm-1',
+        runtime: 'kimi',
+        total: 2,
+        status: 'completed',
+        members: [
+          { id: 'member-1', index: 1, status: 'completed', description: '检查后端', summary: '后端契约完整' },
+          { id: 'member-2', index: 2, status: 'failed', error: '类型检查失败' },
+        ],
+      },
+    });
+    expect(messages[0]?.swarm?.members.some((member) => member.id === 'ordinary-child')).toBe(false);
+  });
+
+  it('没有 adapter 显式 swarm 元数据时，AgentSwarm 工具仍按普通 Activity 工具处理', () => {
+    const messages = buildMessages(['run_plain_agent'], {
+      run_plain_agent: [
+        entry('run_plain_agent', 1, 'tool.started', {
+          tool: 'AgentSwarm', call_id: 'call-1', args_summary: 'parallel work',
+        }),
+      ],
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ kind: 'tool', tool: 'AgentSwarm', toolStatus: 'running' });
+    expect(messages[0]?.swarm).toBeUndefined();
+  });
+
+  it('孤立 member 事件不能把普通 Kimi Agent 工具升级为蜂巢', () => {
+    const messages = buildMessages(['run_regular_child'], {
+      run_regular_child: [
+        entry('run_regular_child', 1, 'tool.started', {
+          tool: 'Agent', call_id: 'agent-1', args_summary: '检查单个模块',
+        }),
+        entry('run_regular_child', 2, 'subagent.updated', {
+          runtime: 'kimi', role: 'member', subagent_id: 'child-1',
+          parent_tool_call_id: 'agent-1', swarm_index: 1, status: 'running',
+          name: 'coder', description: '检查单个模块',
+        }),
+        entry('run_regular_child', 3, 'tool.completed', {
+          call_id: 'agent-1', output: '检查完成',
+        }),
+      ],
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: 'tool', tool: 'Agent', toolStatus: 'success', detail: '检查完成',
+    });
+    expect(messages[0]?.swarm).toBeUndefined();
+  });
+
+  it('父蜂群已结束但成员终态缺失时收为 stopped，不伪造 completed', () => {
+    const messages = buildMessages(['run_missing_member'], {
+      run_missing_member: [
+        entry('run_missing_member', 1, 'tool.started', {
+          tool: 'AgentSwarm', call_id: 'swarm-missing',
+          swarm: {
+            runtime: 'kimi', id: 'swarm-missing', title: '并行检查', total: 1,
+            items: [{ index: 1, description: '检查后端' }],
+          },
+        }),
+        entry('run_missing_member', 2, 'tool.completed', { call_id: 'swarm-missing' }),
+      ],
+    });
+    expect(messages[0]?.swarm).toMatchObject({
+      status: 'completed',
+      members: [{ index: 1, status: 'stopped' }],
+    });
+  });
+
+  it('拒绝非官方的 0-based swarmIndex，不污染声明的 1-based 蜂格', () => {
+    const messages = buildMessages(['run_zero_based'], {
+      run_zero_based: [
+        entry('run_zero_based', 1, 'tool.started', {
+          tool: 'AgentSwarm', call_id: 'swarm-zero',
+          swarm: {
+            runtime: 'kimi', id: 'swarm-zero', title: '三路检查', total: 3,
+            items: [
+              { index: 1, description: 'A' },
+              { index: 2, description: 'B' },
+              { index: 3, description: 'C' },
+            ],
+          },
+        }),
+        entry('run_zero_based', 2, 'subagent.updated', {
+          runtime: 'kimi', role: 'member', subagent_id: 'member-0',
+          parent_tool_call_id: 'swarm-zero', swarm_index: 0,
+          status: 'running', name: 'member-0', description: 'invalid task',
+        }),
+      ],
+    });
+    expect(messages[0]?.swarm?.total).toBe(3);
+    expect(messages[0]?.swarm?.members).toHaveLength(3);
+    expect(messages[0]?.swarm?.members.map((member) => [member.index, member.id, member.status])).toEqual([
+      [1, 'queued:swarm-zero:1', 'queued'],
+      [2, 'queued:swarm-zero:2', 'queued'],
+      [3, 'queued:swarm-zero:3', 'queued'],
     ]);
   });
 

@@ -100,6 +100,32 @@ describe('projectWorkActivityTimeline', () => {
     if (result[1].kind === 'work-timeline') expect(result[1].items.map((item) => item.kind)).toEqual(['meta', 'assistant', 'approval']);
   });
 
+  it('Kimi swarm 作为工作过程项留在原事件位置', () => {
+    const swarm: TranscriptSegment = {
+      kind: 'swarm',
+      runId: 'r-swarm',
+      msg: {
+        key: 'swarm-1', runId: 'r-swarm', kind: 'swarm', text: '并行检查', at: '2026-01-01T00:00:02Z',
+        swarm: {
+          id: 'swarm-1', runtime: 'kimi', title: '并行检查', total: 2,
+          status: 'running', members: [], startedAt: '2026-01-01T00:00:02Z',
+        },
+      },
+    };
+    const result = projectWorkActivityTimeline([
+      user('u-swarm', 'r-swarm', '2026-01-01T00:00:00Z'),
+      thinking('t-swarm', 'r-swarm', '拆成两路', '2026-01-01T00:00:01Z'),
+      swarm,
+      assistant('a-swarm', 'r-swarm', '最终汇总', '2026-01-01T00:00:03Z'),
+    ], { runStatuses: { 'r-swarm': 'succeeded' } });
+
+    expect(result.map((item) => item.kind)).toEqual(['user', 'work-timeline', 'assistant']);
+    expect(result[1]).toMatchObject({
+      kind: 'work-timeline',
+      items: [{ kind: 'thinking' }, { kind: 'swarm' }],
+    });
+  });
+
   it('无 status 且只有 optimistic user 时不生成空 timeline；key 稳定', () => {
     const result = projectWorkActivityTimeline([user('u4', 'pending')]);
     expect(result).toHaveLength(1);

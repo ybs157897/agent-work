@@ -11,6 +11,8 @@ export type TranscriptSegment =
   | { kind: 'assistant'; msg: ChatMessage; streaming?: boolean; renderKey?: string }
   | { kind: 'thinking'; msg: ChatMessage; streaming?: boolean; renderKey?: string }
   | { kind: 'meta'; msg: ChatMessage }
+  | { kind: 'swarm'; runId: string; msg: ChatMessage }
+  | { kind: 'subagent'; runId: string; msg: ChatMessage }
   | { kind: 'activity'; runId: string; items: ChatMessage[] }
   | { kind: 'thinking-placeholder'; runId: string }
   | { kind: 'turn-diff'; runId: string; text: string }
@@ -73,7 +75,7 @@ function filterVisibleMessages(
 }
 
 function hasRunningTools(items: readonly ChatMessage[]): boolean {
-  return items.some((m) => m.toolStatus === 'running');
+  return items.some((m) => m.toolStatus === 'running' || m.swarm?.status === 'running');
 }
 
 /** timeline 已有 run.created 但 buildMessages 尚未产出 user 行时的兜底（竞态窗口）。 */
@@ -141,6 +143,10 @@ function segmentFromSingle(msg: ChatMessage): TranscriptSegment | undefined {
       return { kind: 'assistant', msg };
     case 'thinking':
       return { kind: 'thinking', msg };
+    case 'swarm':
+      return msg.swarm ? { kind: 'swarm', runId: msg.runId, msg } : undefined;
+    case 'subagent':
+      return msg.childAgent ? { kind: 'subagent', runId: msg.runId, msg } : undefined;
     case 'system':
     case 'error':
       return { kind: 'meta', msg };
@@ -158,6 +164,8 @@ function segmentRunId(segment: TranscriptSegment): string | undefined {
   ) return segment.msg.runId;
   if (
     segment.kind === 'activity'
+    || segment.kind === 'swarm'
+    || segment.kind === 'subagent'
     || segment.kind === 'thinking-placeholder'
     || segment.kind === 'turn-diff'
   ) return segment.runId;
@@ -257,7 +265,11 @@ function appendLiveTail(
   const runTools = segments.flatMap((s) =>
     s.kind === 'activity' && s.runId === liveRunId ? s.items : [],
   );
-  const running = hasRunningTools(runTools);
+  const running = hasRunningTools(runTools) || segments.some((segment) =>
+    ((segment.kind === 'swarm' && segment.msg.swarm?.status === 'running')
+      || (segment.kind === 'subagent' && segment.msg.childAgent?.status === 'running'))
+    && segment.runId === liveRunId,
+  );
 
   const reasoningVisible = opts.showReasoning !== false
     || !out.some((segment) => segment.kind === 'thinking' && segment.msg.runId === liveRunId);

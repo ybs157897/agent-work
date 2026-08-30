@@ -28,6 +28,8 @@ describe('LanguageGUI demo · rich assistant output', () => {
     expect(html).toContain('data-content-block="rating"');
     expect(html).toContain('data-content-block="review-summary"');
     expect(html).toContain('data-languagegui-tool-showcase');
+    expect(html).toContain('data-languagegui-swarm-showcase');
+    expect(html).toContain('Kimi 蜂群正文');
     expect(html).toContain('TOOL ACTIVITY · DEMO DATA');
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('展开工具调用：共 5 次');

@@ -58,4 +58,19 @@ describe('mergeApprovalSegments', () => {
     expect(transcriptSegmentKey(first)).toBe(transcriptSegmentKey(expanded));
     expect(transcriptSegmentKey(later)).not.toBe(transcriptSegmentKey(first));
   });
+
+  it('蜂群成员更新时沿用父 swarm id 作为稳定 key', () => {
+    const swarm = (status: 'running' | 'completed'): TranscriptSegment => ({
+      kind: 'swarm',
+      runId: 'r1',
+      msg: {
+        key: `event-${status}`, runId: 'r1', kind: 'swarm', text: '并行检查', at: 't1',
+        swarm: {
+          id: 'swarm-1', runtime: 'kimi', title: '并行检查', total: 2,
+          status, members: [], startedAt: 't1',
+        },
+      },
+    });
+    expect(transcriptSegmentKey(swarm('running'))).toBe(transcriptSegmentKey(swarm('completed')));
+  });
 });
