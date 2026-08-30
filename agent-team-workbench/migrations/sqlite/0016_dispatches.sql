@@ -1,5 +1,5 @@
--- 0015_dispatches_sqlite.sql — 会话元模型 S1：派发批次（SQLite 本地验证版）。
--- 与 migrations/0015_dispatches.sql 语义等价：dispatches 表 + execution_runs.dispatch_id
+-- 0016_dispatches_sqlite.sql — 会话元模型 S1：派发批次（SQLite 本地验证版）。
+-- 与 migrations/0016_dispatches.sql 语义等价：dispatches 表 + execution_runs.dispatch_id
 -- + task_sessions.segment_seq；时间列用 DATETIME（RFC3339Nano 文本）。
 
 CREATE TABLE dispatches (

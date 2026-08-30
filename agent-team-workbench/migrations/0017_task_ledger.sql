@@ -1,4 +1,4 @@
--- 0016_task_ledger.sql — 会话元模型 S2：任务台账（Task Ledger）。
+-- 0017_task_ledger.sql — 会话元模型 S2：任务台账（Task Ledger）。
 -- rolling_digest 是任务级滚动摘要（确定性生成，无 LLM；转述只允许进摘要），
 -- 决策台账 decision_entries 存用户原话（quote 保真，禁止 LLM 转述——「当时
 -- 怎么定的」必须可回溯）。台账不属于任何会话，是任务级共享记忆（D4：横向

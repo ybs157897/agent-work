@@ -1,4 +1,4 @@
--- 0015_dispatches.sql — 会话元模型 S1：派发（dispatch）批次。
+-- 0016_dispatches.sql — 会话元模型 S1：派发（dispatch）批次。
 -- dispatch = 用户一次发送（或 lead plan 派生 / wakeup）触发的执行批次，是会话组
 -- 的关联键：execution_runs.dispatch_id 让成员 run 免树遍历即可成组。
 -- trigger 记批次成因（user_message | lead_plan | wakeup）；status 跟随成员收口
