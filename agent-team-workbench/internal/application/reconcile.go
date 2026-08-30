@@ -78,6 +78,13 @@ func (s *Service) ReconcileOrphanRuns(ctx context.Context) (int, error) {
 		}
 		marked++
 		notified[run.WorkspaceID] = true
+		if reconciled, getErr := s.store.Runs().Get(context.WithoutCancel(ctx), run.ID); getErr == nil {
+			// Reconciliation commits the terminal Run first, then replays the
+			// same idempotent terminal projections used by live status reports.
+			// This lets a coordinated Worker enter retry/replan instead of
+			// remaining a running observation after a control-plane restart.
+			s.replayCoordinatorTerminalHooks(context.WithoutCancel(ctx), reconciled)
+		}
 	}
 	for ws := range notified {
 		s.notifier.Notify(ws)

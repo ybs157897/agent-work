@@ -411,6 +411,34 @@ func TestSubmitPlanUnknownVerbRejected(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanRejectsSystemCoordinatorAsWorker(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	wsID, leadID, _ := seedPlanEnv(t, ctx, store)
+	config, err := store.TaskCoordinators().EnsureConfig(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "主任务"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: main.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{dispatchStep(config.AgentProfileID, "越界派发", "执行任务")},
+	})
+	if err == nil || !strings.Contains(err.Error(), "系统 Task Coordinator") {
+		t.Fatalf("系统 Coordinator 不得成为 Worker: %v", err)
+	}
+	if children, listErr := store.WorkItems().ListByParent(ctx, main.ID); listErr != nil || len(children) != 0 {
+		t.Fatalf("被拒计划不得留下子任务: %v %+v", listErr, children)
+	}
+}
+
 // TestWorkItemTreeThreeLevels 验收 7：三级树返回先序全部节点
 // （root → childA → grandchild → childB）。
 func TestWorkItemTreeThreeLevels(t *testing.T) {

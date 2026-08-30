@@ -135,9 +135,16 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 	if err != nil || !isTaskWorkItem(wi) {
 		return
 	}
+	if isSystemCoordinatorRun(r) {
+		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
+		if stateErr != nil || state.CurrentRunID != r.ID {
+			return
+		}
+	}
 	text, err := s.runFinalText(wctx, r.ID)
 	if err != nil {
 		log.Printf("evaluation: run %s 最终文本读取失败: %v", r.ID, err)
+		s.blockForParseFailure(wctx, r, "verdict_read_failed", "评估证据读取失败："+err.Error())
 		return
 	}
 	block, ok := extractLastFencedBlock(text, "verdict")

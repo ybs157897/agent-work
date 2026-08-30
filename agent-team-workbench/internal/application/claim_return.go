@@ -7,6 +7,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,6 +34,11 @@ func (s *Service) ClaimWorkItem(ctx context.Context, workItemID, agentID string,
 			return err
 		}
 		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
+		if _, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, w.ID); err == nil {
+			return fmt.Errorf("%w: coordinated Task 由系统 Coordinator 自动接取", domain.ErrValidation)
+		} else if !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -110,5 +116,6 @@ func (s *Service) ReturnWorkItem(ctx context.Context, workItemID string, reason 
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
+	s.resumeCoordinatorAfterUserAction(context.WithoutCancel(ctx), wi.ID, "用户打回重做："+reason)
 	return wi, nil
 }
