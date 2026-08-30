@@ -20,6 +20,23 @@ const (
 	PresenceOffline  AgentPresence = "offline"
 )
 
+// AgentProfileKind distinguishes ordinary, user-managed agents from the
+// system-owned Task Coordinator. System profiles are persisted so a task can
+// refer to a stable execution identity, but they are not part of the ordinary
+// agent roster and their instructions are immutable.
+type AgentProfileKind string
+
+const (
+	AgentProfileKindUser            AgentProfileKind = "user"
+	AgentProfileKindTaskCoordinator AgentProfileKind = "task_coordinator"
+)
+
+func (k AgentProfileKind) Valid() bool {
+	return k == "" || k == AgentProfileKindUser || k == AgentProfileKindTaskCoordinator
+}
+
+func (k AgentProfileKind) IsSystem() bool { return k == AgentProfileKindTaskCoordinator }
+
 // RuntimePreference：每次 Run 可选 preferred/fallback Runtime，角色与 Runtime 解耦。
 type RuntimePreference struct {
 	Preferred   string   `json:"preferred,omitempty"`
@@ -53,22 +70,28 @@ type ModelRef struct {
 // AgentProfile 持久角色配置（PM/Architect/UI/Developer/Reviewer），与 Runtime Session 解耦。
 // 文件目录（agents/<slug>/）为配置真相源，DB 为运行时投影。
 type AgentProfile struct {
-	ID                string
-	WorkspaceID       string
-	Slug              string // 配置目录名；空表示尚未关联文件
-	Name              string
-	Role              string
-	Skills            []string
-	Instructions      string
-	Avatar            string
-	Availability      AgentAvailability
-	Presence          AgentPresence
-	RuntimePreference RuntimePreference
-	ModelOverride     ModelRef
-	Policy            AgentPolicy
-	Version           int
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID          string
+	WorkspaceID string
+	// Kind is user for normal editable agents and task_coordinator for the
+	// protected system coordinator profile. Empty means user for in-memory
+	// objects created before the discriminator was introduced.
+	Kind                 AgentProfileKind
+	Slug                 string // 配置目录名；空表示尚未关联文件
+	Name                 string
+	Role                 string
+	Skills               []string
+	Instructions         string
+	PromptVersion        string
+	InstructionsEditable bool
+	Avatar               string
+	Availability         AgentAvailability
+	Presence             AgentPresence
+	RuntimePreference    RuntimePreference
+	ModelOverride        ModelRef
+	Policy               AgentPolicy
+	Version              int
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 
 	// wakeup 调度策略（M4；列见 migrations/0005_wakeup.sql）。
 	HeartbeatEnabled     bool

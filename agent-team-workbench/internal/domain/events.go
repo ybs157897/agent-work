@@ -36,6 +36,19 @@ const (
 	// 发布；载荷带 work_item_id/quote，前端台账区据此增量刷新。
 	EventDecisionCreated = "decision.created"
 
+	// Task Coordinator 是根 Task 的系统控制线；事件既驱动任务追踪 read model，
+	// 也为重启恢复与失败重试保留可审计因果链。
+	EventCoordinatorQueued          = "coordinator.queued"
+	EventCoordinatorStarted         = "coordinator.started"
+	EventCoordinatorMessageReceived = "coordinator.message_received"
+	EventCoordinatorPlanUpdated     = "coordinator.plan_updated"
+	EventCoordinatorAttemptUpdated  = "coordinator.attempt_updated"
+	EventCoordinatorRetryScheduled  = "coordinator.retry_scheduled"
+	EventCoordinatorRecoveryStarted = "coordinator.recovery_started"
+	EventCoordinatorBlocked         = "coordinator.blocked"
+	EventCoordinatorCompleted       = "coordinator.completed"
+	EventCoordinatorStateChanged    = "coordinator.state_changed"
+
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
@@ -95,6 +108,11 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {}, EventWorkItemLocked: {}, EventWorkItemLockPreempted: {},
 	EventDispatchCreated: {}, EventDispatchUpdated: {}, EventDecisionCreated: {},
+	EventCoordinatorQueued: {}, EventCoordinatorStarted: {},
+	EventCoordinatorMessageReceived: {}, EventCoordinatorPlanUpdated: {},
+	EventCoordinatorAttemptUpdated: {}, EventCoordinatorRetryScheduled: {},
+	EventCoordinatorRecoveryStarted: {}, EventCoordinatorBlocked: {},
+	EventCoordinatorCompleted: {}, EventCoordinatorStateChanged: {},
 	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
@@ -119,17 +137,18 @@ func IsKnownEventName(name string) bool {
 
 // 聚合类型。
 const (
-	AggregateWorkspace      = "workspace"
-	AggregateAgentProfile   = "agent_profile"
-	AggregateWorkItem       = "work_item"
-	AggregatePlan           = "plan"
-	AggregateExecutionRun   = "execution_run"
-	AggregateApproval       = "approval"
-	AggregateArtifact       = "artifact"
-	AggregateRuntimeBinding = "runtime_binding"
-	AggregateRunner         = "runner"
-	AggregateDispatch       = "dispatch"
-	AggregateDecision       = "decision"
+	AggregateWorkspace       = "workspace"
+	AggregateAgentProfile    = "agent_profile"
+	AggregateWorkItem        = "work_item"
+	AggregatePlan            = "plan"
+	AggregateExecutionRun    = "execution_run"
+	AggregateApproval        = "approval"
+	AggregateArtifact        = "artifact"
+	AggregateRuntimeBinding  = "runtime_binding"
+	AggregateRunner          = "runner"
+	AggregateDispatch        = "dispatch"
+	AggregateDecision        = "decision"
+	AggregateTaskCoordinator = "task_coordinator"
 )
 
 // CanonicalEvent 是工作台投影事实源（asyncapi CanonicalEventEnvelope）。

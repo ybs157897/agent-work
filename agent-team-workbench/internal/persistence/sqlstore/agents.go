@@ -2,6 +2,7 @@ package sqlstore
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -64,22 +65,34 @@ func (r *WorkspaceRepo) ListIDs(ctx context.Context) ([]string, error) {
 
 type AgentRepo struct{ store *Store }
 
-const agentCols = `id, workspace_id, slug, name, role, skills, instructions, avatar,
+const agentCols = `id, workspace_id, kind, slug, name, role, skills, instructions, avatar,
 	availability, presence, runtime_preference, model_override, policy,
 	heartbeat_enabled, heartbeat_interval_sec, wake_on_assignment, wake_on_demand,
-	wake_on_automation, prompt_template, last_heartbeat_at, version, created_at, updated_at`
+	wake_on_automation, prompt_template, last_heartbeat_at, version, created_at, updated_at,
+	prompt_version, instructions_editable`
 
 func (r *AgentRepo) scan(row interface{ Scan(...any) error }, a *domain.AgentProfile) error {
 	var skills, pref, model, policy string
 	var avatar *string
 	var lastHeartbeat scanTime
 	var created, updated scanTime
-	if err := row.Scan(&a.ID, &a.WorkspaceID, &a.Slug, &a.Name, &a.Role, &skills, &a.Instructions, &avatar,
+	var kind string
+	if err := row.Scan(&a.ID, &a.WorkspaceID, &kind, &a.Slug, &a.Name, &a.Role, &skills, &a.Instructions, &avatar,
 		&a.Availability, &a.Presence, &pref, &model, &policy,
 		&a.HeartbeatEnabled, &a.HeartbeatIntervalSec, &a.WakeOnAssignment, &a.WakeOnDemand,
 		&a.WakeOnAutomation, &a.PromptTemplate, &lastHeartbeat,
-		&a.Version, &created, &updated); err != nil {
+		&a.Version, &created, &updated, &a.PromptVersion, &a.InstructionsEditable); err != nil {
 		return err
+	}
+	a.Kind = domain.AgentProfileKind(kind)
+	if a.Kind == "" {
+		a.Kind = domain.AgentProfileKindUser
+	}
+	// The persisted boolean is a convenience for DTOs; system identity is the
+	// authority. This also keeps old/in-memory ordinary agents editable when
+	// their zero value is loaded before migration.
+	if !a.Kind.IsSystem() {
+		a.InstructionsEditable = true
 	}
 	_ = jsonInto(skills, &a.Skills)
 	_ = jsonInto(pref, &a.RuntimePreference)
@@ -95,13 +108,29 @@ func (r *AgentRepo) scan(row interface{ Scan(...any) error }, a *domain.AgentPro
 
 func (r *AgentRepo) Create(ctx context.Context, a *domain.AgentProfile) error {
 	d := r.store.dialect
+	kind := a.Kind
+	if kind == "" {
+		kind = domain.AgentProfileKindUser
+	}
+	if !kind.Valid() {
+		return fmt.Errorf("%w: agent profile kind 无效", domain.ErrValidation)
+	}
+	a.Kind = kind
+	if kind.IsSystem() {
+		a.InstructionsEditable = false
+		if a.PromptVersion == "" {
+			a.PromptVersion = domain.TaskCoordinatorPromptVersion
+		}
+	} else {
+		a.InstructionsEditable = true
+	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO agent_profiles(`+agentCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.WorkspaceID, a.Slug, a.Name, a.Role, jsonText(a.Skills), a.Instructions, nullString(a.Avatar),
+		`INSERT INTO agent_profiles(`+agentCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.WorkspaceID, a.Kind, a.Slug, a.Name, a.Role, jsonText(a.Skills), a.Instructions, nullString(a.Avatar),
 		a.Availability, a.Presence, jsonText(a.RuntimePreference), jsonText(a.ModelOverride), jsonText(a.Policy),
 		a.HeartbeatEnabled, a.HeartbeatIntervalSec, a.WakeOnAssignment, a.WakeOnDemand,
 		a.WakeOnAutomation, a.PromptTemplate, d.NullTimeParam(a.LastHeartbeatAt),
-		a.Version, d.TimeParam(a.CreatedAt), d.TimeParam(a.UpdatedAt))
+		a.Version, d.TimeParam(a.CreatedAt), d.TimeParam(a.UpdatedAt), a.PromptVersion, a.InstructionsEditable)
 	return r.store.mapErr(err)
 }
 
@@ -117,7 +146,8 @@ func (r *AgentRepo) Get(ctx context.Context, id string) (*domain.AgentProfile, e
 
 func (r *AgentRepo) List(ctx context.Context, workspaceID string) ([]*domain.AgentProfile, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT `+agentCols+` FROM agent_profiles WHERE workspace_id=? ORDER BY created_at`, workspaceID)
+		`SELECT `+agentCols+` FROM agent_profiles WHERE workspace_id=? AND kind=? ORDER BY created_at`,
+		workspaceID, domain.AgentProfileKindUser)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +167,15 @@ func (r *AgentRepo) List(ctx context.Context, workspaceID string) ([]*domain.Age
 // wakeup 策略列随 Update 持久化；last_heartbeat_at 由 ClaimHeartbeat 独占维护，此处不触碰。
 func (r *AgentRepo) Update(ctx context.Context, a *domain.AgentProfile, expectedVersion int) error {
 	d := r.store.dialect
+	// A system profile is managed exclusively by TaskCoordinatorRepo. Check the
+	// persisted identity rather than trusting a caller-provided object.
+	var kind string
+	if err := r.store.queryRow(ctx, r.store.exec(ctx), `SELECT kind FROM agent_profiles WHERE id=?`, a.ID).Scan(&kind); err != nil {
+		return r.store.mapErr(err)
+	}
+	if domain.AgentProfileKind(kind).IsSystem() {
+		return fmt.Errorf("%w: system task coordinator profile is protected", domain.ErrValidation)
+	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_profiles SET slug=?, name=?, role=?, skills=?, instructions=?, avatar=?,
 			availability=?, presence=?, runtime_preference=?, model_override=?, policy=?,
@@ -171,8 +210,8 @@ func (r *AgentRepo) SetPresence(ctx context.Context, id string, presence domain.
 func (r *AgentRepo) ListHeartbeatEnabled(ctx context.Context) ([]*domain.AgentProfile, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
 		`SELECT `+agentCols+` FROM agent_profiles
-		 WHERE availability=? AND heartbeat_enabled=1 ORDER BY created_at`,
-		domain.AgentEnabled)
+		 WHERE availability=? AND heartbeat_enabled=1 AND kind=? ORDER BY created_at`,
+		domain.AgentEnabled, domain.AgentProfileKindUser)
 	if err != nil {
 		return nil, r.store.mapErr(err)
 	}
