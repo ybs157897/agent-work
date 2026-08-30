@@ -2,6 +2,7 @@ package sqlstore_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +21,8 @@ func seedSearchEntry(t *testing.T, store *sqlstore.Store, workItemID, kind, sour
 }
 
 // TestSearchIndexAndQuery 防回归（S4）：检索命中、定点重写幂等（旧快照不残留）、
-// workspace 隔离、kind/work_item_id 过滤、空/纯符号/特殊字符 query 不报错。
+// workspace 隔离、kind/work_item_id 过滤、中文局部词命中、空/纯符号/特殊字符
+// query 不报错。
 func TestSearchIndexAndQuery(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
@@ -37,8 +39,13 @@ func TestSearchIndexAndQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO work_items(id, workspace_id, title, status, priority, version, created_at, updated_at)
-		 VALUES ('wi_other','ws_other','t','todo','medium',1,?,?)`, now, now); err != nil {
+		`INSERT INTO work_items(id, workspace_id, record_kind, title, status, priority, version, created_at, updated_at)
+			 VALUES ('wi_other','ws_other','task','t','todo','medium',1,?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO work_items(id, workspace_id, record_kind, title, status, priority, version, created_at, updated_at)
+			 VALUES ('wi_chat','ws_wk','chat','chat','todo','medium',1,?,?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,6 +53,10 @@ func TestSearchIndexAndQuery(t *testing.T) {
 		"用 PostgreSQL", "团队决定用 PostgreSQL 作为唯一存储，不引入第二套数据库。")
 	seedSearchEntry(t, store, "wi_s1", "segment_summary", "wi_s1",
 		"台账任务", "已完成 2 轮。结论：storage 选型 PostgreSQL。")
+	seedSearchEntry(t, store, "wi_s1", "segment_summary", "wi_cjk",
+		"会话元模型验收任务", "详情包含任务卡详情和完整正文，供局部中文检索验证。")
+	seedSearchEntry(t, store, "wi_chat", "segment_summary", "wi_chat",
+		"Chat PostgreSQL", "单 Agent 对话里的 PostgreSQL 不能出现在任务搜索。")
 
 	// 命中：decision 关键词。
 	hits, err := store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "", 20)
@@ -77,6 +88,9 @@ func TestSearchIndexAndQuery(t *testing.T) {
 	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("workspace 隔离失效: %v %#v", err, hits)
 	}
+	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "wi_chat", "", 20); err != nil || len(hits) != 0 {
+		t.Fatalf("Chat 索引不得出现在任务搜索: %v %#v", err, hits)
+	}
 	if hits, err = store.Search().Search(ctx, "ws_other", "PostgreSQL", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("ws_other 应搜到自己的条目: %v %#v", err, hits)
 	}
@@ -87,6 +101,19 @@ func TestSearchIndexAndQuery(t *testing.T) {
 	}
 	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "artifact", 20); err != nil || len(hits) != 0 {
 		t.Fatalf("artifact kind 应无命中: %v %#v", err, hits)
+	}
+
+	// 中文局部词：unicode61 可能把连续 CJK 串视为一个 token，应用层
+	// fallback 仍应按同一 workspace/work item/kind 过滤命中标题和正文。
+	if hits, err = store.Search().Search(ctx, "ws_wk", "会话", "", "segment_summary", 20); err != nil || len(hits) != 1 || hits[0].SourceID != "wi_cjk" {
+		t.Fatalf("中文标题局部词应命中: %v %#v", err, hits)
+	} else if hits[0].Snippet == "" || !strings.Contains(hits[0].Snippet, "[会话]") {
+		t.Fatalf("中文标题局部词应生成高亮 snippet: %#v", hits[0])
+	}
+	if hits, err = store.Search().Search(ctx, "ws_wk", "任务卡详情", "wi_s1", "segment_summary", 20); err != nil || len(hits) != 1 || hits[0].SourceID != "wi_cjk" {
+		t.Fatalf("中文正文局部词应命中且保留过滤: %v %#v", err, hits)
+	} else if !strings.Contains(hits[0].Snippet, "[任务卡详情]") {
+		t.Fatalf("中文正文局部词应高亮正文: %#v", hits[0])
 	}
 
 	// 空 query / 纯符号 query / FTS 语法字符 → 空结果或安全降级，不报错。

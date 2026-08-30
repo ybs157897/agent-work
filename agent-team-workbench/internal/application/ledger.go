@@ -37,6 +37,10 @@ func (s *Service) maybeSummarizeSegment(ctx context.Context, r *domain.Execution
 	if r == nil || !r.Status.IsTerminal() {
 		return
 	}
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil || !isTaskWorkItem(wi) {
+		return
+	}
 	wctx := context.WithoutCancel(ctx)
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -63,6 +67,9 @@ func (s *Service) refreshRollingDigest(ctx context.Context, workItemID string) e
 	wi, err := s.store.WorkItems().Get(ctx, workItemID)
 	if err != nil {
 		return err
+	}
+	if !isTaskWorkItem(wi) {
+		return nil
 	}
 	runs, err := s.store.Runs().ListByWorkItem(ctx, workItemID)
 	if err != nil {
@@ -160,6 +167,9 @@ func (s *Service) RecordDecision(ctx context.Context, workItemID string, p Recor
 		if err != nil {
 			return err
 		}
+		if err := requireTaskWorkItem(wi); err != nil {
+			return err
+		}
 		workspaceID = wi.WorkspaceID
 		if p.SourceRunID != "" {
 			run, err := s.store.Runs().Get(ctx, p.SourceRunID)
@@ -179,6 +189,7 @@ func (s *Service) RecordDecision(ctx context.Context, workItemID string, p Recor
 			return err
 		}
 		data := map[string]any{"work_item_id": entry.WorkItemID, "quote": entry.Quote}
+		data["record_kind"] = string(domain.RecordKindTask)
 		if entry.SourceRunID != "" {
 			data["source_run_id"] = entry.SourceRunID
 		}
@@ -209,7 +220,11 @@ func (s *Service) RecordDecision(ctx context.Context, workItemID string, p Recor
 
 // DecisionsByWorkItem 台账决策列表（详情页冷启动）；任务不存在时 404。
 func (s *Service) DecisionsByWorkItem(ctx context.Context, workItemID string) ([]*domain.DecisionEntry, error) {
-	if _, err := s.store.WorkItems().Get(ctx, workItemID); err != nil {
+	wi, err := s.store.WorkItems().Get(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
 		return nil, err
 	}
 	return s.store.DecisionEntries().ListByWorkItem(ctx, workItemID)

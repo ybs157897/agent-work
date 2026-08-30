@@ -91,4 +91,25 @@ func TestSearchIndexPipelines(t *testing.T) {
 	if len(hits) != 1 || hits[0].Kind != "artifact" || !strings.Contains(hits[0].Title, "rollout-plan.md") {
 		t.Fatalf("artifact 标题应可搜到: %#v", hits)
 	}
+
+	// artifact.manifest：真实 Runner 走 RecordArtifact 时也必须复用同一
+	// artifact 搜索投影，不能只有 mock 的 artifact.created 可搜。
+	runnerRun, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: wi.AgentProfileID, Instruction: "produce runner artifact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := &domain.Artifact{
+		LogicalPath: "artifacts/runner-output.md", Mime: "text/markdown",
+		Size: 7, Sha256: "runner-sha256", Classification: "internal",
+	}
+	if err := svc.RecordArtifact(ctx, runnerRun.ID, manifest); err != nil {
+		t.Fatal(err)
+	}
+	hits = searchHits(t, ctx, store, "ws_"+t.Name(), "runner-output", "artifact")
+	if len(hits) != 1 || hits[0].Kind != "artifact" || hits[0].SourceID != manifest.ID ||
+		!strings.Contains(hits[0].Title, "runner-output.md") {
+		t.Fatalf("真实 Runner 产物标题应可搜到: %#v", hits)
+	}
 }

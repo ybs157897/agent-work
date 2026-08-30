@@ -62,6 +62,15 @@ func TestSearchEndpoint(t *testing.T) {
 	if item["kind"] != "decision" || item["work_item_id"] != wi.ID {
 		t.Fatalf("命中项归属异常: %v", item)
 	}
+	for _, kind := range []string{"task", "chat", "other"} {
+		code, _ = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=PostgreSQL&record_kind="+kind)
+		if kind == "task" && code != http.StatusOK {
+			t.Fatalf("record_kind=task 应 200，实际 %d", code)
+		}
+		if kind != "task" && code != http.StatusUnprocessableEntity {
+			t.Fatalf("record_kind=%s 应响亮返回 422，实际 %d", kind, code)
+		}
+	}
 
 	// kind 过滤：artifact 无命中。
 	code, body = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=PostgreSQL&kind=artifact")

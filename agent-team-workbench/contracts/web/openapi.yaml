@@ -146,6 +146,11 @@ paths:
         - { name: status, in: query, schema: { type: string } }
         - { name: priority, in: query, schema: { type: string } }
         - { name: assignee, in: query, schema: { type: string } }
+        - name: record_kind
+          in: query
+          required: false
+          schema: { type: string, enum: [chat, task] }
+          description: 缺省为 task；Chat 与 Task 列表不得混读，Chat 调用方必须显式传 chat。
         - name: parent_id
           in: query
           required: false
@@ -568,6 +573,7 @@ paths:
       description: 索引为派生存储（定点重写），q 为空或纯符号返回空 items；不发 SSE 事件。
       parameters:
         - { name: q, in: query, required: true, schema: { type: string }, description: 检索词（空格分词 AND 语义） }
+        - { name: record_kind, in: query, required: false, schema: { type: string, enum: [task] }, description: 缺省或 task；Chat 记录不属于任务搜索面 }
         - { name: work_item_id, in: query, schema: { type: string }, description: 可选，限定单任务 }
         - { name: kind, in: query, schema: { type: string, enum: [segment_summary, decision, artifact] } }
         - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
@@ -1160,11 +1166,14 @@ components:
       required: [title]
       properties:
         title: { type: string }
+        record_kind: { type: string, enum: [chat, task], default: task, description: 新记录类型；省略时兼容旧任务创建语义 }
         description: { type: string }
         status: { $ref: "#/components/schemas/WorkItemStatus", default: todo }
         priority: { $ref: "#/components/schemas/Priority", default: medium }
         due_date: { type: string, format: date }
         agent_profile_id: { type: string, nullable: true }
+        parent_id: { type: string, nullable: true, description: 同类型父记录 id }
+        client_key: { type: string, description: 实体级幂等键 }
 
     WorkItemPatch:
       type: object
@@ -1188,6 +1197,7 @@ components:
       properties:
         id: { type: string }
         workspace_id: { type: string }
+        record_kind: { type: string, enum: [chat, task], description: 不可变记录类型 }
         parent_id: { type: string, nullable: true, description: 父任务 id；根任务缺省 }
         title: { type: string }
         description: { type: string }

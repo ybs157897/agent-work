@@ -55,20 +55,24 @@ type AgentRepo interface {
 	ListHeartbeatEnabled(ctx context.Context) ([]*domain.AgentProfile, error)
 }
 
-// WorkItemFilter 查询条件；cursor 为不透明 token，改变筛选必须重新分页。
+// WorkItemFilter 查询条件；record_kind 是 Chat/Task 硬边界；cursor 为不透明 token，改变筛选必须重新分页。
 // ParentID："" 不过滤；"none" 只看根任务（parent IS NULL）；其他值按该 parent 过滤。
 type WorkItemFilter struct {
-	Status   domain.WorkItemStatus
-	Priority domain.Priority
-	Assignee string
-	ParentID string
-	Cursor   string
-	Limit    int
+	RecordKind domain.WorkItemRecordKind
+	Status     domain.WorkItemStatus
+	Priority   domain.Priority
+	Assignee   string
+	ParentID   string
+	Cursor     string
+	Limit      int
 }
 
 type WorkItemRepo interface {
 	Create(ctx context.Context, wi *domain.WorkItem) error
 	Get(ctx context.Context, id string) (*domain.WorkItem, error)
+	// TouchUpdatedAt 仅刷新记录的列表排序时间，不改变 status/phase/lock/version。
+	// Chat 新消息使用该写点保持最近会话置顶，同时不套用任务状态机。
+	TouchUpdatedAt(ctx context.Context, workItemID string, at time.Time) error
 	// GetByClientKey 按 (workspace, client_key) 查回既有实体（实体级幂等重放路径）。
 	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.WorkItem, error)
 	List(ctx context.Context, workspaceID string, f WorkItemFilter) ([]*domain.WorkItem, string, error)

@@ -189,8 +189,12 @@ func (r *RunRepo) LeaselessActive(ctx context.Context) ([]*domain.ExecutionRun, 
 func (r *RunRepo) ActiveCount(ctx context.Context, workspaceID string) (int, error) {
 	var n int
 	err := r.store.queryRow(ctx, r.store.exec(ctx),
-		`SELECT count(*) FROM execution_runs WHERE workspace_id=?
-		 AND status NOT IN ('succeeded','interrupted','cancelled','lost','failed')`, workspaceID).Scan(&n)
+		`SELECT count(*)
+		 FROM execution_runs r
+		 JOIN work_items wi ON wi.id=r.work_item_id
+		 WHERE r.workspace_id=? AND wi.record_kind=?
+			 AND r.status NOT IN ('succeeded','interrupted','cancelled','lost','failed')`,
+		workspaceID, domain.RecordKindTask).Scan(&n)
 	return n, r.store.mapErr(err)
 }
 

@@ -27,6 +27,11 @@ func (s *Service) buildEvaluationInstruction(ctx context.Context, plan *domain.P
 	if err != nil {
 		return "", err
 	}
+	for _, child := range children {
+		if err := requireTaskWorkItem(child); err != nil {
+			return "", err
+		}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "你是任务「%s」的负责人，请评估该任务是否达到验收标准。\n\n", wi.Title)
 	if wi.Description != "" {
@@ -126,6 +131,10 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 		return
 	}
 	wctx := context.WithoutCancel(ctx)
+	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
+	if err != nil || !isTaskWorkItem(wi) {
+		return
+	}
 	text, err := s.runFinalText(wctx, r.ID)
 	if err != nil {
 		log.Printf("evaluation: run %s 最终文本读取失败: %v", r.ID, err)
@@ -139,11 +148,6 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 	pass, reasons, err := parseVerdict(block)
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "verdict_parse_failed", err.Error())
-		return
-	}
-	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
-	if err != nil {
-		log.Printf("evaluation: run %s 读取 work item 失败: %v", r.ID, err)
 		return
 	}
 	if pass {
@@ -166,7 +170,7 @@ func (s *Service) applyVerdictPass(ctx context.Context, wi *domain.WorkItem) {
 		}
 		return s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
 			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-			map[string]any{"phase": string(wi.Phase)})
+			map[string]any{"phase": string(wi.Phase), "record_kind": string(workItemRecordKind(wi))})
 	}); err != nil {
 		log.Printf("evaluation: verdict pass 迁移 acceptance 失败（work item %s）: %v", wi.ID, err)
 		return
@@ -188,7 +192,7 @@ func (s *Service) applyVerdictFail(ctx context.Context, wi *domain.WorkItem, rea
 		}
 		return s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
 			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-			map[string]any{"phase": string(wi.Phase)})
+			map[string]any{"phase": string(wi.Phase), "record_kind": string(workItemRecordKind(wi))})
 	}); err != nil {
 		log.Printf("evaluation: verdict fail 回 execution 失败（work item %s）: %v", wi.ID, err)
 		return

@@ -28,6 +28,13 @@ func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
 		}
+		wi, err := s.store.WorkItems().Get(r.Context(), req.WorkItemID)
+		if err != nil {
+			return problemBytes(err)
+		}
+		if err := requireTaskWorkItemHTTP(wi); err != nil {
+			return planProblemBytes(err)
+		}
 		p := application.SubmitPlanParams{
 			WorkItemID:     req.WorkItemID,
 			AgentProfileID: req.AgentProfileID,
@@ -63,12 +70,30 @@ func (s *Server) handleGetPlan(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
+	wi, err := s.store.WorkItems().Get(r.Context(), plan.WorkItemID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if err := requireTaskWorkItemHTTP(wi); err != nil {
+		fail(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, toPlanDTO(plan))
 }
 
 // handleWorkItemPlan 返回该主任务最新一份 plan（按 created_at 最新，不限状态）；
 // 无 plan → 404 problem+json。
 func (s *Server) handleWorkItemPlan(w http.ResponseWriter, r *http.Request) {
+	wi, err := s.store.WorkItems().Get(r.Context(), r.PathValue("work_item_id"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if err := requireTaskWorkItemHTTP(wi); err != nil {
+		fail(w, r, err)
+		return
+	}
 	plan, err := s.svc.LatestPlanForWorkItem(r.Context(), r.PathValue("work_item_id"))
 	if err != nil {
 		fail(w, r, err)
@@ -79,6 +104,15 @@ func (s *Server) handleWorkItemPlan(w http.ResponseWriter, r *http.Request) {
 
 // handleWorkItemTree 先序返回以该任务为根的整棵子树（含根；DTO 带 parent_id）。
 func (s *Server) handleWorkItemTree(w http.ResponseWriter, r *http.Request) {
+	wi, err := s.store.WorkItems().Get(r.Context(), r.PathValue("work_item_id"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if err := requireTaskWorkItemHTTP(wi); err != nil {
+		fail(w, r, err)
+		return
+	}
 	items, err := s.svc.WorkItemTree(r.Context(), r.PathValue("work_item_id"))
 	if err != nil {
 		fail(w, r, err)

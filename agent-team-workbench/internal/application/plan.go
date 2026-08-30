@@ -112,6 +112,18 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		if wi.WorkspaceID != workspaceID {
 			return domain.ErrNotFound
 		}
+		if err := requireTaskWorkItem(wi); err != nil {
+			return err
+		}
+		if p.SourceRunID != "" {
+			source, err := s.store.Runs().Get(ctx, p.SourceRunID)
+			if err != nil {
+				return err
+			}
+			if source.WorkItemID != wi.ID {
+				return fmt.Errorf("%w: source_run_id %s 不属于该 task work item", domain.ErrValidation, p.SourceRunID)
+			}
+		}
 		owner, err := s.store.Agents().Get(ctx, p.AgentProfileID)
 		if err != nil {
 			return err
@@ -140,6 +152,9 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			}
 			own := make(map[string]struct{}, len(children))
 			for _, c := range children {
+				if err := requireTaskWorkItem(c); err != nil {
+					return err
+				}
 				own[c.ID] = struct{}{}
 			}
 			for _, id := range joins {
@@ -179,7 +194,8 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			}
 			if err := s.emit(ctx, workspaceID, domain.EventPlanFinished,
 				domain.AggregatePlan, existing.ID, existing.Version, nil,
-				map[string]any{"work_item_id": wi.ID, "superseded_by": plan.ID}); err != nil {
+				map[string]any{"work_item_id": wi.ID, "superseded_by": plan.ID,
+					"record_kind": string(domain.RecordKindTask)}); err != nil {
 				return err
 			}
 		}
@@ -188,7 +204,8 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		}
 		if err := s.emit(ctx, workspaceID, domain.EventPlanSubmitted,
 			domain.AggregatePlan, plan.ID, plan.Version, nil,
-			map[string]any{"work_item_id": wi.ID, "steps": len(plan.Steps)}); err != nil {
+			map[string]any{"work_item_id": wi.ID, "steps": len(plan.Steps),
+				"record_kind": string(domain.RecordKindTask)}); err != nil {
 			return err
 		}
 
@@ -309,7 +326,8 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			}
 			child := &domain.WorkItem{
 				ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: plan.WorkspaceID,
-				ParentID: wi.ID, Title: t.title, Status: domain.WorkItemTodo,
+				RecordKind: domain.RecordKindTask,
+				ParentID:   wi.ID, Title: t.title, Status: domain.WorkItemTodo,
 				Priority: t.priority, AgentProfileID: t.agentID,
 				Version: 1, CreatedAt: now, UpdatedAt: now,
 			}
@@ -318,7 +336,8 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			}
 			if err := s.emit(ctx, plan.WorkspaceID, domain.EventWorkItemCreated,
 				domain.AggregateWorkItem, child.ID, child.Version, nil,
-				map[string]any{"parent_id": wi.ID, "title": child.Title}); err != nil {
+				map[string]any{"parent_id": wi.ID, "title": child.Title,
+					"record_kind": string(domain.RecordKindTask)}); err != nil {
 				return err
 			}
 			// 子 run 继承批次：优先 source run 的 dispatch，否则 lead_plan 兜底批
@@ -385,7 +404,7 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			}
 			if err := s.emit(ctx, plan.WorkspaceID, domain.EventPlanWaiting,
 				domain.AggregatePlan, plan.ID, plan.Version, nil,
-				map[string]any{"work_item_id": wi.ID}); err != nil {
+				map[string]any{"work_item_id": wi.ID, "record_kind": string(domain.RecordKindTask)}); err != nil {
 				return err
 			}
 			*deferWakeAt = t.wakeAt
@@ -437,7 +456,8 @@ func (s *Service) finishPlan(ctx context.Context, plan *domain.Plan, fromSeq int
 	if err := s.store.Plans().Update(ctx, plan, plan.Version-1); err != nil {
 		return err
 	}
-	data := map[string]any{"work_item_id": plan.WorkItemID}
+	data := map[string]any{"work_item_id": plan.WorkItemID,
+		"record_kind": string(domain.RecordKindTask)}
 	if supersededBy != "" {
 		data["superseded_by"] = supersededBy
 	}
@@ -471,7 +491,8 @@ func (s *Service) failStepAndPlan(ctx context.Context, plan *domain.Plan, st *do
 	}
 	return s.emit(ctx, plan.WorkspaceID, domain.EventPlanFailed,
 		domain.AggregatePlan, plan.ID, plan.Version, nil,
-		map[string]any{"work_item_id": plan.WorkItemID, "error": stepErr})
+		map[string]any{"work_item_id": plan.WorkItemID, "error": stepErr,
+			"record_kind": string(domain.RecordKindTask)})
 }
 
 // awaitPlanApproval M4 审批护栏挂起：dispatch 目标 agent approval_policy=manual
@@ -497,7 +518,7 @@ func (s *Service) awaitPlanApproval(ctx context.Context, wi *domain.WorkItem, pl
 	if err := s.emit(ctx, plan.WorkspaceID, domain.EventApprovalRequested,
 		domain.AggregateApproval, a.ID, 1, nil,
 		map[string]any{"kind": a.Kind, "risk": a.Risk, "summary": a.Summary,
-			"plan_id": plan.ID, "seq": st.Seq}); err != nil {
+			"plan_id": plan.ID, "seq": st.Seq, "record_kind": string(domain.RecordKindTask)}); err != nil {
 		return err
 	}
 	if err := plan.MarkWaiting(now); err != nil {
@@ -508,7 +529,8 @@ func (s *Service) awaitPlanApproval(ctx context.Context, wi *domain.WorkItem, pl
 	}
 	return s.emit(ctx, plan.WorkspaceID, domain.EventPlanWaiting,
 		domain.AggregatePlan, plan.ID, plan.Version, nil,
-		map[string]any{"work_item_id": wi.ID, "reason": "pending_approval", "approval_id": a.ID})
+		map[string]any{"work_item_id": wi.ID, "reason": "pending_approval", "approval_id": a.ID,
+			"record_kind": string(domain.RecordKindTask)})
 }
 
 // resolvePlanDispatchApproval M4 审批护栏回调（ResolveApproval 事务内，审批决定
@@ -551,6 +573,9 @@ func (s *Service) resolvePlanDispatchApproval(ctx context.Context, a *domain.App
 	if err != nil {
 		return nil, err
 	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return nil, err
+	}
 	if !approved {
 		st := plan.Step(seq)
 		if st == nil {
@@ -589,7 +614,8 @@ func (s *Service) skipRemainingSteps(ctx context.Context, plan *domain.Plan, fro
 // 事件信封契约（前端 store 路由依据）：aggregate.type=plan、aggregate id=plan id、
 // data 携带 work_item_id。
 func (s *Service) emitStep(ctx context.Context, plan *domain.Plan, st *domain.PlanStep) error {
-	data := map[string]any{"work_item_id": plan.WorkItemID, "seq": st.Seq, "verb": string(st.Verb), "status": string(st.Status)}
+	data := map[string]any{"work_item_id": plan.WorkItemID, "seq": st.Seq, "verb": string(st.Verb), "status": string(st.Status),
+		"record_kind": string(domain.RecordKindTask)}
 	if st.ResultWorkItemID != "" {
 		data["result_work_item_id"] = st.ResultWorkItemID
 	}
@@ -605,12 +631,30 @@ func (s *Service) emitStep(ctx context.Context, plan *domain.Plan, st *domain.Pl
 
 // Plan 读取 plan（含步骤执行结果）。
 func (s *Service) Plan(ctx context.Context, id string) (*domain.Plan, error) {
-	return s.store.Plans().Get(ctx, id)
+	plan, err := s.store.Plans().Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	wi, err := s.store.WorkItems().Get(ctx, plan.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return nil, err
+	}
+	return plan, nil
 }
 
 // LatestPlanForWorkItem 返回主任务最新一份 plan（按 created_at 最新，不限状态）；
 // 无 plan 返回 ErrNotFound。任务详情页冷启动（无 SSE 回放）的 plan 投影入口。
 func (s *Service) LatestPlanForWorkItem(ctx context.Context, workItemID string) (*domain.Plan, error) {
+	wi, err := s.store.WorkItems().Get(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return nil, err
+	}
 	plan, err := s.store.Plans().LatestByWorkItem(ctx, workItemID)
 	if err != nil {
 		return nil, err
@@ -627,9 +671,15 @@ func (s *Service) WorkItemTree(ctx context.Context, workItemID string) ([]*domai
 	if err != nil {
 		return nil, err
 	}
+	if err := requireTaskWorkItem(root); err != nil {
+		return nil, err
+	}
 	out := []*domain.WorkItem{}
 	var walk func(wi *domain.WorkItem) error
 	walk = func(wi *domain.WorkItem) error {
+		if err := requireTaskWorkItem(wi); err != nil {
+			return err
+		}
 		out = append(out, wi)
 		children, err := s.store.WorkItems().ListByParent(ctx, wi.ID)
 		if err != nil {
@@ -652,6 +702,13 @@ func (s *Service) WorkItemTree(ctx context.Context, workItemID string) ([]*domai
 // 未静默（无子任务、或目标只有终态 run 均为静默——静默后不会再有终态事件触发
 // 唤醒）。targets 空 = 全部子任务（defer 与 join{children:"all"} 语义）。
 func (s *Service) targetsQuiet(ctx context.Context, workItemID string, targets []string) (bool, error) {
+	root, err := s.store.WorkItems().Get(ctx, workItemID)
+	if err != nil {
+		return false, err
+	}
+	if err := requireTaskWorkItem(root); err != nil {
+		return false, err
+	}
 	if len(targets) == 0 {
 		children, err := s.store.WorkItems().ListByParent(ctx, workItemID)
 		if err != nil {
@@ -663,6 +720,13 @@ func (s *Service) targetsQuiet(ctx context.Context, workItemID string, targets [
 		}
 	}
 	for _, id := range targets {
+		child, err := s.store.WorkItems().Get(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if err := requireTaskWorkItem(child); err != nil {
+			return false, err
+		}
 		runs, err := s.store.Runs().ListByWorkItem(ctx, id)
 		if err != nil {
 			return false, err
@@ -761,10 +825,11 @@ func (s *Service) failPlanForBudget(ctx context.Context, plan *domain.Plan, used
 		if err := s.emit(ctx, fresh.WorkspaceID, domain.EventPlanFailed,
 			domain.AggregatePlan, fresh.ID, fresh.Version, nil,
 			map[string]any{"work_item_id": fresh.WorkItemID, "error": domain.PlanErrorBudgetExceeded,
-				"tokens_used": used, "tokens_limit": limit}); err != nil {
+				"tokens_used": used, "tokens_limit": limit,
+				"record_kind": string(domain.RecordKindTask)}); err != nil {
 			return err
 		}
-		return s.activity(ctx, fresh.WorkspaceID, "plan.budget_exceeded",
+		return s.activityFor(ctx, fresh.WorkspaceID, fresh.WorkItemID, "plan.budget_exceeded",
 			fmt.Sprintf("预算超限：token 合计 %d 超过 max_tokens %d，plan %s 失败", used, limit, fresh.ID))
 	})
 	if err != nil {
@@ -801,11 +866,11 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 		return
 	}
 	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
-	if err != nil || wi.ParentID == "" {
+	if err != nil || !isTaskWorkItem(wi) || wi.ParentID == "" {
 		return
 	}
 	parent, err := s.store.WorkItems().Get(ctx, wi.ParentID)
-	if err != nil {
+	if err != nil || !isTaskWorkItem(parent) {
 		return
 	}
 	plan, err := s.store.Plans().ActiveByWorkItem(ctx, parent.ID)
@@ -839,7 +904,7 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 		log.Printf("plan: children_quiet 唤醒入队失败（plan %s）: %v", plan.ID, err)
 		return
 	}
-	_ = s.activity(wctx, plan.WorkspaceID, "plan.children_quiet",
+	_ = s.activityFor(wctx, plan.WorkspaceID, parent.ID, "plan.children_quiet",
 		fmt.Sprintf("等待集子任务全部静默，唤醒 plan owner（plan %s / agent %s）", plan.ID, plan.AgentProfileID))
 }
 

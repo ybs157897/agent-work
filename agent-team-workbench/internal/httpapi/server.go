@@ -431,7 +431,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	for _, a := range agents {
 		agentDTOs = append(agentDTOs, toAgentDTO(a))
 	}
-	items, _, err := s.svc.WorkItems(r.Context(), wsID, application.WorkItemFilter{Limit: 100})
+	items, _, err := s.svc.WorkItems(r.Context(), wsID, application.WorkItemFilter{
+		RecordKind: domain.RecordKindTask,
+		Limit:      100,
+	})
 	if err != nil {
 		fail(w, r, err)
 		return

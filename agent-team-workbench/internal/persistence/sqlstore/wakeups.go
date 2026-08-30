@@ -149,8 +149,8 @@ func (r *WakeupRepo) ListHeartbeatAgents(ctx context.Context) ([]domain.AgentPro
 func (r *WakeupRepo) AssignedTasks(ctx context.Context, agentProfileID string) ([]scheduling.TaskRef, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
 		`SELECT id, title FROM work_items
-		 WHERE agent_profile_id=? AND status IN `+nonTerminalWorkItemStatuses+`
-		 ORDER BY created_at`, agentProfileID)
+		 WHERE agent_profile_id=? AND record_kind=? AND status IN `+nonTerminalWorkItemStatuses+`
+		 ORDER BY created_at`, agentProfileID, domain.RecordKindTask)
 	if err != nil {
 		return nil, r.store.mapErr(err)
 	}
@@ -238,9 +238,10 @@ func (r *WakeupRepo) ActiveRunKeyForAgentTask(ctx context.Context, agentProfileI
 			 WHERE l.run_id=r.id AND l.released_at IS NULL AND l.renewed_until > ?),
 			EXISTS(SELECT 1 FROM run_leases l WHERE l.run_id=r.id)
 		 FROM execution_runs r
-		 WHERE r.agent_profile_id=? AND r.work_item_id=? AND r.status NOT IN `+terminalRunStatuses+`
+		 JOIN work_items wi ON wi.id=r.work_item_id
+		 WHERE r.agent_profile_id=? AND r.work_item_id=? AND wi.record_kind=? AND r.status NOT IN `+terminalRunStatuses+`
 		 ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
-		d.TimeParam(timeNow()), agentProfileID, taskKey).
+		d.TimeParam(timeNow()), agentProfileID, taskKey, domain.RecordKindTask).
 		Scan(&id, &activeLease, &anyLease)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

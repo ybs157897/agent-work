@@ -276,6 +276,13 @@ func (s *Service) RevertRunChanges(ctx context.Context, runID, key string) (RunC
 	if err != nil {
 		return RunChanges{}, err
 	}
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		return RunChanges{}, err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return RunChanges{}, err
+	}
 	type item struct {
 		path         string
 		beforeExists bool
@@ -351,7 +358,8 @@ func (s *Service) RevertRunChanges(ctx context.Context, runID, key string) (RunC
 			return RunChanges{}, e
 		}
 	}
-	if e := s.emit(ctx, r.WorkspaceID, domain.EventFileChangesReverted, domain.AggregateExecutionRun, runID, r.Version, &RunEventRecord{RunID: runID, EventType: domain.EventFileChangesReverted, Payload: map[string]any{"idempotency_key": key}}, map[string]any{"idempotency_key": key}); e != nil {
+	eventData := map[string]any{"idempotency_key": key, "record_kind": string(workItemRecordKind(wi))}
+	if e := s.emit(ctx, r.WorkspaceID, domain.EventFileChangesReverted, domain.AggregateExecutionRun, runID, r.Version, &RunEventRecord{RunID: runID, EventType: domain.EventFileChangesReverted, Payload: eventData}, eventData); e != nil {
 		restore()
 		return RunChanges{}, e
 	}

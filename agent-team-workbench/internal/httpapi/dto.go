@@ -56,6 +56,7 @@ type blockerDTO struct {
 type workItemDTO struct {
 	ID             string  `json:"id"`
 	WorkspaceID    string  `json:"workspace_id"`
+	RecordKind     string  `json:"record_kind"`
 	ParentID       string  `json:"parent_id,omitempty"`
 	Title          string  `json:"title"`
 	Description    string  `json:"description"`
@@ -79,8 +80,14 @@ type workItemDTO struct {
 }
 
 func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
+	recordKind := w.RecordKind
+	// Direct/in-process callers predating the discriminator represented task
+	// board records; persisted rows are always normalized by migration 0019.
+	if recordKind == "" {
+		recordKind = domain.RecordKindTask
+	}
 	d := workItemDTO{
-		ID: w.ID, WorkspaceID: w.WorkspaceID, ParentID: w.ParentID,
+		ID: w.ID, WorkspaceID: w.WorkspaceID, RecordKind: string(recordKind), ParentID: w.ParentID,
 		Title: w.Title, Description: w.Description,
 		Status: string(w.Status), Phase: string(w.Phase), Priority: string(w.Priority),
 		AgentProfileID: w.AgentProfileID,
@@ -202,6 +209,7 @@ type createAgentRequest struct {
 
 type createWorkItemRequest struct {
 	Title          string  `json:"title"`
+	RecordKind     string  `json:"record_kind"`
 	Description    string  `json:"description"`
 	Status         string  `json:"status"`
 	Priority       string  `json:"priority"`

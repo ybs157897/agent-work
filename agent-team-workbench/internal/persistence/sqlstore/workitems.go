@@ -3,6 +3,7 @@ package sqlstore
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,17 +13,20 @@ import (
 
 type WorkItemRepo struct{ store *Store }
 
-const workItemCols = `id, workspace_id, parent_id, title, description, status, phase, priority,
+const workItemCols = `id, workspace_id, record_kind, parent_id, title, description, status, phase, priority,
 	due_date, agent_profile_id, client_key, locked_by_run_id, locked_at, rolling_digest,
 	version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
-	var parent, phase, dueDate, assignee, clientKey, lockedBy *string
+	var recordKind, parent, phase, dueDate, assignee, clientKey, lockedBy *string
 	var created, updated, lockedAt scanTime
-	if err := row.Scan(&w.ID, &w.WorkspaceID, &parent, &w.Title, &w.Description, &w.Status, &phase,
+	if err := row.Scan(&w.ID, &w.WorkspaceID, &recordKind, &parent, &w.Title, &w.Description, &w.Status, &phase,
 		&w.Priority, &dueDate, &assignee, &clientKey, &lockedBy, &lockedAt,
 		&w.RollingDigest, &w.Version, &created, &updated); err != nil {
 		return err
+	}
+	if recordKind != nil {
+		w.RecordKind = domain.WorkItemRecordKind(*recordKind)
 	}
 	if parent != nil {
 		w.ParentID = *parent
@@ -51,13 +55,24 @@ func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkI
 
 func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 	d := r.store.dialect
+	recordKind := wi.RecordKind
+	// Direct/in-process callers predating record_kind represent task-board
+	// work items; public Chat callers are normalized by application before
+	// reaching the repository.
+	if recordKind == "" {
+		recordKind = domain.RecordKindTask
+	}
+	if !recordKind.Valid() {
+		return fmt.Errorf("%w: record_kind 必须为 chat 或 task", domain.ErrValidation)
+	}
+	wi.RecordKind = recordKind
 	var due any
 	if wi.DueDate != nil {
 		due = wi.DueDate.Format("2006-01-02")
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		wi.ID, wi.WorkspaceID, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		wi.ID, wi.WorkspaceID, recordKind, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
 		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey),
 		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.RollingDigest, wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
@@ -85,7 +100,7 @@ func (r *WorkItemRepo) Get(ctx context.Context, id string) (*domain.WorkItem, er
 	return w, nil
 }
 
-// List 支持 status/priority/assignee 筛选与 cursor 分页。
+// List 支持 record_kind/status/priority/assignee 筛选与 cursor 分页。
 // RFC3339Nano UTC 时间字符串定宽，字典序比较在两种方言下均成立。
 func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f application.WorkItemFilter) ([]*domain.WorkItem, string, error) {
 	limit := f.Limit
@@ -105,6 +120,13 @@ func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f applicati
 	if f.Assignee != "" {
 		args = append(args, f.Assignee)
 		where = append(where, "agent_profile_id=?")
+	}
+	if f.RecordKind != "" {
+		if !f.RecordKind.Valid() {
+			return nil, "", fmt.Errorf("%w: record_kind 必须为 chat 或 task", domain.ErrValidation)
+		}
+		args = append(args, f.RecordKind)
+		where = append(where, "record_kind=?")
 	}
 	if f.ParentID != "" {
 		if f.ParentID == "none" {
@@ -172,6 +194,20 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return domain.ErrVersionConflict
+	}
+	return nil
+}
+
+// TouchUpdatedAt 仅刷新记录的列表排序时间，不改变 version、status、phase 或执行锁。
+// Chat 新消息使用该写点保持最近对话置顶，同时不套用任务状态机。
+func (r *WorkItemRepo) TouchUpdatedAt(ctx context.Context, workItemID string, at time.Time) error {
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE work_items SET updated_at=? WHERE id=?`, r.store.dialect.TimeParam(at), workItemID)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.ErrNotFound
 	}
 	return nil
 }
@@ -287,7 +323,8 @@ func (r *WorkItemRepo) LatestRunID(ctx context.Context, workItemID string) (stri
 
 func (r *WorkItemRepo) BoardCounts(ctx context.Context, workspaceID string) (map[domain.WorkItemStatus]int, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT status, count(*) FROM work_items WHERE workspace_id=? GROUP BY status`, workspaceID)
+		`SELECT status, count(*) FROM work_items WHERE workspace_id=? AND record_kind=? GROUP BY status`,
+		workspaceID, domain.RecordKindTask)
 	if err != nil {
 		return nil, err
 	}
@@ -310,8 +347,8 @@ func (r *WorkItemRepo) BoardCounts(ctx context.Context, workspaceID string) (map
 func (r *WorkItemRepo) CompletedToday(ctx context.Context, workspaceID string, day time.Time) (int, error) {
 	var n int
 	err := r.store.queryRow(ctx, r.store.exec(ctx),
-		`SELECT count(*) FROM work_items WHERE workspace_id=? AND status='completed' AND updated_at >= ?`,
-		workspaceID, r.store.dialect.TimeParam(day)).Scan(&n)
+		`SELECT count(*) FROM work_items WHERE workspace_id=? AND record_kind=? AND status='completed' AND updated_at >= ?`,
+		workspaceID, domain.RecordKindTask, r.store.dialect.TimeParam(day)).Scan(&n)
 	return n, r.store.mapErr(err)
 }
 

@@ -47,6 +47,7 @@ func (s *Service) emitDispatchCreated(ctx context.Context, workspaceID string, d
 		"work_item_id": d.WorkItemID,
 		"trigger":      string(d.Trigger),
 		"status":       string(d.Status),
+		"record_kind":  string(domain.RecordKindTask),
 	}
 	if d.LeadRunID != "" {
 		data["lead_run_id"] = d.LeadRunID
@@ -62,6 +63,13 @@ func (s *Service) emitDispatchCreated(ctx context.Context, workspaceID string, d
 // 重复建），无 source run 的手动 plan 每次提交独立成批。须在创建成员 run 的
 // 同一事务内调用。
 func (s *Service) resolvePlanDispatchID(ctx context.Context, plan *domain.Plan) (string, error) {
+	wi, err := s.store.WorkItems().Get(ctx, plan.WorkItemID)
+	if err != nil {
+		return "", err
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return "", err
+	}
 	if plan.SourceRunID != "" {
 		src, err := s.store.Runs().Get(ctx, plan.SourceRunID)
 		if err != nil && !errors.Is(err, domain.ErrNotFound) {

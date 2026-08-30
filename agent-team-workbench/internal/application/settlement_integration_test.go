@@ -15,19 +15,11 @@ import (
 )
 
 // settleEnv S3 收口测试环境：接诊批（lead run + plan 派生的 Alice worker 子
-// run 同批），返回批 id 与两个成员 run。lead 开启心跳（automation 源受心跳
-// 门控，ConsumeOne 需 policy.Enabled）。
+// run 同批），返回批 id 与两个成员 run。lead 不开启 heartbeat，验证 settlement
+// automation 不把必达收口绑定到自主唤醒策略。
 func settleEnv(t *testing.T, ctx context.Context, svc *application.Service, store *sqlstore.Store) (wsID, leadID, wiID, batchID, leadRunID, childRunID string) {
 	t.Helper()
 	wsID, aliceID, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
-	lead, err := store.Agents().Get(ctx, leadID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lead.HeartbeatEnabled = true
-	if err := store.Agents().Update(ctx, lead, lead.Version); err != nil {
-		t.Fatal(err)
-	}
 	_ = aliceID
 	leadRun, err := svc.CreateRun(ctx, wiID, application.CreateRunParams{
 		AgentProfileID: leadID, Instruction: "拆解任务",
@@ -157,6 +149,10 @@ func TestSettlementHappyPath(t *testing.T) {
 	}
 	if instr, _ := wakeups[0].Context["instruction"].(string); !strings.Contains(instr, "Alice：succeeded") {
 		t.Fatalf("汇总材料应含成员结局行: %q", instr)
+	} else if !strings.Contains(instr, "worker 干完") {
+		t.Fatalf("汇总材料应读取 worker assistant 正文: %q", instr)
+	} else if strings.Contains(instr, "worker 干活") || strings.Contains(instr, "lead 干完") {
+		t.Fatalf("汇总材料不得把 instruction 或 lead 正文当作 worker 结果: %q", instr)
 	}
 
 	// 调度消费 → 汇总 run 挂批（dispatch_id=原批、settle 标记固化）。
@@ -221,6 +217,101 @@ func TestSettlementHappyPath(t *testing.T) {
 	}
 }
 
+// TestSettlementLeadOnlyClosesWithoutWake 防回归：没有 worker 的普通 lead
+// 派发在 lead 终态后直接收口，不创建自我汇总 run。
+func TestSettlementLeadOnlyClosesWithoutWake(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	_, _, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
+
+	leadRun, err := svc.CreateRun(ctx, wiID, application.CreateRunParams{
+		AgentProfileID: leadID, Instruction: "主任务直接完成",
+		DispatchTrigger: domain.DispatchTriggerUserMessage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatches, err := store.Dispatches().ListByWorkItem(ctx, wiID)
+	if err != nil || len(dispatches) != 1 {
+		t.Fatalf("应只有 1 个批次: %v %#v", err, dispatches)
+	}
+	batchID := dispatches[0].ID
+
+	settleDriveRun(t, ctx, svc, leadRun.ID, "主任务已完成", true)
+	d := dispatchOf(t, ctx, store, batchID)
+	if d.Status != domain.DispatchCompleted || d.ClosedAt == nil {
+		t.Fatalf("lead-only 批应直接收口 completed: %+v", d)
+	}
+	if n := len(settlementWakeups(t, ctx, store, leadID, wiID)); n != 0 {
+		t.Fatalf("lead-only 批不得创建汇总唤醒，实际 %d", n)
+	}
+}
+
+// TestSettlementLeadOnlyCancelled 防回归：lead-only 的唯一参与成员取消时
+// 也应按整批取消收口，而不是因为“实际 worker 为空”误报 degraded。
+func TestSettlementLeadOnlyCancelled(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	_, _, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
+
+	leadRun, err := svc.CreateRun(ctx, wiID, application.CreateRunParams{
+		AgentProfileID: leadID, Instruction: "主任务停止",
+		DispatchTrigger: domain.DispatchTriggerUserMessage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatches, err := store.Dispatches().ListByWorkItem(ctx, wiID)
+	if err != nil || len(dispatches) != 1 {
+		t.Fatalf("应只有 1 个批次: %v %#v", err, dispatches)
+	}
+
+	for _, status := range []domain.RunStatus{domain.RunStarting, domain.RunCancelled} {
+		if err := svc.RecordRunStatus(ctx, leadRun.ID, status, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := dispatchOf(t, ctx, store, dispatches[0].ID)
+	if d.Status != domain.DispatchCancelled {
+		t.Fatalf("lead-only 取消批应收口 cancelled，实际 %s", d.Status)
+	}
+}
+
+// TestSettlementSummaryMissingBodyUsesExplicitFallback 防回归：Runtime 没有
+// 完成正文且没有可读失败原因时，不把 instruction 冒充结果，必须显式标注无结果。
+func TestSettlementSummaryMissingBodyUsesExplicitFallback(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	_, leadID, wiID, _, leadRunID, childRunID := settleEnv(t, ctx, svc, store)
+
+	settleDriveRun(t, ctx, svc, leadRunID, "lead 干完", true)
+	for _, status := range []domain.RunStatus{domain.RunStarting, domain.RunRunning, domain.RunCancelling, domain.RunCancelled} {
+		if err := svc.RecordRunStatus(ctx, childRunID, status, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wakeups := settlementWakeups(t, ctx, store, leadID, wiID)
+	if len(wakeups) != 1 {
+		t.Fatalf("无正文 worker 应触发一次汇总唤醒: %#v", wakeups)
+	}
+	instr, _ := wakeups[0].Context["instruction"].(string)
+	if !strings.Contains(instr, "无结果正文；原指令：worker 干活") {
+		t.Fatalf("缺少正文时应显式使用 instruction 兜底: %q", instr)
+	}
+	if strings.Contains(instr, "lead 干完") {
+		t.Fatalf("汇总材料不得包含 lead 正文: %q", instr)
+	}
+}
+
 // TestSettlementPartialFailureDegraded 防回归：worker 失败 → 收口 degraded
 // （部分失败是常态路径，不是异常路径）。
 func TestSettlementPartialFailureDegraded(t *testing.T) {
@@ -229,12 +320,21 @@ func TestSettlementPartialFailureDegraded(t *testing.T) {
 	defer db.Close()
 	store := sqlstore.New(db, sqlstore.SQLiteDialect())
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
-	_, _, wiID, batchID, leadRunID, childRunID := settleEnv(t, ctx, svc, store)
+	_, leadID, wiID, batchID, leadRunID, childRunID := settleEnv(t, ctx, svc, store)
 
 	settleDriveRun(t, ctx, svc, leadRunID, "lead 干完", true)
 	settleDriveRun(t, ctx, svc, childRunID, "worker 崩了", false)
 	if d := dispatchOf(t, ctx, store, batchID); d.Status != domain.DispatchCollecting {
 		t.Fatalf("成员齐后应 collecting，实际 %s", d.Status)
+	}
+	wakeups := settlementWakeups(t, ctx, store, leadID, wiID)
+	if len(wakeups) != 1 {
+		t.Fatalf("失败 worker 仍应触发一次汇总唤醒: %#v", wakeups)
+	}
+	if instr, _ := wakeups[0].Context["instruction"].(string); !strings.Contains(instr, "失败：worker 崩了") {
+		t.Fatalf("汇总材料应优先使用 failure_message: %q", instr)
+	} else if strings.Contains(instr, "worker 干活") {
+		t.Fatalf("failure_message 存在时不得用 instruction 冒充结果: %q", instr)
 	}
 	sched := &scheduling.Scheduler{Store: store.Wakeups(), RunStarter: svc}
 	sched.Tick(ctx, time.Now().UTC().Add(time.Minute))
@@ -358,6 +458,46 @@ func TestSettlementCollectingDuplicateTriggerNoOp(t *testing.T) {
 	}
 	if n := len(settlementWakeups(t, ctx, store, leadID, wiID)); n != 1 {
 		t.Fatalf("不得二次唤醒，实际 %d", n)
+	}
+}
+
+// TestSettlementLateMemberCannotCloseBeforeSettlementRun 防回归：汇总 run 已创建
+// 但尚未终态时，迟到普通成员的终态只能保持 collecting，不能越权抢先收口。
+func TestSettlementLateMemberCannotCloseBeforeSettlementRun(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	wsID, _, wiID, batchID, leadRunID, childRunID := settleEnv(t, ctx, svc, store)
+
+	settleDriveRun(t, ctx, svc, leadRunID, "lead 完成", true)
+	settleDriveRun(t, ctx, svc, childRunID, "worker 完成", true)
+	sched := &scheduling.Scheduler{Store: store.Wakeups(), RunStarter: svc}
+	sched.Tick(ctx, time.Now().UTC().Add(time.Minute))
+	runs, err := store.Runs().ListByWorkItem(ctx, wiID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settlement := findSettlementRun(t, runs, batchID)
+	if settlement.Status.IsTerminal() {
+		t.Fatalf("测试前置要求汇总 run 尚未终态，实际 %s", settlement.Status)
+	}
+
+	late := &domain.ExecutionRun{
+		ID: domain.NewID(domain.PrefixRun), WorkspaceID: wsID, WorkItemID: wiID,
+		Status: domain.RunQueued, DispatchID: batchID,
+		Input: map[string]any{"instruction": "迟到普通成员"}, Version: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.Runs().Create(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunStatus(ctx, late.ID, domain.RunCancelled, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d := dispatchOf(t, ctx, store, batchID); d.Status != domain.DispatchCollecting {
+		t.Fatalf("汇总 run 终态前迟到成员不得抢先收口，实际 %s", d.Status)
 	}
 }
 

@@ -179,6 +179,54 @@ func TestTaskListAndGetReturnSeedEntity(t *testing.T) {
 	}
 }
 
+func TestTaskToolsRejectChatRecords(t *testing.T) {
+	ctx := context.Background()
+	d := newTestDeps(t)
+	wsID, agentID := seedBoard(t, ctx, d)
+
+	chat, err := d.svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "MCP Chat only", AgentProfileID: agentID, RecordKind: domain.RecordKindChat,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatRun, err := d.svc.CreateRun(ctx, chat.ID, application.CreateRunParams{
+		AgentProfileID: agentID, Instruction: "普通 Chat run",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := d.svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "MCP Task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list := requireNoError(t, callTool(t, ctx, d, "task_list", map[string]any{"workspace_id": wsID}), "task_list")
+	items, ok := list["items"].([]any)
+	if !ok || len(items) != 1 || items[0].(map[string]any)["Title"] != task.Title {
+		t.Fatalf("task_list 不得混入 Chat：%#v", list)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "task_get", args: map[string]any{"work_item_id": chat.ID}},
+		{name: "run_list", args: map[string]any{"work_item_id": chat.ID}},
+		{name: "run_get", args: map[string]any{"run_id": chatRun.ID}},
+		{name: "run_events_tail", args: map[string]any{"run_id": chatRun.ID}},
+		{name: "approval_list", args: map[string]any{"run_id": chatRun.ID}},
+		{name: "task_claim", args: map[string]any{"work_item_id": chat.ID, "agent_id": agentID, "expected_version": 0}},
+		{name: "task_return", args: map[string]any{"work_item_id": chat.ID, "expected_version": 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if res := callTool(t, ctx, d, tc.name, tc.args); !res.IsError {
+				t.Fatalf("Chat 不得通过 MCP %s：%#v", tc.name, res)
+			}
+		})
+	}
+}
+
 // seedRunEvents 建 wi + run 并直插 n 条 run 事件（CreateRun 自带 1 条 run.created，
 // 共 n+1 条、run_seq 1..n+1）。
 func seedRunEvents(t *testing.T, ctx context.Context, d *toolDeps, wsID, agentID string, n int) string {

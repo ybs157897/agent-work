@@ -2,7 +2,7 @@
 // 纪律（plan.md「S3 回流/降级纪律」）：成员全终态 → running→collecting +
 // automation 唤醒 lead → 汇总 run（trigger=wakeup，同 dispatch_id）终态 →
 // completed/degraded/cancelled；只唤醒一次（MarkCollecting CAS 硬保证）；
-// @直达批（lead_run_id NULL）无唤醒直接收口；不设独立 dispatch 超时器——
+// lead-only 与 @直达批（lead_run_id NULL）无唤醒直接收口；不设独立 dispatch 超时器——
 // run 层 lease/超时保证成员必落终态，dispatch 跟随收口（取舍留痕见最终 note）。
 package application
 
@@ -21,7 +21,7 @@ import (
 // 的键：CreateRunForWakeup 据此把汇总 run 挂回原批（DispatchID）并固化进
 // input.wakeup；终态钩子据此识别收口主体。存量 wakeup 路径（timer/assignment/
 // on_demand）不带该键，dispatch_id 保持为空、不参与收口判定。
-const settleDispatchContextKey = "settle_dispatch_id"
+const settleDispatchContextKey = domain.WakeupContextSettlementDispatchID
 
 // settlementDigestRunes 汇总材料单成员一行摘要的截断宽度（与派发卡片同源）。
 const settlementDigestRunes = 120
@@ -66,6 +66,13 @@ func (s *Service) settleDispatchTx(ctx context.Context, r *domain.ExecutionRun) 
 	if err != nil {
 		return err
 	}
+	wi, err := s.store.WorkItems().Get(ctx, d.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return err
+	}
 	// 已终态批 no-op（见函数头 v1 已知限制）。
 	if d.Status.IsTerminal() {
 		return nil
@@ -74,18 +81,33 @@ func (s *Service) settleDispatchTx(ctx context.Context, r *domain.ExecutionRun) 
 	if err != nil {
 		return err
 	}
+	// members 是批次的完整成员集合（lead、worker 与可能已经创建的汇总
+	// run）。workers 只保留实际 worker：lead 的结果不是回流材料，且全取消
+	// 判定也只看 worker，避免汇总 run 成功后破坏“全 worker 取消”语义。
+	participants := make([]*domain.ExecutionRun, 0, len(members))
 	workers := make([]*domain.ExecutionRun, 0, len(members))
-	isSettlement := false
 	for _, m := range members {
+		memberItem, err := s.store.WorkItems().Get(ctx, m.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireTaskWorkItem(memberItem); err != nil {
+			return err
+		}
 		if settlementRunID(m) == d.ID {
-			isSettlement = true
 			continue
 		}
-		workers = append(workers, m)
+		participants = append(participants, m)
+		if d.LeadRunID == "" || m.ID != d.LeadRunID {
+			workers = append(workers, m)
+		}
 	}
-	if isSettlement {
+	// 只有当前终态 run 自己是该批汇总 run，才拥有唯一收口资格。不能仅因
+	// 批次里已经存在一个 queued/running 汇总 run，就让迟到的普通成员抢跑
+	// 关闭批次。
+	if settlementRunID(r) == d.ID {
 		// a. 汇总 run 终态 → 收口（唯一收口点，不再唤醒）。
-		for _, w := range workers {
+		for _, w := range participants {
 			if !w.Status.IsTerminal() {
 				return nil // 防御：汇总前成员必已全终态；未齐不收口
 			}
@@ -93,14 +115,15 @@ func (s *Service) settleDispatchTx(ctx context.Context, r *domain.ExecutionRun) 
 		return s.closeDispatch(ctx, d, members, workers)
 	}
 	// b. 普通成员：非 wakeup 成员未全终态 → 不动。
-	for _, w := range workers {
+	for _, w := range participants {
 		if !w.Status.IsTerminal() {
 			return nil
 		}
 	}
-	wi, err := s.store.WorkItems().Get(ctx, d.WorkItemID)
-	if err != nil {
-		return err
+	// 没有实际 worker 时，lead 自己就是全部交付，不再创建第二轮汇总
+	// run。这样普通的 lead-only 派发与 @直达一样在 lead 终态时直接收口。
+	if len(workers) == 0 {
+		return s.closeDispatchFor(ctx, d, members, participants, wi.WorkspaceID)
 	}
 	if d.LeadRunID == "" {
 		// @直达批：无 lead 汇总环节，直接收口（无唤醒）。
@@ -122,22 +145,26 @@ func (s *Service) settleDispatchTx(ctx context.Context, r *domain.ExecutionRun) 
 }
 
 // closeDispatch 批次收口（成员全终态后的唯一终态写入口）。
-func (s *Service) closeDispatch(ctx context.Context, d *domain.Dispatch, members, workers []*domain.ExecutionRun) error {
+func (s *Service) closeDispatch(ctx context.Context, d *domain.Dispatch, members, cancellationRuns []*domain.ExecutionRun) error {
 	wi, err := s.store.WorkItems().Get(ctx, d.WorkItemID)
 	if err != nil {
 		return err
 	}
-	return s.closeDispatchFor(ctx, d, members, workers, wi.WorkspaceID)
+	if err := requireTaskWorkItem(wi); err != nil {
+		return err
+	}
+	return s.closeDispatchFor(ctx, d, members, cancellationRuns, wi.WorkspaceID)
 }
 
-// closeDispatchFor 收口口径（a/b 共用）：worker 全 cancelled → cancelled
+// closeDispatchFor 收口口径（a/b 共用）：cancellationRuns 全 cancelled → cancelled
 // （用户整批喊停不是部分失败，优先于降级）；否则任一成员（含汇总 run 自身）
-// failed/cancelled/lost/interrupted → degraded；否则 completed。
+// failed/cancelled/lost/interrupted → degraded；否则 completed。多 worker 批次的
+// cancellationRuns 只含实际 worker；lead-only 与 @直达批次传入全部参与成员。
 // 领域层 Transition 校验合法边，存储层 CloseStatus CAS 防并发双写。
-func (s *Service) closeDispatchFor(ctx context.Context, d *domain.Dispatch, members, workers []*domain.ExecutionRun, workspaceID string) error {
+func (s *Service) closeDispatchFor(ctx context.Context, d *domain.Dispatch, members, cancellationRuns []*domain.ExecutionRun, workspaceID string) error {
 	to := domain.DispatchCompleted
 	cancelled, degraded := 0, 0
-	for _, w := range workers {
+	for _, w := range cancellationRuns {
 		if w.Status == domain.RunCancelled {
 			cancelled++
 		}
@@ -149,7 +176,7 @@ func (s *Service) closeDispatchFor(ctx context.Context, d *domain.Dispatch, memb
 		}
 	}
 	switch {
-	case len(workers) > 0 && cancelled == len(workers):
+	case len(cancellationRuns) > 0 && cancelled == len(cancellationRuns):
 		to = domain.DispatchCancelled
 	case degraded > 0:
 		to = domain.DispatchDegraded
@@ -192,8 +219,12 @@ func (s *Service) wakeSettlementLead(ctx context.Context, d *domain.Dispatch, wo
 			agentNames[a.ID] = a.Name
 		}
 	}
+	lines, err := s.settlementLines(ctx, workers, agentNames)
+	if err != nil {
+		return err
+	}
 	instruction := scheduling.RenderPrompt(scheduling.SettlementPromptTemplate, lead, wi.Title,
-		map[string]any{"settlement_lines": settlementLines(workers, agentNames)})
+		map[string]any{"settlement_lines": lines})
 	wakeContext := map[string]any{
 		"work_item_title":        wi.Title,
 		settleDispatchContextKey: d.ID,
@@ -204,29 +235,78 @@ func (s *Service) wakeSettlementLead(ctx context.Context, d *domain.Dispatch, wo
 	return err
 }
 
-// settlementLines 成员结局行：agent 名 + 终态 + 一行结果摘要。
-func settlementLines(workers []*domain.ExecutionRun, agentNames map[string]string) string {
+// settlementLines 成员结局行：实际 worker 的 agent 名 + 终态 + 一行结果摘要。
+// 摘要优先取最后一条 assistant message.completed；失败 run 没有完成正文时
+// 使用可读失败原因；两者都没有时明确标注无结果并附原 instruction，避免把
+// 任务描述伪装成交付结果。
+func (s *Service) settlementLines(ctx context.Context, workers []*domain.ExecutionRun, agentNames map[string]string) (string, error) {
 	lines := make([]string, 0, len(workers))
 	for _, w := range workers {
 		name := agentNames[w.AgentProfileID]
 		if name == "" {
 			name = w.AgentProfileID
 		}
-		instr, _ := w.Input["instruction"].(string)
-		summary := truncateRunes(strings.TrimSpace(instr), settlementDigestRunes)
+		summary, err := s.settlementRunSummary(ctx, w)
+		if err != nil {
+			return "", err
+		}
 		lines = append(lines, fmt.Sprintf("- %s：%s（%s）", name, w.Status, summary))
 	}
 	if len(lines) == 0 {
-		return "（无成员结局可汇总）"
+		return "（无成员结局可汇总）", nil
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), nil
+}
+
+func (s *Service) settlementRunSummary(ctx context.Context, run *domain.ExecutionRun) (string, error) {
+	events, err := s.store.Events().ListRunEvents(ctx, run.ID)
+	if err != nil {
+		return "", err
+	}
+	// ListRunEvents 按 run_seq 正序返回；从尾部寻找最后一条有效的 assistant
+	// 完成正文，兼容旧 adapter 未填 role 的 canonical payload。
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.EventType != domain.EventMessageCompleted {
+			continue
+		}
+		if role, ok := e.Payload["role"].(string); ok && strings.TrimSpace(role) != "" && role != "assistant" {
+			continue
+		}
+		if text, ok := e.Payload["text"].(string); ok && strings.TrimSpace(text) != "" {
+			return truncateRunes(strings.TrimSpace(text), settlementDigestRunes), nil
+		}
+	}
+
+	// 失败原因是 Runtime 的可读事实，优先于 instruction 兜底，避免把任务
+	// 描述误报为结果。Code 仅在 Message 缺失时作为次级可读原因。
+	if run.Failure != nil {
+		message := strings.TrimSpace(run.Failure.Message)
+		code := strings.TrimSpace(run.Failure.Code)
+		switch {
+		case message != "" && code != "":
+			return truncateRunes(fmt.Sprintf("失败：%s（%s）", message, code), settlementDigestRunes), nil
+		case message != "":
+			return truncateRunes("失败："+message, settlementDigestRunes), nil
+		case code != "":
+			return truncateRunes("失败："+code, settlementDigestRunes), nil
+		}
+	}
+
+	instruction, _ := run.Input["instruction"].(string)
+	instruction = truncateRunes(strings.TrimSpace(instruction), settlementDigestRunes)
+	if instruction == "" {
+		instruction = "（空）"
+	}
+	return "无结果正文；原指令：" + instruction, nil
 }
 
 // emitDispatchUpdated 发布 dispatch.updated（S3 起有生产者）：批次行变更
 // （running→collecting 与收口）。payload 带 work_item_id/status，收口附
 // closed_at；dispatch id 在信封 aggregate。
 func (s *Service) emitDispatchUpdated(ctx context.Context, workspaceID string, d *domain.Dispatch) error {
-	data := map[string]any{"work_item_id": d.WorkItemID, "status": string(d.Status)}
+	data := map[string]any{"work_item_id": d.WorkItemID, "status": string(d.Status),
+		"record_kind": string(domain.RecordKindTask)}
 	if d.ClosedAt != nil {
 		data["closed_at"] = *d.ClosedAt
 	}

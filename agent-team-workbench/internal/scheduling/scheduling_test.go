@@ -453,6 +453,64 @@ func TestConsumeOneActiveRunCoalesces(t *testing.T) {
 	}
 }
 
+// TestConsumeOneSettlementAutomationBypassesHeartbeat 防回归：S3 汇总唤醒是
+// 控制平面必达收口，不应因为 lead 未开启 heartbeat 而被 coalesced 丢弃。
+func TestConsumeOneSettlementAutomationBypassesHeartbeat(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(testAgent(false, 0))
+	starter := &fakeRunStarter{}
+	w, err := EnqueueWakeup(ctx, store, domain.WakeupSourceAutomation, "ws_t", "agent_t", "wi_1",
+		map[string]any{
+			"settle_dispatch_id": "dispatch_1",
+			"instruction":        "汇总 worker 结果",
+		}, testNow.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := newTestScheduler(store, starter).ConsumeOne(ctx, *w, testNow)
+	if err != nil || outcome != OutcomeConsumed {
+		t.Fatalf("outcome=%q err=%v", outcome, err)
+	}
+	if got := store.status(w.ID); got != domain.WakeupStatusConsumed {
+		t.Fatalf("settlement 唤醒应 consumed, status=%q", got)
+	}
+	if len(store.claimCalls) != 0 {
+		t.Fatalf("settlement 不应 claim heartbeat: %d", len(store.claimCalls))
+	}
+	if len(starter.created) != 1 {
+		t.Fatalf("heartbeat 关闭时 settlement 仍应建 run: %d", len(starter.created))
+	}
+}
+
+// TestConsumeOneSettlementAutomationStaysQueuedWhileActive 防回归：settlement
+// 不得像普通唤醒一样被活跃 run coalesced；等活跃 run 释放后应能再次消费。
+func TestConsumeOneSettlementAutomationStaysQueuedWhileActive(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(testAgent(false, 0))
+	store.activeFn = func(string, string) (string, bool, error) { return "run_live", true, nil }
+	starter := &fakeRunStarter{}
+	w, err := EnqueueWakeup(ctx, store, domain.WakeupSourceAutomation, "ws_t", "agent_t", "wi_1",
+		map[string]any{
+			"settle_dispatch_id": "dispatch_1",
+			"instruction":        "汇总 worker 结果",
+		}, testNow.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := newTestScheduler(store, starter).ConsumeOne(ctx, *w, testNow)
+	if err != nil || outcome != OutcomeQueued {
+		t.Fatalf("outcome=%q err=%v, settlement 应保持 queued", outcome, err)
+	}
+	if got := store.status(w.ID); got != domain.WakeupStatusQueued {
+		t.Fatalf("活跃 run 下 settlement 应保持 queued, status=%q", got)
+	}
+	if len(starter.created) != 0 || len(store.contextSet) != 0 {
+		t.Fatalf("活跃 run 下不得建 run 或 coalesced 审计: created=%d context=%v", len(starter.created), store.contextSet)
+	}
+}
+
 func TestConsumeOneZombieRunPierces(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore(testAgent(true, 0))
@@ -500,6 +558,30 @@ func TestConsumeOneStaleWakeupCoalesced(t *testing.T) {
 	}
 	if got := store.status(w.ID); got != domain.WakeupStatusCoalesced {
 		t.Fatalf("超龄应 coalesced, status=%q", got)
+	}
+}
+
+// TestConsumeOneStaleSettlementRetries 防回归：必达汇总即使超过普通唤醒的
+// maxWakeupAge，也不能被 coalesced 丢弃；创建失败后仍保持 queued 等待重试。
+func TestConsumeOneStaleSettlementRetries(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore(testAgent(false, 0))
+	starter := &fakeRunStarter{err: errors.New("temporary")}
+	w, err := EnqueueWakeup(ctx, store, domain.WakeupSourceAutomation, "ws_t", "agent_t", "wi_1",
+		map[string]any{
+			"settle_dispatch_id": "dispatch_1",
+			"instruction":        "汇总 worker 结果",
+		}, testNow.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := newTestScheduler(store, starter).ConsumeOne(ctx, *w, testNow)
+	if err != nil || outcome != OutcomeQueued {
+		t.Fatalf("outcome=%q err=%v, stale settlement 应继续 queued", outcome, err)
+	}
+	if got := store.status(w.ID); got != domain.WakeupStatusQueued {
+		t.Fatalf("stale settlement 不得 coalesced, status=%q", got)
 	}
 }
 

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -116,12 +117,55 @@ func (s *Server) setAvailability(w http.ResponseWriter, r *http.Request, enabled
 
 // ── WorkItem ─────────────────────────────────────────────────────────
 
+func parseWorkItemRecordKind(raw string) (domain.WorkItemRecordKind, error) {
+	if raw == "" {
+		return "", nil
+	}
+	kind := domain.WorkItemRecordKind(raw)
+	if !kind.Valid() {
+		return "", fmt.Errorf("%w: record_kind 必须为 chat 或 task", domain.ErrValidation)
+	}
+	return kind, nil
+}
+
+func normalizedWorkItemRecordKind(w *domain.WorkItem) domain.WorkItemRecordKind {
+	if w == nil || w.RecordKind == "" {
+		return domain.RecordKindTask
+	}
+	return w.RecordKind
+}
+
+func requireTaskWorkItemHTTP(w *domain.WorkItem) error {
+	if w == nil {
+		return fmt.Errorf("%w: work item required", domain.ErrValidation)
+	}
+	kind := normalizedWorkItemRecordKind(w)
+	if !kind.Valid() {
+		return fmt.Errorf("%w: work item %s 的 record_kind 无效", domain.ErrValidation, w.ID)
+	}
+	if kind != domain.RecordKindTask {
+		return fmt.Errorf("%w: record_kind=chat 不支持任务操作", domain.ErrValidation)
+	}
+	return nil
+}
+
 func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 	wsID := r.PathValue("workspace_id")
+	recordKind, err := parseWorkItemRecordKind(r.URL.Query().Get("record_kind"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if recordKind == "" {
+		// The public task-list endpoint is task-only by default. Chat callers
+		// must opt into the independent conversation surface explicitly.
+		recordKind = domain.RecordKindTask
+	}
 	f := application.WorkItemFilter{
-		Status:   domain.WorkItemStatus(r.URL.Query().Get("status")),
-		Priority: domain.Priority(r.URL.Query().Get("priority")),
-		Assignee: r.URL.Query().Get("assignee"),
+		Status:     domain.WorkItemStatus(r.URL.Query().Get("status")),
+		Priority:   domain.Priority(r.URL.Query().Get("priority")),
+		Assignee:   r.URL.Query().Get("assignee"),
+		RecordKind: recordKind,
 		// parent_id：缺省不过滤；none = 只看根任务（无父链接）。
 		ParentID: r.URL.Query().Get("parent_id"),
 		Cursor:   r.URL.Query().Get("cursor"),
@@ -147,7 +191,9 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 	dto := s.enrichWorkItem(r, wi)
 	// 台账摘要只在详情响应携带（S2）：enrichWorkItem 被列表路径共用，
 	// 4KB 级摘要不得进列表/bootstrap 载荷。
-	dto.RollingDigest = wi.RollingDigest
+	if normalizedWorkItemRecordKind(wi) == domain.RecordKindTask {
+		dto.RollingDigest = wi.RollingDigest
+	}
 	writeJSON(w, http.StatusOK, dto)
 }
 
@@ -171,10 +217,15 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
 		}
+		recordKind, err := parseWorkItemRecordKind(req.RecordKind)
+		if err != nil {
+			return problemBytes(err)
+		}
 		p := application.CreateWorkItemParams{
 			Title: req.Title, Description: req.Description,
 			Status: domain.WorkItemStatus(req.Status), Priority: domain.Priority(req.Priority),
 			AgentProfileID: req.AgentProfileID, ParentID: req.ParentID, ClientKey: req.ClientKey,
+			RecordKind: recordKind,
 		}
 		if req.DueDate != nil {
 			if d, err := time.Parse("2006-01-02", *req.DueDate); err == nil {
@@ -397,6 +448,10 @@ func (s *Server) handleListWorkItemDispatches(w http.ResponseWriter, r *http.Req
 	ctx := r.Context()
 	wi, err := s.store.WorkItems().Get(ctx, wiID)
 	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if err := requireTaskWorkItemHTTP(wi); err != nil {
 		fail(w, r, err)
 		return
 	}

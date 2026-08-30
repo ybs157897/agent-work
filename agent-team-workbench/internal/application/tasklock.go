@@ -30,6 +30,12 @@ func (s *Service) acquireTaskLock(ctx context.Context, r *domain.ExecutionRun) e
 	if err != nil {
 		return err
 	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return err
+	}
+	if !isTaskWorkItem(wi) {
+		return nil
+	}
 	if wi.HoldsLock(r.ID) {
 		return nil
 	}
@@ -57,7 +63,8 @@ func (s *Service) acquireTaskLock(ctx context.Context, r *domain.ExecutionRun) e
 	if preemptFrom != "" {
 		if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemLockPreempted,
 			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-			map[string]any{"run_id": r.ID, "preempted_from": preemptFrom}); err != nil {
+			map[string]any{"run_id": r.ID, "preempted_from": preemptFrom,
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 		return s.activityFor(ctx, wi.WorkspaceID, wi.ID, "work_item.lock_preempted",
@@ -65,7 +72,7 @@ func (s *Service) acquireTaskLock(ctx context.Context, r *domain.ExecutionRun) e
 	}
 	return s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemLocked,
 		domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-		map[string]any{"run_id": r.ID})
+		map[string]any{"run_id": r.ID, "record_kind": string(workItemRecordKind(wi))})
 }
 
 // releaseTaskLock 在 run 落终态的同一事务内释放其持有的任务执行锁；锁已被
@@ -74,6 +81,12 @@ func (s *Service) releaseTaskLock(ctx context.Context, r *domain.ExecutionRun) e
 	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
 	if err != nil {
 		return err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return err
+	}
+	if !isTaskWorkItem(wi) {
+		return nil
 	}
 	if !wi.HoldsLock(r.ID) {
 		return nil
