@@ -24,6 +24,7 @@ tags:
   - name: runtime-bindings
   - name: events
   - name: models
+  - name: coordinator
 
 paths:
   /me:
@@ -80,6 +81,27 @@ paths:
           description: text/event-stream
           content: { text/event-stream: { schema: { type: string } } }
         "410": { $ref: "#/components/responses/CursorExpired" }
+
+  /workspaces/{workspace_id}/coordinator:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [coordinator]
+      operationId: getTaskCoordinatorConfig
+      summary: 获取 Workspace 唯一系统 Task Coordinator 配置
+      description: 只返回 runtime/model/reasoning；系统提示词仅暴露不可变版本，不返回正文。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorConfig" } } } }
+    patch:
+      tags: [coordinator]
+      operationId: updateTaskCoordinatorConfig
+      summary: 更新 Coordinator 可配置底座
+      description: 只允许 Codex/Kimi runtime、model、reasoning_effort 与备用配置；instructions/prompt 修改一律拒绝。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorConfigPatch" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorConfig" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { description: prompt/runtime/model 校验失败, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
 
   /workspaces/{workspace_id}/agent-profiles:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -162,10 +184,17 @@ paths:
     post:
       tags: [work-items]
       operationId: createWorkItem
+      description: |
+        创建工作项。公开调用省略 record_kind 时按 Task 处理，并由系统 Task
+        Coordinator 自动接取根 Task；调用方不得关闭该交接或指定 Worker。
+        根 Task 的初始 status 只能省略或为 todo，in_progress/blocked/completed/cancelled
+        均返回 422，避免绕过 Coordinator 与人工验收。Chat 必须显式传 record_kind=chat，
+        并保留其独立记录语义。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/WorkItemCreate" } } } }
       responses:
         "201": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "422": { description: record_kind/Task assignment/根 Task 初始状态校验失败, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
 
   /work-items/{work_item_id}:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
@@ -334,6 +363,48 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } } }
         "404": { description: 该任务尚无 plan, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
+  /work-items/{work_item_id}/coordinator:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [coordinator]
+      operationId: getTaskCoordinatorSnapshot
+      summary: Task Coordinator 控制线快照
+      description: 仅 Task 可见；Chat 记录返回 validation_failed，不泄漏任务控制线。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorSnapshot" } } } }
+        "404": { description: 尚未创建 Coordinator state, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "422": { description: Chat 不属于任务控制线, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
+  /work-items/{work_item_id}/coordinator/events:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [coordinator]
+      operationId: listTaskCoordinatorEvents
+      summary: Task Coordinator 因果时间线
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorTimelineList" } } } }
+        "422": { description: Chat 不属于任务控制线, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
+  /work-items/{work_item_id}/coordinator/messages:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [coordinator]
+      operationId: sendTaskCoordinatorInstruction
+      summary: 向任务 Coordinator 追加用户指令
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instruction]
+              properties:
+                instruction: { type: string, minLength: 1 }
+      responses:
+        "202": { description: 指令已接收 }
+        "422": { description: Chat 或 Coordinator 不可用, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
 
   /workspaces/{workspace_id}/plans:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -784,7 +855,10 @@ paths:
     post:
       tags: [work-items]
       operationId: acceptWorkItem
-      description: 验收工作项（acceptance 决议；漂移检测后接受当前状态）。
+      description: |
+        验收根 Task（acceptance 决议；漂移检测后接受当前状态）。存在
+        Coordinator 控制线时只有根 WorkItem 可验收并完成该控制线；协调子任务
+        直接返回 422，不能单独完成根任务。无 Coordinator 的历史 Task 保留原有验收语义。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -1022,6 +1096,8 @@ components:
       type: object
       properties:
         id: { type: string }
+        kind: { type: string, enum: [user, task_coordinator] }
+        is_system: { type: boolean }
         name: { type: string }
         role: { type: string }
         skills: { type: array, items: { type: string } }
@@ -1039,7 +1115,116 @@ components:
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
         model_override: { $ref: "#/components/schemas/ModelRef" }
         policy: { $ref: "#/components/schemas/AgentPolicy" }
+        instructions_editable: { type: boolean }
         version: { type: integer }
+
+    CoordinatorConfig:
+      type: object
+      required: [workspace_id, kind, runtime_label, model_ref, reasoning_effort, prompt_version, prompt_locked, instructions_editable, version]
+      properties:
+        workspace_id: { type: string }
+        kind: { type: string, enum: [task_coordinator] }
+        runtime_label: { type: string, enum: [codex_local, kimi_local, mock] }
+        model_ref: { type: string }
+        reasoning_effort: { type: string, enum: [minimal, low, medium, high, xhigh] }
+        fallback_runtime_label: { type: string, enum: [codex_local, kimi_local, mock] }
+        fallback_model_ref: { type: string }
+        prompt_version: { type: string, enum: [task-coordinator.v1] }
+        prompt_locked: { type: boolean, enum: [true] }
+        instructions_editable: { type: boolean, enum: [false] }
+        version: { type: integer }
+
+    CoordinatorConfigPatch:
+      type: object
+      required: [expected_version]
+      properties:
+        runtime_label: { type: string, enum: [codex_local, kimi_local] }
+        model_ref: { type: string }
+        reasoning_effort: { type: string, enum: [minimal, low, medium, high, xhigh] }
+        fallback_runtime_label: { type: string, enum: [codex_local, kimi_local] }
+        fallback_model_ref: { type: string }
+        expected_version: { type: integer }
+        instructions: { type: string, description: 始终拒绝；提示词由系统内置 }
+        prompt: { type: string, description: 始终拒绝；提示词由系统内置 }
+
+    CoordinatorFailure:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        retryable: { type: boolean }
+
+    CoordinatorAgentRef:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { type: string }
+        runtime: { type: string }
+
+    CoordinatorAttempt:
+      type: object
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        agent: { $ref: "#/components/schemas/CoordinatorAgentRef" }
+        status: { type: string }
+        attempt: { type: integer }
+        max_attempts: { type: integer }
+        retry_of: { type: string }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        failure: { $ref: "#/components/schemas/CoordinatorFailure" }
+        next_action: { type: string }
+        next_action_at: { type: string, format: date-time }
+
+    CoordinatorTimelineEntry:
+      type: object
+      properties:
+        id: { type: string }
+        stage: { type: string, enum: [plan, dispatch, attempt, failure, retry, reassign, settlement, result, acceptance] }
+        kind: { type: string }
+        title: { type: string }
+        message: { type: string }
+        status: { type: string }
+        occurred_at: { type: string, format: date-time }
+        agent: { $ref: "#/components/schemas/CoordinatorAgentRef" }
+        attempt: { type: integer }
+        run_id: { type: string }
+        retry_of: { type: string }
+        failure: { $ref: "#/components/schemas/CoordinatorFailure" }
+        next_action_at: { type: string, format: date-time }
+
+    CoordinatorSnapshot:
+      type: object
+      required: [root_work_item_id, work_item_id, status, attempts, timeline, updated_at, version]
+      properties:
+        root_work_item_id: { type: string }
+        work_item_id: { type: string }
+        status: { type: string }
+        stage: { type: string }
+        progress: { type: number, nullable: true }
+        completed_steps: { type: integer }
+        total_steps: { type: integer }
+        current_agent: { $ref: "#/components/schemas/CoordinatorAgentRef" }
+        next_action: { type: string }
+        next_action_at: { type: string, format: date-time }
+        blocker: { $ref: "#/components/schemas/Blocker" }
+        runtime_label: { type: string }
+        model_ref: { type: string }
+        reasoning_effort: { type: string }
+        prompt_version: { type: string }
+        prompt_locked: { type: boolean, enum: [true] }
+        attempts: { type: array, items: { $ref: "#/components/schemas/CoordinatorAttempt" } }
+        timeline: { type: array, items: { $ref: "#/components/schemas/CoordinatorTimelineEntry" } }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+
+    CoordinatorTimelineList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/CoordinatorTimelineEntry" } }
 
     RuntimePreference:
       type: object
@@ -1166,14 +1351,15 @@ components:
       required: [title]
       properties:
         title: { type: string }
-        record_kind: { type: string, enum: [chat, task], default: task, description: 新记录类型；省略时兼容旧任务创建语义 }
+        record_kind: { type: string, enum: [chat, task], default: task, description: 新记录类型；公开创建省略时按 task 处理，Chat 必须显式传 chat }
         description: { type: string }
-        status: { $ref: "#/components/schemas/WorkItemStatus", default: todo }
+        status: { $ref: "#/components/schemas/WorkItemStatus", default: todo, description: 根 Task 只能省略或为 todo；其他初始状态返回 422。Chat 保留独立记录的旧语义 }
         priority: { $ref: "#/components/schemas/Priority", default: medium }
         due_date: { type: string, format: date }
-        agent_profile_id: { type: string, nullable: true }
+        agent_profile_id: { type: string, nullable: true, description: Chat 可选；公开 Task（含省略 record_kind）禁止传入，返回 422，由系统 Coordinator 选择 Worker }
         parent_id: { type: string, nullable: true, description: 同类型父记录 id }
         client_key: { type: string, description: 实体级幂等键 }
+        acceptance_criteria: { type: array, items: { type: string }, description: 根 Task 的验收标准，持久化在 Coordinator state 中 }
 
     WorkItemPatch:
       type: object
@@ -1533,7 +1719,7 @@ components:
         agent_profile_id: { type: string }
         adapter_id: { type: string }
         task_key: { type: string, description: 通常是 work item ID }
-        session_ref: { type: string, description: provider 会话句柄（如 codex://thread_x、dsh://session-y） }
+        session_ref: { type: string, description: "provider 会话句柄（如 codex://thread_x、dsh://session-y）" }
         session_params:
           type: object
           additionalProperties: true

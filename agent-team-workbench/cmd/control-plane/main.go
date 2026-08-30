@@ -307,6 +307,10 @@ func run() error {
 	}
 	go scheduler.Start(ctx)
 	log.Printf("wakeup 调度循环已启动（tick %s，心跳缺省 %ds）", wakeupTick, domain.DefaultHeartbeatIntervalSec)
+	// Task Coordinator 的 queued/waiting_retry/running checkpoint 使用独立的
+	// 轻量 due-scan；启动先扫一次，随后持续恢复连接中断或进程重启留下的控制线。
+	go svc.RunCoordinatorRecoveryLoop(ctx, 2*time.Second)
+	log.Printf("Task Coordinator 恢复循环已启动（tick 2s）")
 
 	root := http.NewServeMux()
 	root.Handle("/runner/v1/connect", gateway)

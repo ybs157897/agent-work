@@ -511,6 +511,50 @@ func TestConsumeOneSettlementAutomationStaysQueuedWhileActive(t *testing.T) {
 	}
 }
 
+func TestConsumeOneCoordinatorPlanAutomationBypassesHeartbeatOnlyForSystemProfile(t *testing.T) {
+	ctx := context.Background()
+	coordinator := testAgent(false, 0)
+	coordinator.Kind = domain.AgentProfileKindTaskCoordinator
+	store := newFakeStore(coordinator)
+	starter := &fakeRunStarter{}
+	w, err := EnqueueWakeup(ctx, store, domain.WakeupSourceAutomation, "ws_t", coordinator.ID, "plan:plan_1",
+		map[string]any{"plan_id": "plan_1", "trigger": "children_quiet"}, testNow.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := newTestScheduler(store, starter).ConsumeOne(ctx, *w, testNow)
+	if err != nil || outcome != OutcomeConsumed {
+		t.Fatalf("system Coordinator plan automation should bypass heartbeat gate: outcome=%q err=%v", outcome, err)
+	}
+	if len(store.claimCalls) != 0 || len(starter.created) != 1 {
+		t.Fatalf("system Coordinator plan automation should not claim heartbeat and should create run: claims=%d created=%d", len(store.claimCalls), len(starter.created))
+	}
+	activeStore := newFakeStore(coordinator)
+	activeStore.activeFn = func(string, string) (string, bool, error) { return "run_coordinator", true, nil }
+	activeWake, err := EnqueueWakeup(ctx, activeStore, domain.WakeupSourceAutomation, "ws_t", coordinator.ID, "plan:plan_1",
+		map[string]any{"plan_id": "plan_1", "trigger": "defer_wake_at"}, testNow.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeOutcome, err := newTestScheduler(activeStore, &fakeRunStarter{}).ConsumeOne(ctx, *activeWake, testNow)
+	if err != nil || activeOutcome != OutcomeQueued || activeStore.status(activeWake.ID) != domain.WakeupStatusQueued {
+		t.Fatalf("system Coordinator plan automation with an active Run must remain queued: outcome=%q status=%q err=%v", activeOutcome, activeStore.status(activeWake.ID), err)
+	}
+
+	ordinary := testAgent(false, 0)
+	ordinary.ID = "agent_ordinary"
+	ordinaryStore := newFakeStore(ordinary)
+	ordinaryWake, err := EnqueueWakeup(ctx, ordinaryStore, domain.WakeupSourceAutomation, "ws_t", ordinary.ID, "plan:plan_1",
+		map[string]any{"plan_id": "plan_1", "trigger": "children_quiet"}, testNow.Add(-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err = newTestScheduler(ordinaryStore, &fakeRunStarter{}).ConsumeOne(ctx, *ordinaryWake, testNow)
+	if err != nil || outcome != OutcomeCoalesced {
+		t.Fatalf("ordinary Agent automation must retain heartbeat gate: outcome=%q err=%v", outcome, err)
+	}
+}
+
 func TestConsumeOneZombieRunPierces(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore(testAgent(true, 0))

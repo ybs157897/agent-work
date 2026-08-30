@@ -14,6 +14,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -24,6 +25,7 @@ import {
 import type { QueuedMessage } from '../../stores/chat.store';
 import { useAgentsStore } from '../../stores/agents.store';
 import { formatBytes } from '../../utils/artifact-visuals';
+import { isUserManagedAgent } from '../../utils/agent-scope';
 import { activeMention, applyMention, mentionableAgents, type MentionState } from '../../utils/mention';
 import { Avatar } from '../avatar';
 import { Button } from '../ui';
@@ -112,7 +114,11 @@ export function PromptBox({
   // @ 提及弹层：mention = 光标处提及态（null 关闭）；mentionIndex = 键盘高亮行。
   const [mention, setMention] = useState<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
-  const agents = useAgentsStore((s) => (mentionsEnabled ? s.agents : []));
+  const allAgents = useAgentsStore((s) => s.agents);
+  const agents = useMemo(
+    () => (mentionsEnabled ? allAgents.filter(isUserManagedAgent) : []),
+    [allAgents, mentionsEnabled],
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const appsRef = useRef<HTMLDivElement>(null);

@@ -73,6 +73,11 @@ const (
 	OutcomeQueued    Outcome = "queued"    // 保持 queued，下轮重试
 )
 
+// ErrWakeupNoop tells the scheduler that the wakeup was intentionally consumed
+// without creating a Run because its target control line is already terminal.
+// It is distinct from a transient RunStarter error, which must be requeued.
+var ErrWakeupNoop = errors.New("wakeup: intentional no-op")
+
 const (
 	// DefaultTickInterval 调度循环缺省周期。
 	DefaultTickInterval = 30 * time.Second
@@ -244,6 +249,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 
 	policy := profile.Heartbeat()
 	settlement := isSettlementWakeup(w)
+	coordinatorAutomation := isCoordinatorPlanAutomation(w, profile)
 	claimed := false
 	switch w.Source {
 	case domain.WakeupSourceTimer:
@@ -259,9 +265,10 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 			return s.coalesce(ctx, w, "距上次心跳不足间隔")
 		}
 	case domain.WakeupSourceAutomation:
-		if settlement {
-			// settlement 是由已完成成员触发的必达控制面工作，不受 agent 的
-			// 自主 heartbeat 开关或间隔约束。
+		if settlement || coordinatorAutomation {
+			// settlement 与受保护 Coordinator 的 plan timer/children_quiet
+			// 都是控制平面必达工作，不受 Coordinator 自主 heartbeat 开关
+			// 或间隔约束；普通 Agent automation 仍走原有 heartbeat 门控。
 			break
 		}
 		if !policy.Enabled {
@@ -303,7 +310,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 		return s.retryOrExpire(ctx, w, now)
 	}
 	if alive {
-		if settlement {
+		if settlement || coordinatorAutomation {
 			// 汇总 run 不能被活跃 lead/同任务 run 合并吞掉；保持 queued，待
 			// 活跃 run 终态释放任务锁后由下一轮消费。
 			s.logf("wakeup %s: settlement 等待活跃 run %s，保持 queued", w.ID, runID)
@@ -328,6 +335,10 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 
 	instruction := RenderPrompt(policy.PromptTemplate, profile, workItemTitle(w), w.Context)
 	if _, err := s.RunStarter.CreateRunForWakeup(ctx, w.WorkspaceID, w.AgentProfileID, w.TaskKey, instruction, w.Context); err != nil {
+		if errors.Is(err, ErrWakeupNoop) {
+			releaseClaim()
+			return OutcomeConsumed, nil
+		}
 		s.logf("wakeup %s: 创建 run 失败: %v", w.ID, err)
 		// 补偿：唤醒退回 queued（不烧掉）+ 回滚 claim，下一 tick 重新消费。
 		if rerr := s.Store.RequeueWakeup(ctx, w.ID); rerr != nil {
@@ -401,6 +412,22 @@ func isSettlementWakeup(w domain.WakeupRequest) bool {
 	}
 	id, _ := w.Context[domain.WakeupContextSettlementDispatchID].(string)
 	return strings.TrimSpace(id) != ""
+}
+
+// isCoordinatorPlanAutomation is the narrow heartbeat exception for the
+// system Task Coordinator. Plan timer and children_quiet wakeups are control
+// actions, not user Agent heartbeats; ordinary Agents carrying the same
+// context remain subject to the normal automation policy.
+func isCoordinatorPlanAutomation(w domain.WakeupRequest, profile *domain.AgentProfile) bool {
+	if w.Source != domain.WakeupSourceAutomation || profile == nil || !profile.Kind.IsSystem() {
+		return false
+	}
+	planID, ok := w.Context["plan_id"].(string)
+	if !ok || strings.TrimSpace(planID) == "" {
+		return false
+	}
+	trigger, _ := w.Context["trigger"].(string)
+	return trigger == "defer_wake_at" || trigger == "children_quiet"
 }
 
 // workItemTitle 从唤醒 context 取工作项标题（入队时可携带），缺省用 taskKey 占位。

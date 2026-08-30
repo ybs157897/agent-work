@@ -389,7 +389,12 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 	}); err != nil {
 		return
 	}
-	p := CreateRunParams{AgentProfileID: r.AgentProfileID, Instruction: instruction, AutoHealOf: r.ID}
+	p := CreateRunParams{AgentProfileID: r.AgentProfileID, Instruction: instruction, AutoHealOf: r.ID, DispatchID: r.DispatchID}
+	if coordinator, ok := r.Input["task_coordinator"].(map[string]any); ok {
+		p.CoordinatorContext = mapsCloneAny(coordinator)
+		p.CoordinatorContext["attempt"] = coordinatorAttemptValue(p.CoordinatorContext["attempt"]) + 1
+		p.CoordinatorContext["retry_of"] = r.ID
+	}
 	p.OutputContract, _ = r.Input["output_contract"].(string)
 	if raw, ok := r.Input["acceptance_criteria"].([]any); ok {
 		for _, item := range raw {
@@ -407,6 +412,7 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 	}
 	_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_healed",
 		fmt.Sprintf("会话丢失（session_unknown）已自愈重试：%s → %s", r.ID, retry.ID))
+	s.recordCoordinatorSessionHeal(healCtx, r, retry)
 }
 
 // runtimePreferenceOf 从 run.Input 快照恢复 CreateRun 所需的显式偏好

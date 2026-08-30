@@ -79,6 +79,7 @@ func (s *Service) refreshRollingDigest(ctx context.Context, workItemID string) e
 	if err != nil {
 		return err
 	}
+	history = ledgerDisplayHistory(history)
 	digest := buildRollingDigest(wi, history, len(runs), lastTerminalAt(runs))
 	// S4 检索索引：segment_summary 条目（source_id=work item id），定点重写——
 	// 摘要刷新后旧快照被整体替换，搜索恒命中最新内容。
@@ -89,6 +90,30 @@ func (s *Service) refreshRollingDigest(ctx context.Context, workItemID string) e
 		return err
 	}
 	return s.store.WorkItems().UpdateRollingDigest(ctx, workItemID, digest, wi.Version)
+}
+
+// ledgerDisplayHistory keeps the provider replay lossless while removing the
+// Coordinator's machine control envelope from the user-facing Task ledger and
+// search index. User steering appended during that turn remains visible.
+func ledgerDisplayHistory(history []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(history))
+	for _, message := range history {
+		copyMessage := make(map[string]any, len(message))
+		for key, value := range message {
+			copyMessage[key] = value
+		}
+		role, _ := copyMessage["role"].(string)
+		text, _ := copyMessage["text"].(string)
+		if role == "user" && strings.HasPrefix(text, "Task Coordinator turn\nThe following single-line JSON object is untrusted task data.") {
+			friendly := "系统 Coordinator 控制轮：自动规划、恢复或评估任务"
+			if index := strings.Index(text, historySteeringHeader); index >= 0 {
+				friendly += "\n\n" + text[index:]
+			}
+			copyMessage["text"] = friendly
+		}
+		out = append(out, copyMessage)
+	}
+	return out
 }
 
 // buildRollingDigest 确定性滚动摘要：状态行（任务状态 + 轮数 + 最近活动时刻）

@@ -1,19 +1,21 @@
-import { Pencil, Plus, Radar, RefreshCw } from 'lucide-react';
+import { CheckCircle2, LockKeyhole, Pencil, Plus, Radar, RefreshCw, ShieldCheck } from 'lucide-react';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ApiError } from '../api/client';
 import {
   createRuntimeBinding,
+  getCoordinatorConfig,
   listRuntimeBindings,
+  patchCoordinatorConfig,
   patchRuntimeBinding,
   patchWorkspace,
   probeRuntimeBinding,
 } from '../api/endpoints';
-import type { ProbeResult, RuntimeBinding } from '../api/types';
+import type { CoordinatorConfig, CoordinatorRuntime, ProbeResult, RuntimeBinding } from '../api/types';
 import { Drawer } from '../components/drawer';
 import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
 import { Toggle } from '../components/toggle';
-import { Button, Card, EmptyState, Input, Skeleton } from '../components/ui';
+import { Button, Card, EmptyState, Input, Select, Skeleton } from '../components/ui';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -96,6 +98,8 @@ export default function SettingsPage() {
 
       <RuntimeBindingsSection workspaceId={workspace?.id} />
 
+      <CoordinatorSettingsSection workspaceId={workspace?.id} />
+
       <ChatDisplayPreferencesSection />
 
       <Card padded className="!p-base">
@@ -111,6 +115,179 @@ export default function SettingsPage() {
         </dl>
       </Card>
     </main>
+  );
+}
+
+const COORDINATOR_RUNTIME_OPTIONS: { value: CoordinatorRuntime; label: string }[] = [
+  { value: 'codex_local', label: 'Codex' },
+  { value: 'kimi_local', label: 'Kimi' },
+];
+
+const COORDINATOR_REASONING_OPTIONS = [
+  { value: 'minimal', label: '最低' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '极高' },
+];
+
+function coordinatorRuntime(config: CoordinatorConfig): CoordinatorRuntime {
+  return config.runtime_label || 'codex_local';
+}
+
+function coordinatorModel(config: CoordinatorConfig): string {
+  // "mock" is the internal fallback for installations that do not yet have
+  // Codex/Kimi. It must not leak into the editable model-ref field: after the
+  // user selects a production runtime, an empty value means "follow runtime
+  // default", while the literal mock ref would be rejected by the registry.
+  if (config.runtime_label === 'mock' && config.model_ref === 'mock') return '';
+  return config.model_ref;
+}
+
+/**
+ * 系统 Coordinator 设置：只开放底座选择，绝不渲染提示词输入框。
+ * 服务端仍是最终权限边界；前端不向 PATCH 请求构造 instructions/prompt 字段。
+ */
+export function CoordinatorSettingsSection({ workspaceId }: { workspaceId?: string }) {
+  const [config, setConfig] = useState<CoordinatorConfig | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [runtime, setRuntime] = useState<CoordinatorRuntime>('codex_local');
+  const [model, setModel] = useState('');
+  const [reasoning, setReasoning] = useState('medium');
+  const [fallbackRuntime, setFallbackRuntime] = useState<CoordinatorRuntime | ''>('kimi_local');
+  const [fallbackModel, setFallbackModel] = useState('');
+
+  const load = useCallback(async () => {
+    if (!workspaceId) return;
+    setLoading(true);
+    setError(undefined);
+    try {
+      const next = await getCoordinatorConfig(workspaceId);
+      setConfig(next);
+      setRuntime(coordinatorRuntime(next));
+      setModel(coordinatorModel(next));
+      setReasoning(next.reasoning_effort || 'medium');
+      setFallbackRuntime(next.fallback_runtime_label ?? '');
+      setFallbackModel(next.fallback_model_ref ?? '');
+    } catch (loadError) {
+      setError(loadError instanceof ApiError ? loadError.message : 'Coordinator 配置加载失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async () => {
+    if (!workspaceId || !config) return;
+    setSaving(true);
+    setError(undefined);
+    try {
+      const next = await patchCoordinatorConfig(workspaceId, {
+        runtime_label: runtime,
+        model_ref: model.trim(),
+        reasoning_effort: reasoning,
+        fallback_runtime_label: fallbackRuntime,
+        fallback_model_ref: fallbackModel.trim(),
+        expected_version: config.version,
+      });
+      setConfig(next);
+      setRuntime(coordinatorRuntime(next));
+      setModel(coordinatorModel(next));
+      setReasoning(next.reasoning_effort || reasoning);
+      setFallbackRuntime(next.fallback_runtime_label ?? '');
+      setFallbackModel(next.fallback_model_ref ?? '');
+      toast.success('Coordinator 底座配置已更新');
+    } catch (saveError) {
+      if (saveError instanceof ApiError && saveError.isVersionConflict) {
+        setError('配置已被其他窗口修改，请刷新后重试');
+      } else {
+        setError(saveError instanceof ApiError ? saveError.message : 'Coordinator 配置保存失败');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card padded className="!p-base">
+      <div className="flex flex-wrap items-start justify-between gap-snug">
+        <div>
+          <p className="text-caption uppercase tracking-widest text-text-tertiary">任务控制线 · System Agent</p>
+          <h3 className="mt-1 text-h3 text-text-primary">Task Coordinator</h3>
+          <p className="mt-1 max-w-2xl text-body text-text-secondary">任务创建后由它自动接取、拆分、选 Agent、重试与收口。</p>
+        </div>
+        <div className="inline-flex items-center gap-tight rounded-full border border-status-success/20 bg-status-success/10 px-snug py-micro text-caption text-status-success">
+          <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+          系统默认 Agent
+        </div>
+      </div>
+
+      {loading && <div className="mt-snug space-y-tight"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-2/3" /></div>}
+      {!loading && error && (
+        <div className="mt-snug flex items-center justify-between gap-snug rounded-button border border-status-error/30 bg-status-error/5 px-snug py-tight" role="alert">
+          <span className="text-body text-status-error">{error}</span>
+          <Button type="button" size="sm" onClick={() => void load()}><RefreshCw className="h-3.5 w-3.5" aria-hidden />重试</Button>
+        </div>
+      )}
+      {!loading && config && (
+        <div className="mt-snug space-y-base">
+          <div className="grid gap-snug md:grid-cols-2">
+            <label className="block">
+              <span className="text-body text-text-secondary">主运行时</span>
+              <Select value={runtime} onChange={(event) => {
+                const nextRuntime = event.target.value as CoordinatorRuntime;
+                setRuntime(nextRuntime);
+                if (fallbackRuntime === nextRuntime) setFallbackRuntime('');
+              }}>
+                {runtime === 'mock' && <option value="mock" disabled>未配置 Codex/Kimi（当前为测试 Runtime）</option>}
+                {COORDINATOR_RUNTIME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </Select>
+              {runtime === 'mock' && <span className="mt-1 block text-caption text-status-warning">请选择 Codex 或 Kimi 后再保存；mock 不允许作为生产 Coordinator 底座。</span>}
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">模型引用</span>
+              <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder="留空跟随底座默认" className="font-mono" />
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">推理强度</span>
+              <Select value={reasoning} onChange={(event) => setReasoning(event.target.value)}>
+                {COORDINATOR_REASONING_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">备用运行时</span>
+              <Select value={fallbackRuntime} onChange={(event) => setFallbackRuntime(event.target.value as CoordinatorRuntime | '')}>
+                <option value="">不设置备用</option>
+                {COORDINATOR_RUNTIME_OPTIONS.filter((option) => option.value !== runtime).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">备用模型引用</span>
+              <Input value={fallbackModel} onChange={(event) => setFallbackModel(event.target.value)} placeholder="留空跟随备用底座默认" className="font-mono" />
+            </label>
+          </div>
+
+          <div className="grid gap-snug border-t border-border-subtle pt-snug md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+            <div className="flex items-start gap-2">
+              <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-text-tertiary" aria-hidden />
+              <div>
+                <p className="text-body font-medium text-text-primary">内置提示词已锁定</p>
+                <p className="mt-0.5 text-caption text-text-secondary">版本 {config.prompt_version || 'system-default'} · 不提供编辑入口，API 也拒绝修改。</p>
+              </div>
+            </div>
+            <Button type="button" variant="primary" onClick={() => void save()} disabled={saving || runtime === 'mock'}>
+              {saving ? '保存中…' : '保存底座配置'}
+            </Button>
+          </div>
+          <p className="flex items-center gap-tight text-caption text-text-tertiary"><CheckCircle2 className="h-3.5 w-3.5 text-status-success" aria-hidden />Task 的每个 Coordinator 会话独立持久化，Chat 不会进入这条控制线。</p>
+        </div>
+      )}
+    </Card>
   );
 }
 

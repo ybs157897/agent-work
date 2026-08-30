@@ -425,6 +425,13 @@ type CreateWorkItemParams struct {
 	// RecordKind 是不可变的记录边界。空值保留内部/历史调用的 task 语义；
 	// Chat 创建入口必须显式传 RecordKindChat。
 	RecordKind domain.WorkItemRecordKind
+	// AutoCoordinate marks a public root Task for immediate system coordination.
+	// Internal seeds, plan children, and generic test/setup calls leave this
+	// false so creating a row never unexpectedly starts an execution.
+	AutoCoordinate bool
+	// AcceptanceCriteria is copied into the root coordinator state so the
+	// planner receives the user's acceptance contract after a restart.
+	AcceptanceCriteria []string
 }
 
 func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p CreateWorkItemParams) (*domain.WorkItem, error) {
@@ -438,6 +445,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 	status := p.Status
 	if status == "" {
 		status = domain.WorkItemTodo
+	}
+	if p.AutoCoordinate && recordKind == domain.RecordKindTask && p.ParentID == "" &&
+		status != domain.WorkItemTodo {
+		return nil, fmt.Errorf("%w: 根 Task 创建时 status 必须为 todo，由系统 Coordinator 推进任务状态", domain.ErrValidation)
 	}
 	priority := p.Priority
 	if priority == "" {
@@ -458,6 +469,18 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			return nil, fmt.Errorf("%w: parent work item 的 record_kind=%s，与子项=%s 不一致",
 				domain.ErrValidation, workItemRecordKind(parent), recordKind)
 		}
+		if recordKind == domain.RecordKindTask && parent.Status.IsTerminal() {
+			return nil, fmt.Errorf("%w: terminal Task 不能创建子任务，请先重新打开根任务", domain.ErrValidation)
+		}
+		if recordKind == domain.RecordKindTask {
+			if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, parent.ID); stateErr == nil {
+				if state != nil && (state.Status == domain.CoordinatorCompleted || state.Status == domain.CoordinatorCancelled) {
+					return nil, fmt.Errorf("%w: Coordinator 已完成的 Task 不能创建子任务", domain.ErrValidation)
+				}
+			} else if !errors.Is(stateErr, domain.ErrNotFound) {
+				return nil, stateErr
+			}
+		}
 	}
 	now := time.Now().UTC()
 	wi := &domain.WorkItem{
@@ -468,7 +491,21 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		ClientKey: p.ClientKey, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	autoCoordinate := p.AutoCoordinate && recordKind == domain.RecordKindTask && p.ParentID == ""
+	var coordinatorRootID string
+	var coordinatorChildInstruction string
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
+		var config *domain.TaskCoordinatorConfig
+		if autoCoordinate {
+			var err error
+			config, err = s.store.TaskCoordinators().EnsureConfig(ctx, workspaceID)
+			if err != nil {
+				return err
+			}
+			// Root Task ownership is the protected system identity. A caller cannot
+			// smuggle a manually selected worker into the root assignee field.
+			wi.AgentProfileID = config.AgentProfileID
+		}
 		if err := s.store.WorkItems().Create(ctx, wi); err != nil {
 			return err
 		}
@@ -476,12 +513,63 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			domain.AggregateWorkItem, wi.ID, wi.Version, nil, workItemEventData(wi)); err != nil {
 			return err
 		}
+		if autoCoordinate {
+			state := &domain.TaskCoordinatorState{
+				ID:                 domain.NewID(domain.PrefixCoordinatorState),
+				WorkspaceID:        workspaceID,
+				RootWorkItemID:     wi.ID,
+				CoordinatorAgentID: config.AgentProfileID,
+				Status:             domain.CoordinatorQueued,
+				CurrentAction:      "queued",
+				Data:               map[string]any{"acceptance_criteria": append([]string(nil), p.AcceptanceCriteria...)},
+				Version:            1,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			}
+			if err := s.store.TaskCoordinators().CreateState(ctx, state); err != nil {
+				return err
+			}
+			if err := s.appendCoordinatorEvent(ctx, state, wi.ID, domain.EventCoordinatorQueued,
+				"任务已进入 Coordinator 队列", "", config.AgentProfileID, 0, "", nil, nil); err != nil {
+				return err
+			}
+			coordinatorRootID = wi.ID
+		} else if recordKind == domain.RecordKindTask && p.ParentID != "" {
+			// A user-added child belongs to the existing root control line. Plan
+			// children bypass this Service and therefore do not cause a second wake.
+			if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, p.ParentID); stateErr == nil {
+				if err := s.appendCoordinatorEvent(ctx, state, wi.ID, domain.EventCoordinatorMessageReceived,
+					"新增子任务，等待根 Coordinator 重新规划", "", state.CoordinatorAgentID,
+					state.Attempt, wi.Title, nil, map[string]any{"stage": "plan", "next_action": "重新规划子任务"}); err != nil {
+					return err
+				}
+				coordinatorRootID = state.RootWorkItemID
+				coordinatorChildInstruction = "用户新增子任务：" + wi.Title + "。请把它纳入根任务计划并继续推进。"
+			}
+		}
 		return s.activityFor(ctx, workspaceID, wi.ID, "work_item.created", "创建"+workItemNoun(wi)+"「"+wi.Title+"」")
 	})
 	if err != nil {
 		return nil, err
 	}
 	s.notifier.Notify(workspaceID)
+	if coordinatorRootID != "" {
+		// The row/state/event transaction is the durable hand-off. Starting after
+		// commit prevents a runtime side effect from observing a rolled-back task;
+		// a failure is persisted as blocked/retryable state by the engine.
+		var startErr error
+		if coordinatorChildInstruction != "" {
+			_, startErr = s.SendCoordinatorInstruction(context.WithoutCancel(ctx), coordinatorRootID, coordinatorChildInstruction)
+		} else {
+			startErr = s.StartCoordinator(context.WithoutCancel(ctx), coordinatorRootID)
+		}
+		if startErr != nil {
+			log.Printf("coordinator: task %s 自动接取失败: %v", coordinatorRootID, startErr)
+		}
+		if refreshed, refreshErr := s.store.WorkItems().Get(ctx, wi.ID); refreshErr == nil {
+			wi = refreshed
+		}
+	}
 	return wi, nil
 }
 
@@ -508,6 +596,12 @@ func (s *Service) CreateWorkItemIdempotent(ctx context.Context, workspaceID stri
 		return nil, false, fmt.Errorf("%w: client_key 已属于 record_kind=%s，不能重放为 %s",
 			domain.ErrIdempotencyConflict, workItemRecordKind(existing), requestedKind)
 	}
+	if p.AutoCoordinate && requestedKind == domain.RecordKindTask && existing.ParentID == "" {
+		// A network retry after the create transaction but before the immediate
+		// start call actively kicks the durable queued state instead of waiting
+		// for the periodic recovery scan.
+		_ = s.StartCoordinator(context.WithoutCancel(ctx), existing.ID)
+	}
 	return existing, true, nil
 }
 
@@ -520,6 +614,11 @@ func (s *Service) MoveWorkItem(ctx context.Context, workItemID string, to domain
 			return err
 		}
 		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
+		if _, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, w.ID); err == nil {
+			return fmt.Errorf("%w: coordinated Task 的状态由系统 Coordinator 管理", domain.ErrValidation)
+		} else if !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -565,6 +664,11 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 			return err
 		}
 		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
+		if _, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, w.ID); err == nil {
+			return fmt.Errorf("%w: coordinated Task 不接受手工指派", domain.ErrValidation)
+		} else if !errors.Is(err, domain.ErrNotFound) {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -630,6 +734,9 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		if err := s.blockLocked(ctx, w, p); err != nil {
 			return err
 		}
+		if err := s.closeOpenDispatchesForBlockLocked(ctx, w); err != nil {
+			return err
+		}
 		wi = w
 		return nil
 	})
@@ -637,7 +744,33 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
+	s.markCoordinatorUserBlocked(context.WithoutCancel(ctx), wi.ID, p)
 	return wi, nil
+}
+
+func (s *Service) closeOpenDispatchesForBlockLocked(ctx context.Context, workItem *domain.WorkItem) error {
+	dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, workItem.ID)
+	if err != nil {
+		return err
+	}
+	for _, dispatch := range dispatches {
+		if dispatch == nil || dispatch.Status.IsTerminal() {
+			continue
+		}
+		closedAt := time.Now().UTC()
+		closed, err := s.store.Dispatches().CloseStatus(ctx, dispatch.ID, domain.DispatchDegraded, closedAt)
+		if err != nil {
+			return err
+		}
+		if !closed {
+			continue
+		}
+		dispatch.Status, dispatch.ClosedAt = domain.DispatchDegraded, &closedAt
+		if err := s.emitDispatchUpdated(ctx, workItem.WorkspaceID, dispatch); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // blockLocked 事务内落 blocker：状态迁移 + blocker 行 + 事件 + activity。
@@ -668,7 +801,8 @@ func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockPa
 	return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
 }
 
-// UnblockWorkItem 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。
+// UnblockWorkItem 解除阻塞回到 in_progress；存在系统 Coordinator 时提交后
+// 自动排队恢复，用户不再手工选择 Agent 或创建 Run。
 func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expectedVersion int) (*domain.WorkItem, error) {
 	var wi *domain.WorkItem
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -703,6 +837,7 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
+	s.resumeCoordinatorAfterUserAction(context.WithoutCancel(ctx), wi.ID, "用户解除阻塞")
 	return wi, nil
 }
 
@@ -716,6 +851,21 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 		}
 		if err := requireTaskWorkItem(w); err != nil {
 			return err
+		}
+		var coordinatorState *domain.TaskCoordinatorState
+		if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, w.ID); stateErr == nil {
+			if state == nil {
+				return fmt.Errorf("%w: coordinated Task state required", domain.ErrValidation)
+			}
+			if state.RootWorkItemID != w.ID {
+				return fmt.Errorf("%w: coordinated child Task 不能单独验收，请验收根 Task", domain.ErrValidation)
+			}
+			if state.Status != domain.CoordinatorWaitingUser {
+				return fmt.Errorf("%w: Coordinator 尚未进入待用户验收状态", domain.ErrStateConflict)
+			}
+			coordinatorState = state
+		} else if !errors.Is(stateErr, domain.ErrNotFound) {
+			return stateErr
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
@@ -735,6 +885,26 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 			return err
 		}
 		s.audit(ctx, w.WorkspaceID, "work_item.accepted", w.ID, map[string]any{"title": w.Title})
+		if coordinatorState != nil {
+			expected := coordinatorState.Version
+			coordinatorState.Status = domain.CoordinatorCompleted
+			coordinatorState.Phase = "acceptance"
+			coordinatorState.Summary = "任务已由用户验收"
+			coordinatorState.CurrentAction = "任务已由用户验收"
+			coordinatorState.CurrentRunID = ""
+			coordinatorState.NextActionAt = nil
+			coordinatorState.BlockerCode, coordinatorState.BlockerMessage = "", ""
+			coordinatorState.LastError = ""
+			if err := s.store.TaskCoordinators().UpdateState(ctx, coordinatorState, expected); err != nil {
+				return err
+			}
+			coordinatorState.Version = expected + 1
+			if err := s.appendCoordinatorEvent(ctx, coordinatorState, w.ID, domain.EventCoordinatorCompleted,
+				"用户已验收任务", "", coordinatorState.CoordinatorAgentID, coordinatorState.Attempt, "", nil,
+				map[string]any{"stage": "acceptance", "status": "completed"}); err != nil {
+				return err
+			}
+		}
 		wi = w
 		return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.completed", "任务「"+w.Title+"」验收通过")
 	})

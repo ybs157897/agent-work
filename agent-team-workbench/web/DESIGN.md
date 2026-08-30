@@ -241,6 +241,14 @@ Chat 的正文工作流采用单一、按事件顺序的 Run 时间线：`thinki
 - Final 正文：默认完整展开并持续按 Markdown 段落流式渲染，不提供「展开全文/收起全文」或高度帽；长文、代码块与 ContentBlocks 均保持直接可读。
 - 错误三通道：`tool.failed` 只在 ActivityGroup/ToolRow 标错；模型/供应商 `RunFailed` 只在 composer 上方 RunErrorBanner 展示（详情/复制/可重试时真实 Retry）；cancelled/interrupted/user stop 使用停止或 info 语义，不显示模型错误 Banner，也不把运行错误复制成 assistant/transcript 行。
 
+## Task Coordinator 追踪页
+
+`/tasks/:taskId` 是 Task 的独立全页，不是 Chat 抽屉的另一种皮肤。看板只承担观察、筛选和进入详情；状态由系统 Coordinator 控制，禁止拖拽改列或在页面选择 Worker。发布根 Task 后首屏显示「Coordinator 接取中」，随后以同一页呈现整体进度、当前阶段、当前 Agent、下一动作和阻塞恢复路径；子任务沿 `/tasks/:taskId` 内导航，不能跳转 `/chat`。
+
+主时间线按因果顺序固定为：规划 → 派发 → 执行尝试 → 失败归因 → 自动重试/重新分配 → 结果 → 用户验收。每个失败节点必须同时给出原因和下一步；技术 Run、工具调用与 Worker 正文按需展开，正文仍唯一复用 `AgentOutput`。未知或缺少 `record_kind=task` 的 Coordinator SSE 事件不进入任何页面投影。
+
+Task Coordinator 是系统级 Agent。配置面只开放 Codex/Kimi runtime、模型引用、推理强度和备用 runtime/model；提示词仅展示不可编辑的版本与锁定状态。普通 Agent 配置页、Chat Agent 切换排和 Chat `@` 候选均不展示该系统身份。
+
 ## Elevation & Depth
 
 四级阴影阶梯（frontmatter `shadows:`），日常只用前两级：

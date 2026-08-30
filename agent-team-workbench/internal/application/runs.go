@@ -45,6 +45,10 @@ type CreateRunParams struct {
 	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有 run
 	// （队列 drain 重试等场景；撞键时事务整体回滚，不产生重复事件与重复分派）。
 	ClientKey string
+	// CoordinatorContext is an internal-only control-plane envelope. Public
+	// Task callers cannot choose workers once a root Coordinator exists; Plan,
+	// recovery and Coordinator turns populate this map explicitly.
+	CoordinatorContext map[string]any
 }
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
@@ -179,12 +183,26 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		return nil, err
 	}
 	taskRecord := isTaskWorkItem(wi)
+	var coordinatorState *domain.TaskCoordinatorState
+	if taskRecord {
+		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID)
+		switch {
+		case stateErr == nil:
+			coordinatorState = state
+		case errors.Is(stateErr, domain.ErrNotFound):
+		default:
+			return nil, stateErr
+		}
+	}
 	if taskRecord && wi.Status.IsTerminal() {
 		return nil, fmt.Errorf("%w: work item is terminal", domain.ErrValidation)
 	}
 	// HTTP 的历史入口会为每条用户消息填 user_message；只有 Task 才能拥有
 	// dispatch_id/@路由，Chat 必须在事务内剥离该上层标记。
 	if !taskRecord {
+		if p.CoordinatorContext != nil || p.WakeContext != nil {
+			return nil, fmt.Errorf("%w: Chat run 不能携带 Coordinator 或 wake context", domain.ErrValidation)
+		}
 		if p.DispatchID != "" {
 			return nil, fmt.Errorf("%w: chat run 不能加入 task dispatch", domain.ErrValidation)
 		}
@@ -194,7 +212,10 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	// agent（大小写不敏感）→ 直达该 agent；未命中/无 @ 保持既有 assignee 行为
 	//（接诊）。必须在 agent 校验与 runtime 选择之前改写目标。
 	atMention := ""
-	if taskRecord && p.DispatchTrigger == domain.DispatchTriggerUserMessage {
+	if taskRecord && coordinatorState != nil && p.CoordinatorContext == nil && p.WakeContext == nil {
+		return nil, fmt.Errorf("%w: coordinated Task 只能由系统 Coordinator 或其 Plan 创建 Run", domain.ErrValidation)
+	}
+	if taskRecord && coordinatorState == nil && p.DispatchTrigger == domain.DispatchTriggerUserMessage {
 		var err error
 		atMention, err = s.resolveAtMentionAgent(ctx, wi.WorkspaceID, p.Instruction)
 		if err != nil {
@@ -205,6 +226,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		}
 	}
 	var agent *domain.AgentProfile
+	var coordinatorConfig *domain.TaskCoordinatorConfig
 	if p.AgentProfileID != "" {
 		a, err := s.store.Agents().Get(ctx, p.AgentProfileID)
 		if err != nil {
@@ -217,6 +239,25 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			return nil, fmt.Errorf("%w: agent 已停用", domain.ErrValidation)
 		}
 		agent = a
+		if a.Kind.IsSystem() {
+			if p.CoordinatorContext == nil && p.WakeContext == nil {
+				return nil, fmt.Errorf("%w: system Task Coordinator 只能由控制面启动", domain.ErrValidation)
+			}
+			config, err := s.store.TaskCoordinators().GetConfig(ctx, wi.WorkspaceID)
+			if err != nil {
+				return nil, err
+			}
+			coordinatorConfig = config
+			copyAgent := *a
+			copyAgent.Instructions = CoordinatorSystemPrompt
+			copyAgent.PromptVersion = domain.TaskCoordinatorPromptVersion
+			copyAgent.InstructionsEditable = false
+			copyAgent.ModelOverride = config.ModelRef
+			if useFallback, _ := p.CoordinatorContext["use_fallback"].(bool); useFallback && config.FallbackRuntimeLabel != "" {
+				copyAgent.ModelOverride = config.FallbackModelRef
+			}
+			agent = &copyAgent
+		}
 	}
 	// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
 	// 第一个存在 RuntimeBinding 的候选胜出，调度原因写入快照（协议 §8.2）。
@@ -232,6 +273,22 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 				reason = "fallback"
 			}
 			break
+		}
+	}
+	if coordinatorConfig != nil {
+		configuredRuntime := label == coordinatorConfig.RuntimeLabel ||
+			(coordinatorConfig.FallbackRuntimeLabel != "" && label == coordinatorConfig.FallbackRuntimeLabel)
+		if !configuredRuntime {
+			return nil, fmt.Errorf("%w: Coordinator 配置的 Runtime 不可用，禁止静默回退到 %s", domain.ErrValidation, label)
+		}
+		if binding == nil {
+			return nil, fmt.Errorf("%w: Coordinator Runtime %q 未配置", domain.ErrValidation, label)
+		}
+		if binding.Status != domain.BindingReady {
+			return nil, fmt.Errorf("%w: Coordinator Runtime %q 尚未就绪", domain.ErrValidation, label)
+		}
+		if !domain.TaskCoordinatorRuntimeMatchesAdapter(label, binding.AdapterID) {
+			return nil, fmt.Errorf("%w: Coordinator Runtime %q 与 adapter %q 不匹配", domain.ErrValidation, label, binding.AdapterID)
 		}
 	}
 	if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
@@ -380,6 +437,10 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if p.Evaluation {
 		r.Input["evaluation"] = true
 	}
+	if p.CoordinatorContext != nil {
+		r.Input["task_coordinator"] = mapsCloneAny(p.CoordinatorContext)
+		r.Input["coordinator_prompt_version"] = domain.TaskCoordinatorPromptVersion
+	}
 	// 会话决议显式化（纯观测面）：为什么换了会话可查可审计；history_tier/
 	// history_stats 记录本次请求注入历史的实际档位与规模（分档留痕）。
 	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, historyTier, stats); err != nil {
@@ -527,6 +588,10 @@ func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.Mode
 
 // RetryRun 总是创建新 Run（retry_of），终态 Run 不可覆盖。
 func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.ExecutionRun, error) {
+	return s.retryRun(ctx, runID, false)
+}
+
+func (s *Service) retryRun(ctx context.Context, runID string, coordinatorOwned bool) (*domain.ExecutionRun, error) {
 	parent, err := s.store.Runs().Get(ctx, runID)
 	if err != nil {
 		return nil, err
@@ -538,53 +603,31 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 	if err := requireValidWorkItemRecordKind(wi); err != nil {
 		return nil, err
 	}
+	if _, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID); err == nil && !coordinatorOwned {
+		return nil, fmt.Errorf("%w: coordinated Task 的 retry 由系统 Coordinator 管理", domain.ErrValidation)
+	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
 	if !parent.Status.IsTerminal() {
 		return nil, fmt.Errorf("%w: only terminal runs can be retried", domain.ErrValidation)
 	}
 	var retry *domain.ExecutionRun
+	retryClientKey := ""
+	if coordinatorOwned {
+		retryClientKey = "coordinator-retry:" + parent.ID
+	}
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
-		now := time.Now().UTC()
-		input := cloneInput(parent.Input)
-		if conversation, ok := input["conversation"].(map[string]any); ok {
-			delete(conversation, "resume_session_ref")
-			delete(conversation, "resume_from_run_id")
-		}
-		// 重试语义 = 重新执行：锚点写墓碑（阻断播种复活），重试 run 自己的会话上报会重建锚点。
-		if parent.AdapterID != "" {
-			_ = s.writeAnchorTombstone(ctx, parent.WorkspaceID, parent.AgentProfileID, parent.AdapterID, parent.WorkItemID, "retry")
-		}
-		r := &domain.ExecutionRun{
-			ID: domain.NewID(domain.PrefixRun), WorkspaceID: parent.WorkspaceID,
-			WorkItemID: parent.WorkItemID, AgentProfileID: parent.AgentProfileID,
-			Status: domain.RunQueued, RuntimeLabel: parent.RuntimeLabel,
-			AdapterID: parent.AdapterID, Provider: parent.Provider,
-			RetryOf: parent.ID, Input: input,
-			Version: 1, CreatedAt: now, UpdatedAt: now,
-		}
-		if err := s.store.Runs().Create(ctx, r); err != nil {
-			return err
-		}
-		if !isTaskWorkItem(wi) {
-			// Retry is another Chat turn; keep its list ordering current without
-			// applying the Task status/phase/lock projection.
-			if err := s.store.WorkItems().TouchUpdatedAt(ctx, wi.ID, now); err != nil {
-				return err
-			}
-		}
-		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunCreated,
-			domain.AggregateExecutionRun, r.ID, r.Version,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
-				"instruction": parent.Input["instruction"],
-				"record_kind": string(workItemRecordKind(wi)),
-			}},
-			map[string]any{"retry_of": parent.ID, "instruction": parent.Input["instruction"],
-				"record_kind": string(workItemRecordKind(wi))}); err != nil {
-			return err
-		}
-		retry = r
-		return nil
+		var createErr error
+		retry, createErr = s.createRetryRunLocked(ctx, parent, wi, retryClientKey)
+		return createErr
 	})
 	if err != nil {
+		if coordinatorOwned && errors.Is(err, domain.ErrIdempotencyConflict) {
+			existing, getErr := s.store.Runs().GetByClientKey(ctx, parent.WorkspaceID, retryClientKey)
+			if getErr == nil {
+				return existing, nil
+			}
+		}
 		return nil, err
 	}
 	s.notifier.Notify(retry.WorkspaceID)
@@ -592,10 +635,61 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 		if err := s.dispatcher.Dispatch(context.WithoutCancel(ctx), retry); err != nil {
 			_ = s.RecordRunStatus(context.WithoutCancel(ctx), retry.ID, domain.RunFailed,
 				map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
-			return nil, err
+			// Keep the persisted retry in the result so Coordinator-owned callers
+			// can observe the terminal hook's bounded retry/replan decision. Public
+			// RetryRun still receives the dispatch error, but must not lose the
+			// durable Run identity created before the side effect.
+			return retry, err
 		}
 	}
 	return retry, nil
+}
+
+func (s *Service) createRetryRunLocked(ctx context.Context, parent *domain.ExecutionRun,
+	wi *domain.WorkItem, retryClientKey string) (*domain.ExecutionRun, error) {
+	now := time.Now().UTC()
+	input := cloneInput(parent.Input)
+	if conversation, ok := input["conversation"].(map[string]any); ok {
+		delete(conversation, "resume_session_ref")
+		delete(conversation, "resume_from_run_id")
+	}
+	// 重试语义 = 重新执行：锚点写墓碑（阻断播种复活），重试 run 自己的会话上报会重建锚点。
+	if parent.AdapterID != "" {
+		_ = s.writeAnchorTombstone(ctx, parent.WorkspaceID, parent.AgentProfileID, parent.AdapterID, parent.WorkItemID, "retry")
+	}
+	run := &domain.ExecutionRun{
+		ID: domain.NewID(domain.PrefixRun), WorkspaceID: parent.WorkspaceID,
+		WorkItemID: parent.WorkItemID, AgentProfileID: parent.AgentProfileID,
+		Status: domain.RunQueued, RuntimeLabel: parent.RuntimeLabel,
+		AdapterID: parent.AdapterID, Provider: parent.Provider,
+		RetryOf: parent.ID, DispatchID: parent.DispatchID, ClientKey: retryClientKey, Input: input,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if coordinator, ok := input["task_coordinator"].(map[string]any); ok {
+		coordinator["attempt"] = coordinatorAttemptValue(coordinator["attempt"]) + 1
+		coordinator["retry_of"] = parent.ID
+	}
+	if err := s.store.Runs().Create(ctx, run); err != nil {
+		return nil, err
+	}
+	if !isTaskWorkItem(wi) {
+		// Retry is another Chat turn; keep its list ordering current without
+		// applying the Task status/phase/lock projection.
+		if err := s.store.WorkItems().TouchUpdatedAt(ctx, wi.ID, now); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.emit(ctx, run.WorkspaceID, domain.EventRunCreated,
+		domain.AggregateExecutionRun, run.ID, run.Version,
+		&RunEventRecord{RunID: run.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
+			"instruction": parent.Input["instruction"],
+			"record_kind": string(workItemRecordKind(wi)),
+		}},
+		map[string]any{"retry_of": parent.ID, "instruction": parent.Input["instruction"],
+			"record_kind": string(workItemRecordKind(wi))}); err != nil {
+		return nil, err
+	}
+	return run, nil
 }
 
 func cloneInput(input map[string]any) map[string]any {
@@ -754,7 +848,7 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		}
 	}
 	// Run 成功 → WorkItem 进入评审投影；completed 只能由验收门决定。
-	if taskRecord && to == domain.RunSucceeded {
+	if taskRecord && to == domain.RunSucceeded && !coordinatorRunDefersReview(r) {
 		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
 		if err != nil {
 			return err
@@ -815,8 +909,11 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	if r != nil {
 		s.notifier.Notify(r.WorkspaceID)
 	}
-	// session_unknown 失败自愈：终态落库后清锚点并一次性 fresh 重试（maybeSelfHeal 自带防循环）。
-	s.maybeSelfHeal(ctx, r)
+	// session_unknown 失败自愈：系统 Coordinator 由自己的有界恢复策略负责，
+	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。
+	if !isSystemCoordinatorRun(r) {
+		s.maybeSelfHeal(ctx, r)
+	}
 	if r != nil {
 		if wi, werr := s.store.WorkItems().Get(ctx, r.WorkItemID); werr == nil && isTaskWorkItem(wi) {
 			// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
@@ -827,6 +924,9 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 			s.maybeExtractPlan(ctx, r)
 			// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
 			s.maybeSummarizeSegment(ctx, r)
+			// 系统 Coordinator：在派发收口前创建有界 retry/recovery，保证新成员
+			// 能进入原 dispatch，避免批次先被错误收成 degraded。
+			s.maybeAdvanceTaskCoordinator(ctx, r)
 			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
 			s.maybeSettleDispatch(ctx, r)
 		}
@@ -1193,7 +1293,11 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 				return result, err
 			}
 			if resumeWakeAt != nil {
-				s.enqueuePlanTimerWake(ctx, resolveWS, resolvePlan.AgentProfileID, resolvePlan.ID, *resumeWakeAt)
+				if err := s.enqueuePlanTimerWake(ctx, resolveWS, resolvePlan.AgentProfileID, resolvePlan.ID, *resumeWakeAt); err != nil {
+					if recoveryErr := s.schedulePlanTimerRecovery(ctx, resolvePlan, *resumeWakeAt, err); recoveryErr != nil {
+						return result, recoveryErr
+					}
+				}
 			}
 		}
 	}

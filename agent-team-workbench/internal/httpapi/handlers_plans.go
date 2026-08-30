@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -34,6 +35,11 @@ func (s *Server) handleCreatePlan(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := requireTaskWorkItemHTTP(wi); err != nil {
 			return planProblemBytes(err)
+		}
+		if _, err := s.store.TaskCoordinators().GetStateForWorkItem(r.Context(), wi.ID); err == nil {
+			return planProblemBytes(fmt.Errorf("%w: coordinated Task 的 plan 只由系统 Coordinator 内部提交", domain.ErrValidation))
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return problemBytes(err)
 		}
 		p := application.SubmitPlanParams{
 			WorkItemID:     req.WorkItemID,

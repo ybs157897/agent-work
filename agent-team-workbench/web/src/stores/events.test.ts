@@ -5,6 +5,7 @@ import { useDecisionsStore } from './decisions.store';
 import { createDebounced, routeEvent, SSE_REFRESH_DEBOUNCE_MS } from './events';
 import { usePlansStore } from './plans.store';
 import { useWorkspaceStore } from './workspace.store';
+import { useCoordinatorStore } from './coordinator.store';
 
 const envelope = (type: string): CanonicalEvent => ({
   contract_version: 'events/v1',
@@ -217,6 +218,45 @@ describe('routeEvent dispatch 域路由（会话元模型）', () => {
     await useDispatchesStore.getState().refreshFor('wi_1');
     expect(useDispatchesStore.getState().errorByWorkItem.wi_1).toBeUndefined();
     expect(useDispatchesStore.getState().byWorkItem.wi_1).toEqual([]);
+  });
+});
+
+describe('routeEvent Coordinator 控制线', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    useCoordinatorStore.setState({ byWorkItem: {}, errorByWorkItem: {} });
+  });
+
+  it('缺少 record_kind 的 Coordinator 事件 fail-closed', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(json({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const ev = envelope('coordinator.state_changed');
+    delete ev.data;
+    routeEvent(ev);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('子任务事件优先刷新 root Coordinator snapshot', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(url.endsWith('/events') ? json({ items: [] }) : json({
+        work_item_id: 'root', status: 'running', attempts: [], timeline: [], updated_at: '', version: 1,
+      })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const ev = envelope('coordinator.attempt_updated');
+    ev.aggregate = { type: 'work_item', id: 'child', version: 2 };
+    ev.data = { work_item_id: 'child', root_work_item_id: 'root', record_kind: 'task' };
+    routeEvent(ev);
+    await vi.advanceTimersByTimeAsync(250);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls.every((call) => String(call[0]).includes('/root/coordinator'))).toBe(true);
   });
 });
 

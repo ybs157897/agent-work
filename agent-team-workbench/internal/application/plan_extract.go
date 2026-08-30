@@ -90,12 +90,24 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 		return
 	}
 	agent, err := s.store.Agents().Get(wctx, r.AgentProfileID)
-	if err != nil || agent.Role != AgentRoleLead {
+	if err != nil || (agent.Role != AgentRoleLead && !agent.Kind.IsSystem()) {
 		return
+	}
+	if agent.Kind.IsSystem() {
+		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
+		if stateErr != nil || state.CurrentRunID != r.ID {
+			return
+		}
 	}
 	text, err := s.runFinalText(wctx, r.ID)
 	if err != nil {
 		log.Printf("plan: run %s 最终文本读取失败: %v", r.ID, err)
+		if agent.Kind.IsSystem() {
+			action, _ := coordinatorContextOf(r)["action"].(string)
+			if action != "evaluation" {
+				s.blockForParseFailure(wctx, r, "plan_read_failed", "Coordinator 计划证据读取失败："+err.Error())
+			}
+		}
 		return
 	}
 	block, ok := extractLastFencedBlock(text, "plan")

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -221,11 +222,27 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return problemBytes(err)
 		}
+		if recordKind == "" {
+			// The public create contract is task-first. Chat callers must opt into
+			// the independent conversation surface with record_kind=chat.
+			recordKind = domain.RecordKindTask
+		}
+		if recordKind == domain.RecordKindTask && strings.TrimSpace(req.AgentProfileID) != "" {
+			return renderProblem(http.StatusUnprocessableEntity, "validation_failed", "Task assignment is coordinator-owned", "Task 不接受手工 agent_profile_id，由系统 Coordinator 自动选择 Agent")
+		}
+		if recordKind == domain.RecordKindTask && req.ParentID == "" && req.Status != "" &&
+			domain.WorkItemStatus(req.Status) != domain.WorkItemTodo {
+			return renderProblem(http.StatusUnprocessableEntity, "validation_failed", "Invalid initial Task status", "根 Task 创建时 status 必须为 todo，由系统 Coordinator 推进任务状态")
+		}
 		p := application.CreateWorkItemParams{
 			Title: req.Title, Description: req.Description,
 			Status: domain.WorkItemStatus(req.Status), Priority: domain.Priority(req.Priority),
 			AgentProfileID: req.AgentProfileID, ParentID: req.ParentID, ClientKey: req.ClientKey,
 			RecordKind: recordKind,
+			// Public root Task creation always enters the coordinator queue;
+			// callers cannot disable or bypass this hand-off.
+			AutoCoordinate:     recordKind == domain.RecordKindTask && req.ParentID == "",
+			AcceptanceCriteria: req.AcceptanceCriteria,
 		}
 		if req.DueDate != nil {
 			if d, err := time.Parse("2006-01-02", *req.DueDate); err == nil {
@@ -468,6 +485,14 @@ func (s *Server) handleListWorkItemDispatches(w http.ResponseWriter, r *http.Req
 	agentNames := make(map[string]string, len(agentList))
 	for _, a := range agentList {
 		agentNames[a.ID] = a.Name
+	}
+	// AgentRepo.List intentionally hides system identities from Chat and normal
+	// Agent management. Task dispatch cards still need the protected
+	// Coordinator's display name for an intelligible execution timeline.
+	if config, configErr := s.store.TaskCoordinators().GetConfig(ctx, wi.WorkspaceID); configErr == nil {
+		if coordinator, coordinatorErr := s.store.Agents().Get(ctx, config.AgentProfileID); coordinatorErr == nil {
+			agentNames[coordinator.ID] = coordinator.Name
+		}
 	}
 	items := make([]dispatchCardDTO, 0, len(dispatches))
 	// ListByWorkItem 升序，时间线倒序输出（新→旧）。

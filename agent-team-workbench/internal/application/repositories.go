@@ -36,6 +36,8 @@ type Store interface {
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store
+	// TaskCoordinators 持久化系统级 Task Coordinator 配置、根任务控制线与追加事件。
+	TaskCoordinators() TaskCoordinatorRepo
 }
 
 type WorkspaceRepo interface {
@@ -53,6 +55,38 @@ type AgentRepo interface {
 	SetPresence(ctx context.Context, id string, presence domain.AgentPresence) error
 	// ListHeartbeatEnabled 心跳自主唤醒候选（timer 唤醒生产用）。
 	ListHeartbeatEnabled(ctx context.Context) ([]*domain.AgentProfile, error)
+}
+
+// TaskCoordinatorRepo is the persistence port for the system Task Coordinator.
+// A workspace has one protected config/profile; a root Task has one state and
+// children resolve that state through GetStateForWorkItem. State updates use
+// optimistic CAS. Events are append-only and ordered by occurred_at/id.
+type TaskCoordinatorRepo interface {
+	// EnsureConfig atomically ensures the workspace's hidden system profile and
+	// its coordinator config. It is idempotent and returns the existing config
+	// when called more than once.
+	EnsureConfig(ctx context.Context, workspaceID string) (*domain.TaskCoordinatorConfig, error)
+	GetConfig(ctx context.Context, workspaceID string) (*domain.TaskCoordinatorConfig, error)
+	// UpdateConfig changes runtime/model/reasoning only. AgentProfileID and
+	// PromptVersion are immutable and are ignored by the persistence update.
+	UpdateConfig(ctx context.Context, c *domain.TaskCoordinatorConfig, expectedVersion int) error
+
+	// CreateState creates the sole coordinator state for a root Task. The
+	// repository rejects child/non-task WorkItems and duplicate roots.
+	CreateState(ctx context.Context, state *domain.TaskCoordinatorState) error
+	GetState(ctx context.Context, rootWorkItemID string) (*domain.TaskCoordinatorState, error)
+	// GetStateForWorkItem resolves any child WorkItem to its root coordinator
+	// state; the caller does not need to walk parent links itself.
+	GetStateForWorkItem(ctx context.Context, workItemID string) (*domain.TaskCoordinatorState, error)
+	UpdateState(ctx context.Context, state *domain.TaskCoordinatorState, expectedVersion int) error
+	// ListDueStates returns queued/running/waiting_retry states whose next action
+	// is due. workspaceID may be empty for startup recovery across workspaces.
+	ListDueStates(ctx context.Context, workspaceID string, now time.Time, limit int) ([]*domain.TaskCoordinatorState, error)
+
+	AppendEvent(ctx context.Context, event *domain.TaskCoordinatorEvent) error
+	// ListEvents lists the root task timeline in causal order. A non-empty
+	// workItemID is resolved to its root before querying.
+	ListEvents(ctx context.Context, workItemID string, limit int) ([]*domain.TaskCoordinatorEvent, error)
 }
 
 // WorkItemFilter 查询条件；record_kind 是 Chat/Task 硬边界；cursor 为不透明 token，改变筛选必须重新分页。

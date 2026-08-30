@@ -9,6 +9,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -115,6 +116,9 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		if err := requireTaskWorkItem(wi); err != nil {
 			return err
 		}
+		if wi.Status.IsTerminal() {
+			return fmt.Errorf("%w: terminal Task 不允许提交 Plan", domain.ErrValidation)
+		}
 		if p.SourceRunID != "" {
 			source, err := s.store.Runs().Get(ctx, p.SourceRunID)
 			if err != nil {
@@ -130,6 +134,54 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		}
 		if owner.WorkspaceID != workspaceID {
 			return domain.ErrNotFound
+		}
+		coordinatedTask := false
+		if coordinator, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID); err == nil {
+			coordinatedTask = true
+			if coordinator.Status != domain.CoordinatorRunning {
+				return fmt.Errorf("%w: 当前 Coordinator 状态 %s 不允许提交 Plan", domain.ErrStateConflict, coordinator.Status)
+			}
+			if owner.ID != coordinator.CoordinatorAgentID || !owner.Kind.IsSystem() {
+				return fmt.Errorf("%w: coordinated Task 的 plan 只能由系统 Coordinator 提交", domain.ErrValidation)
+			}
+			if p.SourceRunID == "" {
+				return fmt.Errorf("%w: coordinated Task plan 必须关联 Coordinator source_run_id", domain.ErrValidation)
+			}
+			if coordinator.CurrentRunID != p.SourceRunID {
+				return fmt.Errorf("%w: plan source_run_id %s 不是当前 Coordinator Run", domain.ErrStateConflict, p.SourceRunID)
+			}
+			source, err := s.store.Runs().Get(ctx, p.SourceRunID)
+			if err != nil {
+				return err
+			}
+			if !isSystemCoordinatorRun(source) {
+				return fmt.Errorf("%w: plan source_run_id 不是系统 Coordinator Run", domain.ErrValidation)
+			}
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		if coordinatedTask {
+			lastDispatch := -1
+			for i, task := range tasks {
+				if task.verb == domain.PlanVerbDispatch {
+					lastDispatch = i
+				}
+			}
+			if lastDispatch >= 0 {
+				hasWaitBarrier := false
+				for _, task := range tasks[lastDispatch+1:] {
+					if task.verb == domain.PlanVerbFinish {
+						return fmt.Errorf("%w: coordinated Task 的 finish 不能出现在 dispatch 的 join/defer 等待屏障之前", domain.ErrValidation)
+					}
+					if task.verb == domain.PlanVerbJoin || task.verb == domain.PlanVerbDefer {
+						hasWaitBarrier = true
+						break
+					}
+				}
+				if !hasWaitBarrier {
+					return fmt.Errorf("%w: coordinated Task 的 dispatch 后必须有 join/defer 等待 Worker 终态", domain.ErrValidation)
+				}
+			}
 		}
 		// dispatch 步骤预校验（存在 + 同 workspace + 启用）并标注 M4 审批闸门：
 		// 执行期的 createRunLocked 会再校验，但提前失败让整份 plan 不落库。
@@ -221,7 +273,11 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 	}
 	// defer/join 带 wake_at：入 timer 型 automation wakeup（同 task_key，coalescing 兜底）。
 	if deferWakeAt != nil {
-		s.enqueuePlanTimerWake(ctx, workspaceID, plan.AgentProfileID, plan.ID, *deferWakeAt)
+		if err := s.enqueuePlanTimerWake(ctx, workspaceID, plan.AgentProfileID, plan.ID, *deferWakeAt); err != nil {
+			if recoveryErr := s.schedulePlanTimerRecovery(ctx, plan, *deferWakeAt, err); recoveryErr != nil {
+				return plan, recoveryErr
+			}
+		}
 	}
 	return plan, nil
 }
@@ -229,6 +285,7 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 // dispatchCreatedRuns 权威写入提交后启动 Runtime 副作用（SubmitPlan 与审批放行
 // 续跑共用）；分派失败回写 run failed（防幽灵 queued run）并返回错误。
 func (s *Service) dispatchCreatedRuns(ctx context.Context, runs []*domain.ExecutionRun) error {
+	var firstErr error
 	for _, run := range runs {
 		if s.dispatcher == nil {
 			break
@@ -236,21 +293,67 @@ func (s *Service) dispatchCreatedRuns(ctx context.Context, runs []*domain.Execut
 		if err := s.dispatcher.Dispatch(context.WithoutCancel(ctx), run); err != nil {
 			_ = s.RecordRunStatus(context.WithoutCancel(ctx), run.ID, domain.RunFailed,
 				map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
-			return fmt.Errorf("dispatch run %s: %w", run.ID, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("dispatch run %s: %w", run.ID, err)
+			}
+			// Every Run in this slice is already committed. Continue dispatching
+			// siblings so a single transient failure cannot strand later Runs in
+			// queued forever; the failed member enters the normal retry/replan hook.
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // enqueuePlanTimerWake defer/join 带 wake_at 的 timer 型 automation wakeup 入队
-// （task_key="plan:"+planID，coalescing 以 (agent, task_key) 判定；失败只记日志，
-// 终态事件不会再来，无需重试）。
-func (s *Service) enqueuePlanTimerWake(ctx context.Context, workspaceID, agentID, planID string, at time.Time) {
-	if _, err := scheduling.EnqueueWakeup(context.WithoutCancel(ctx), s.store.Wakeups(),
+// （task_key="plan:"+planID，coalescing 以 (agent, task_key) 判定）。
+func (s *Service) enqueuePlanTimerWake(ctx context.Context, workspaceID, agentID, planID string, at time.Time) error {
+	_, err := scheduling.EnqueueWakeup(context.WithoutCancel(ctx), s.store.Wakeups(),
 		domain.WakeupSourceAutomation, workspaceID, agentID, planTaskKey(planID),
-		map[string]any{"plan_id": planID, "trigger": "defer_wake_at"}, at); err != nil {
-		log.Printf("plan: defer wake_at 入队失败（plan %s）: %v", planID, err)
+		map[string]any{"plan_id": planID, "trigger": "defer_wake_at"}, at)
+	return err
+}
+
+func (s *Service) schedulePlanTimerRecovery(ctx context.Context, plan *domain.Plan, wakeAt time.Time, cause error) error {
+	if plan == nil || cause == nil {
+		return cause
 	}
+	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, plan.WorkItemID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return cause
+	}
+	if err != nil {
+		return err
+	}
+	return s.store.InTx(context.WithoutCancel(ctx), func(ctx context.Context) error {
+		fresh, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
+		if err != nil {
+			return err
+		}
+		if coordinatorStateExecutionStopped(fresh) {
+			return nil
+		}
+		expected := fresh.Version
+		fresh.Status = domain.CoordinatorWaitingRetry
+		fresh.Phase = "waiting"
+		fresh.CurrentAction = "等待计划定时恢复"
+		fresh.CurrentRunID = ""
+		fresh.LastError = cause.Error()
+		fresh.NextActionAt = &wakeAt
+		if fresh.Data == nil {
+			fresh.Data = map[string]any{}
+		}
+		fresh.Data["control_action"] = "plan_timer"
+		fresh.Data["plan_id"] = plan.ID
+		if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+			return err
+		}
+		fresh.Version = expected + 1
+		return s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID,
+			domain.EventCoordinatorRetryScheduled, "计划定时唤醒入队失败，已转持久恢复", "",
+			fresh.CoordinatorAgentID, fresh.Attempt, cause.Error(), &wakeAt,
+			map[string]any{"stage": "retry", "status": "waiting_retry", "plan_id": plan.ID,
+				"next_action": fresh.CurrentAction})
+	})
 }
 
 // planTaskKey plan 唤醒锚定的稳定 key（children_quiet 钩子与 defer wake_at 共用，
@@ -273,6 +376,9 @@ func (s *Service) annotateDispatchSteps(ctx context.Context, workspaceID string,
 		}
 		if a.WorkspaceID != workspaceID {
 			return fmt.Errorf("%w: dispatch step %q 目标 agent %s 不属于当前 workspace", domain.ErrValidation, t.title, t.agentID)
+		}
+		if a.Kind.IsSystem() {
+			return fmt.Errorf("%w: dispatch step %q 不能把系统 Task Coordinator 当作 Worker", domain.ErrValidation, t.title)
 		}
 		if a.Availability != domain.AgentEnabled {
 			return fmt.Errorf("%w: dispatch step %q 目标 agent %s 已停用", domain.ErrValidation, t.title, t.agentID)
@@ -354,6 +460,7 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				Instruction:        t.instruction + knowledgeAppendix(plan.Step(t.knowledgeFrom)),
 				AcceptanceCriteria: t.acceptance,
 				DispatchID:         planDispatchID,
+				CoordinatorContext: s.planWorkerCoordinatorContext(ctx, wi.ID, plan, st, t.agentID),
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch step %q 创建 run: %w", t.title, err)
@@ -363,6 +470,9 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			st.ResultRunID = run.ID
 			st.ExecutedAt = &now
 			if err := s.store.Plans().UpdateStep(ctx, st); err != nil {
+				return err
+			}
+			if err := s.recordCoordinatorWorkerDispatch(ctx, wi, child, run, plan, st); err != nil {
 				return err
 			}
 			*createdRuns = append(*createdRuns, run)
@@ -433,6 +543,7 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			}
 			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
 				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
+				CoordinatorContext: s.planEvaluationCoordinatorContext(ctx, plan),
 			})
 			if err != nil {
 				return fmt.Errorf("创建评估 run: %w", err)
@@ -880,6 +991,19 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 	joinStep := waitingPlanJoinStep(plan)
 	if joinStep == nil {
 		return // pending_approval 挂起：续跑由审批回调驱动，与静默无关
+	}
+	if _, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, parent.ID); stateErr == nil {
+		for _, step := range plan.Steps {
+			if step.Verb == domain.PlanVerbDispatch && step.ResultRunID != "" {
+				// Coordinated dispatches have a richer settlement path that waits for
+				// the complete batch, includes the latest retry result, and wakes the
+				// system Coordinator exactly once. A parallel children_quiet wake would
+				// create a second control turn for the same terminal edge.
+				return
+			}
+		}
+	} else if !errors.Is(stateErr, domain.ErrNotFound) {
+		return
 	}
 	quiet, err := s.targetsQuiet(ctx, parent.ID, joinChildrenOf(joinStep))
 	if err != nil || !quiet {

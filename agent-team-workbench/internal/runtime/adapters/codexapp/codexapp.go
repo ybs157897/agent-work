@@ -118,7 +118,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	}
 
 	snap := runtime.ModelSnapshotOf(ex.Run)
-	if snap.Model != "" || snap.Provider != "" {
+	if shouldApplyCodexModelSnapshot(snap) {
 		if err := codexconfig.ApplySnapshot(m.cfg.Home, snap); err != nil {
 			return failedResult(configFailure("codex_config", err.Error()))
 		}
@@ -197,6 +197,25 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 // ── 执行流状态 ───────────────────────────────────────────────────────
 
 // execStream 一次 Execute 的子进程会话状态；stdin 写入与关键字段由 mu 串行化。
+// shouldApplyCodexModelSnapshot distinguishes an explicit model override from
+// the built-in Codex account route. A local codex_local binding deliberately
+// carries provider=codex while leaving model empty; in that case app-server
+// discovers the account's default model and writing config.toml would instead
+// fail before the first turn starts.
+func shouldApplyCodexModelSnapshot(snap runtime.ModelSnapshot) bool {
+	if strings.TrimSpace(snap.Model) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(snap.Provider)) {
+	case "", "codex", "openai":
+		return false
+	default:
+		// Custom providers still require an explicit model and should keep the
+		// configuration error visible instead of silently using another account.
+		return true
+	}
+}
+
 type execStream struct {
 	module *Module
 	ex     *runtime.ExecContext

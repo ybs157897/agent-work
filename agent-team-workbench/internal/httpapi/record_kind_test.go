@@ -17,6 +17,7 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	s := newPlanTestServer(t)
 	mux := s.Routes()
 	wsID, agentID, _ := seedPlanHTTPEnv(t, s)
+	seedHTTPCoordinatorBinding(t, s, wsID)
 
 	chat := postWorkItem(t, mux, wsID,
 		`{"title":"普通对话","record_kind":"chat","agent_profile_id":"`+agentID+`"}`)
@@ -30,9 +31,14 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	if chatBody["record_kind"] != "chat" {
 		t.Fatalf("Chat 响应应携带 record_kind=chat: %#v", chatBody)
 	}
+	manualTask := postWorkItem(t, mux, wsID,
+		`{"title":"错误手工指派","record_kind":"task","agent_profile_id":"`+agentID+`"}`)
+	if manualTask.Code != http.StatusUnprocessableEntity || !strings.Contains(manualTask.Body.String(), "Coordinator") {
+		t.Fatalf("发布 Task 不得手工选择 Agent: %d %s", manualTask.Code, manualTask.Body.String())
+	}
 
 	task := postWorkItem(t, mux, wsID,
-		`{"title":"发布任务","record_kind":"task","agent_profile_id":"`+agentID+`"}`)
+		`{"title":"发布任务","record_kind":"task"}`)
 	if task.Code != http.StatusCreated {
 		t.Fatalf("Task 创建应 201，实际 %d: %s", task.Code, task.Body.String())
 	}
@@ -42,6 +48,32 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	}
 	if taskBody["record_kind"] != "task" {
 		t.Fatalf("Task 响应应携带 record_kind=task: %#v", taskBody)
+	}
+	if taskBody["status"] != string(domain.WorkItemInProgress) || taskBody["agent_profile_id"] == "" || taskBody["agent_profile_id"] == agentID {
+		t.Fatalf("根 Task 应由隐藏系统 Coordinator 自动接取: %#v", taskBody)
+	}
+	taskID, _ := taskBody["id"].(string)
+	dispatches := httptest.NewRecorder()
+	mux.ServeHTTP(dispatches, httptest.NewRequest(http.MethodGet,
+		"/api/v1/work-items/"+taskID+"/dispatches", nil))
+	if dispatches.Code != http.StatusOK {
+		t.Fatalf("Coordinator dispatch timeline 应可读: %d %s", dispatches.Code, dispatches.Body.String())
+	}
+	var dispatchBody struct {
+		Items []struct {
+			Runs []struct {
+				AgentName string `json:"agent_name"`
+				Summary   string `json:"summary"`
+			} `json:"runs"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(dispatches.Body.Bytes(), &dispatchBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatchBody.Items) != 1 || len(dispatchBody.Items[0].Runs) != 1 ||
+		dispatchBody.Items[0].Runs[0].AgentName != "Task Coordinator" ||
+		strings.Contains(dispatchBody.Items[0].Runs[0].Summary, "TASK_DATA_JSON") {
+		t.Fatalf("Task 时间线应显示系统身份与产品摘要，不暴露内部控制载荷: %#v", dispatchBody.Items)
 	}
 
 	for _, tc := range []struct {
@@ -122,6 +154,114 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	if len(boot.WorkItems.Items) != 1 || boot.WorkItems.Items[0].Title != "发布任务" ||
 		boot.WorkItems.Items[0].RecordKind != "task" {
 		t.Fatalf("bootstrap 只能携带 Task: %#v", boot.WorkItems.Items)
+	}
+}
+
+func TestPublicTaskCreateDefaultsToTaskAndRejectsUnsafeInitialState(t *testing.T) {
+	s := newPlanTestServer(t)
+	mux := s.Routes()
+	wsID, agentID, _ := seedPlanHTTPEnv(t, s)
+	seedHTTPCoordinatorBinding(t, s, wsID)
+
+	// Omitting record_kind is the public Task contract. It must still enter the
+	// Coordinator path, and a caller cannot smuggle in a worker assignment.
+	defaultTask := postWorkItem(t, mux, wsID, `{"title":"缺省类型任务"}`)
+	if defaultTask.Code != http.StatusCreated {
+		t.Fatalf("缺省 record_kind 的 Task 创建应 201，实际 %d: %s", defaultTask.Code, defaultTask.Body.String())
+	}
+	var defaultBody map[string]any
+	if err := json.Unmarshal(defaultTask.Body.Bytes(), &defaultBody); err != nil {
+		t.Fatal(err)
+	}
+	if defaultBody["record_kind"] != string(domain.RecordKindTask) || defaultBody["agent_profile_id"] == "" {
+		t.Fatalf("缺省 record_kind 必须归一为 Coordinator-owned Task: %#v", defaultBody)
+	}
+
+	manualDefaultTask := postWorkItem(t, mux, wsID,
+		`{"title":"缺省类型手工指派","agent_profile_id":"`+agentID+`"}`)
+	if manualDefaultTask.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(manualDefaultTask.Body.String(), "Coordinator") {
+		t.Fatalf("省略 record_kind 的 Task 也不得手工指派: %d %s", manualDefaultTask.Code, manualDefaultTask.Body.String())
+	}
+
+	for _, status := range []string{"in_progress", "completed", "cancelled", "blocked"} {
+		rec := postWorkItem(t, mux, wsID,
+			`{"title":"非法初始状态","status":"`+status+`"}`)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "status") {
+			t.Fatalf("根 Task 初始 status=%s 应 fail-closed 422: %d %s", status, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Chat keeps its explicit legacy creation semantics: opting into chat may
+	// still preserve a caller-provided non-todo status.
+	chat := postWorkItem(t, mux, wsID,
+		`{"title":"保留旧语义的 Chat","record_kind":"chat","status":"in_progress","agent_profile_id":"`+agentID+`"}`)
+	if chat.Code != http.StatusCreated {
+		t.Fatalf("显式 Chat 的旧 status 语义不应被 Task 校验拦截: %d %s", chat.Code, chat.Body.String())
+	}
+	var chatBody map[string]any
+	if err := json.Unmarshal(chat.Body.Bytes(), &chatBody); err != nil {
+		t.Fatal(err)
+	}
+	if chatBody["record_kind"] != string(domain.RecordKindChat) || chatBody["status"] != "in_progress" {
+		t.Fatalf("Chat status 应原样保留: %#v", chatBody)
+	}
+}
+
+func seedHTTPCoordinatorBinding(t *testing.T, s *Server, wsID string) {
+	t.Helper()
+	if _, err := s.store.Bindings().GetByLabel(context.Background(), wsID, "mock"); err == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if err := s.store.Bindings().Create(context.Background(), &domain.RuntimeBinding{
+		ID: "rb_http_coordinator_mock", WorkspaceID: wsID, RuntimeLabel: "mock", AdapterID: "mock",
+		Provider: "mock", Model: "mock", Status: domain.BindingReady,
+		Capabilities: map[string]string{"resume": "supported"},
+		Version:      1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatedChildAcceptHTTPIsRejected(t *testing.T) {
+	ctx := context.Background()
+	s := newPlanTestServer(t)
+	mux := s.Routes()
+	wsID, _, _ := seedPlanHTTPEnv(t, s)
+	seedHTTPCoordinatorBinding(t, s, wsID)
+
+	rootRec := postWorkItem(t, mux, wsID, `{"title":"根任务","record_kind":"task"}`)
+	if rootRec.Code != http.StatusCreated {
+		t.Fatalf("根 Task 创建失败: %d %s", rootRec.Code, rootRec.Body.String())
+	}
+	var rootBody map[string]any
+	if err := json.Unmarshal(rootRec.Body.Bytes(), &rootBody); err != nil {
+		t.Fatal(err)
+	}
+	rootID, _ := rootBody["id"].(string)
+	if rootID == "" {
+		t.Fatalf("根 Task 响应缺少 id: %#v", rootBody)
+	}
+
+	now := time.Now().UTC()
+	child := &domain.WorkItem{
+		ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: wsID,
+		RecordKind: domain.RecordKindTask, ParentID: rootID, Title: "子任务",
+		Status: domain.WorkItemInProgress, Phase: domain.PhaseAcceptance,
+		Priority: domain.PriorityMedium, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.store.WorkItems().Create(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+
+	acceptReq := httptest.NewRequest(http.MethodPost,
+		"/api/v1/work-items/"+child.ID+"/commands/accept", strings.NewReader(`{}`))
+	acceptReq.Header.Set("Idempotency-Key", "accept-coordinated-child")
+	accept := httptest.NewRecorder()
+	mux.ServeHTTP(accept, acceptReq)
+	if accept.Code != http.StatusUnprocessableEntity || !strings.Contains(accept.Body.String(), "coordinated child") {
+		t.Fatalf("coordinated child 验收应由 HTTP fail-closed 422: %d %s", accept.Code, accept.Body.String())
 	}
 }
 

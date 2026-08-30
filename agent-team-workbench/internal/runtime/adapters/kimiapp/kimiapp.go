@@ -162,6 +162,22 @@ type fileSnapshot struct {
 	BeforeHash   string
 }
 
+// shouldApplyKimiModelSnapshot leaves an empty model to the signed-in Kimi
+// runtime. The built-in kimi_local binding identifies the provider as "kimi"
+// even when the user selected "follow runtime default"; forcing that
+// incomplete snapshot through kimiconfig would block every new Task.
+func shouldApplyKimiModelSnapshot(snap runtime.ModelSnapshot) bool {
+	if strings.TrimSpace(snap.Model) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(snap.Provider)) {
+	case "", "kimi":
+		return false
+	default:
+		return true
+	}
+}
+
 // Execute 阻塞执行一轮：确保 kap-server → 解析/创建会话 → WS 订阅 → prompt →
 // 事件泵推进到本 turn 的 turn.ended → 结构化返回。
 func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
@@ -170,7 +186,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 			Failure: modFailure(runtime.FamilyConfig, "instruction_required", "instruction required", false)}
 	}
 	snap := runtime.ModelSnapshotOf(ex.Run)
-	if snap.Model != "" || snap.Provider != "" {
+	if shouldApplyKimiModelSnapshot(snap) {
 		changed, err := kimiconfig.ApplySnapshotIfChanged(m.cfg.Home, snap)
 		if err != nil {
 			return runtime.ExecResult{Outcome: runtime.OutcomeFailed,

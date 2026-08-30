@@ -2,6 +2,7 @@ import type { CanonicalEvent } from '../api/types';
 import { useAgentsStore } from './agents.store';
 import { useChatStore } from './chat.store';
 import { useDashboardStore } from './dashboard.store';
+import { useCoordinatorStore } from './coordinator.store';
 import { useDecisionsStore } from './decisions.store';
 import { useDispatchesStore } from './dispatches.store';
 import { useLogsStore } from './logs.store';
@@ -79,6 +80,13 @@ export function routeEvent(ev: CanonicalEvent): void {
     // 派发批次事件（会话元模型）：按 work item 失效重取派发卡片
     //（详情抽屉时间线消费）；批次建出的子任务仍由 work_item.created 刷看板。
     useDispatchesStore.getState().applyEvent(ev);
+    return;
+  }
+  if (ev.type.startsWith('coordinator.')) {
+    // Coordinator 是 Task 控制线；没有明确 record_kind 的事件必须丢弃，
+    // 防止未知/旧事件把 Chat 页面污染成任务执行线。
+    if (eventRecordKind(ev) !== 'task') return;
+    useCoordinatorStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type.startsWith('decision.')) {

@@ -337,17 +337,18 @@ func TestContractGuardEventNamesMatchAsyncAPI(t *testing.T) {
 
 	// aggregate 枚举必须与 domain.Aggregate* 常量一一对应。
 	wantAggregates := map[string]bool{
-		domain.AggregateWorkspace:      true,
-		domain.AggregateAgentProfile:   true,
-		domain.AggregateWorkItem:       true,
-		domain.AggregatePlan:           true,
-		domain.AggregateExecutionRun:   true,
-		domain.AggregateApproval:       true,
-		domain.AggregateArtifact:       true,
-		domain.AggregateRuntimeBinding: true,
-		domain.AggregateRunner:         true,
-		domain.AggregateDispatch:       true,
-		domain.AggregateDecision:       true,
+		domain.AggregateWorkspace:       true,
+		domain.AggregateAgentProfile:    true,
+		domain.AggregateWorkItem:        true,
+		domain.AggregatePlan:            true,
+		domain.AggregateExecutionRun:    true,
+		domain.AggregateApproval:        true,
+		domain.AggregateArtifact:        true,
+		domain.AggregateRuntimeBinding:  true,
+		domain.AggregateRunner:          true,
+		domain.AggregateDispatch:        true,
+		domain.AggregateDecision:        true,
+		domain.AggregateTaskCoordinator: true,
 	}
 	aggSchema := envelope.Properties["aggregate"]
 	if aggSchema == nil || aggSchema.Properties["type"] == nil {
