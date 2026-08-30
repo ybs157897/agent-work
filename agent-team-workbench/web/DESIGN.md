@@ -157,6 +157,7 @@ components:
   output-stream:
     base: "正文只有一棵展示树：普通 Markdown 以 100ms 节流流式解析；已闭合 code fence 直接进入 CodeBlock；未闭合 languagegui/Mermaid/复杂 fence 先缓冲，闭合后原子渲染"
     chronology: "同一 run 严格投影为 thinking → assistant/activity → thinking → assistant/activity → final；每段 reasoning 使用独立稳定 key，禁止整轮汇总或按 tool.progress 切碎"
+    reuse-boundary: "AgentOutput 是任何 Agent 正文的唯一投影：Chat 与 Task 共用 Markdown、代码、表格、Callout、LanguageGUI ContentBlocks 和流式节奏；页面只在外层追加本域允许的交互，不复制正文渲染器"
     diagnostics: "DEV 下仅通过 outputTrace=1 或 localStorage 显式启用结构化 ring buffer；正文内容需额外 outputTraceContent=1；默认不写 console、不进入 Zustand、不改变渲染节奏"
 ---
 
@@ -212,7 +213,12 @@ LanguageGUI 对话皮肤是局部视觉映射：只在 ChatPage 根将对话的 
 - **对话页**：生产 `/chat` 在 ChatPage 根挂更具体的 LanguageGUI scoped skin：浅蓝画布、白色内容面与蓝色强调；正文和底部 composer 共用约 920px 居中阅读轨，窄屏吃满可用空间。旧 `.tx-scope` 保留为 fallback，不影响其他页面；SSE 连接态仍在对话页头，非对话页继续走宣纸壳。本次皮肤迁移不新增 `<1024px` 或 mobile 断点承诺。
 - **对话工作流**：Goal、Plan 模式方案正文与本轮执行步骤只占一个工作流区域。Goal 是 Workbench 自有语义；Action 卡只读展示真实步骤状态，不复制 LanguageGUI multi-prompt 的编辑器按钮。
 
-## LanguageGUI Work Timeline
+## 通用 Agent Output 与 LanguageGUI Work Timeline
+
+`AgentOutput` 是所有 Agent 正文的唯一事实源，不属于 Chat 或 Task 任一记录域。Chat 和
+Task 必须复用同一套 Markdown、代码、表格、Callout、LanguageGUI ContentBlocks、
+流式 caret 与安全回退；两者只在组件外层区分交互。Chat 可提供消息级复制与分叉，Task
+只提供任务内查看与复制，不得因此复制正文渲染树，也不得跳转到 `/chat` 才能阅读正文。
 
 Chat 的正文工作流采用单一、按事件顺序的 Run 时间线：`thinking → interim assistant/tool → thinking → interim assistant/tool → final`。每个 reasoning 阶段、interim assistant 和连续工具批次都是独立 sibling；interim assistant 始终按普通 Markdown 正文渲染，不属于 thinking。只有终态才将 thinking、interim、tools、approval 和错误证据整体收进「已工作 X」WorkTimeline，真正 final answer 始终独立在外，不覆盖或吸收之前的 interim 输出。
 

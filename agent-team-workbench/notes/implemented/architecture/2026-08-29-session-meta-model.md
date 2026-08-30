@@ -214,28 +214,39 @@ S1 不依赖 lead 智能（可用规则路由先跑）；S3 依赖编排 M1–M4
 
 ## 落地记录（2026-08-30，分支 `kimi/session-meta-model`）
 
-实施刀法（每刀独立可回滚）：`6ee7c85` 迁移 0015+domain+sqlstore → `2954bc5` dispatch 关联与 @路由 → `0e94c14` 派发卡片端点 → `0fed865` 前端派发时间线+@提及 → `674e257` 迁移 0016 台账+自动摘要 → `195ff77` 前端台账区+钉为决策 → `b4b2cf0` S3 回流唤醒与降级收口 → `96dcc8b` 迁移 0017 FTS5+检索端点 → `6ee1d58` 前端搜索入口。
+实施刀法（每刀独立可回滚）：`6ee7c85` 迁移 0016+domain+sqlstore → `2954bc5` dispatch 关联与 @路由 → `0e94c14` 派发卡片端点 → `0fed865` 前端派发时间线+@提及 → `674e257` 迁移 0017 台账+自动摘要 → `195ff77` 前端台账区+钉为决策 → `b4b2cf0` S3 回流唤醒与降级收口 → `96dcc8b` 迁移 0018 FTS5+检索端点 → `6ee1d58` 前端搜索入口。
+
+接入主线前发现 `main` 已占用 0015（run event agent identity）；会话元模型三条尚未进入主线的迁移整体顺延到 0016–0018，避免合并后触发迁移编号唯一性门禁。
+
+真实 SQLite/API/浏览器验收暴露的默认收口、结果回流、产物索引、中文检索与
+`@mention` 身份问题已修复；决策与放弃项见 [会话元模型真实验收修复](../bug-fix/2026-08-30-session-meta-model-validation-fixes.md)。
+
+随后将模型的宿主边界钉死为 Task：`work_items.record_kind` 持久化区分 `chat | task`；
+Chat 只复用 Run/Session/Adapter、续接、产物和通用正文投影，不进入派发、计划、任务锁、
+状态机、台账、决策、收口或任务检索。Chat 与 Task 的列表、深链、事件和参与线均分域；
+Task 的 Agent 正文留在任务详情内展示，不借道 Chat。完整决策与验证证据见
+[Chat 与 Task 记录及执行边界隔离](./2026-08-30-chat-task-record-isolation.md)。
 
 ### 实施期的取舍与偏差（相对提案文本）
 
 - **接诊批落库顺序**：`lead_run_id`↔`dispatch_id` 互指成环，实现为同事务三步（建批 lead_run_id=NULL → 落 run → SetLeadRun 回填），语义不变。
 - **lead_plan 继承语义**：plan 子 run 优先继承 source run 的既有批次；仅当 source run 无批次（手动提交 plan/存量 run）才落 trigger=lead_plan 兜底批，同 source run 幂等复用。
-- **@直达边界**：@ 命中停用 agent 不回退（响亮失败走既有校验）；名字含空白的 agent 无法经 @ 指名（取首词），前端弹层已同步过滤。
+- **@直达边界**：@ 命中停用 agent 不回退（响亮失败走既有校验）；前端候选过滤停用 agent 与名字含空白的 agent。直达 Run 的助手身份按 `agent_profile_id` 渲染，目标 Agent 的 task session 参与线也进入其会话列表，不改任务 assignee。
 - **rolling_digest = 全量重算覆盖写**（非增量追加）：run 终态即片段关闭，整段重算后以 work_items.version 乐观锁覆盖、有界重试收敛；同一 run 重放终态输出逐字节不变，天然幂等。摘要不 bump updated_at（避免扰动按 updated_at 的统计口径），不发 SSE（每终态一条会打爆事件流），前端详情打开时自取。
 - **决策台账 v1 只经显式端点写入**（POST /work-items/{id}/decisions，幂等键必带），不做启发式抽取；补了契约外的 GET 读端点（SSE 只有增量，冷启动需要全量）。校验失败按平台惯例落 422。
 - **汇总 run 识别**：run 表无 trigger 列，以 `input.wakeup.settle_dispatch_id` 标记；存量 wakeup 路径（timer/assignment/on_demand）无此键、不挂批，零影响。
 - **「只唤醒一次」的硬保证 = MarkCollecting CAS**：存储层原子迁移，成功方才 enqueue——并发终态、唤醒重放、collecting 下迟到成员全部 no-op。
-- **enqueue 与 collecting 迁移同事务**（有意偏离 maybeAdvancePlans 的事务外先例）：消灭「迁移成功但入队失败 → 批卡 collecting 且不再有事件」的死缝；enqueue 失败整体回滚，下个终态事件重试。
+- **enqueue 与 collecting 迁移同事务**（有意偏离 maybeAdvancePlans 的事务外先例）：消灭「迁移成功但入队失败 → 批卡 collecting 且无 wakeup」的死缝；enqueue 失败整体回滚到 running。最后一个终态事件后的持久化重试仍待统一 durable job reconciler 收口。
 - **全取消→cancelled 的成员集合只含 worker**：若含汇总 run，汇总 succeeded 永远破坏全员 cancelled，规则成死代码；「整批喊停非部分失败」只在 worker 侧成立。汇总 run 自身失败仍落 degraded。
 - **接诊批全取消仍会唤醒 lead**（collecting→汇总→cancelled），不跳过唤醒。
-- **automation 唤醒受心跳门控**：lead agent 未开心跳时批次停在 collecting（唤醒被 coalesce 不重投）。这是配置契约——部署/产品侧须保证 lead 开心跳，代码不静默降级。
-- **汇总材料 = 各成员 instruction 摘录（120 rune）**，不含助手最终文本；更高质量汇总素材属后续增强。
-- **FTS 的 CJK 限制**：unicode61 把连续中文整段成一个 token，中文按词检索命中率低；改善路径（trigram/ICU/jieba 预处理）留后续刀。搜索结果无 created_at 列（v1 省略，需要时加 indexed_at）。
-- **前端两处计划偏差**：tasks 页 Header 本无搜索框，S4 前端是纯新增而非「替换纯前端过滤」；检索服务不可用时回退本地标题匹配并在面板标注。chat 页 ⌘K 本地会话过滤保留不动。
+- **settlement automation 是必达控制面工作**：不依赖 heartbeat、不因同任务活跃 Run 被 coalesced；冲突时保持 queued 重试。lead-only 批次直接收口，不创建自我汇总 Run。
+- **汇总材料 = worker 最后一条 assistant `message.completed`（120 rune）**；失败优先使用 Failure，Runtime 无完成正文时显式标注 instruction 兜底，绝不把任务描述冒充结果。
+- **FTS + CJK 子串 fallback**：ASCII/结构化 token 继续走 FTS；含汉字查询补充同 workspace/work-item/kind 过滤的子串检索。mock 与真实 Runner 产物入口共用 artifact 索引投影。搜索结果仍无 created_at 列（v1 省略，需要时加 indexed_at）。
+- **前端请求失败可恢复**：dispatch、decision、digest、task session 子请求分别显示就地 `role=alert` 与重试，不把失败伪装成空态或无限加载。tasks Header 搜索是新增入口；chat 页 ⌘K 本地会话过滤保留不动。
 
 ### 负向保证（本模型不做）
 
-- **不设独立 dispatch 超时器**：成员必落终态由 run 层 lease/超时保证，dispatch 跟随收口；唯一的卡死缝（enqueue 失败）已被同事务入队封死。
+- **不设独立 dispatch 超时器**：成员必落终态由 run 层 lease/超时保证，dispatch 跟随收口；settlement wakeup 创建后的冲突/失败保持 queued，不超龄 coalesce。
 - **dispatch 终态后迟到成员不复活批次**：已 completed/degraded/cancelled 的批，后落终态的 lead_plan 成员一律 no-op，其结果不进任何汇总（v1 已知限制）。
 - **collecting 不回 running**：收口是单向的，防汇总循环。
 - **decision_entries.quote 永不存 LLM 转述**：转述只允许进 rolling_digest；原话保真是台账的存在理由。
