@@ -2,8 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Plan, WorkItem } from './types';
 import {
   acceptWorkItem,
+  getCoordinatorConfig,
+  getCoordinatorSnapshot,
   createDecision,
   createPlan,
+  createWorkItem,
   getPlan,
   getRunChangeDiff,
   getWorkItemPlan,
@@ -11,9 +14,12 @@ import {
   listRunChanges,
   listWorkItemDecisions,
   listWorkItems,
+  listCoordinatorEvents,
+  patchCoordinatorConfig,
   returnWorkItem,
   revertRunChanges,
   searchWorkspace,
+  sendCoordinatorInstruction,
 } from './endpoints';
 
 const json = (body: unknown, status = 200) =>
@@ -138,6 +144,77 @@ describe('plan / tree endpoints', () => {
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=task&parent_id=none');
     expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=chat&parent_id=wi_parent');
+  });
+});
+
+describe('Task Coordinator endpoints', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const config = {
+    workspace_id: 'ws_1',
+    kind: 'task_coordinator',
+    runtime_label: 'codex_local',
+    model_ref: 'gpt-5',
+    reasoning_effort: 'high',
+    fallback_runtime_label: 'kimi_local',
+    prompt_version: 'coordinator/v1',
+    prompt_locked: true,
+    instructions_editable: false,
+    version: 3,
+  } as const;
+
+  it('读取 Task snapshot 与因果事件使用独立 Coordinator API', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(json(url.endsWith('/events') ? { items: [] } : {
+        root_work_item_id: 'wi_1', work_item_id: 'wi_1', status: 'running', attempts: [], timeline: [], updated_at: '', version: 1,
+      })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getCoordinatorSnapshot('wi_1');
+    await listCoordinatorEvents('wi_1');
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/v1/work-items/wi_1/coordinator',
+      '/api/v1/work-items/wi_1/coordinator/events',
+    ]);
+  });
+
+  it('发布根 Task 时由服务端强制自动接取，客户端只传验收契约', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ id: 'wi_1' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createWorkItem('ws_1', {
+      title: '发布任务', record_kind: 'task', status: 'todo',
+      acceptance_criteria: ['有可验证结果'],
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
+      title: '发布任务', record_kind: 'task', acceptance_criteria: ['有可验证结果'],
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).not.toHaveProperty('auto_coordinate');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).not.toHaveProperty('agent_profile_id');
+  });
+
+  it('追加指令与配置更新不携带普通 Agent 或 prompt 字段', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(json(url.includes('/coordinator') ? config : {})));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendCoordinatorInstruction('wi_1', '补充验收标准');
+    await getCoordinatorConfig('ws_1');
+    await patchCoordinatorConfig('ws_1', {
+      runtime_label: 'kimi_local', model_ref: 'kimi-model', reasoning_effort: 'medium',
+      fallback_runtime_label: 'codex_local', expected_version: 3,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/work-items/wi_1/coordinator/messages');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ instruction: '补充验收标准' });
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/workspaces/ws_1/coordinator');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
+      runtime_label: 'kimi_local', model_ref: 'kimi-model', reasoning_effort: 'medium',
+      fallback_runtime_label: 'codex_local', expected_version: 3,
+    });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).not.toHaveProperty('instructions');
   });
 });
 

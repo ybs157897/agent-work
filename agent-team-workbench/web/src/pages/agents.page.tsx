@@ -40,6 +40,7 @@ import { Button, Select } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
+import { isUserManagedAgent } from '../utils/agent-scope';
 
 const ROLE_OPTIONS = [
   { value: 'pm', label: '产品 PM' },
@@ -99,6 +100,9 @@ export function isCodexRuntime(preferred: string, binding: RuntimeBinding | null
   return binding?.adapter_id === 'codex-appserver';
 }
 
+/** 系统 Coordinator 只在专属设置面出现；普通 Agent 配置列表必须过滤它。 */
+export const isConfigurableAgent = isUserManagedAgent;
+
 /** 组装唤醒请求体：instruction 修剪后为空则省略（服务端回退心跳模板渲染）。 */
 export function buildWakePayload(taskKey: string, instruction: string): { task_key: string; instruction?: string } {
   const text = instruction.trim();
@@ -136,6 +140,10 @@ function normalizePermissionPreset(value: string | undefined, presets: Permissio
 
 export default function AgentsPage() {
   const agents = useAgentsStore((s) => s.agents);
+  const configurableAgents = useMemo(
+    () => agents.filter(isConfigurableAgent),
+    [agents],
+  );
   const refresh = useAgentsStore((s) => s.refresh);
   const workspace = useWorkspaceStore((s) => s.workspace);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -148,12 +156,12 @@ export default function AgentsPage() {
 
   useEffect(() => {
     setSelectedId((prev) => {
-      if (prev && agents.some((a) => a.id === prev)) return prev;
-      return agents[0]?.id ?? null;
+      if (prev && configurableAgents.some((a) => a.id === prev)) return prev;
+      return configurableAgents[0]?.id ?? null;
     });
-  }, [agents]);
+  }, [configurableAgents]);
 
-  const selected = agents.find((a) => a.id === selectedId) ?? null;
+  const selected = configurableAgents.find((a) => a.id === selectedId) ?? null;
 
   const reloadConfigs = async () => {
     if (!workspace) return;
@@ -192,12 +200,12 @@ export default function AgentsPage() {
         <ConfigSidebar
           title="智能体"
           footer={
-            agents.length === 0 ? (
+            configurableAgents.length === 0 ? (
               <p className="text-caption text-text-tertiary text-center py-1">点击右上角添加第一个智能体</p>
             ) : undefined
           }
         >
-          {agents.map((agent) => {
+          {configurableAgents.map((agent) => {
             const disabled = agent.availability === 'disabled';
             return (
               <ConfigSidebarItem

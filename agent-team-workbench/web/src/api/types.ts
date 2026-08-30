@@ -49,6 +49,12 @@ export interface AgentProfile {
   runtime_preference?: { preferred?: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
   model_override?: { ref?: string; provider?: string; model?: string; reasoning_effort?: string };
   policy?: AgentPolicy;
+  /** 系统内置 Agent（例如 Task Coordinator）；普通 Agent 配置页不得暴露或编辑。 */
+  is_system?: boolean;
+  /** 系统 Agent 类型；当前内置类型为 task_coordinator。 */
+  kind?: 'task_coordinator' | string;
+  /** 系统提示词是否允许修改；Coordinator 固定为 false。 */
+  instructions_editable?: boolean;
   version: number;
 }
 
@@ -138,6 +144,121 @@ export interface WorkItem {
   version: number;
   created_at: string;
   updated_at: string;
+}
+
+// ── Task Coordinator（任务控制线）──────────────────────────────────
+
+export type CoordinatorRuntime = 'mock' | 'codex_local' | 'kimi_local';
+export type CoordinatorStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_retry'
+  | 'waiting_user'
+  | 'blocked'
+  | 'completed'
+  | 'cancelled';
+export type CoordinatorStage =
+  | 'plan'
+  | 'dispatch'
+  | 'attempt'
+  | 'failure'
+  | 'retry'
+  | 'reassign'
+  | 'settlement'
+  | 'result'
+  | 'acceptance';
+
+export interface CoordinatorAgentRef {
+  id: string;
+  name: string;
+  role?: string;
+  runtime?: CoordinatorRuntime;
+}
+
+export interface CoordinatorFailure {
+  code?: string;
+  message: string;
+  retryable?: boolean;
+}
+
+/** 一次 Worker 尝试；attempt 序列由控制面落盘，前端只读投影。 */
+export interface CoordinatorAttempt {
+  id: string;
+  step_id?: string;
+  run_id?: string;
+  agent?: CoordinatorAgentRef;
+  status: string;
+  attempt: number;
+  max_attempts?: number;
+  retry_of?: string;
+  started_at: string;
+  finished_at?: string;
+  failure?: CoordinatorFailure;
+  next_action?: string;
+}
+
+/** Task 级因果时间线；正文仍由 run/AgentOutput 投影渲染。 */
+export interface CoordinatorTimelineEntry {
+  id: string;
+  stage: CoordinatorStage;
+  kind?: string;
+  title: string;
+  message?: string;
+  status?: string;
+  occurred_at: string;
+  agent?: CoordinatorAgentRef;
+  attempt?: number;
+  run_id?: string;
+  retry_of?: string;
+  failure?: CoordinatorFailure;
+}
+
+export interface CoordinatorSnapshot {
+  root_work_item_id: string;
+  work_item_id: string;
+  status: CoordinatorStatus;
+  stage?: CoordinatorStage;
+  progress?: number | null;
+  completed_steps?: number;
+  total_steps?: number;
+  current_agent?: CoordinatorAgentRef;
+  next_action?: string;
+  next_action_at?: string;
+  blocker?: Blocker;
+  runtime_label?: CoordinatorRuntime;
+  model_ref?: string;
+  reasoning_effort?: string;
+  prompt_version?: string;
+  prompt_locked?: boolean;
+  attempts: CoordinatorAttempt[];
+  timeline: CoordinatorTimelineEntry[];
+  updated_at: string;
+  version: number;
+}
+
+/** Workspace 级 Coordinator 配置；instructions 永远不在此 DTO 中出现。 */
+export interface CoordinatorConfig {
+  workspace_id: string;
+  kind: 'task_coordinator';
+  /** Persisted control-plane names. */
+  runtime_label: CoordinatorRuntime;
+  model_ref: string;
+  reasoning_effort: string;
+  fallback_runtime_label?: CoordinatorRuntime | '';
+  fallback_model_ref?: string;
+  prompt_version: string;
+  prompt_locked: boolean;
+  instructions_editable: false;
+  version: number;
+}
+
+export interface PatchCoordinatorConfigInput {
+  runtime_label: CoordinatorRuntime;
+  model_ref: string;
+  reasoning_effort: string;
+  fallback_runtime_label?: CoordinatorRuntime | '';
+  fallback_model_ref?: string;
+  expected_version: number;
 }
 
 // ── Plan（M1 编排：lead agent 提交的有序动作批次）────────────────────
@@ -484,6 +605,17 @@ export const EVENT_NAMES = [
   'run.recovery_started',
   'run.recovery_completed',
   'run.recovery_failed',
+  // Task Coordinator 控制线；缺少 record_kind 的事件由前端丢弃。
+  'coordinator.queued',
+  'coordinator.started',
+  'coordinator.message_received',
+  'coordinator.plan_updated',
+  'coordinator.attempt_updated',
+  'coordinator.retry_scheduled',
+  'coordinator.recovery_started',
+  'coordinator.state_changed',
+  'coordinator.blocked',
+  'coordinator.completed',
 ] as const;
 
 /** 模型注册表条目（models/ 目录为真相源；词汇对齐 pi-ai provider profile）。 */

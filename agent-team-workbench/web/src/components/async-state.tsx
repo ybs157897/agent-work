@@ -1,7 +1,7 @@
 import { AlertCircle, Circle } from 'lucide-react';
 import { Button } from './ui';
 
-export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+export function ErrorState({ message, onRetry, actionLabel = '重试' }: { message: string; onRetry?: () => void; actionLabel?: string }) {
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-20 px-6 text-center max-w-md mx-auto">
       <div className="w-12 h-12 rounded-full bg-status-error/10 flex items-center justify-center">
@@ -10,7 +10,7 @@ export function ErrorState({ message, onRetry }: { message: string; onRetry?: ()
       <p className="text-body-lg text-text-primary font-medium">{message}</p>
       {onRetry && (
         <Button variant="primary" onClick={onRetry}>
-          重试
+          {actionLabel}
         </Button>
       )}
     </div>

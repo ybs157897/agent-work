@@ -1,7 +1,8 @@
-import { Lock, Pencil } from 'lucide-react';
+import { ArrowLeft, Lock, Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
-import { assignWorkItem, getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
+import { getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
 import type { Plan, PlanStep, Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Drawer } from '../../components/drawer';
 import { PriorityBadge } from '../../components/priority-badge';
@@ -9,6 +10,7 @@ import { useAgentsStore } from '../../stores/agents.store';
 import { usePlansStore } from '../../stores/plans.store';
 import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
+import { useCoordinatorStore } from '../../stores/coordinator.store';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
 import { evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
@@ -17,6 +19,7 @@ import { DispatchTimeline } from './dispatch-timeline';
 import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 import { TaskLedger } from './task-ledger';
+import { CoordinatorPanel } from './coordinator-panel';
 
 const STATUS_TEXT: Record<string, string> = {
   todo: '待办',
@@ -61,15 +64,17 @@ const STEP_STATUS_TEXT: Record<string, string> = {
   failed: '失败',
 };
 
-/** 任务详情抽屉：字段、指派、子任务、编排计划、阻塞/验收操作、Run 面板。 */
+/** 任务详情：全页承载 Coordinator 全局追踪；抽屉模式保留给旧入口。 */
 export function TaskDetail({
   taskId,
   onClose,
   onTransition,
+  fullPage = false,
 }: {
   taskId: string | null;
   onClose: () => void;
   onTransition: (item: WorkItem, to: WorkItemStatus) => Promise<void>;
+  fullPage?: boolean;
 }) {
   const storeTask = useTasksStore((s) => (taskId ? s.items.find((t) => t.id === taskId) : undefined));
   const upsert = useTasksStore((s) => s.upsert);
@@ -80,7 +85,10 @@ export function TaskDetail({
   const refreshPlan = usePlansStore((s) => s.refreshFor);
   const watchRun = useRunsStore((s) => s.watchRun);
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
-  const [assigning, setAssigning] = useState(false);
+  const coordinator = useCoordinatorStore((s) => (taskId ? s.byWorkItem[taskId] : undefined));
+  const coordinatorError = useCoordinatorStore((s) => (taskId ? s.errorByWorkItem[taskId] : undefined));
+  const refreshCoordinator = useCoordinatorStore((s) => s.refreshFor);
+  const navigate = useNavigate();
   const [editOpen, setEditOpen] = useState(false);
   const [returning, setReturning] = useState(false);
   // 子任务树快照：null = 未加载/加载失败（回退列表本地推导）。
@@ -131,6 +139,11 @@ export function TaskDetail({
     if (taskId) void refreshPlan(taskId);
   }, [taskId, refreshPlan]);
 
+  // Coordinator 是 Task 专属控制线；Chat 记录不会进入该 store。
+  useEffect(() => {
+    if (taskId && task?.record_kind === 'task') void refreshCoordinator(taskId);
+  }, [taskId, task?.record_kind, refreshCoordinator]);
+
   // 订阅最新 Run 的实时事件。
   const latestRunId = task?.latest_run_id;
   useEffect(() => {
@@ -144,31 +157,26 @@ export function TaskDetail({
     treeChildren ?? (taskId ? storeItems.filter((t) => t.parent_id === taskId) : []),
   ).map((e) => e.item);
 
-  const onAssign = async (agentProfileId: string) => {
-    if (!task) return;
-    setAssigning(true);
-    try {
-      upsert(await assignWorkItem(task.id, agentProfileId, task.version));
-      toast.success('已更新指派人');
-    } catch (err) {
-      if (err instanceof ApiError && err.isVersionConflict) {
-        toast.error('任务已被他人修改，请重试');
-        upsert(await getWorkItem(task.id));
-      } else {
-        toast.error(err instanceof ApiError ? err.message : '指派失败');
-      }
-    } finally {
-      setAssigning(false);
-    }
+  const openWorkItem = (workItemId: string) => {
+    if (fullPage) navigate(`/tasks/${workItemId}`);
+    else selectTask(workItemId);
   };
 
-  return (
-    <Drawer open={taskId !== null} onClose={onClose} width={380}>
-      {task && (
-        <div className="flex flex-col h-full overflow-y-auto">
-          <div className="p-comfortable space-y-comfortable">
+  const content = task ? (
+        <div className={`flex flex-col ${fullPage ? 'min-h-full overflow-visible' : 'h-full overflow-y-auto'}`}>
+          <div className={`space-y-comfortable ${fullPage ? 'page-shell w-full py-comfortable' : 'p-comfortable'}`}>
             {/* 头部 */}
-            <div className="pr-8">
+            <div className={fullPage ? '' : 'pr-8'}>
+              {fullPage && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="mb-snug inline-flex items-center gap-tight rounded-button px-snug py-micro text-body text-text-secondary transition-colors hover:bg-surface-base hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+                >
+                  <ArrowLeft className="h-4 w-4" aria-hidden />
+                  返回任务看板
+                </button>
+              )}
               <div className="flex items-center gap-2 mb-2">
                 <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-caption font-medium bg-surface-base text-text-secondary border border-border-subtle">
                   {STATUS_TEXT[task.status] ?? task.status}
@@ -204,24 +212,15 @@ export function TaskDetail({
               </p>
             </div>
 
+            <CoordinatorPanel
+              task={task}
+              snapshot={coordinator}
+              error={coordinatorError}
+              onRetry={() => void refreshCoordinator(task.id)}
+            />
+
             {/* 字段 */}
             <section className="space-y-snug">
-              <label className="block">
-                <span className="text-caption text-text-tertiary">指派人</span>
-                <select
-                  value={task.agent_profile_id ?? ''}
-                  disabled={assigning || task.status === 'completed' || task.status === 'cancelled'}
-                  onChange={(e) => void onAssign(e.target.value)}
-                  className="mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 disabled:opacity-60"
-                >
-                  <option value="">未指派</option>
-                  {agents.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name}（{a.role}）
-                    </option>
-                  ))}
-                </select>
-              </label>
               <div className="flex gap-comfortable text-body">
                 <div>
                   <span className="text-caption text-text-tertiary block">截止日</span>
@@ -254,14 +253,14 @@ export function TaskDetail({
                   {children.map((child) => {
                     const assignee = child.agent_profile_id
                       ? agents.find((a) => a.id === child.agent_profile_id)?.name ?? child.agent_profile_id
-                      : '未指派';
+                      : 'Coordinator 自动选择';
                     return (
                       <li
                         key={child.id}
                         className="flex items-center gap-2 p-2 rounded-lg border border-border-subtle bg-surface-base"
                       >
                         <button
-                          onClick={() => selectTask(child.id)}
+                          onClick={() => openWorkItem(child.id)}
                           className="flex-1 min-w-0 text-left"
                           title="打开子任务详情"
                         >
@@ -290,7 +289,7 @@ export function TaskDetail({
             <section className="space-y-snug">
               <h3 className="text-caption font-medium text-text-tertiary">编排计划</h3>
               {plan ? (
-                <PlanPanel plan={plan} task={task} agents={agents} onOpenWorkItem={selectTask} />
+                <PlanPanel plan={plan} task={task} agents={agents} onOpenWorkItem={openWorkItem} />
               ) : (
                 <p className="text-body text-text-tertiary">暂无编排计划</p>
               )}
@@ -374,9 +373,12 @@ export function TaskDetail({
             onClose={() => setReturning(false)}
           />
         </div>
-      )}
-    </Drawer>
-  );
+      ) : null;
+
+  if (fullPage) {
+    return <div className="min-h-full bg-surface-base">{content}</div>;
+  }
+  return <Drawer open={taskId !== null} onClose={onClose} width={380}>{content}</Drawer>;
 }
 
 /** plan 摘要面板：状态徽标 + 评估提示 + steps 执行明细。 */
@@ -391,7 +393,7 @@ function PlanPanel({
   agents: { id: string; name: string }[];
   onOpenWorkItem: (workItemId: string) => void;
 }) {
-  const ownerName = agents.find((a) => a.id === plan.agent_profile_id)?.name ?? plan.agent_profile_id;
+  const ownerName = agents.find((a) => a.id === plan.agent_profile_id)?.name ?? '系统 Coordinator';
   return (
     <div className="rounded-lg border border-border-subtle bg-surface-base p-snug space-y-snug">
       <div className="flex items-center gap-2 flex-wrap">
@@ -441,7 +443,7 @@ function PlanStepRow({
         ? text(step.payload?.reason)
         : text(step.payload?.summary);
   const targetAgent = step.verb === 'dispatch' ? text(step.payload?.agent_id) : '';
-  const targetName = targetAgent ? agents.find((a) => a.id === targetAgent)?.name ?? targetAgent : '';
+  const targetName = targetAgent ? agents.find((a) => a.id === targetAgent)?.name ?? 'Coordinator 自动选择' : '';
   const resultWorkItemId = step.result_work_item_id ?? undefined;
 
   return (

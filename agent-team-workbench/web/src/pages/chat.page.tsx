@@ -21,6 +21,7 @@ import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-sess
 import { useRunsStore } from '../stores/runs.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
+import { isUserManagedAgent } from '../utils/agent-scope';
 import { deriveChatDock } from '../utils/derive-chat-dock';
 import {
   buildTranscriptSegments,
@@ -134,7 +135,11 @@ function segmentTraceSnapshot(segments: readonly PresentedTranscriptSegment[]) {
 
 /** 对话页：Agent 选择器 + 会话列表 + 气泡消息流 + 输入框（协议 §5.2/§5.3）。 */
 export default function ChatPage() {
-  const agents = useAgentsStore((s) => s.agents);
+  const allAgents = useAgentsStore((s) => s.agents);
+  const agents = useMemo(
+    () => allAgents.filter(isUserManagedAgent),
+    [allAgents],
+  );
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
@@ -148,11 +153,13 @@ export default function ChatPage() {
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
+    if (urlBooted.current) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
-    if (qAgent && qAgent !== agentId) selectAgent(qAgent);
+    if (qAgent && agents.some((agent) => agent.id === qAgent) && qAgent !== agentId) selectAgent(qAgent);
     if (qConv) openConversation(qConv);
     urlBooted.current = true;
+    // The URL is only bootstrapped once; subsequent selection is handled by pick().
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -491,7 +498,11 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   const retryRun = useChatStore((s) => s.retryRun);
   const runAlerts = useChatStore((s) => s.runAlerts);
   const pendingUsers = useChatStore((s) => s.pendingUsers);
-  const agents = useAgentsStore((s) => s.agents);
+  const allAgents = useAgentsStore((s) => s.agents);
+  const agents = useMemo(
+    () => allAgents.filter(isUserManagedAgent),
+    [allAgents],
+  );
   const showReasoning = useChatPreferencesStore((state) => state.showReasoning);
   const groupExploreTools = useChatPreferencesStore((state) => state.groupExploreTools);
   const groupTerminalTools = useChatPreferencesStore((state) => state.groupTerminalTools);

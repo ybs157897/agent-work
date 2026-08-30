@@ -19,6 +19,7 @@ const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
 const SettingsPage = lazy(() => import('./pages/settings.page'));
 const TasksPage = lazy(() => import('./pages/tasks.page'));
+const TaskWorkspacePage = lazy(() => import('./pages/task-workspace.page'));
 
 export default function App() {
   const phase = useWorkspaceStore((s) => s.phase);
@@ -81,6 +82,7 @@ function AnimatedRoutes() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/tasks/:taskId" element={<TaskWorkspacePage />} />
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/logs" element={<LogsPage />} />

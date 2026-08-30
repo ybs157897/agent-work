@@ -1,21 +1,14 @@
 import { ChevronDown, GitBranch, KanbanSquare, List, Lock, Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { ApiError } from '../api/client';
-import { acceptWorkItem, unblockWorkItem } from '../api/endpoints';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { Priority, WorkItem, WorkItemStatus } from '../api/types';
-import { Avatar } from '../components/avatar';
 import { PriorityBadge } from '../components/priority-badge';
 import { KanbanSkeleton, ListSkeleton } from '../components/ui';
-import { useAgentsStore } from '../stores/agents.store';
 import { useTasksStore, type ViewMode } from '../stores/tasks.store';
-import { toast } from '../stores/toast.store';
 import { childCountByParent, sortTasksTree } from '../utils/task-tree';
 import { isAwaitingAcceptance } from '../utils/task-phase';
 import { formatDueDate } from '../utils/format';
-import { BlockTaskModal } from './tasks/block-modal';
 import { CreateTaskModal } from './tasks/create-task-modal';
-import { TaskDetail } from './tasks/task-detail';
 import { TaskSearch } from './tasks/search-panel';
 
 // 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
@@ -28,7 +21,7 @@ const COLUMNS: { id: WorkItemStatus; title: string }[] = [
   { id: 'blocked', title: '阻塞' },
 ];
 
-/** 任务看板：四列 + 看板/列表切换 + 筛选 + 拖拽移动（协议 §4.2 状态机）。 */
+/** 任务入口：看板只做观察与导航；Coordinator 管理状态，不允许看板拖拽改状态。 */
 export default function TasksPage() {
   const items = useTasksStore((s) => s.items);
   const loaded = useTasksStore((s) => s.loaded);
@@ -36,16 +29,10 @@ export default function TasksPage() {
   const setFilter = useTasksStore((s) => s.setFilter);
   const viewMode = useTasksStore((s) => s.viewMode);
   const setViewMode = useTasksStore((s) => s.setViewMode);
-  const selectedTaskId = useTasksStore((s) => s.selectedTaskId);
-  const selectTask = useTasksStore((s) => s.selectTask);
-  const moveOptimistic = useTasksStore((s) => s.moveOptimistic);
-  const upsert = useTasksStore((s) => s.upsert);
-  const refresh = useTasksStore((s) => s.refresh);
-  const agents = useAgentsStore((s) => s.agents);
+  const navigate = useNavigate();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [createFor, setCreateFor] = useState<WorkItemStatus | null>(null);
-  const [blocking, setBlocking] = useState<WorkItem | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   // viewMode 是本地 UI 状态：放 URL，不进后端（协议 §4.1）。
   useEffect(() => {
@@ -56,59 +43,6 @@ export default function TasksPage() {
   const switchView = (m: ViewMode) => {
     setViewMode(m);
     setSearchParams(m === 'kanban' ? {} : { view: m }, { replace: true });
-  };
-
-  /** 拖拽/按钮触发的状态迁移：按协议选择命令（move / block / unblock / accept）。 */
-  const transitionTask = async (item: WorkItem, to: WorkItemStatus) => {
-    if (item.status === to) return;
-    try {
-      if (to === 'blocked') {
-        if (item.status !== 'in_progress') {
-          toast.error('只有进行中的任务才能标记阻塞');
-          return;
-        }
-        setBlocking(item);
-        return;
-      }
-      if (item.status === 'blocked') {
-        if (to !== 'in_progress') {
-          toast.error('阻塞任务只能解除阻塞回到进行中');
-          return;
-        }
-        upsert(await unblockWorkItem(item.id, item.version));
-        toast.success(`已解除阻塞「${item.title}」`);
-        return;
-      }
-      if (to === 'completed') {
-        if (item.phase === 'review' || item.phase === 'acceptance') {
-          upsert(await acceptWorkItem(item.id, item.version));
-          toast.success(`任务「${item.title}」验收通过`);
-        } else {
-          toast.error('任务需先运行成功并进入评审，才能验收完成');
-        }
-        return;
-      }
-      if (to === 'in_progress' && item.status === 'todo') {
-        await moveOptimistic(item.id, to);
-        return;
-      }
-      if (to === 'todo') {
-        toast.error('状态机不支持回退到待办');
-        return;
-      }
-      toast.error('不支持的状态迁移');
-    } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.isVersionConflict) {
-          toast.error('任务已被他人修改，已为你刷新最新状态');
-          void refresh();
-        } else {
-          toast.error(err.message);
-        }
-      } else {
-        toast.error('操作失败，请重试');
-      }
-    }
   };
 
   const columns = COLUMNS.map((c) => ({
@@ -160,7 +94,15 @@ export default function TasksPage() {
         </div>
 
         <div className="flex items-center gap-snug">
-          <TaskSearch onOpenTask={selectTask} />
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-tight rounded-button bg-brand-primary px-base py-tight text-body font-medium text-text-inverse transition-all hover:bg-brand-accent active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+          >
+            <Plus className="h-4 w-4" aria-hidden />
+            发布任务
+          </button>
+          <TaskSearch onOpenTask={(id) => navigate(`/tasks/${id}`)} />
           <span className="text-caption uppercase tracking-widest text-text-tertiary">筛选</span>
           <FilterSelect
             label="优先级"
@@ -173,12 +115,9 @@ export default function TasksPage() {
             ]}
             onChange={(v) => setFilter({ ...filter, priority: (v || undefined) as Priority | undefined })}
           />
-          <FilterSelect
-            label="指派人"
-            value={filter.assignee ?? ''}
-            options={agents.map((a) => ({ value: a.id, label: a.name }))}
-            onChange={(v) => setFilter({ ...filter, assignee: v || undefined })}
-          />
+          <span className="rounded-button border border-brand-primary/20 bg-brand-primary/5 px-snug py-tight text-caption text-brand-accent">
+            Coordinator 自动调度
+          </span>
         </div>
       </header>
 
@@ -193,14 +132,9 @@ export default function TasksPage() {
                 key={col.id}
                 title={col.title}
                 tasks={col.tasks}
-                agents={agents}
                 childCounts={childCounts}
-                onDropTask={(taskId) => {
-                  const item = items.find((t) => t.id === taskId);
-                  if (item) void transitionTask(item, col.id);
-                }}
-                onCreate={() => setCreateFor(col.id)}
-                onOpen={(id) => selectTask(id)}
+                onCreate={col.id === 'todo' ? () => setCreateOpen(true) : undefined}
+                onOpen={(id) => navigate(`/tasks/${id}`)}
               />
             ))}
           </div>
@@ -219,11 +153,11 @@ export default function TasksPage() {
                     {sortTasksTree(col.tasks).map((entry) => (
                       <div
                         key={entry.item.id}
-                        onClick={() => selectTask(entry.item.id)}
+                        onClick={() => navigate(`/tasks/${entry.item.id}`)}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault();
-                            selectTask(entry.item.id);
+                            navigate(`/tasks/${entry.item.id}`);
                           }
                         }}
                         role="button"
@@ -245,7 +179,7 @@ export default function TasksPage() {
                           </span>
                         </div>
                         <div className="flex items-center gap-6">
-                          <AssigneeTag agentId={entry.item.agent_profile_id} agents={agents} size={20} />
+                          <span className="text-caption text-text-tertiary">Coordinator</span>
                           <span className="text-caption text-text-tertiary tabular-nums w-12 text-right">
                             {formatDueDate(entry.item.due_date)}
                           </span>
@@ -263,18 +197,10 @@ export default function TasksPage() {
         )}
       </section>
 
-      <TaskDetail
-        taskId={selectedTaskId}
-        onClose={() => selectTask(null)}
-        onTransition={transitionTask}
-      />
       <CreateTaskModal
-        open={createFor !== null}
-        // blocked 列的 "+" 创建为 todo（blocked 只能经 block 命令进入）。
-        initialStatus={createFor === 'blocked' ? 'todo' : createFor ?? 'todo'}
-        onClose={() => setCreateFor(null)}
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
       />
-      <BlockTaskModal task={blocking} onClose={() => setBlocking(null)} />
     </main>
   );
 }
@@ -316,39 +242,18 @@ function FilterSelect({
 function KanbanColumn({
   title,
   tasks,
-  agents,
   childCounts,
-  onDropTask,
   onCreate,
   onOpen,
 }: {
   title: string;
   tasks: WorkItem[];
-  agents: ReturnType<typeof useAgentsStore.getState>['agents'];
   childCounts: Map<string, number>;
-  onDropTask: (taskId: string) => void;
-  onCreate: () => void;
+  onCreate?: () => void;
   onOpen: (taskId: string) => void;
 }) {
-  const [dragOver, setDragOver] = useState(false);
-
   return (
-    <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragOver(false);
-        const taskId = e.dataTransfer.getData('text/plain');
-        if (taskId) onDropTask(taskId);
-      }}
-      className={`flex-1 min-w-0 flex flex-col rounded-card transition-colors ${
-        dragOver ? 'bg-brand-primary/5 ring-2 ring-brand-primary/40' : 'bg-surface-sunken'
-      }`}
-    >
+    <div className="flex-1 min-w-0 flex flex-col rounded-card bg-surface-sunken">
       <div className="flex items-center justify-between px-base py-snug shrink-0">
         <div className="flex items-center gap-2">
           <h3 className="font-semibold text-body-lg text-text-primary">{title}</h3>
@@ -356,15 +261,17 @@ function KanbanColumn({
             {tasks.length}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onCreate}
-          aria-label={`在${title}列创建任务`}
-          title="创建任务"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-base hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
-        >
-          <Plus className="w-5 h-5" />
-        </button>
+        {onCreate && (
+          <button
+            type="button"
+            onClick={onCreate}
+            aria-label="发布任务"
+            title="发布任务"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-base hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-snug pb-snug space-y-snug">
@@ -372,15 +279,14 @@ function KanbanColumn({
           <TaskCard
             key={task.id}
             task={task}
-            agents={agents}
             childCount={childCounts.get(task.id) ?? 0}
             onOpen={() => onOpen(task.id)}
           />
         ))}
         {tasks.length === 0 && (
           <div className="rounded-card border border-dashed border-border-strong/60 px-snug py-comfortable text-center text-caption text-text-tertiary">
-            <p>此列暂无案牍</p>
-            <p className="mt-1">拖入任务，或使用右上角加号创建</p>
+            <p>此列暂无任务</p>
+            <p className="mt-1">由 Coordinator 自动推进；可从待办列发布新任务</p>
           </div>
         )}
       </div>
@@ -390,12 +296,10 @@ function KanbanColumn({
 
 function TaskCard({
   task,
-  agents,
   childCount,
   onOpen,
 }: {
   task: WorkItem;
-  agents: ReturnType<typeof useAgentsStore.getState>['agents'];
   childCount: number;
   onOpen: () => void;
 }) {
@@ -411,8 +315,6 @@ function TaskCard({
 
   return (
     <div
-      draggable
-      onDragStart={(e) => e.dataTransfer.setData('text/plain', task.id)}
       onClick={onOpen}
       role="button"
       tabIndex={0}
@@ -434,7 +336,10 @@ function TaskCard({
       </h4>
 
       <div className="mb-snug">
-        <AssigneeTag agentId={task.agent_profile_id} agents={agents} size={20} />
+        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-caption font-medium ${coordinatorCardClass(task)}`}>
+          <span className="mr-1 h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+          {coordinatorCardText(task)}
+        </span>
       </div>
 
       {isBlocked && task.blocker && (
@@ -487,33 +392,16 @@ function TaskCard({
   );
 }
 
-function AssigneeTag({
-  agentId,
-  agents,
-  size,
-}: {
-  agentId: string | undefined;
-  agents: { id: string; name: string; avatar?: string }[];
-  size: number;
-}) {
-  const agent = agentId ? agents.find((a) => a.id === agentId) : undefined;
-  if (!agent) {
-    return (
-      <div className="flex items-center gap-1.5">
-        <div
-          className="rounded-full border border-dashed border-border-strong flex items-center justify-center bg-surface-base"
-          style={{ width: size, height: size }}
-        >
-          <span className="text-[11px] text-text-tertiary">?</span>
-        </div>
-        <span className="text-xs text-text-tertiary">无 Agent</span>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-center gap-1.5">
-      <Avatar name={agent.name} url={agent.avatar} size={size} />
-      <span className="text-xs font-medium text-text-secondary">{agent.name}</span>
-    </div>
-  );
+function coordinatorCardText(task: WorkItem): string {
+  if (task.status === 'completed') return 'Coordinator 已交付';
+  if (task.status === 'blocked') return 'Coordinator 等待介入';
+  if (task.status === 'in_progress') return 'Coordinator 执行中';
+  return 'Coordinator 接取中';
+}
+
+function coordinatorCardClass(task: WorkItem): string {
+  if (task.status === 'completed') return 'bg-status-success/10 text-status-success border-status-success/20';
+  if (task.status === 'blocked') return 'bg-status-error/10 text-status-error border-status-error/20';
+  if (task.status === 'in_progress') return 'bg-brand-primary/10 text-brand-accent border-brand-primary/20';
+  return 'bg-status-warning/10 text-status-warning border-status-warning/20';
 }

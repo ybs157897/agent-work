@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeBinding } from '../api/types';
+import { isTaskCoordinatorAgent } from '../utils/agent-scope';
 import { buildWakePayload, formatTokenCount, isCodexRuntime, normalizeReasoningEffort, runtimeDisplayLabel, sessionDisplayName } from './agents.page';
 
 describe('Agent runtime options', () => {
+  it('hides the protected system Coordinator from ordinary Agent configuration', () => {
+    expect(isTaskCoordinatorAgent({ is_system: true, kind: 'task_coordinator' })).toBe(true);
+    expect(isTaskCoordinatorAgent({ is_system: false, kind: 'user' })).toBe(false);
+    expect(isTaskCoordinatorAgent({})).toBe(false);
+  });
+
   it('renders the built-in Codex runtime with a product label', () => {
     expect(runtimeDisplayLabel('codex_local')).toBe('Codex app-server');
     expect(runtimeDisplayLabel('dsh_local')).toBe('deepseek harness');

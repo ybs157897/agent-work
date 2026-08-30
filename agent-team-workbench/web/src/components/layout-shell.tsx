@@ -31,7 +31,7 @@ const BREADCRUMBS: Record<string, string> = {
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const workspace = useWorkspaceStore((state) => state.workspace);
-  const breadcrumb = BREADCRUMBS[location.pathname] ?? '';
+  const breadcrumb = location.pathname.startsWith('/tasks/') ? '任务详情' : BREADCRUMBS[location.pathname] ?? '';
   const isChat = isChatPath(location.pathname);
 
   return (

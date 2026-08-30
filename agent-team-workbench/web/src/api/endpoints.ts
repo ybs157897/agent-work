@@ -7,6 +7,8 @@ import type {
   Artifact,
   Bootstrap,
   Dashboard,
+  CoordinatorConfig,
+  CoordinatorSnapshot,
   DecisionEntry,
   DispatchCard,
   DSHCatalog,
@@ -14,6 +16,7 @@ import type {
   Me,
   ModelEntry,
   Plan,
+  PatchCoordinatorConfigInput,
   Priority,
   ProbeResult,
   RunEvent,
@@ -52,6 +55,31 @@ export const getDashboard = (workspaceId: string) =>
 
 export const listActivities = (workspaceId: string) =>
   apiFetch<{ items: Activity[]; next_cursor: string | null }>(`/workspaces/${workspaceId}/activities`);
+
+// ── Task Coordinator ───────────────────────────────────────────────
+
+/** 根 Task 的持久化 Coordinator 控制线快照；Chat 记录没有该投影。 */
+export const getCoordinatorSnapshot = (workItemId: string) =>
+  apiFetch<CoordinatorSnapshot>(`/work-items/${workItemId}/coordinator`);
+
+/** Coordinator 因果事件只读投影；正文继续通过 Run/AgentOutput 读取。 */
+export const listCoordinatorEvents = (workItemId: string) =>
+  apiFetch<{ items: CoordinatorSnapshot['timeline'] }>(`/work-items/${workItemId}/coordinator/events`);
+
+/** 向 Task Coordinator 追加指令；不创建用户可选 Agent 的直接 Run。 */
+export const sendCoordinatorInstruction = (workItemId: string, instruction: string) =>
+  apiFetch<{ accepted: boolean; coordinator_run_id?: string }>(`/work-items/${workItemId}/coordinator/messages`, {
+    method: 'POST',
+    body: { instruction },
+  });
+
+/** Workspace 的系统 Coordinator 配置；只返回 runtime/model/reasoning 与锁定提示词元数据。 */
+export const getCoordinatorConfig = (workspaceId: string) =>
+  apiFetch<CoordinatorConfig>(`/workspaces/${workspaceId}/coordinator`);
+
+/** 更新系统 Coordinator 的可配置底座；服务端拒绝 instructions/prompt 字段。 */
+export const patchCoordinatorConfig = (workspaceId: string, input: PatchCoordinatorConfigInput) =>
+  apiFetch<CoordinatorConfig>(`/workspaces/${workspaceId}/coordinator`, { method: 'PATCH', body: input });
 
 // ── AgentProfile ────────────────────────────────────────────────────
 
@@ -123,6 +151,8 @@ export interface CreateWorkItemInput {
   parent_id?: string;
   /** 实体级幂等键：同 workspace 下同 key 重复创建返回既有实体（200 + Idempotent-Replayed）。 */
   client_key?: string;
+  /** 交给 Coordinator 的验收契约。 */
+  acceptance_criteria?: string[];
 }
 
 export const createWorkItem = (workspaceId: string, input: CreateWorkItemInput) =>
