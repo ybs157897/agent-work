@@ -203,17 +203,17 @@ func TestValidateRequiredCapabilities(t *testing.T) {
 	}
 }
 
-func TestCodexRuntimeAcceptsRegistryModelWithCredentials(t *testing.T) {
+func TestCodexRuntimeRequiresResponsesForCustomProvider(t *testing.T) {
 	binding := &domain.RuntimeBinding{AdapterID: "codex-appserver"}
 	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
-		Ref: "deepseek-v4-flash", Provider: "deepseek-official", Model: "deepseek-v4-flash",
-		APIKeyEnv: "DEEPSEEK_API_KEY",
+		Ref: "kimi-2-7", Provider: "moonshot", Model: "kimi-k2.7-code",
+		API: "openai-responses", APIKeyEnv: "MOONSHOT_API_KEY", BaseURL: "https://api.kimi.com/coding/v1",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
 		Provider: "openrouter", Model: "ox-alpha", APIKeyEnv: "OPENROUTER_API_KEY",
-		BaseURL: "https://openrouter.ai/api/v1",
+		API: "openai-responses", BaseURL: "https://openrouter.ai/api/v1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,8 +221,28 @@ func TestCodexRuntimeAcceptsRegistryModelWithCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
-		Provider: "openrouter", Model: "ox-alpha", BaseURL: "https://openrouter.ai/api/v1",
+		Provider: "openrouter", Model: "ox-alpha", API: "openai-completions", APIKeyEnv: "OPENROUTER_API_KEY", BaseURL: "https://openrouter.ai/api/v1",
 	}); err == nil {
+		t.Fatal("completions provider should fail")
+	}
+	if err := validateAdapterModel(binding, orchestrator.ModelSpec{
+		Provider: "openrouter", Model: "ox-alpha", API: "openai-responses", BaseURL: "https://openrouter.ai/api/v1",
+	}); err == nil || !strings.Contains(err.Error(), "api_key_env") {
 		t.Fatal("missing api_key_env should fail")
+	}
+}
+
+func TestMainAgentEventsExcludesChildTranscript(t *testing.T) {
+	events := []RunEvent{
+		{RunSeq: 1, AgentID: "main", EventType: domain.EventMessageDelta, Payload: map[string]any{"text": "主"}},
+		{RunSeq: 2, AgentID: "child-1", EventType: domain.EventMessageDelta, Payload: map[string]any{"text": "子"}},
+		{RunSeq: 3, EventType: domain.EventMessageCompleted, Payload: map[string]any{"text": "旧主"}},
+	}
+	got := mainAgentEvents(events)
+	if len(got) != 2 || got[0].AgentID != "main" || got[1].AgentID != "" {
+		t.Fatalf("main/legacy events should remain while child is excluded: %#v", got)
+	}
+	if text := completedOrDeltaText(got); text != "旧主" {
+		t.Fatalf("history text must not include child transcript: %q", text)
 	}
 }

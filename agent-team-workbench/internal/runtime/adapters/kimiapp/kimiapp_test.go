@@ -36,12 +36,14 @@ type fakeKap struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu        sync.Mutex
-	calls     []kapCall
-	sessions  map[string]bool
-	nextSess  int
-	nextPrmpt int
-	failCode  int // 非 0 时 prompt 提交返回该 envelope code
+	mu            sync.Mutex
+	calls         []kapCall
+	sessions      map[string]bool
+	modes         map[string]agentConfig
+	nextSess      int
+	nextPrmpt     int
+	failCode      int // 非 0 时 prompt 提交返回该 envelope code
+	ignoreProfile bool
 
 	wsMu      sync.Mutex // 串行化 WS 写
 	wsConn    *websocket.Conn
@@ -56,6 +58,7 @@ func newFakeKap(t *testing.T) *fakeKap {
 	f := &fakeKap{
 		t:         t,
 		sessions:  map[string]bool{},
+		modes:     map[string]agentConfig{},
 		ready:     make(chan struct{}),
 		promptsCh: make(chan string, 8),
 		pongs:     make(chan string, 8),
@@ -159,6 +162,17 @@ func (f *fakeKap) serveREST(w http.ResponseWriter, r *http.Request) {
 		f.sessions[id] = true
 		f.mu.Unlock()
 		writeKap(w, http.StatusOK, 0, map[string]any{"id": id, "busy": false})
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/status"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/sessions/"), "/status")
+		f.mu.Lock()
+		mode, known := f.modes[id]
+		f.mu.Unlock()
+		if !known {
+			mode = agentConfig{PermissionMode: "manual", SwarmMode: false}
+		}
+		writeKap(w, http.StatusOK, 0, map[string]any{
+			"busy": false, "permission": mode.PermissionMode, "swarm_mode": mode.SwarmMode,
+		})
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sessions/") && !strings.Contains(path, "/prompts") && !strings.Contains(path, ":abort") && !strings.Contains(path, "/approvals"):
 		id := strings.TrimPrefix(path, "/api/v1/sessions/")
 		f.mu.Lock()
@@ -169,6 +183,22 @@ func (f *fakeKap) serveREST(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeKap(w, http.StatusOK, 0, map[string]any{"id": id, "busy": false})
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/profile"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/sessions/"), "/profile")
+		config, _ := body["agent_config"].(map[string]any)
+		mode := agentConfig{PermissionMode: "manual"}
+		if permission, ok := config["permission_mode"].(string); ok {
+			mode.PermissionMode = permission
+		}
+		if swarm, ok := config["swarm_mode"].(bool); ok {
+			mode.SwarmMode = swarm
+		}
+		f.mu.Lock()
+		if !f.ignoreProfile {
+			f.modes[id] = mode
+		}
+		f.mu.Unlock()
+		writeKap(w, http.StatusOK, 0, map[string]any{"updated": true})
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/prompts"):
 		f.mu.Lock()
 		if f.failCode != 0 {
@@ -272,9 +302,13 @@ func (f *fakeKap) push(frame map[string]any) {
 
 // kapEvent 构造事件帧：durable 带 seq/epoch，volatile 带 volatile+offset。
 func kapEvent(sessionID, evType string, payload map[string]any, seq int64, volatile bool) map[string]any {
+	return kapEventForAgent(sessionID, evType, payload, seq, volatile, "main")
+}
+
+func kapEventForAgent(sessionID, evType string, payload map[string]any, seq int64, volatile bool, agentID string) map[string]any {
 	payload["type"] = evType
 	payload["sessionId"] = sessionID
-	payload["agentId"] = "main"
+	payload["agentId"] = agentID
 	frame := map[string]any{
 		"type": evType, "session_id": sessionID, "timestamp": "now",
 		"payload": mustJSON(payload),
@@ -459,7 +493,12 @@ func TestFreshTurnHappyPath(t *testing.T) {
 		t.Fatalf("create metadata.cwd 不符: %v", createBody)
 	}
 	if _, ok := createBody["agent_config"]; ok {
-		t.Fatalf("agent_config 是服务端不应用的死透传，不应再发送: %v", createBody)
+		t.Fatalf("create.agent_config 在 KAP 中是 no-op，不应发送: %v", createBody)
+	}
+	profileBody := f.waitCall("/api/v1/sessions/s_1/profile")
+	profileConfig, _ := profileBody["agent_config"].(map[string]any)
+	if profileConfig == nil || profileConfig["permission_mode"] != "yolo" || profileConfig["swarm_mode"] != true {
+		t.Fatalf("fresh 应通过 profile 证明 yolo + swarm 生效: %v", profileBody)
 	}
 	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
 	content, _ := promptBody["content"].([]any)
@@ -470,8 +509,11 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if part["type"] != "text" || !strings.Contains(part["text"].(string), "记住 ALPHA") {
 		t.Fatalf("prompt 文本不符: %v", part)
 	}
-	if promptBody["model"] != "test-model" || promptBody["permission_mode"] != "auto" {
+	if promptBody["model"] != "test-model" || promptBody["permission_mode"] != "yolo" {
 		t.Fatalf("prompt model/permission_mode 不符: %v", promptBody)
+	}
+	if _, ok := promptBody["swarm_mode"]; ok {
+		t.Fatalf("prompt.swarm_mode 在 KAP 中是 no-op，不应发送: %v", promptBody)
 	}
 	if res.Session == nil || res.Session.Ref != "kimiapp://s_1" || res.Session.Params["kap_session"] != "s_1" {
 		t.Fatalf("SessionUpdate 不符: %+v", res.Session)
@@ -942,6 +984,11 @@ func TestResumeHitReusesSession(t *testing.T) {
 	if f.callExact("/api/v1/sessions/s_known") != 1 {
 		t.Fatal("resume 应先 GET 探测原会话")
 	}
+	profileBody := f.waitCall("/api/v1/sessions/s_known/profile")
+	profileConfig, _ := profileBody["agent_config"].(map[string]any)
+	if profileConfig == nil || profileConfig["permission_mode"] != "yolo" || profileConfig["swarm_mode"] != true {
+		t.Fatalf("resume 应在 prompt 前重申默认 profile: %v", profileBody)
+	}
 	if f.callExact("/api/v1/sessions/s_known/prompts") != 1 {
 		t.Fatal("应向原会话提交 prompt")
 	}
@@ -950,6 +997,51 @@ func TestResumeHitReusesSession(t *testing.T) {
 	}
 	if len(cb.sessions) == 0 || cb.sessions[0].Ref != "kimiapp://s_known" {
 		t.Fatalf("resume 轮应重报同 ref: %+v", cb.sessions)
+	}
+}
+
+func TestManualPolicyPreservesManualPermissionWithSwarm(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+	ex := newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8))
+	ex.Run.Input = map[string]any{"policy": map[string]any{"approval_policy": "manual"}}
+	res := runKapExecute(t, m, ex, f, func(pid string) { pushHappyTurn(f, "s_1", 7, pid, 1) })
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	createBody := f.waitCall("/api/v1/sessions")
+	if _, ok := createBody["agent_config"]; ok {
+		t.Fatalf("manual fresh create 也不应发送 no-op agent_config: %v", createBody)
+	}
+	profileBody := f.waitCall("/api/v1/sessions/s_1/profile")
+	profileConfig, _ := profileBody["agent_config"].(map[string]any)
+	if profileConfig["permission_mode"] != "manual" || profileConfig["swarm_mode"] != true {
+		t.Fatalf("manual profile 应保留且仍开启 swarm: %v", profileBody)
+	}
+	promptBody := f.waitCall("/api/v1/sessions/s_1/prompts")
+	if promptBody["permission_mode"] != "manual" {
+		t.Fatalf("manual prompt 配置不符: %v", promptBody)
+	}
+	if _, ok := promptBody["swarm_mode"]; ok {
+		t.Fatalf("manual prompt 也不应发送 no-op swarm_mode: %v", promptBody)
+	}
+}
+
+func TestSessionDefaultsFailClosedWhenProfileIsIgnored(t *testing.T) {
+	f := newFakeKap(t)
+	f.mu.Lock()
+	f.sessions["s_ignored"] = true
+	f.ignoreProfile = true
+	f.mu.Unlock()
+	failure := applySessionDefaults(
+		context.Background(),
+		newRestClient(f.srv.URL, testToken),
+		"s_ignored",
+		agentConfig{PermissionMode: "yolo", SwarmMode: true},
+	)
+	if failure == nil || failure.Code != "session_profile_not_applied" || failure.Family != runtime.FamilyConfig {
+		t.Fatalf("profile no-op 应 fail closed: %+v", failure)
 	}
 }
 
@@ -1170,6 +1262,89 @@ func TestStaleTurnEndIgnored(t *testing.T) {
 	}
 }
 
+func TestChildEventsWithSameTurnIDCannotAffectMain(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8)), f, func(pid string) {
+		// KAP AgentSwarm members can reuse the parent's turnId (including 0).
+		f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 0, "promptId": pid}, 1, false))
+		f.push(kapEventForAgent("s_1", "turn.started", map[string]any{"turnId": 0}, 2, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "assistant.delta", map[string]any{"turnId": 0, "delta": "child output"}, 3, true, "child-1"))
+		f.push(kapEventForAgent("s_1", "thinking.delta", map[string]any{"turnId": 0, "delta": "child thought"}, 4, true, "child-1"))
+		f.push(kapEventForAgent("s_1", "turn.step.completed", map[string]any{"turnId": 0, "usage": map[string]any{"inputOther": 99, "output": 99}}, 5, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "tool.call.started", map[string]any{"turnId": 0, "toolCallId": "child-tool", "name": "shell"}, 6, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "tool.result", map[string]any{"turnId": 0, "toolCallId": "child-tool", "output": mustJSON("child result")}, 7, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "turn.ended", map[string]any{"turnId": 0, "reason": "completed"}, 8, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "turn.started", map[string]any{"turnId": 0}, 14, false, "child-2"))
+		f.push(kapEventForAgent("s_1", "tool.call.started", map[string]any{"turnId": 0, "toolCallId": "child-tool", "name": "read"}, 15, false, "child-2"))
+		f.push(kapEventForAgent("s_1", "tool.result", map[string]any{"turnId": 0, "toolCallId": "child-tool", "output": mustJSON("child 2 result")}, 16, false, "child-2"))
+		f.push(kapEventForAgent("s_1", "turn.ended", map[string]any{"turnId": 0, "reason": "completed"}, 17, false, "child-2"))
+		f.push(kapEventForAgent("s_1", "turn.started", map[string]any{"turnId": 1}, 18, false, "child-1"))
+		f.push(kapEventForAgent("s_1", "assistant.delta", map[string]any{"turnId": 1, "delta": "child second"}, 19, true, "child-1"))
+		f.push(kapEventForAgent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 20, false, "child-1"))
+		// Session 级流无法仅凭 turnId 归属事件；缺 agentId 同样 fail closed。
+		f.push(kapEventForAgent("s_1", "assistant.delta", map[string]any{"turnId": 0, "delta": "anonymous output"}, 9, true, ""))
+		f.push(kapEventForAgent("s_1", "turn.ended", map[string]any{"turnId": 0, "reason": "completed"}, 10, false, ""))
+
+		f.push(kapEvent("s_1", "assistant.delta", map[string]any{"turnId": 0, "delta": "main output"}, 11, true))
+		f.push(kapEvent("s_1", "turn.step.completed", map[string]any{"turnId": 0, "usage": map[string]any{"inputOther": 3, "output": 2}}, 12, false))
+		f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 0, "reason": "completed"}, 13, false))
+	})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("子 agent 收尾不应提前终止主 turn，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if res.Usage == nil || res.Usage.InputTokens != 3 || res.Usage.OutputTokens != 2 {
+		t.Fatalf("子 agent usage 不应污染主 turn: %+v", res.Usage)
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	mainDelta, childText, childThinking := 0, 0, 0
+	childTools := map[string]int{}
+	completed := map[string]int{}
+	for _, event := range cb.events {
+		if event.kind == domain.EventMessageCompleted {
+			id, _ := event.data["agent_id"].(string)
+			completed[id]++
+			if id == "child-1" && completed[id] == 2 && event.data["text"] != "child second" {
+				t.Fatalf("child 第二轮 message 未重置: %+v", event.data)
+			}
+		}
+		if event.kind == domain.EventMessageDelta {
+			raw, _ := event.data["raw"].(map[string]any)
+			chunk, _ := raw["chunk"].(map[string]any)
+			if event.data["agent_id"] == "child-1" {
+				if chunk["type"] == "reasoning-delta" {
+					childThinking++
+				} else {
+					childText++
+				}
+			} else {
+				mainDelta++
+				if chunk["text"] != "main output" {
+					t.Fatalf("main transcript 不符: %+v", event.data)
+				}
+			}
+		}
+		if event.kind == domain.EventToolStarted || event.kind == domain.EventToolCompleted || event.kind == domain.EventToolFailed {
+			if event.data["call_id"] == "child-tool" {
+				childTools[event.data["agent_id"].(string)]++
+			}
+		}
+	}
+	if mainDelta != 1 || childText != 2 || childThinking != 1 {
+		t.Fatalf("主/子 transcript 数量不符: main=%d childText=%d childThinking=%d", mainDelta, childText, childThinking)
+	}
+	if childTools["child-1"] != 2 || childTools["child-2"] != 2 {
+		t.Fatalf("相同 callId 的 child tool 未按 agent 隔离: %+v", childTools)
+	}
+	if completed["child-1"] != 2 {
+		t.Fatalf("child 两轮应各自产生 completed: %+v", completed)
+	}
+}
+
 func TestUnmappedFramesLogged(t *testing.T) {
 	f := newFakeKap(t)
 	m := newTestModule(f)
@@ -1195,5 +1370,92 @@ func TestUnmappedFramesLogged(t *testing.T) {
 	}
 	if logged < 2 {
 		t.Fatalf("未映射帧应显式 OnLog（得到 %d）: %+v", logged, cb.logs)
+	}
+}
+
+func TestSubagentLifecycleProjectsSelfContainedSnapshots(t *testing.T) {
+	cb := newRecordCallbacks()
+	p := &eventPump{
+		ex:    &runtime.ExecContext{Callbacks: cb},
+		state: &turnState{pendingTools: map[string]string{"tc-swarm": "AgentSwarm", "tc-child": "Agent"}},
+	}
+	frames := []wsFrame{
+		{Type: "subagent.spawned", Seq: 1, Payload: json.RawMessage(`{"subagentId":"sa-1","subagentName":"research","parentToolCallId":"tc-swarm","description":"查资料","swarmIndex":2,"runInBackground":true}`)},
+		{Type: "subagent.suspended", Seq: 2, Payload: json.RawMessage(`{"subagentId":"sa-1","reason":"等待依赖"}`)},
+		{Type: "subagent.completed", Seq: 3, Payload: json.RawMessage(`{"subagentId":"sa-1","resultSummary":"已完成"}`)},
+	}
+	for _, frame := range frames {
+		p.handle(frame)
+	}
+	// cursor 边界重复投递同一 durable seq 时不重复写 canonical 事件。
+	p.handle(frames[2])
+	cb.mu.Lock()
+	if len(cb.events) != 3 {
+		t.Fatalf("期望 3 个快照，得到 %+v", cb.events)
+	}
+	for i, want := range []string{"queued", "waiting", "completed"} {
+		if cb.events[i].kind != domain.EventSubagentUpdated || cb.events[i].data["runtime"] != "kimi" || cb.events[i].data["role"] != "member" || cb.events[i].data["status"] != want {
+			t.Fatalf("快照 %d 契约不符: %+v", i, cb.events[i])
+		}
+		if cb.events[i].data["swarm_index"] != 2 || cb.events[i].data["parent_tool_call_id"] != "tc-swarm" {
+			t.Fatalf("快照 %d 身份丢失: %+v", i, cb.events[i])
+		}
+		if i == 1 && cb.events[i].data["reason"] != "等待依赖" {
+			t.Fatalf("suspended reason 丢失: %+v", cb.events[i].data)
+		}
+		if i == 2 && cb.events[i].data["summary"] != "已完成" {
+			t.Fatalf("completed summary 丢失: %+v", cb.events[i].data)
+		}
+	}
+	cb.mu.Unlock()
+	p.handle(wsFrame{Type: "subagent.completed", Seq: 4, Payload: json.RawMessage(`{"subagentId":"unknown","resultSummary":"不应创建"}`)})
+	p.handle(wsFrame{Type: "subagent.spawned", Seq: 5, Payload: json.RawMessage(`{"subagentId":"foreign","subagentName":"Agent","parentToolCallId":"old-call"}`)})
+	cb.mu.Lock()
+	if len(cb.events) != 3 {
+		t.Fatalf("未知 lifecycle/旧 parent 不应创建快照: %+v", cb.events)
+	}
+	cb.mu.Unlock()
+	p.handle(wsFrame{Type: "subagent.spawned", Seq: 6, Payload: json.RawMessage(`{"subagentId":"child-1","subagentName":"Agent","parentToolCallId":"tc-child","description":"普通 child"}`)})
+	p.handle(wsFrame{Type: "subagent.failed", Seq: 7, Payload: json.RawMessage(`{"subagentId":"child-1","error":{"message":"boom"}}`)})
+	cb.mu.Lock()
+	if len(cb.events) != 5 || cb.events[4].data["role"] != "child" || cb.events[4].data["status"] != "failed" || cb.events[4].data["error"] != "boom" {
+		t.Fatalf("普通 child 契约不符: %+v", cb.events[3])
+	}
+	cb.mu.Unlock()
+}
+
+func TestSubagentInvalidSwarmIndexDoesNotBecomeMember(t *testing.T) {
+	cb := newRecordCallbacks()
+	p := &eventPump{
+		ex:    &runtime.ExecContext{Callbacks: cb},
+		state: &turnState{pendingTools: map[string]string{"tc-swarm": "AgentSwarm"}},
+	}
+	p.handle(wsFrame{Type: "subagent.spawned", Seq: 1, Payload: json.RawMessage(`{"subagentId":"sa-zero","parentToolCallId":"tc-swarm","swarmIndex":0}`)})
+	p.handle(wsFrame{Type: "subagent.spawned", Seq: 2, Payload: json.RawMessage(`{"subagentId":"sa-one","parentToolCallId":"tc-swarm","swarmIndex":1}`)})
+
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if len(cb.events) != 2 {
+		t.Fatalf("期望两个子 Agent 快照，得到 %+v", cb.events)
+	}
+	if cb.events[0].data["role"] != "child" {
+		t.Fatalf("0-based swarmIndex 不得进入蜂巢: %+v", cb.events[0].data)
+	}
+	if _, ok := cb.events[0].data["swarm_index"]; ok {
+		t.Fatalf("非法 swarmIndex 不应透传: %+v", cb.events[0].data)
+	}
+	if cb.events[1].data["role"] != "member" || cb.events[1].data["swarm_index"] != 1 {
+		t.Fatalf("1-based swarmIndex 应成为蜂群成员: %+v", cb.events[1].data)
+	}
+}
+
+func TestSwarmMetadataIncludesItemsAndResume(t *testing.T) {
+	m := swarmMetadata("tc-1", "ignored", json.RawMessage(`{"description":"并行调研","items":["A","B"],"resume_agent_ids":{"sa-3":"C"}}`))
+	if m["runtime"] != "kimi" || m["id"] != "tc-1" || m["title"] != "并行调研" || m["total"] != 3 {
+		t.Fatalf("蜂群头契约不符: %+v", m)
+	}
+	items := m["items"].([]map[string]any)
+	if items[0]["index"] != 1 || items[0]["description"] != "续接已有子 Agent" || items[2]["index"] != 3 || items[2]["description"] != "B" {
+		t.Fatalf("蜂群占位项不符: %+v", items)
 	}
 }

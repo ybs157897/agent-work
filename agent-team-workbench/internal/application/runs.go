@@ -414,6 +414,9 @@ func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.Mode
 	}
 	switch binding.AdapterID {
 	case "codex-appserver":
+		if err := codexconfig.ValidateProviderAPI(spec); err != nil {
+			return err
+		}
 		provider := strings.ToLower(strings.TrimSpace(spec.Provider))
 		if provider == "" || provider == "codex" || provider == "openai" {
 			return nil

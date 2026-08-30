@@ -41,7 +41,7 @@ func ApplySnapshot(home string, snap runtime.ModelSnapshot) error {
 // EffectiveReasoningEffort 归一化 Codex reasoning 等级；未知/空回退 medium。
 func EffectiveReasoningEffort(effort string) string {
 	switch strings.TrimSpace(strings.ToLower(effort)) {
-	case "minimal", "low", "medium", "high", "xhigh":
+	case "minimal", "low", "medium", "high", "xhigh", "ultra":
 		return strings.TrimSpace(strings.ToLower(effort))
 	default:
 		return "medium"
@@ -56,6 +56,9 @@ func apply(home string, spec orchestrator.ModelSpec) error {
 	model := strings.TrimSpace(spec.Model)
 	if model == "" {
 		return fmt.Errorf("%w: Codex 模型名不能为空", domain.ErrValidation)
+	}
+	if err := ValidateProviderAPI(spec); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return err
@@ -99,6 +102,20 @@ wire_api = "responses"
 `, model, providerKey, effort, providerKey, name, baseURL, envKey)
 
 	return os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o644)
+}
+
+// ValidateProviderAPI enforces the Codex app-server wire contract. Codex's
+// built-in OpenAI route is already Responses-native; every custom provider
+// must explicitly opt into the same protocol in the model registry.
+func ValidateProviderAPI(spec orchestrator.ModelSpec) error {
+	provider := strings.ToLower(strings.TrimSpace(spec.Provider))
+	if provider == "" || provider == "codex" || provider == "openai" {
+		return nil
+	}
+	if strings.ToLower(strings.TrimSpace(spec.API)) != "openai-responses" {
+		return fmt.Errorf("%w: Codex 自定义 provider %q 仅支持 api=openai-responses（当前为 %q）", domain.ErrValidation, provider, spec.API)
+	}
+	return nil
 }
 
 // ResolveBaseURL 返回 Codex 可用的 OpenAI 兼容端点；注册表未写时补常见默认值。

@@ -23,7 +23,7 @@ func TestLoadDir(t *testing.T) {
 role: developer
 skills: [Go, React]
 runtime: {preferred: dsh_local, fallbacks: [mock]}
-model: {provider: deepseek, model: deepseek-v4-flash}
+model: {provider: deepseek, model: deepseek-v4-flash, reasoning_effort: ultra}
 permissions: {tools: [bash, fs], approval_policy: approve_high_risk, sandbox: workspace-write}
 `), 0o644)
 	os.WriteFile(filepath.Join(one, "prompt.md"), []byte("# 角色：开发\n"), 0o644)
@@ -41,6 +41,9 @@ permissions: {tools: [bash, fs], approval_policy: approve_high_risk, sandbox: wo
 	}
 	if c.Permissions.ApprovalPolicy != "approve_high_risk" || len(c.Permissions.Tools) != 2 {
 		t.Fatalf("bad permissions: %+v", c.Permissions)
+	}
+	if c.Model.ReasoningEffort != "ultra" {
+		t.Fatalf("bad reasoning effort: %+v", c.Model)
 	}
 	if c.Prompt != "# 角色：开发\n" {
 		t.Fatalf("bad prompt: %q", c.Prompt)

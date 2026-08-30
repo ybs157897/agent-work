@@ -107,6 +107,20 @@ func (c *restClient) createSession(ctx context.Context, req *createSessionReques
 	return &out, nil
 }
 
+func (c *restClient) updateProfile(ctx context.Context, sessionID string, req *sessionProfileRequest) *kapError {
+	path := "/api/v1/sessions/" + sessionID + "/profile"
+	return c.do(ctx, http.MethodPost, path, req, nil, false)
+}
+
+func (c *restClient) getSessionStatus(ctx context.Context, sessionID string) (*sessionStatus, *kapError) {
+	var out sessionStatus
+	path := "/api/v1/sessions/" + sessionID + "/status"
+	if kerr := c.do(ctx, http.MethodGet, path, nil, &out, false); kerr != nil {
+		return nil, kerr
+	}
+	return &out, nil
+}
+
 func (c *restClient) submitPrompt(ctx context.Context, sessionID string, req *promptSubmitRequest) (*promptSubmitResult, *kapError) {
 	var out promptSubmitResult
 	path := "/api/v1/sessions/" + sessionID + "/prompts"

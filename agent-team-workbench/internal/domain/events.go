@@ -57,6 +57,7 @@ const (
 	EventToolProgress        = "tool.progress"
 	EventToolCompleted       = "tool.completed"
 	EventToolFailed          = "tool.failed"
+	EventSubagentUpdated     = "subagent.updated"
 	EventFileChangesReverted = "file_changes.reverted"
 
 	EventApprovalRequested = "approval.requested"
@@ -91,6 +92,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventPlanFailed:   {},
 	EventMessageDelta: {}, EventMessageCompleted: {},
 	EventToolStarted: {}, EventToolProgress: {}, EventToolCompleted: {}, EventToolFailed: {},
+	EventSubagentUpdated:     {},
 	EventFileChangesReverted: {},
 	EventApprovalRequested:   {}, EventApprovalResolved: {}, EventApprovalExpired: {},
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
@@ -128,6 +130,7 @@ type CanonicalEvent struct {
 	AggregateID     string         `json:"-"`
 	Aggregate       AggregateRef   `json:"aggregate"`
 	RunSeq          int64          `json:"run_seq,omitempty"`
+	AgentID         string         `json:"agent_id,omitempty"`
 	Type            string         `json:"type"`
 	OccurredAt      time.Time      `json:"occurred_at"`
 	Actor           *EventActor    `json:"actor,omitempty"`

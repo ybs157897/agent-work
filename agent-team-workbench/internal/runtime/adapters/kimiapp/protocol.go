@@ -52,11 +52,25 @@ type sessionSummary struct {
 }
 
 // createSessionRequest 对齐 POST /sessions body：metadata.cwd 必填。
-// 不透传 agent_config：创建路由完全忽略它，/profile 路由也只应用 model/
-// permission_mode 等少数字段（system_prompt 无任何应用通道）——persona/plan
-// 语义由适配器经 prompt 文本注入（见 kimiapp.submitPrompt）。
+// main 与 0.38 都会静默忽略 create.agent_config，禁止发送假配置。
 type createSessionRequest struct {
 	Metadata map[string]string `json:"metadata"`
+}
+
+type agentConfig struct {
+	PermissionMode string `json:"permission_mode"`
+	SwarmMode      bool   `json:"swarm_mode"`
+}
+
+// sessionProfileRequest 是 resume 前重申的会话 profile；KAP 的 profile
+// 更新契约要求 agent_config 嵌套在 body 中。
+type sessionProfileRequest struct {
+	AgentConfig agentConfig `json:"agent_config"`
+}
+
+type sessionStatus struct {
+	Permission string `json:"permission"`
+	SwarmMode  bool   `json:"swarm_mode"`
 }
 
 type promptContentPart struct {
@@ -65,8 +79,8 @@ type promptContentPart struct {
 }
 
 // promptSubmitRequest 对齐 PromptSubmission：content ≥1 段；model 与
-// permission_mode(manual|yolo|auto) 服务端逐 prompt 应用。plan_mode 服务端
-// 接受但不应用（routes/prompts.ts 无引用），不前向——plan 语义经文本注入。
+// permission_mode(manual|yolo|auto) 服务端逐 prompt 应用。swarm_mode/plan_mode
+// 虽在 schema 中，但 main 与 0.38 prompt 路由均不消费，不前向；模式只走 profile。
 type promptSubmitRequest struct {
 	Content        []promptContentPart `json:"content"`
 	Model          string              `json:"model,omitempty"`
@@ -141,15 +155,17 @@ type pongPayload struct {
 
 type evTurnStarted struct {
 	TurnID   int64  `json:"turnId"`
+	AgentID  string `json:"agentId,omitempty"`
 	PromptID string `json:"promptId,omitempty"`
 }
 
 // evTurnEnded：reason ∈ completed|cancelled|failed|blocked；error 为
 // KimiErrorPayload{code,message,retryable}。
 type evTurnEnded struct {
-	TurnID int64    `json:"turnId"`
-	Reason string   `json:"reason"`
-	Error  *evError `json:"error,omitempty"`
+	TurnID  int64    `json:"turnId"`
+	AgentID string   `json:"agentId,omitempty"`
+	Reason  string   `json:"reason"`
+	Error   *evError `json:"error,omitempty"`
 }
 
 type evError struct {
@@ -159,8 +175,9 @@ type evError struct {
 }
 
 type evDelta struct {
-	TurnID int64  `json:"turnId"`
-	Delta  string `json:"delta"`
+	TurnID  int64  `json:"turnId"`
+	AgentID string `json:"agentId,omitempty"`
+	Delta   string `json:"delta"`
 }
 
 // tokenUsage 对齐 protocol TokenUsage：input = inputOther + inputCacheRead +
@@ -173,13 +190,15 @@ type tokenUsage struct {
 }
 
 type evStepCompleted struct {
-	TurnID int64       `json:"turnId"`
-	Step   int         `json:"step"`
-	Usage  *tokenUsage `json:"usage,omitempty"`
+	TurnID  int64       `json:"turnId"`
+	AgentID string      `json:"agentId,omitempty"`
+	Step    int         `json:"step"`
+	Usage   *tokenUsage `json:"usage,omitempty"`
 }
 
 type evToolCallStarted struct {
 	TurnID      int64           `json:"turnId"`
+	AgentID     string          `json:"agentId,omitempty"`
 	ToolCallID  string          `json:"toolCallId"`
 	Name        string          `json:"name"`
 	Args        json.RawMessage `json:"args,omitempty"`
@@ -188,6 +207,7 @@ type evToolCallStarted struct {
 
 type evToolResult struct {
 	TurnID     int64           `json:"turnId"`
+	AgentID    string          `json:"agentId,omitempty"`
 	ToolCallID string          `json:"toolCallId"`
 	Output     json.RawMessage `json:"output,omitempty"`
 	IsError    *bool           `json:"isError,omitempty"`
@@ -195,6 +215,7 @@ type evToolResult struct {
 
 type evToolProgress struct {
 	TurnID     int64  `json:"turnId"`
+	AgentID    string `json:"agentId,omitempty"`
 	ToolCallID string `json:"toolCallId"`
 	Update     struct {
 		Kind    string   `json:"kind"`

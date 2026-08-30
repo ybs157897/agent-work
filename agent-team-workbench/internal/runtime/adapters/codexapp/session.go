@@ -36,7 +36,7 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 		ctx, cancel = context.WithTimeout(ctx, defaultSessionTimeout)
 	}
 
-	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs()...)
+	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs(runtime.ModelSnapshot{})...)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -170,11 +170,18 @@ func writeJSONFrame(w io.Writer, frame map[string]any) error {
 	return err
 }
 
-func (m *Module) commandArgs() []string {
+func (m *Module) commandArgs(model runtime.ModelSnapshot) []string {
 	if len(m.cfg.Args) > 0 {
 		return append([]string(nil), m.cfg.Args...)
 	}
-	return []string{"app-server", "--stdio"}
+	args := []string{"app-server", "--stdio", "--enable", "multi_agent"}
+	provider := strings.ToLower(strings.TrimSpace(model.Provider))
+	if provider == "" || provider == "codex" || provider == "openai" {
+		return append(args, "--enable", "multi_agent_v2")
+	}
+	// v2 子线程使用 OpenAI/Codex 的 agent_message Responses 扩展；第三方
+	// Responses-compatible provider 只承诺标准输入项，使用稳定 multi_agent。
+	return append(args, "--disable", "multi_agent_v2")
 }
 
 func (m *Module) processEnv() []string {

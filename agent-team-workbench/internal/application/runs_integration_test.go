@@ -696,6 +696,54 @@ func seedRunEnv(t *testing.T, ctx context.Context, svc *application.Service, sto
 	return wi
 }
 
+func TestRecordRunEventPersistsAgentIdentityAcrossRunAndStream(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	wi := seedRunEnv(t, ctx, svc, store)
+	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: wi.AgentProfileID, Instruction: "identity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunEvent(ctx, run.ID, domain.EventMessageDelta, map[string]any{"role": "assistant", "text": "main"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunEvent(ctx, run.ID, domain.EventMessageDelta, map[string]any{"agent_id": "child-1", "role": "assistant", "text": "child"}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.Events().ListRunEvents(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[1].RunSeq != 2 || events[2].RunSeq != 3 {
+		t.Fatalf("run events must retain one global sequence: %#v", events)
+	}
+	if events[1].AgentID != "main" || events[2].AgentID != "child-1" {
+		t.Fatalf("agent identity not persisted: %#v", events)
+	}
+	if _, ok := events[2].Payload["agent_id"]; ok {
+		t.Fatalf("agent_id must be deduplicated from run payload: %#v", events[2].Payload)
+	}
+	stream, err := store.Events().Since(ctx, wi.WorkspaceID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runStream []*domain.CanonicalEvent
+	for _, event := range stream {
+		if event.AggregateID == run.ID && event.Type == domain.EventMessageDelta {
+			runStream = append(runStream, event)
+		}
+	}
+	if len(runStream) != 2 || runStream[0].AgentID != "main" || runStream[1].AgentID != "child-1" {
+		t.Fatalf("stream events must expose top-level agent_id: %#v", runStream)
+	}
+	if _, ok := runStream[1].Data["agent_id"]; ok {
+		t.Fatalf("agent_id must not be duplicated in stream data: %#v", runStream[1].Data)
+	}
+}
+
 // TestDisableAgentWithQueuedRun 回归：禁用带排队 run 的智能体曾因 queued→interrupting
 // 非法边整体回滚；现在 queued 直达终态 interrupted，不再阻塞禁用。
 func TestDisableAgentWithQueuedRun(t *testing.T) {

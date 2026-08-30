@@ -32,12 +32,14 @@ func initializedNotification() map[string]any {
 }
 
 type itemEvent struct {
-	Type   string
-	ID     string
-	Status string
-	Tool   string
-	Text   string
-	Raw    map[string]any
+	Type              string
+	ID                string
+	Status            string
+	Tool              string
+	Text              string
+	Raw               map[string]any
+	ReceiverThreadIDs []string
+	AgentsStates      map[string]any
 }
 
 func parseItemEvent(raw json.RawMessage) itemEvent {
@@ -66,6 +68,18 @@ func parseItemEvent(raw json.RawMessage) itemEvent {
 		e.Tool, _ = item["tool"].(string)
 	case "webSearch":
 		e.Tool = "web_search"
+	case "collabAgentToolCall":
+		e.Tool = "agent"
+		if ids, ok := item["receiverThreadIds"].([]any); ok {
+			for _, id := range ids {
+				if s, ok := id.(string); ok && s != "" {
+					e.ReceiverThreadIDs = append(e.ReceiverThreadIDs, s)
+				}
+			}
+		}
+		if states, ok := item["agentsStates"].(map[string]any); ok {
+			e.AgentsStates = states
+		}
 	}
 	return e
 }
@@ -102,6 +116,16 @@ func (e itemEvent) argsSummary() string {
 				return truncateSummary(string(b))
 			}
 		}
+	case "collabAgentToolCall":
+		tool, _ := e.Raw["tool"].(string)
+		prompt, _ := e.Raw["prompt"].(string)
+		if strings.TrimSpace(prompt) == "" {
+			return truncateSummary(tool)
+		}
+		if strings.TrimSpace(tool) == "" {
+			return truncateSummary(prompt)
+		}
+		return truncateSummary(tool + ": " + prompt)
 	}
 	return ""
 }
@@ -124,6 +148,18 @@ func (e itemEvent) resultOutput() string {
 				return truncateOutput(string(b))
 			}
 		}
+	case "collabAgentToolCall":
+		result := map[string]any{}
+		for _, key := range []string{"receiverThreadIds", "agentsStates"} {
+			if value, ok := e.Raw[key]; ok && value != nil {
+				result[key] = value
+			}
+		}
+		if len(result) > 0 {
+			if b, err := json.Marshal(result); err == nil {
+				return truncateOutput(string(b))
+			}
+		}
 	}
 	return ""
 }
@@ -139,7 +175,7 @@ func truncateOutput(s string) string {
 
 func toolCompletionEvent(e itemEvent) string {
 	switch e.Status {
-	case "failed", "declined":
+	case "failed", "declined", "interrupted":
 		return domain.EventToolFailed
 	default:
 		return domain.EventToolCompleted

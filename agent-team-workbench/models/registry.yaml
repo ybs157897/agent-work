@@ -4,7 +4,7 @@ providers:
     - id: prov-kimi
       label: Kimi
       provider: moonshot
-      api: openai-completions
+      api: openai-responses
       base_url: https://api.kimi.com/coding/v1
       api_key_env: MOONSHOT_API_KEY
       models:

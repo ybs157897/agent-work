@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,7 @@ import (
 
 type Config struct {
 	BinPath       string   // codex 可执行文件
-	Args          []string // 启动参数；缺省 ["app-server","--stdio"]（测试可替换为回放桩）
+	Args          []string // 启动参数；缺省开启 multi_agent，原生 OpenAI provider 额外开启 v2（测试可替换为回放桩）
 	Home          string   // CODEX_HOME 项目空间（默认 .agent-work/codex）
 	WorkspaceRoot string   // thread/start.cwd
 	Model         string   // 可选：thread/start.model
@@ -81,6 +82,7 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 			"steering":          runtime.CapSupported, // turn/steer
 			"system_prompt":     runtime.CapSupported,
 			"modes":             runtime.CapSupported,
+			"subagents":         runtime.CapSupported,
 			"permissions":       runtime.CapAdapterTranslated,
 			"approval":          runtime.CapSupported, // item/*/requestApproval
 			"workspace_files":   runtime.CapSupported,
@@ -122,7 +124,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 	}
 
-	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs()...)
+	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs(snap)...)
 	if err != nil {
 		return failedResult(configFailure("spawn_failed", err.Error()))
 	}
@@ -154,13 +156,17 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		cmd: cmd, pgid: pgid, stdin: stdin,
 		done: make(chan error, 1),
 		// 模型注册表快照（orchestrator 写入 run.Input）：per-run 覆盖 thread/start.model。
-		model:           runtime.ModelSnapshotOf(ex.Run).Model,
-		reasoningEffort: codexconfig.EffectiveReasoningEffort(runtime.ModelSnapshotOf(ex.Run).ReasoningEffort),
+		model: runtime.ModelSnapshotOf(ex.Run).Model,
+		// 未显式配置时用 Ultra 进入 proactive multi-agent；用户明确选择的
+		// effort 仍是更高优先级的运行快照，不以“默认”名义覆盖。
+		reasoningEffort: codexTurnReasoningEffort(runtime.ModelSnapshotOf(ex.Run).ReasoningEffort),
 		systemPrompt:    runtime.SystemPromptOf(ex.Run),
 		policy:          policy,
 		resumeThreadID:  runtime.SessionIDFromRef(ex.Session.Ref, "codex"),
 		pendingRequests: make(map[int64]string),
 		approvals:       make(map[string]chan bool),
+		childIDs:        make(map[string]struct{}), childEmitted: make(map[string]map[string]struct{}),
+		childMeta: make(map[string]childMetadata),
 	}
 	go func() { s.done <- cmd.Wait() }()
 	stderrDone := make(chan struct{})
@@ -218,10 +224,19 @@ type execStream struct {
 
 	// 本轮 token 用量（thread/tokenUsage/updated 的 last 增量逐通知累计）；
 	// 过程经 OnUsage 流式观测（累计值逐帧覆盖），终态结算出口是 ExecResult.Usage。
-	usageIn     int64
-	usageOut    int64
-	usageCached int64
-	usageSeen   bool
+	usageIn       int64
+	usageOut      int64
+	usageCached   int64
+	usageSeen     bool
+	childIDs      map[string]struct{}
+	childEmitted  map[string]map[string]struct{}
+	childMeta     map[string]childMetadata
+	turnStartedAt time.Time
+}
+
+type childMetadata struct {
+	name, description, preview, parent string
+	createdAt                          time.Time
 }
 
 func (s *execStream) send(frame map[string]any) error {
@@ -400,19 +415,25 @@ func (s *execStream) closeStdin() {
 	s.mu.Unlock()
 }
 
-// reap 进程回收：关 stdin → 进程组 SIGINT → 宽限 → SIGKILL，随后收尸并等 stderr 排空。
+// reap 正常完成时先关 stdin 并等待 app-server 自然退出；只有超时才升级信号。
 func (s *execStream) reap(grace time.Duration, stderrDone <-chan struct{}) error {
 	s.closeStdin()
-	signalGroup(s.cmd, s.pgid, sigInt)
 	select {
 	case err := <-s.done:
 		<-stderrDone
 		return err
 	case <-time.After(grace):
-		signalGroup(s.cmd, s.pgid, sigKill)
-		err := <-s.done
-		<-stderrDone
-		return err
+		signalGroup(s.cmd, s.pgid, sigInt)
+		select {
+		case err := <-s.done:
+			<-stderrDone
+			return err
+		case <-time.After(grace):
+			signalGroup(s.cmd, s.pgid, sigKill)
+			err := <-s.done
+			<-stderrDone
+			return err
+		}
 	}
 }
 
@@ -588,6 +609,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				if r.Turn.ID != "" {
 					s.mu.Lock()
 					s.turnID = r.Turn.ID
+					s.turnStartedAt = time.Now().UTC()
 					s.mu.Unlock()
 				}
 			}
@@ -622,9 +644,14 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				} `json:"turn"`
 			}
 			_ = json.Unmarshal(frame.Params, &n)
+			if agent := s.eventAgent(frame.Params); agent != "" {
+				s.emitChildSnapshot(agent, "running", "", "")
+				continue
+			}
 			if n.Turn.ID != "" {
 				s.mu.Lock()
 				s.turnID = n.Turn.ID
+				s.turnStartedAt = time.Now().UTC()
 				s.mu.Unlock()
 			}
 		case "turn/plan/updated":
@@ -638,8 +665,15 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 			}
 		case "item/started":
 			item := parseItemEvent(frame.Params)
+			agent := s.eventAgent(frame.Params)
+			s.markChildItem(agent, item.ID)
+			s.trackCollab(item)
 			if item.isTool() {
+				s.markChildKind(agent, "tool")
 				payload := item.canonicalPayload()
+				if agent != "" {
+					payload["agent_id"] = agent
+				}
 				if s := item.argsSummary(); s != "" {
 					payload["args_summary"] = s
 				}
@@ -647,11 +681,14 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					payload["args"] = a
 				}
 				s.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
-			} else if item.Type == "agentMessage" || item.Type == "plan" {
+			} else if (item.Type == "agentMessage" || item.Type == "plan") && agent == "" {
 				s.resetAnswerState()
 			}
 		case "item/completed":
 			item := parseItemEvent(frame.Params)
+			agent := s.eventAgent(frame.Params)
+			s.markChildItem(agent, item.ID)
+			s.trackCollab(item)
 			switch {
 			case item.Type == "contextCompaction":
 				// 0.149.0 v2 压缩事实的 canonical 路径：item/started 只表示压缩
@@ -659,6 +696,13 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				// 不重放历史 item 通知）。
 				s.ex.Callbacks.OnEvent(domain.EventSessionCompacted, compactedPayload(frame.Params))
 			case item.Type == "agentMessage" || item.Type == "plan":
+				if agent != "" {
+					if item.Text != "" {
+						s.markChildKind(agent, "message")
+						s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{"agent_id": agent, "role": "assistant", "text": item.Text, "item_type": item.Type})
+					}
+					continue
+				}
 				if text, ok := s.finalAnswer(item.Text); ok {
 					s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{
 						"role": "assistant", "text": text, "item_type": item.Type,
@@ -666,7 +710,11 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.resetAnswerState()
 				}
 			case item.isTool():
+				s.markChildKind(agent, "tool")
 				payload := item.canonicalPayload()
+				if agent != "" {
+					payload["agent_id"] = agent
+				}
 				if out := item.resultOutput(); out != "" {
 					payload["output"] = out
 				}
@@ -678,20 +726,36 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "item/agentMessage/delta", "item/plan/delta":
 			text := codexDeltaText(frame.Params)
 			if text != "" {
-				s.appendAnswer(text)
-				s.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
+				agent := s.eventAgent(frame.Params)
+				if agent == "" {
+					s.appendAnswer(text)
+				}
+				payload := map[string]any{
 					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": text}},
-				})
+				}
+				if agent != "" {
+					payload["agent_id"] = agent
+				}
+				s.ex.Callbacks.OnEvent(domain.EventMessageDelta, payload)
 			}
 		case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 			if text := codexDeltaText(frame.Params); text != "" {
-				s.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
+				payload := map[string]any{
 					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": text}},
-				})
+				}
+				if agent := s.eventAgent(frame.Params); agent != "" {
+					payload["agent_id"] = agent
+					s.markChildKind(agent, "reasoning")
+				}
+				s.ex.Callbacks.OnEvent(domain.EventMessageDelta, payload)
 			}
 		case "item/commandExecution/outputDelta":
 			if text := codexDeltaText(frame.Params); text != "" {
 				payload := map[string]any{"tool": "shell", "text": truncateSummary(text)}
+				if agent := s.eventAgent(frame.Params); agent != "" {
+					payload["agent_id"] = agent
+					s.markChildKind(agent, "tool")
+				}
 				var ref struct {
 					ItemID string `json:"itemId"`
 				}
@@ -702,6 +766,10 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				s.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
 			}
 		case "turn/completed":
+			if agent := s.eventAgent(frame.Params); agent != "" {
+				s.emitChildSnapshot(agent, "completed", "", "")
+				continue
+			}
 			var n struct {
 				Turn struct {
 					Status string `json:"status"`
@@ -724,6 +792,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.resetAnswerState()
 				}
 			}
+			s.hydrateChildren(reader)
 			return res
 		case "error":
 			res.failure = codexFailure("codex_error", rawString(frame.Params))
@@ -735,6 +804,375 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		}
 	}
 }
+
+// 记录本轮协作项声明的精确子线程集合。
+func (s *execStream) trackCollab(item itemEvent) {
+	if item.Type != "collabAgentToolCall" {
+		return
+	}
+	for _, id := range item.ReceiverThreadIDs {
+		s.mu.Lock()
+		s.childIDs[id] = struct{}{}
+		s.mu.Unlock()
+		status := "running"
+		if state, ok := item.AgentsStates[id].(map[string]any); ok {
+			if v, ok := state["status"].(string); ok && v != "" {
+				status = codexChildStatus(v)
+			}
+		}
+		if item.argsSummary() != "" {
+			s.mu.Lock()
+			meta := s.childMeta[id]
+			if meta.preview == "" {
+				meta.preview = item.argsSummary()
+			}
+			s.childMeta[id] = meta
+			s.mu.Unlock()
+		}
+		s.emitChildSnapshot(id, status, "", "")
+	}
+}
+
+func (s *execStream) emitChildSnapshot(id, status, summary, failure string) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	meta := s.childMeta[id]
+	parent := s.threadID
+	s.mu.Unlock()
+	name, description := meta.name, meta.description
+	if meta.parent != "" {
+		parent = meta.parent
+	}
+	if name == "" {
+		name = id
+	}
+	if description == "" {
+		description = meta.preview
+	}
+	if description == "" {
+		description = "Codex 子 Agent"
+	}
+	s.ex.Callbacks.OnEvent(domain.EventSubagentUpdated, map[string]any{
+		"runtime": "codex", "role": "child", "id": id, "subagent_id": id,
+		"name": name, "description": description, "status": codexChildStatus(status),
+		"summary": truncateOutput(summary), "error": truncateMessage(failure), "parent_thread_id": parent,
+	})
+}
+
+func codexChildStatus(status string) string {
+	switch strings.ToLower(status) {
+	case "pendinginit", "pending", "queued":
+		return "queued"
+	case "running", "inprogress":
+		return "running"
+	case "completed", "succeeded", "success":
+		return "completed"
+	case "interrupted", "shutdown", "cancelled", "canceled":
+		return "stopped"
+	case "errored", "error", "failed", "notfound":
+		return "failed"
+	default:
+		return "running"
+	}
+}
+
+func codexCreatedAt(value any) time.Time {
+	switch v := value.(type) {
+	case float64:
+		if v > 1e12 {
+			v /= 1000
+		}
+		return time.Unix(int64(v), 0).UTC()
+	case json.Number:
+		f, _ := v.Float64()
+		if f > 1e12 {
+			f /= 1000
+		}
+		return time.Unix(int64(f), 0).UTC()
+	case string:
+		t, _ := time.Parse(time.RFC3339Nano, v)
+		return t
+	}
+	return time.Time{}
+}
+
+func codexChildBelongsToTurn(id string, createdAt any, started time.Time, exactIDs map[string]struct{}) bool {
+	if len(exactIDs) > 0 {
+		_, ok := exactIDs[id]
+		return ok
+	}
+	if started.IsZero() {
+		return true
+	}
+	created := codexCreatedAt(createdAt)
+	return !created.IsZero() && !created.Before(started.Add(-2*time.Second))
+}
+
+func (s *execStream) currentThreadID() string { s.mu.Lock(); defer s.mu.Unlock(); return s.threadID }
+
+func (s *execStream) eventAgent(raw json.RawMessage) string {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		ItemID   string `json:"itemId"`
+	}
+	_ = json.Unmarshal(raw, &p)
+	s.mu.Lock()
+	root := s.threadID
+	s.mu.Unlock()
+	if p.ThreadID != "" && p.ThreadID != root {
+		return p.ThreadID
+	}
+	return ""
+}
+
+func (s *execStream) markChildItem(agent, item string) {
+	if agent == "" || item == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.childEmitted[agent] == nil {
+		s.childEmitted[agent] = map[string]struct{}{}
+	}
+	s.childEmitted[agent][item] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *execStream) markChildKind(agent, kind string) {
+	if kind == "" {
+		return
+	}
+	s.markChildItem(agent, "@kind/"+kind)
+}
+
+// 通过 app-server 补齐本轮子线程；不读取 rollout JSONL。
+func (s *execStream) hydrateChildren(reader *bufio.Reader) {
+	s.mu.Lock()
+	ids := make([]string, 0, len(s.childIDs))
+	for id := range s.childIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	parent := s.threadID
+	s.mu.Unlock()
+	if parent == "" {
+		return
+	}
+	result, ok := s.rpcDuringPump(reader, "thread/list", map[string]any{"ancestorThreadId": parent, "limit": 100})
+	if ok {
+		var body struct {
+			Data []map[string]any `json:"data"`
+		}
+		if json.Unmarshal(result, &body) == nil {
+			s.mu.Lock()
+			started := s.turnStartedAt
+			selected := make(map[string]struct{}, len(ids))
+			for _, id := range ids {
+				selected[id] = struct{}{}
+			}
+			for _, child := range body.Data {
+				id, _ := child["id"].(string)
+				if id == "" {
+					continue
+				}
+				if !codexChildBelongsToTurn(id, child["createdAt"], started, s.childIDs) {
+					continue
+				}
+				meta := childMetadata{parent: parent}
+				if value, ok := child["parentThreadId"].(string); ok && value != "" {
+					meta.parent = value
+				}
+				meta.name, _ = child["agentRole"].(string)
+				if meta.name == "" {
+					meta.name, _ = child["agentNickname"].(string)
+				}
+				meta.description, _ = child["preview"].(string)
+				if meta.description == "" {
+					meta.description, _ = child["task"].(string)
+				}
+				meta.preview, _ = child["preview"].(string)
+				s.childMeta[id] = meta
+				if _, exists := selected[id]; !exists {
+					selected[id] = struct{}{}
+					ids = append(ids, id)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+	sort.Strings(ids)
+	for _, child := range ids {
+		status, summary, failure := s.hydrateChild(reader, child)
+		s.emitChildSnapshot(child, status, summary, failure)
+	}
+}
+
+func (s *execStream) hydrateChild(reader *bufio.Reader, child string) (string, string, string) {
+	cursor := ""
+	seen := map[string]struct{}{}
+	status, summary, failure := "completed", "", ""
+	for {
+		params := map[string]any{"threadId": child, "itemsView": "full", "sortDirection": "asc", "limit": 100}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		result, ok := s.rpcDuringPump(reader, "thread/turns/list", params)
+		if !ok {
+			return status, summary, failure
+		}
+		var body struct {
+			Data []struct {
+				ID     string           `json:"id"`
+				Status string           `json:"status"`
+				Error  map[string]any   `json:"error"`
+				Items  []map[string]any `json:"items"`
+			} `json:"data"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if json.Unmarshal(result, &body) != nil {
+			return status, summary, failure
+		}
+		for _, turn := range body.Data {
+			if turn.Status != "" {
+				status = codexChildStatus(turn.Status)
+			}
+			if turn.Error != nil {
+				failure, _ = turn.Error["message"].(string)
+				if failure != "" {
+					status = "failed"
+				}
+			}
+			for _, item := range turn.Items {
+				key, _ := item["id"].(string)
+				if key == "" {
+					key = fmt.Sprintf("%s:%v", turn.ID, item["type"])
+				}
+				if _, dup := seen[key]; dup {
+					continue
+				}
+				seen[key] = struct{}{}
+				if typ, _ := item["type"].(string); typ == "agentMessage" {
+					summary, _ = item["text"].(string)
+				}
+				s.emitHydratedItem(child, item)
+			}
+		}
+		if body.NextCursor == "" {
+			return status, summary, failure
+		}
+		cursor = body.NextCursor
+	}
+}
+
+func (s *execStream) rpcDuringPump(reader *bufio.Reader, method string, params map[string]any) (json.RawMessage, bool) {
+	s.mu.Lock()
+	s.nextID++
+	id := s.nextID
+	s.mu.Unlock()
+	if err := s.send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
+		return nil, false
+	}
+	for {
+		frame, err := readFrame(reader, s.module.cfg.MaxFrameBytes)
+		if err != nil || frame == nil {
+			if err != nil {
+				return nil, false
+			}
+			continue
+		}
+		if frame.ID != nil && *frame.ID == id {
+			if frame.Error != nil {
+				return nil, false
+			}
+			return frame.Result, true
+		}
+	}
+}
+
+func (s *execStream) emitHydratedItem(child string, item map[string]any) {
+	typ, _ := item["type"].(string)
+	id, _ := item["id"].(string)
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.childEmitted[child] == nil {
+		s.childEmitted[child] = map[string]struct{}{}
+	}
+	kind := ""
+	switch typ {
+	case "reasoning", "reasoningSummary":
+		kind = "reasoning"
+	case "agentMessage", "plan":
+		kind = "message"
+	default:
+		if parseItemEvent(mustJSON(map[string]any{"item": item})).isTool() {
+			kind = "tool"
+		}
+	}
+	if kind != "" {
+		if _, ok := s.childEmitted[child]["@kind/"+kind]; ok {
+			s.mu.Unlock()
+			return
+		}
+	}
+	if _, ok := s.childEmitted[child][id]; ok {
+		s.mu.Unlock()
+		return
+	}
+	s.childEmitted[child][id] = struct{}{}
+	s.mu.Unlock()
+	text, _ := item["text"].(string)
+	if text == "" {
+		for _, key := range []string{"summary", "content"} {
+			if parts, ok := item[key].([]any); ok {
+				var ss []string
+				for _, p := range parts {
+					if v, ok := p.(string); ok {
+						ss = append(ss, v)
+					}
+				}
+				text = strings.Join(ss, "\n")
+				if text != "" {
+					break
+				}
+			}
+		}
+	}
+	switch typ {
+	case "reasoning", "reasoningSummary":
+		if text != "" {
+			s.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": child, "role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": text}}})
+		}
+	case "agentMessage", "plan":
+		if text != "" {
+			s.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{"agent_id": child, "role": "assistant", "text": text, "item_type": typ})
+		}
+	default:
+		ie := parseItemEvent(mustJSON(map[string]any{"item": item}))
+		if !ie.isTool() {
+			return
+		}
+		p := ie.canonicalPayload()
+		p["agent_id"] = child
+		if a := ie.argsSummary(); a != "" {
+			p["args_summary"] = a
+		}
+		if out := ie.resultOutput(); out != "" {
+			p["output"] = out
+		}
+		if ie.Status == "inProgress" || ie.Status == "started" {
+			s.ex.Callbacks.OnEvent(domain.EventToolStarted, p)
+		} else {
+			// 历史完整项只有终态，补发 started 以保持统一卡片结构。
+			s.ex.Callbacks.OnEvent(domain.EventToolStarted, p)
+			s.ex.Callbacks.OnEvent(toolCompletionEvent(ie), p)
+		}
+	}
+}
+
+func mustJSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
 // compactedPayload session.compacted 的 data：turnId 可得则带（thread/compacted
 // 与 item/completed 信封均携 turnId），否则空对象——canonical 契约允许两形态。
@@ -1005,6 +1443,16 @@ func effectiveCodexModel(cfg Config, model string) string {
 		return strings.TrimSpace(model)
 	}
 	return strings.TrimSpace(cfg.Model)
+}
+
+func codexTurnReasoningEffort(effort string) string {
+	normalized := strings.TrimSpace(strings.ToLower(effort))
+	switch normalized {
+	case "minimal", "low", "medium", "high", "xhigh", "ultra":
+		return normalized
+	default:
+		return "ultra"
+	}
 }
 
 func defaultModelFromList(raw json.RawMessage) string {

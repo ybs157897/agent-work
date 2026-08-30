@@ -32,7 +32,7 @@ type FileConfig struct {
 		Ref             string `yaml:"ref,omitempty"` // 引用 models/ 注册表条目
 		Provider        string `yaml:"provider,omitempty"`
 		Model           string `yaml:"model,omitempty"`
-		ReasoningEffort string `yaml:"reasoning_effort,omitempty"` // Codex：minimal|low|medium|high|xhigh
+		ReasoningEffort string `yaml:"reasoning_effort,omitempty"` // Codex：minimal|low|medium|high|xhigh|ultra
 	} `yaml:"model,omitempty"`
 	Permissions struct {
 		Tools          []string `yaml:"tools,omitempty"`
@@ -45,7 +45,7 @@ type FileConfig struct {
 
 var validApprovalPolicy = map[string]bool{"": true, "auto": true, "approve_high_risk": true, "manual": true}
 var validSandbox = map[string]bool{"": true, "read-only": true, "workspace-write": true, "danger-full-access": true}
-var validReasoningEffort = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true}
+var validReasoningEffort = map[string]bool{"": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "ultra": true}
 
 // ToProfile 把文件配置映射到领域对象的可配置字段（不含 availability/presence 等运行态）。
 func (c *FileConfig) ToProfile(a *domain.AgentProfile) {
@@ -148,7 +148,7 @@ func loadOne(dir, slug string) (*FileConfig, error) {
 		return nil, fmt.Errorf("%w: %s: permissions.preset 必须是 read-only|workspace-write|danger-full-access", domain.ErrValidation, yamlPath)
 	}
 	if effort := strings.TrimSpace(strings.ToLower(cfg.Model.ReasoningEffort)); !validReasoningEffort[effort] {
-		return nil, fmt.Errorf("%w: %s: model.reasoning_effort 必须是 minimal|low|medium|high|xhigh", domain.ErrValidation, yamlPath)
+		return nil, fmt.Errorf("%w: %s: model.reasoning_effort 必须是 minimal|low|medium|high|xhigh|ultra", domain.ErrValidation, yamlPath)
 	}
 	if prompt, err := os.ReadFile(filepath.Join(dir, "prompt.md")); err == nil {
 		cfg.Prompt = string(prompt)
