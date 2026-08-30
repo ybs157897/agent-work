@@ -11,7 +11,9 @@ import type { CanonicalEvent, DecisionEntry } from '../api/types';
 interface DecisionsStore {
   /** work_item_id → 决策台账（升序）；未拉取过 = undefined。 */
   byWorkItem: Record<string, DecisionEntry[]>;
-  /** 详情抽屉打开时拉快照；GET 失败只吞本次（下一个 decision.* 事件或重开重试）。 */
+  /** work_item_id → 最近一次决策列表请求错误；存在时 UI 不得伪装为空态。 */
+  errorByWorkItem: Record<string, string | undefined>;
+  /** 详情抽屉打开时拉快照；GET 失败保留错误供就地重试。 */
   refreshFor: (workItemId: string) => Promise<void>;
   /** decision 域 SSE 事件（decision.*）；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
@@ -21,16 +23,35 @@ interface DecisionsStore {
 const REFETCH_DEBOUNCE_MS = 200;
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const requestVersions = new Map<string, number>();
 
 export const useDecisionsStore = create<DecisionsStore>()((set) => ({
   byWorkItem: {},
+  errorByWorkItem: {},
 
   refreshFor: async (workItemId) => {
+    const requestVersion = (requestVersions.get(workItemId) ?? 0) + 1;
+    requestVersions.set(workItemId, requestVersion);
     try {
       const { items } = await listWorkItemDecisions(workItemId);
-      set((s) => ({ byWorkItem: { ...s.byWorkItem, [workItemId]: items } }));
+      if (requestVersions.get(workItemId) !== requestVersion) return;
+      set((s) => {
+        const errorByWorkItem = { ...s.errorByWorkItem };
+        delete errorByWorkItem[workItemId];
+        return {
+          byWorkItem: { ...s.byWorkItem, [workItemId]: items },
+          errorByWorkItem,
+        };
+      });
     } catch {
-      // 只吞本次 GET 失败（网络/5xx）：SSE 仍在流上，重开详情或下个事件会重试。
+      if (requestVersions.get(workItemId) !== requestVersion) return;
+      // 保留错误投影给当前详情；重试按钮会复用同一权威 GET。
+      set((s) => ({
+        errorByWorkItem: {
+          ...s.errorByWorkItem,
+          [workItemId]: '决策记录加载失败，请重试',
+        },
+      }));
     }
   },
 

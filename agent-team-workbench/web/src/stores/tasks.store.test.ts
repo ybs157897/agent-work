@@ -5,6 +5,7 @@ import { useTasksStore } from './tasks.store';
 const item: WorkItem = {
   id: 'wi_1',
   workspace_id: 'ws_1',
+  record_kind: 'task',
   title: '任务',
   description: '',
   status: 'todo',
@@ -82,5 +83,38 @@ describe('tasks.store moveOptimistic', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(problem(422, 'illegal_transition')));
     await expect(useTasksStore.getState().moveOptimistic('wi_1', 'completed')).rejects.toThrow();
     expect(useTasksStore.getState().items[0].status).toBe('todo');
+  });
+});
+
+describe('tasks.store record isolation', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('hydrate 只保留 task 记录，Chat 不进入任务看板', () => {
+    const chat = { ...item, id: 'chat_1', record_kind: 'chat' as const, title: '独立对话' };
+    useTasksStore.getState().hydrate([item, chat]);
+    expect(useTasksStore.getState().items.map((entry) => entry.id)).toEqual(['wi_1']);
+  });
+
+  it('upsert 拒绝 Chat 记录，详情/事件越界也不会写入看板', () => {
+    useTasksStore.setState({ items: [], loaded: false });
+    const chat = { ...item, id: 'chat_1', record_kind: 'chat' as const, title: '独立对话' };
+    useTasksStore.getState().upsert(chat);
+    expect(useTasksStore.getState().items).toEqual([]);
+  });
+
+  it('refresh 请求显式带 record_kind=task 且响应再次 fail-closed', async () => {
+    const chat = { ...item, id: 'chat_1', record_kind: 'chat' as const, title: '独立对话' };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [item, chat], next_cursor: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { useWorkspaceStore } = await import('./workspace.store');
+    useWorkspaceStore.setState({ workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 } });
+
+    await useTasksStore.getState().refresh();
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/workspaces/ws_1/work-items?record_kind=task', expect.any(Object));
+    expect(useTasksStore.getState().items.map((entry) => entry.id)).toEqual(['wi_1']);
   });
 });

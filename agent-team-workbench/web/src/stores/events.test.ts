@@ -14,6 +14,7 @@ const envelope = (type: string): CanonicalEvent => ({
   aggregate: { type: 'work_item', id: 'wi_1', version: 1 },
   type,
   occurred_at: '2026-08-22T00:00:00Z',
+  data: { record_kind: 'task' },
 });
 
 describe('routeEvent SSE→refresh debounce', () => {
@@ -74,12 +75,41 @@ describe('routeEvent SSE→refresh debounce', () => {
 
     const ev = envelope('run.completed');
     ev.aggregate = { type: 'execution_run', id: 'run_1', version: 1 };
+    ev.data = { record_kind: 'chat' };
     routeEvent(ev);
     expect(fetchMock).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 10);
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.includes('/work-items?assignee=agent_1'))).toBe(true);
+    expect(urls.some((u) => u.includes('/work-items?assignee=agent_1&record_kind=chat'))).toBe(true);
+  });
+
+  it('缺少 record_kind 的 work_item 事件不刷新任何记录列表', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [], next_cursor: null })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('work_item.created');
+    delete ev.data;
+    routeEvent(ev);
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 10);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('chat work_item 事件只刷新 Chat 列表，不刷新任务看板或任务仪表盘', async () => {
+    const { useChatStore } = await import('./chat.store');
+    useChatStore.setState({ agentId: 'agent_1', conversationId: null, conversations: [], runs: [], sending: false });
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [], next_cursor: null })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const ev = envelope('work_item.created');
+    ev.data = { record_kind: 'chat' };
+    routeEvent(ev);
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 10);
+
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((url) => url.includes('/work-items?assignee=agent_1&record_kind=chat'))).toBe(true);
+    expect(urls.some((url) => url.includes('/dashboard'))).toBe(false);
+    expect(urls.some((url) => url.includes('record_kind=task'))).toBe(false);
   });
 });
 
@@ -112,7 +142,7 @@ describe('routeEvent plan 域路由', () => {
 
     const ev = envelope('plan.submitted');
     ev.aggregate = { type: 'plan', id: 'plan_1', version: 1 };
-    ev.data = { work_item_id: 'wi_1' };
+    ev.data = { work_item_id: 'wi_1', record_kind: 'task' };
     routeEvent(ev);
 
     await vi.waitFor(() => {
@@ -130,7 +160,7 @@ describe('routeEvent dispatch 域路由（会话元模型）', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    useDispatchesStore.setState({ byWorkItem: {} });
+    useDispatchesStore.setState({ byWorkItem: {}, errorByWorkItem: {} });
   });
 
   it('dispatch.created 按载荷 work_item_id 失效重取派发卡片（窗口内合并为一次）', async () => {
@@ -148,7 +178,7 @@ describe('routeEvent dispatch 域路由（会话元模型）', () => {
 
     const ev = envelope('dispatch.created');
     ev.aggregate = { type: 'dispatch', id: 'disp_1', version: 1 };
-    ev.data = { work_item_id: 'wi_1', trigger: 'user_message', status: 'running' };
+    ev.data = { work_item_id: 'wi_1', trigger: 'user_message', status: 'running', record_kind: 'task' };
     routeEvent(ev);
     routeEvent(ev);
     expect(fetchMock).not.toHaveBeenCalled(); // trailing-edge：窗口内尚未触发
@@ -171,6 +201,23 @@ describe('routeEvent dispatch 域路由（会话元模型）', () => {
     await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('派发列表请求失败留下可重试错误，成功重试后清除错误', async () => {
+    let failed = true;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      if (failed) return Promise.reject(new Error('network'));
+      return Promise.resolve(json({ items: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useDispatchesStore.getState().refreshFor('wi_1');
+    expect(useDispatchesStore.getState().errorByWorkItem.wi_1).toBe('派发记录加载失败，请重试');
+
+    failed = false;
+    await useDispatchesStore.getState().refreshFor('wi_1');
+    expect(useDispatchesStore.getState().errorByWorkItem.wi_1).toBeUndefined();
+    expect(useDispatchesStore.getState().byWorkItem.wi_1).toEqual([]);
+  });
 });
 
 describe('routeEvent decision 域路由（会话元模型 S2）', () => {
@@ -180,7 +227,7 @@ describe('routeEvent decision 域路由（会话元模型 S2）', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    useDecisionsStore.setState({ byWorkItem: {} });
+    useDecisionsStore.setState({ byWorkItem: {}, errorByWorkItem: {} });
   });
 
   it('decision.created 按载荷 work_item_id 失效重取决策台账（窗口内合并为一次）', async () => {
@@ -194,7 +241,7 @@ describe('routeEvent decision 域路由（会话元模型 S2）', () => {
 
     const ev = envelope('decision.created');
     ev.aggregate = { type: 'decision', id: 'dec_1', version: 1 };
-    ev.data = { work_item_id: 'wi_1', quote: '以周会结论为准' };
+    ev.data = { work_item_id: 'wi_1', quote: '以周会结论为准', record_kind: 'task' };
     routeEvent(ev);
     routeEvent(ev);
     expect(fetchMock).not.toHaveBeenCalled(); // trailing-edge：窗口内尚未触发
@@ -216,6 +263,23 @@ describe('routeEvent decision 域路由（会话元模型 S2）', () => {
 
     await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('决策列表请求失败留下可重试错误，成功重试后清除错误', async () => {
+    let failed = true;
+    const fetchMock = vi.fn().mockImplementation(() => {
+      if (failed) return Promise.reject(new Error('network'));
+      return Promise.resolve(json({ items: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useDecisionsStore.getState().refreshFor('wi_1');
+    expect(useDecisionsStore.getState().errorByWorkItem.wi_1).toBe('决策记录加载失败，请重试');
+
+    failed = false;
+    await useDecisionsStore.getState().refreshFor('wi_1');
+    expect(useDecisionsStore.getState().errorByWorkItem.wi_1).toBeUndefined();
+    expect(useDecisionsStore.getState().byWorkItem.wi_1).toEqual([]);
   });
 });
 

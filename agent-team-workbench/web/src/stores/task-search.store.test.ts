@@ -11,6 +11,7 @@ const json = (body: unknown) =>
 const workItem = (id: string, title: string): WorkItem => ({
   id,
   workspace_id: 'ws_1',
+  record_kind: 'task',
   title,
   description: '',
   status: 'in_progress',
@@ -51,7 +52,7 @@ describe('task-search store（S4 FTS）', () => {
     await vi.advanceTimersByTimeAsync(300 + 10);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url] = fetchMock.mock.calls[0] as [string];
-    expect(decodeURIComponent(String(url))).toBe('/api/v1/workspaces/ws_1/search?q=检索关键词');
+    expect(decodeURIComponent(String(url))).toBe('/api/v1/workspaces/ws_1/search?q=检索关键词&record_kind=task');
     expect(useTaskSearchStore.getState().phase).toBe('done');
     expect(useTaskSearchStore.getState().source).toBe('remote');
     expect(useTaskSearchStore.getState().items).toHaveLength(1);

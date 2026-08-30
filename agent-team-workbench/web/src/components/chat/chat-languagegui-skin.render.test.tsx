@@ -41,6 +41,7 @@ describe('production chat LanguageGUI skin', () => {
     expect(html).toContain('chat-msg-actions');
     expect(html).toContain('aria-label="复制"');
     expect(html).toContain('aria-label="分叉对话"');
+    expect(html).not.toContain('钉为决策');
     expect(html).not.toContain('chat-role-label');
     expect(html).not.toContain('chat-msg-time');
     expect(html).not.toContain('2026-08-27');

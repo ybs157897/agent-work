@@ -22,6 +22,7 @@ const json = (body: unknown, status = 200) =>
 const workItem: WorkItem = {
   id: 'wi_1',
   workspace_id: 'ws_1',
+  record_kind: 'task',
   title: '主任务',
   description: '',
   status: 'in_progress',
@@ -128,15 +129,15 @@ describe('plan / tree endpoints', () => {
     expect(got.id).toBe('plan_1');
   });
 
-  it('listWorkItems: parent_id=none 只查根任务，任务 id 精确匹配', async () => {
+  it('listWorkItems: record_kind 与 parent_id 均按查询条件透传', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [], next_cursor: null })));
     vi.stubGlobal('fetch', fetchMock);
 
-    await listWorkItems('ws_1', { parent_id: 'none' });
-    await listWorkItems('ws_1', { parent_id: 'wi_parent' });
+    await listWorkItems('ws_1', { record_kind: 'task', parent_id: 'none' });
+    await listWorkItems('ws_1', { record_kind: 'chat', parent_id: 'wi_parent' });
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
-    expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?parent_id=none');
-    expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?parent_id=wi_parent');
+    expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=task&parent_id=none');
+    expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=chat&parent_id=wi_parent');
   });
 });
 
@@ -236,11 +237,11 @@ describe('workspaces FTS search endpoint（会话元模型 S4）', () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
     vi.stubGlobal('fetch', fetchMock);
 
-    await searchWorkspace('ws_1', { q: '上线窗口', workItemId: 'wi_1', kind: 'decision', limit: 50 });
+    await searchWorkspace('ws_1', { q: '上线窗口', record_kind: 'task', workItemId: 'wi_1', kind: 'decision', limit: 50 });
     await searchWorkspace('ws_1', { q: '上线窗口' });
     const [full, minimal] = fetchMock.mock.calls as [[string, RequestInit], [string, RequestInit]];
     expect(decodeURIComponent(String(full[0]))).toBe(
-      '/api/v1/workspaces/ws_1/search?q=上线窗口&work_item_id=wi_1&kind=decision&limit=50',
+      '/api/v1/workspaces/ws_1/search?q=上线窗口&record_kind=task&work_item_id=wi_1&kind=decision&limit=50',
     );
     expect(decodeURIComponent(String(minimal[0]))).toBe('/api/v1/workspaces/ws_1/search?q=上线窗口');
     expect(minimal[1].method).toBe('GET');

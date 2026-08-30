@@ -33,6 +33,11 @@ const refreshDashboard = createDebounced(() => void useDashboardStore.getState()
 const refreshAgents = createDebounced(() => void useAgentsStore.getState().refresh());
 const refreshChatConversations = createDebounced(() => void useChatStore.getState().refreshConversations());
 
+function eventRecordKind(ev: CanonicalEvent): 'chat' | 'task' | undefined {
+  const value = ev.data?.record_kind;
+  return value === 'chat' || value === 'task' ? value : undefined;
+}
+
 /**
  * SSE 事件路由（协议 §6.3 事件目录）：
  * - 列表类资源采用失效重取（debounce 合并），保证与权威投影一致；
@@ -44,8 +49,13 @@ export function routeEvent(ev: CanonicalEvent): void {
   const runs = useRunsStore.getState();
 
   if (ev.type.startsWith('work_item.')) {
-    refreshTasks();
-    refreshDashboard();
+    const kind = eventRecordKind(ev);
+    if (kind === 'task') {
+      refreshTasks();
+      refreshDashboard();
+    } else if (kind === 'chat') {
+      refreshChatConversations();
+    }
     return;
   }
   if (ev.type.startsWith('agent_')) {
@@ -58,18 +68,21 @@ export function routeEvent(ev: CanonicalEvent): void {
     return;
   }
   if (ev.type.startsWith('plan.')) {
+    if (eventRecordKind(ev) !== 'task') return;
     // plan 域事件就地更新 plans store（按主任务覆盖）；dispatch 建出的子任务
     // 会另行发 work_item.created，看板刷新由那条事件触发。
     usePlansStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type.startsWith('dispatch.')) {
+    if (eventRecordKind(ev) !== 'task') return;
     // 派发批次事件（会话元模型）：按 work item 失效重取派发卡片
     //（详情抽屉时间线消费）；批次建出的子任务仍由 work_item.created 刷看板。
     useDispatchesStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type.startsWith('decision.')) {
+    if (eventRecordKind(ev) !== 'task') return;
     // 决策台账事件（会话元模型 S2）：按 work item 失效重取决策列表。
     useDecisionsStore.getState().applyEvent(ev);
     return;
@@ -81,11 +94,22 @@ export function routeEvent(ev: CanonicalEvent): void {
   }
   if (ev.type === 'run.created') {
     // work item 的 latest_run_id/runs_count 已变化，但 M1 不发 work_item.updated。
-    refreshTasks();
-    refreshChatConversations();
+    const kind = eventRecordKind(ev);
+    if (kind === 'task') {
+      refreshTasks();
+      refreshDashboard();
+    } else if (kind === 'chat') {
+      refreshChatConversations();
+    }
   }
   if (ev.type === 'run.completed' || ev.type === 'run.failed') {
-    refreshChatConversations();
+    const kind = eventRecordKind(ev);
+    if (kind === 'task') {
+      refreshTasks();
+      refreshDashboard();
+    } else if (kind === 'chat') {
+      refreshChatConversations();
+    }
   }
   if (!runs.applyEvent(ev)) {
     // system.health_changed / runtime.health_changed / runner.* 等：

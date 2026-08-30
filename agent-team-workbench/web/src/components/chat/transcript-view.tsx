@@ -1,9 +1,7 @@
 import { AssistantTurn } from './assistant-turn';
 import { MessageActions } from './message-actions';
-import { PinDecisionAction } from './pin-decision-action';
 import { TurnDiffCard } from './turn-diff-card';
 import { OutputLoadingIndicator, WorkActivityTimeline } from './work-activity-timeline';
-import { useChatStore } from '../../stores/chat.store';
 import type { ChatMessage } from '../../stores/chat.store';
 import {
   presentedTranscriptSegmentKey,
@@ -69,21 +67,12 @@ function TranscriptSegmentView({
 }
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
-  // 钉为决策锚到当前会话的任务台账；分叉/切换会话时 conversationId 随之切换。
-  const conversationId = useChatStore((s) => s.conversationId);
   return (
     <article className="chat-user-turn group" aria-label="你的消息">
       <div className="chat-user-card whitespace-pre-wrap break-words">
         {msg.text}
       </div>
-      <MessageActions text={msg.text} className="mt-1">
-        <PinDecisionAction
-          quote={msg.text}
-          workItemId={conversationId ?? undefined}
-          sourceRunId={msg.runId}
-          idempotencyKey={`decision:${conversationId ?? ''}:${msg.key}`}
-        />
-      </MessageActions>
+      <MessageActions text={msg.text} className="mt-1" />
     </article>
   );
 }

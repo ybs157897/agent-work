@@ -188,7 +188,7 @@ export default function ChatPage() {
 
   return (
     <div className="tx-scope chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden" data-theme={chatTheme}>
-      {/* 左栏：Agent 切换排 + 任务列表（对话即任务） */}
+      {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
           <div className="mb-1 px-1 text-caption font-medium uppercase tracking-wide text-text-tertiary">Agent</div>
@@ -241,7 +241,7 @@ export default function ChatPage() {
               <EmptyState
                 icon={<MessageSquare className="w-5 h-5" />}
                 title="选择一个 Agent 开始对话"
-                description="对话即任务：每条消息创建一个执行 Run，全程可追溯"
+                description="每条消息创建独立 Chat 记录与执行 Run，全程可追溯"
               />
             </div>
           </div>
@@ -867,7 +867,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         {messages.length === 0 && presentedSegments.length === 0 && (
           <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
             <p className="text-center text-caption text-text-tertiary">
-              输入第一条消息，为 {agent?.name ?? 'Agent'} 创建任务并开始运行；或从建议开始：
+              输入第一条消息，为 {agent?.name ?? 'Agent'} 创建对话并开始运行；或从建议开始：
             </p>
             <div className="mt-3 flex flex-wrap justify-center gap-2">
               {suggestedPrompts(agent?.role).map((p) => (

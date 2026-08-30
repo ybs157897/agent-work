@@ -42,7 +42,16 @@ describe('applyMention', () => {
 describe('mentionableAgents', () => {
   it('过滤名字含空白的 agent（服务端 @直达 只取首个空白词，无法命中）', () => {
     expect(
-      mentionableAgents([{ name: '小明' }, { name: 'Two Words' }, { name: '   ' }]),
-    ).toEqual([{ name: '小明' }]);
+      mentionableAgents([{ name: '小明', availability: 'enabled' }, { name: 'Two Words' }, { name: '   ' }]),
+    ).toEqual([{ name: '小明', availability: 'enabled' }]);
+  });
+
+  it('停用 Agent 不进入 @ 提及候选', () => {
+    expect(
+      mentionableAgents([
+        { name: 'Atlas', availability: 'enabled' },
+        { name: 'Forge', availability: 'disabled' },
+      ]),
+    ).toEqual([{ name: 'Atlas', availability: 'enabled' }]);
   });
 });

@@ -9,6 +9,8 @@ export type AgentPresence = 'idle' | 'busy' | 'degraded' | 'offline';
 export type WorkItemStatus = 'todo' | 'in_progress' | 'blocked' | 'completed' | 'cancelled';
 export type WorkItemPhase = 'execution' | 'review' | 'acceptance' | '';
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+/** WorkItem 的持久化记录类型；Chat 与 Task 共用执行内核但不共享记录入口。 */
+export type WorkItemRecordKind = 'chat' | 'task';
 
 export type RunStatus =
   | 'queued'
@@ -113,6 +115,8 @@ export interface Blocker {
 export interface WorkItem {
   id: string;
   workspace_id: string;
+  /** 不可变记录类型；所有列表、导航与终态副作用均以此为硬边界。 */
+  record_kind: WorkItemRecordKind;
   title: string;
   description: string;
   status: WorkItemStatus;

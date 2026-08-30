@@ -12,7 +12,9 @@ import type { CanonicalEvent, DispatchCard } from '../api/types';
 interface DispatchesStore {
   /** work_item_id → 派发卡片列表（新→旧）；未拉取过 = undefined。 */
   byWorkItem: Record<string, DispatchCard[]>;
-  /** 详情抽屉打开时按主任务拉快照；GET 失败只吞本次（下一个 dispatch.* 事件或重开重试）。 */
+  /** work_item_id → 最近一次派发列表请求错误；存在时 UI 不得伪装为空态。 */
+  errorByWorkItem: Record<string, string | undefined>;
+  /** 详情抽屉打开时按主任务拉快照；GET 失败保留错误供就地重试。 */
   refreshFor: (workItemId: string) => Promise<void>;
   /** dispatch 域 SSE 事件（dispatch.*）；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
@@ -22,16 +24,35 @@ interface DispatchesStore {
 const REFETCH_DEBOUNCE_MS = 200;
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const requestVersions = new Map<string, number>();
 
 export const useDispatchesStore = create<DispatchesStore>()((set) => ({
   byWorkItem: {},
+  errorByWorkItem: {},
 
   refreshFor: async (workItemId) => {
+    const requestVersion = (requestVersions.get(workItemId) ?? 0) + 1;
+    requestVersions.set(workItemId, requestVersion);
     try {
       const { items } = await listWorkItemDispatches(workItemId);
-      set((s) => ({ byWorkItem: { ...s.byWorkItem, [workItemId]: items } }));
+      if (requestVersions.get(workItemId) !== requestVersion) return;
+      set((s) => {
+        const errorByWorkItem = { ...s.errorByWorkItem };
+        delete errorByWorkItem[workItemId];
+        return {
+          byWorkItem: { ...s.byWorkItem, [workItemId]: items },
+          errorByWorkItem,
+        };
+      });
     } catch {
-      // 只吞本次 GET 失败（网络/5xx）：SSE 仍在流上，重开详情或下个事件会重试。
+      if (requestVersions.get(workItemId) !== requestVersion) return;
+      // 保留错误投影给当前详情；重试按钮会复用同一权威 GET。
+      set((s) => ({
+        errorByWorkItem: {
+          ...s.errorByWorkItem,
+          [workItemId]: '派发记录加载失败，请重试',
+        },
+      }));
     }
   },
 

@@ -33,6 +33,37 @@ describe('TaskLedgerView', () => {
     expect(html).toContain('会话轮次收尾后自动生成');
   });
 
+  it('摘要请求失败显示就地错误与重试，不伪装为空态或持续加载', () => {
+    const html = renderToStaticMarkup(
+      <TaskLedgerView
+        digest={null}
+        digestError="台账摘要加载失败，请重试"
+        onRetryDigest={() => undefined}
+      />,
+    );
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('台账摘要加载失败，请重试');
+    expect(html).toContain('>重试</button>');
+    expect(html).not.toContain('台账加载中…');
+    expect(html).not.toContain('尚无台账摘要');
+  });
+
+  it('决策与参与线请求失败各自显示可重试的就地错误', () => {
+    const html = renderToStaticMarkup(
+      <TaskLedgerView
+        digest="摘要仍可见"
+        decisionsError="决策记录加载失败，请重试"
+        onRetryDecisions={() => undefined}
+        sessionError="会话参与线加载失败，请重试"
+        onRetrySession={() => undefined}
+      />,
+    );
+    expect(html.match(/role="alert"/g)).toHaveLength(2);
+    expect(html).toContain('决策记录加载失败，请重试');
+    expect(html).toContain('会话参与线加载失败，请重试');
+    expect(html).not.toContain('暂无决策原话');
+  });
+
   it('决策原话按引文样式展示：quote 原文 + 时间 + 来源轮次', () => {
     const html = renderToStaticMarkup(
       <TaskLedgerView digest="" decisions={[entry({ source_run_id: 'run_1' })]} />,

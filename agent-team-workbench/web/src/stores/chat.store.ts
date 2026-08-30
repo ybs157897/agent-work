@@ -3,6 +3,7 @@ import { ApiError } from '../api/client';
 import {
   createRun,
   createWorkItem,
+  getWorkItem,
   interruptRun,
   listWorkItemRuns,
   listWorkItems,
@@ -13,7 +14,6 @@ import { chatErrorMessage, logChatError, type ChatErrorCode } from '../utils/cha
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { extractDeltaChunk } from './delta-chunk';
 import { createRequestGuard } from './request-guard';
-import { useTasksStore } from './tasks.store';
 import { toast } from './toast.store';
 import { useWorkspaceStore } from './workspace.store';
 import { parseContentBlockDocument, type ContentBlockDocument } from '../utils/content-blocks';
@@ -836,6 +836,7 @@ function newQueueKey(): string {
 // 请求序号守卫：会话列表与 run 列表各自独立计数（互不干扰），只丢弃各自域的过期响应。
 const conversationsGuard = createRequestGuard();
 const runsGuard = createRequestGuard();
+let openConversationRequest = 0;
 
 /** SSE 快照优先于会话列表加载时的旧状态，避免终态后仍误走 steering。 */
 export function currentRunSnapshot(
@@ -917,7 +918,6 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     useRunsStore.getState().watchRun(resp.run_id);
     await get().refreshConversations();
     await get().refreshRuns();
-    await useTasksStore.getState().refresh();
   };
 
   return {
@@ -932,13 +932,55 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     pendingUsers: {},
 
     selectAgent: (id) => {
+      openConversationRequest += 1;
       set({ agentId: id, conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
       void get().refreshConversations();
     },
 
     openConversation: (workItemId) => {
-      set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
-      void get().refreshRuns();
+      const request = ++openConversationRequest;
+      const agentId = get().agentId;
+      const reset = () => set({ conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
+      if (!workItemId) {
+        reset();
+        return;
+      }
+
+      const listed = get().conversations.find((item) => item.id === workItemId);
+      if (listed) {
+        // The Chat list is fail-closed: a task record can never be opened as a
+        // conversation even if a stale URL or store snapshot contains its id.
+        if (listed.record_kind !== 'chat' || listed.agent_profile_id !== agentId) {
+          reset();
+          return;
+        }
+        set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
+        void get().refreshRuns();
+        return;
+      }
+
+      // A deep link may arrive before the filtered conversation list finishes.
+      // Resolve its record kind before loading any run history; task ids are
+      // rejected and never become a Chat transcript.
+      reset();
+      if (!agentId) return;
+      void getWorkItem(workItemId)
+        .then((item) => {
+          if (request !== openConversationRequest || get().agentId !== agentId) return;
+          if (item.record_kind !== 'chat' || item.agent_profile_id !== agentId) return;
+          set((state) => ({
+            conversations: state.conversations.some((entry) => entry.id === item.id)
+              ? state.conversations
+              : [...state.conversations, item].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
+            conversationId: item.id,
+            runs: [],
+            queue: [],
+            runAlerts: {},
+            pendingUsers: {},
+          }));
+          void get().refreshRuns();
+        })
+        .catch(() => undefined);
     },
 
     refreshConversations: async () => {
@@ -949,12 +991,15 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         return;
       }
       const isStale = conversationsGuard.begin();
-      const { items } = await listWorkItems(wsId, { assignee: agentId });
+      const { items } = await listWorkItems(wsId, { assignee: agentId, record_kind: 'chat' });
       if (isStale()) return; // 期间已切换 agent：丢弃旧响应
-      items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-      set({ conversations: items });
+      // Fail closed even if an older server ignores the query filter.
+      const chats = items
+        .filter((item) => item.record_kind === 'chat')
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+      set({ conversations: chats });
       const runsStore = useRunsStore.getState();
-      const runIds = [...new Set(items.map((i) => i.latest_run_id).filter((id): id is string => !!id))];
+      const runIds = [...new Set(chats.map((i) => i.latest_run_id).filter((id): id is string => !!id))];
       await Promise.all(runIds.map((id) => runsStore.fetchRun(id)));
     },
 
@@ -962,6 +1007,13 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const conversationId = get().conversationId;
       if (!conversationId) {
         set({ runs: [] });
+        return;
+      }
+      const conversation = get().conversations.find((item) => item.id === conversationId);
+      if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== get().agentId) {
+        // Do not load a task's execution history through the Chat surface,
+        // even if a stale caller writes a conversation id into the store.
+        set({ conversationId: null, runs: [] });
         return;
       }
       const isStale = runsGuard.begin();
@@ -991,11 +1043,19 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       set({ sending: true });
       let conversationId = get().conversationId;
       try {
+        if (conversationId) {
+          const conversation = get().conversations.find((item) => item.id === conversationId);
+          if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== agentId) {
+            toast.error('该记录不是当前 Agent 的 Chat 会话');
+            return;
+          }
+        }
         if (!conversationId) {
           // 首发消息：建会话（work item）+ 建 run；任务状态由控制平面推进。
           const title = trimmed.slice(0, 24) + (trimmed.length > 24 ? '…' : '');
           const wi = await createWorkItem(wsId, {
             title,
+            record_kind: 'chat',
             status: 'todo',
             priority: 'medium',
             agent_profile_id: agentId,
@@ -1073,7 +1133,6 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       useRunsStore.getState().watchRun(next.id);
       await get().refreshConversations();
       await get().refreshRuns();
-      await useTasksStore.getState().refresh();
     },
 
     forkConversation: async (atMessageKey) => {
@@ -1089,12 +1148,18 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       try {
         const wi = await createWorkItem(wsId, {
           title: `${source.title}（分叉）`,
+          record_kind: 'chat',
           parent_id: source.id,
           agent_profile_id: agentId,
           description: context,
           // 同一锚点重复分叉（双击/重试）查回既有分叉会话而非重复建卡。
           client_key: `fork:${source.id}:${atMessageKey}`,
         });
+        set((state) => ({
+          conversations: state.conversations.some((entry) => entry.id === wi.id)
+            ? state.conversations
+            : [wi, ...state.conversations],
+        }));
         get().openConversation(wi.id);
         await get().refreshConversations();
       } catch (err) {

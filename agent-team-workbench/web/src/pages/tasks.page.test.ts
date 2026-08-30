@@ -5,6 +5,7 @@ import { childCountByParent, sortTasksTree } from './tasks.page';
 const wi = (id: string, createdAt: string, parentId?: string): WorkItem => ({
   id,
   workspace_id: 'ws_1',
+  record_kind: 'task',
   title: id,
   description: '',
   status: 'todo',

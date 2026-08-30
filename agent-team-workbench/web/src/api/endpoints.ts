@@ -25,6 +25,7 @@ import type {
   TaskSession,
   WakeResult,
   WorkItem,
+  WorkItemRecordKind,
   WorkItemStatus,
   Workspace,
 } from './types';
@@ -80,6 +81,8 @@ export interface WorkItemFilter {
   status?: WorkItemStatus;
   priority?: Priority;
   assignee?: string;
+  /** 记录类型硬过滤：Chat 与 Task 列表不得混读。 */
+  record_kind?: WorkItemRecordKind;
   /** 父任务过滤：任务 id 精确匹配；`'none'` 表示只看根任务（协议 §5.2）。 */
   parent_id?: string | 'none';
   cursor?: string;
@@ -90,6 +93,7 @@ export const listWorkItems = (workspaceId: string, filter: WorkItemFilter = {}) 
   if (filter.status) params.set('status', filter.status);
   if (filter.priority) params.set('priority', filter.priority);
   if (filter.assignee) params.set('assignee', filter.assignee);
+  if (filter.record_kind) params.set('record_kind', filter.record_kind);
   if (filter.parent_id) params.set('parent_id', filter.parent_id);
   if (filter.cursor) params.set('cursor', filter.cursor);
   const qs = params.toString();
@@ -108,6 +112,8 @@ export const patchWorkItem = (
 
 export interface CreateWorkItemInput {
   title: string;
+  /** 新建记录必须显式声明 chat 或 task，避免入口默认混用。 */
+  record_kind: WorkItemRecordKind;
   description?: string;
   status?: WorkItemStatus;
   priority?: Priority;
@@ -316,6 +322,8 @@ export const createDecision = (workItemId: string, input: CreateDecisionInput, i
 export interface WorkspaceSearchFilter {
   /** 检索词（空格分词 AND 语义）；空/纯符号服务端返回空 items。 */
   q: string;
+  /** 记录类型硬过滤；任务搜索不得命中独立 Chat 记录。 */
+  record_kind?: WorkItemRecordKind;
   /** 可选，限定单任务。 */
   workItemId?: string;
   kind?: SearchKind;
@@ -327,6 +335,7 @@ export interface WorkspaceSearchFilter {
 export const searchWorkspace = (workspaceId: string, filter: WorkspaceSearchFilter) => {
   const params = new URLSearchParams();
   params.set('q', filter.q);
+  if (filter.record_kind) params.set('record_kind', filter.record_kind);
   if (filter.workItemId) params.set('work_item_id', filter.workItemId);
   if (filter.kind) params.set('kind', filter.kind);
   if (filter.limit != null) params.set('limit', String(filter.limit));

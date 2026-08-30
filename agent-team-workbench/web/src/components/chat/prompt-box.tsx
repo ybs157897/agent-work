@@ -81,6 +81,8 @@ export interface PromptBoxProps {
   stopping: boolean;
   onStop: () => void;
   usageText: string | null;
+  /** 仅 Task 编排入口开启 @Agent；独立 Chat 默认不提供调度候选。 */
+  mentionsEnabled?: boolean;
 }
 
 export function PromptBox({
@@ -98,6 +100,7 @@ export function PromptBox({
   stopping,
   onStop,
   usageText,
+  mentionsEnabled = false,
 }: PromptBoxProps) {
   const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
   const [fileError, setFileError] = useState('');
@@ -109,7 +112,7 @@ export function PromptBox({
   // @ 提及弹层：mention = 光标处提及态（null 关闭）；mentionIndex = 键盘高亮行。
   const [mention, setMention] = useState<MentionState | null>(null);
   const [mentionIndex, setMentionIndex] = useState(0);
-  const agents = useAgentsStore((s) => s.agents);
+  const agents = useAgentsStore((s) => (mentionsEnabled ? s.agents : []));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const appsRef = useRef<HTMLDivElement>(null);
@@ -137,7 +140,7 @@ export function PromptBox({
   }, [draft]);
 
   // 提及候选：只列能被服务端 @直达 命中的名字（无空白），按已输入 query 过滤。
-  const mentionAgents = mentionableAgents(agents);
+  const mentionAgents = mentionsEnabled ? mentionableAgents(agents) : [];
   const filteredAgents = mention
     ? mentionAgents.filter((a) => a.name.toLowerCase().includes(mention.query.toLowerCase()))
     : [];
@@ -226,12 +229,20 @@ export function PromptBox({
   };
 
   const updateMention = (value: string, caret: number | null) => {
+    if (!mentionsEnabled) {
+      setMention(null);
+      return;
+    }
     setMention(activeMention(value, caret ?? value.length));
     setMentionIndex(0);
   };
 
   // 光标在文本内移动（方向键 / 点击）时重算提及态，弹层随之开合。
   const syncMentionFromDom = () => {
+    if (!mentionsEnabled) {
+      setMention(null);
+      return;
+    }
     const textarea = inputRef.current;
     if (!textarea) return;
     setMention(activeMention(textarea.value, textarea.selectionStart ?? textarea.value.length));
@@ -366,9 +377,9 @@ export function PromptBox({
         rows={1}
         placeholder={placeholder}
         aria-label="输入消息"
-        aria-haspopup="listbox"
-        aria-expanded={mentionOpen}
-        aria-activedescendant={activeMentionId}
+        aria-haspopup={mentionsEnabled ? 'listbox' : undefined}
+        aria-expanded={mentionsEnabled ? mentionOpen : undefined}
+        aria-activedescendant={mentionsEnabled ? activeMentionId : undefined}
         className="chat-composer-input"
       />
       {mentionOpen && (

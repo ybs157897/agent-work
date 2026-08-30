@@ -7,6 +7,7 @@ import { conversationLabel } from '../stores/chat.store';
 const workItem = (over: Partial<WorkItem> = {}): WorkItem => ({
   id: 'wi_test',
   workspace_id: 'ws_test',
+  record_kind: 'chat',
   title: 'test',
   description: '',
   status: 'in_progress',

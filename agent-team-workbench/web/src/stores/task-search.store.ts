@@ -62,7 +62,7 @@ export const useTaskSearchStore = create<TaskSearchStore>()((set, get) => ({
     if (!wsId) return;
     const isStale = guard.begin();
     try {
-      const { items } = await searchWorkspace(wsId, { q });
+      const { items } = await searchWorkspace(wsId, { q, record_kind: 'task' });
       if (isStale()) return; // 期间已有更新请求：丢弃旧响应
       set({ phase: 'done', items, source: 'remote' });
     } catch {

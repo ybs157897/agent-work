@@ -38,6 +38,10 @@ export function applyMention(text: string, mention: MentionState, caret: number,
 }
 
 /** 名字含空白的 agent 无法被服务端 @直达 命中（只取首个空白词），不进弹层。 */
-export function mentionableAgents<T extends { name: string }>(agents: readonly T[]): T[] {
-  return agents.filter((a) => a.name.trim() !== '' && !/\s/.test(a.name.trim()));
+export function mentionableAgents<T extends { name: string; availability?: string }>(agents: readonly T[]): T[] {
+  return agents.filter((a) =>
+    a.availability !== 'disabled'
+    && a.name.trim() !== ''
+    && !/\s/.test(a.name.trim()),
+  );
 }

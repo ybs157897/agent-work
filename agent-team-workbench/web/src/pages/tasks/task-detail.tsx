@@ -1,16 +1,8 @@
-import { Lock, MessageSquare, Pencil } from 'lucide-react';
+import { Lock, Pencil } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
 import { assignWorkItem, getWorkItem, getWorkItemTree, patchWorkItem } from '../../api/endpoints';
-import type {
-  DispatchRun,
-  Plan,
-  PlanStep,
-  Priority,
-  WorkItem,
-  WorkItemStatus,
-} from '../../api/types';
+import type { Plan, PlanStep, Priority, WorkItem, WorkItemStatus } from '../../api/types';
 import { Drawer } from '../../components/drawer';
 import { PriorityBadge } from '../../components/priority-badge';
 import { useAgentsStore } from '../../stores/agents.store';
@@ -79,7 +71,6 @@ export function TaskDetail({
   onClose: () => void;
   onTransition: (item: WorkItem, to: WorkItemStatus) => Promise<void>;
 }) {
-  const navigate = useNavigate();
   const storeTask = useTasksStore((s) => (taskId ? s.items.find((t) => t.id === taskId) : undefined));
   const upsert = useTasksStore((s) => s.upsert);
   const selectTask = useTasksStore((s) => s.selectTask);
@@ -152,17 +143,6 @@ export function TaskDetail({
   const children = sortTasksTree(
     treeChildren ?? (taskId ? storeItems.filter((t) => t.parent_id === taskId) : []),
   ).map((e) => e.item);
-
-  const openChildChat = (child: WorkItem) => {
-    if (!child.agent_profile_id) return;
-    navigate(`/chat?agent=${encodeURIComponent(child.agent_profile_id)}&c=${encodeURIComponent(child.id)}`);
-  };
-
-  // 派发时间线成员行：会话锚 = 成员 run 所在任务 + 该成员 agent（openChildChat 同款）。
-  const openRunChat = (run: DispatchRun) => {
-    if (!run.agent_profile_id) return;
-    navigate(`/chat?agent=${encodeURIComponent(run.agent_profile_id)}&c=${encodeURIComponent(run.work_item_id)}`);
-  };
 
   const onAssign = async (agentProfileId: string) => {
     if (!task) return;
@@ -299,15 +279,6 @@ export function TaskDetail({
                           </div>
                           <span className="text-caption text-text-tertiary">{assignee}</span>
                         </button>
-                        <button
-                          onClick={() => openChildChat(child)}
-                          disabled={!child.agent_profile_id}
-                          title={child.agent_profile_id ? `与 ${assignee} 就该子任务对话` : '未指派，无法对话'}
-                          className="shrink-0 inline-flex items-center gap-1 text-caption border border-border-strong text-text-secondary rounded-button px-2 py-1 hover:bg-surface-raised hover:text-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          对话
-                        </button>
                       </li>
                     );
                   })}
@@ -326,7 +297,7 @@ export function TaskDetail({
             </section>
 
             {/* 派发时间线（会话元模型：一次发送 = 一个执行批次） */}
-            <DispatchTimeline taskId={task.id} onOpenRunChat={openRunChat} />
+            <DispatchTimeline taskId={task.id} />
 
             {/* 任务台账（S2：滚动摘要 + 决策原话，任务级共享记忆） */}
             <TaskLedger taskId={task.id} agentProfileId={task.agent_profile_id} />

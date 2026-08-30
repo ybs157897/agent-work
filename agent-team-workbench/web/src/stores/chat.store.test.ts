@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { aggregateRunStream, buildForkContext, buildMessages, conversationLabel, currentRunSnapshot, extractExitCode, formatTokenUsage, FORK_CONTEXT_MARKER, hideLiveRunDrafts, parsePlanSteps, sessionLine, toolDuration, useChatStore, type ChatMessage } from './chat.store';
 import { extractDeltaChunk } from './delta-chunk';
 import { useRunsStore, type TimelineEntry } from './runs.store';
-import { useTasksStore } from './tasks.store';
 import { useWorkspaceStore } from './workspace.store';
 import type { ExecutionRun, WorkItem } from '../api/types';
 
@@ -980,6 +979,7 @@ describe('conversationLabel', () => {
   const base: WorkItem = {
     id: 'wi_1',
     workspace_id: 'ws_1',
+    record_kind: 'chat',
     title: '测试',
     description: '',
     status: 'in_progress',
@@ -1051,6 +1051,21 @@ describe('chat.store refresh 请求序号守卫', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
+    useChatStore.setState({
+      conversations: [
+        {
+          id: 'wi_a', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: 'A', description: '',
+          status: 'todo', priority: 'medium', due_date: null, runs_count: 0, version: 1,
+          created_at: '', updated_at: '',
+        },
+        {
+          id: 'wi_b', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: 'B', description: '',
+          status: 'todo', priority: 'medium', due_date: null, runs_count: 0, version: 1,
+          created_at: '', updated_at: '',
+        },
+      ],
+    });
+
     // 打开会话 A（响应挂起）→ 立即切到会话 B（响应先回）。
     useChatStore.getState().openConversation('wi_a');
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -1070,6 +1085,8 @@ describe('chat.store refresh 请求序号守卫', () => {
     const convA = {
       id: 'wi_a',
       workspace_id: 'ws_1',
+      record_kind: 'chat',
+      agent_profile_id: 'agent_1',
       title: 'A',
       description: '',
       status: 'todo',
@@ -1101,6 +1118,47 @@ describe('chat.store refresh 请求序号守卫', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await new Promise((r) => setTimeout(r, 0));
     expect(useChatStore.getState().conversations.map((c) => c.id)).toEqual(['wi_b']);
+  });
+
+  it('refreshConversations 只保留 chat 记录且不读取 task session 参与线', async () => {
+    const assigned: WorkItem = {
+      id: 'wi_assigned', workspace_id: 'ws_1', record_kind: 'chat', title: '当前对话', description: '',
+      status: 'todo', priority: 'medium', due_date: null, runs_count: 0, version: 1,
+      created_at: '2026-08-30T01:00:00Z', updated_at: '2026-08-30T01:00:00Z',
+    };
+    const task: WorkItem = {
+      ...assigned, id: 'wi_task', record_kind: 'task', title: '不应进入对话', agent_profile_id: 'agent_1',
+      runs_count: 1, latest_run_id: 'run_task', updated_at: '2026-08-30T02:00:00Z',
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/work-items?assignee=agent_1&record_kind=chat')) return Promise.resolve(json({ items: [assigned, task], next_cursor: null }));
+      return Promise.resolve(json({ items: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useChatStore.getState().refreshConversations();
+
+    expect(useChatStore.getState().conversations.map((entry) => entry.id)).toEqual(['wi_assigned']);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/workspaces/ws_1/work-items?assignee=agent_1&record_kind=chat', expect.any(Object));
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/task-sessions'))).toBe(false);
+  });
+
+  it('深链接到 task 记录时拒绝打开 Chat transcript', async () => {
+    const task: WorkItem = {
+      id: 'wi_task', workspace_id: 'ws_1', record_kind: 'task', title: '任务', description: '',
+      status: 'todo', priority: 'medium', due_date: null, runs_count: 1, version: 1,
+      created_at: '', updated_at: '',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(json(task));
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({ agentId: 'agent_1', conversations: [], conversationId: null, runs: [] });
+
+    useChatStore.getState().openConversation('wi_task');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(useChatStore.getState().conversationId).toBeNull();
+    expect(useChatStore.getState().runs).toEqual([]);
   });
 });
 
@@ -1250,14 +1308,17 @@ describe('send 队列语义（不再 steering）', () => {
     useChatStore.setState({
       agentId: 'agent_1',
       conversationId: 'wi_1',
-      conversations: [],
+      conversations: [{
+        id: 'wi_1', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1',
+        title: '当前对话', description: '', status: 'todo', priority: 'medium', due_date: null,
+        runs_count: 0, version: 1, created_at: '', updated_at: '',
+      }],
       runs: [],
       sending: false,
       queue: [],
     });
     // 屏蔽 watchRun/tasks refresh 的连带请求：本组只断言 send/drain 的出网面。
     useRunsStore.setState({ runs: {}, timelines: {}, watchRun: () => {} });
-    useTasksStore.setState({ refresh: async () => {} });
   });
 
   afterEach(() => {
@@ -1293,6 +1354,34 @@ describe('send 队列语义（不再 steering）', () => {
     expect(sentBody.client_key).toBe('q:k1'); // drain 携带入队时的幂等键（重试安全）
     expect(useChatStore.getState().queue.map((q) => q.text)).toEqual(['第二条', '第三条']); // 本条排到队尾
     expect(inputCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it('新 Chat 首发创建 chat 记录，不走 Task 记录入口', async () => {
+    const wi: WorkItem = {
+      id: 'wi_chat', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1',
+      title: '新对话', description: '', status: 'todo', priority: 'medium', due_date: null,
+      runs_count: 0, version: 1, created_at: '', updated_at: '',
+    };
+    useChatStore.setState({ conversationId: null, conversations: [], runs: [] });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      if ((init?.method ?? 'GET') === 'POST' && /\/workspaces\/ws_1\/work-items$/.test(url)) return Promise.resolve(json(wi));
+      if ((init?.method ?? 'GET') === 'POST' && /\/work-items\/wi_chat\/runs$/.test(url)) {
+        return Promise.resolve(json({ run_id: 'run_chat', work_item_id: 'wi_chat', status: 'queued', version: 1, capability_snapshot_id: null }));
+      }
+      if (url.includes('/work-items?assignee=agent_1&record_kind=chat')) return Promise.resolve(json({ items: [wi], next_cursor: null }));
+      if (url.includes('/work-items/wi_chat/runs')) return Promise.resolve(json({ items: [] }));
+      return Promise.resolve(json({ items: [], next_cursor: null }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useChatStore.getState().send('首条消息');
+
+    const creates = fetchMock.mock.calls.filter(([input, init]) =>
+      (init?.method ?? 'GET') === 'POST' && /\/workspaces\/ws_1\/work-items$/.test(String(input)));
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).record_kind).toBe('chat');
+    expect(useChatStore.getState().conversationId).toBe('wi_chat');
   });
 
   it('队空 + 终态：直接 createRun 本条（现行为）', async () => {
@@ -1351,6 +1440,8 @@ describe('send 队列语义（不再 steering）', () => {
     const forkWi = {
       id: 'wi_fork',
       workspace_id: 'ws_1',
+      record_kind: 'chat',
+      agent_profile_id: 'agent_1',
       title: '原会话（分叉）',
       description,
       status: 'todo',
@@ -1380,6 +1471,8 @@ describe('send 队列语义（不再 steering）', () => {
         {
           id: 'wi_1',
           workspace_id: 'ws_1',
+          record_kind: 'chat',
+          agent_profile_id: 'agent_1',
           title: '分叉会话',
           description: `${FORK_CONTEXT_MARKER}旧上下文`,
           status: 'todo',
@@ -1441,7 +1534,6 @@ describe('forkConversation', () => {
       },
       watchRun: () => {},
     });
-    useTasksStore.setState({ refresh: async () => {} });
   });
 
   afterEach(() => {
@@ -1452,6 +1544,8 @@ describe('forkConversation', () => {
     const forkWi = {
       id: 'wi_fork',
       workspace_id: 'ws_1',
+      record_kind: 'chat',
+      agent_profile_id: 'agent_1',
       title: '原会话（分叉）',
       description: '',
       status: 'todo',
@@ -1479,6 +1573,7 @@ describe('forkConversation', () => {
     expect(creates).toHaveLength(1);
     const body = JSON.parse(String(creates[0][1]?.body));
     expect(body.title).toBe('原会话（分叉）');
+    expect(body.record_kind).toBe('chat');
     expect(body.parent_id).toBe('wi_1');
     expect(body.agent_profile_id).toBe('agent_1');
     expect(body.description).toContain(FORK_CONTEXT_MARKER);
@@ -1519,7 +1614,14 @@ describe('retryRun', () => {
         return Promise.resolve(json(nextRun));
       }
       if (url.endsWith('/work-items/wi_1/runs')) return Promise.resolve(json({ items: [nextRun] }));
-      if (url.includes('/workspaces/ws_1/work-items')) return Promise.resolve(json({ items: [], next_cursor: null }));
+      if (url.includes('/workspaces/ws_1/work-items')) return Promise.resolve(json({
+        items: [{
+          id: 'wi_1', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1',
+          title: '当前对话', description: '', status: 'todo', priority: 'medium', due_date: null,
+          runs_count: 1, version: 1, created_at: '', updated_at: '',
+        }],
+        next_cursor: null,
+      }));
       return Promise.resolve(json({ items: [] }));
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1527,7 +1629,11 @@ describe('retryRun', () => {
     useChatStore.setState({
       agentId: 'agent_1',
       conversationId: 'wi_1',
-      conversations: [],
+      conversations: [{
+        id: 'wi_1', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1',
+        title: '当前对话', description: '', status: 'todo', priority: 'medium', due_date: null,
+        runs_count: 1, version: 1, created_at: '', updated_at: '',
+      }],
       runs: [{ ...nextRun, id: 'run_failed', status: 'failed' }],
     });
     const watchRun = vi.fn();
