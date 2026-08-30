@@ -13,6 +13,7 @@ package kimiapp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -75,11 +76,13 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 			"resume":     runtime.CapSupported, // 会话原生续会 + 40401 探测
 			"steering":   runtime.CapSupported, // prompts + prompts::steer
 			"approval":   runtime.CapSupported, // event.approval.requested + approvals REST
+			"subagents":  runtime.CapSupported, // Kimi AgentSwarm 与普通 Agent 子 Agent
+			"swarm":      runtime.CapSupported, // session profile swarm_mode + AgentSwarm
 			// REST abort（WS 无 abort 帧）：turn 级精确取消，非进程级。
 			"interrupt":       runtime.CapSupported,
 			"workspace_files": runtime.CapSupported,
-			// kap 无 system_prompt 应用通道（创建路由忽略 agent_config，
-			// /profile 也不落）：persona 由适配器注入 fresh 会话的首个 prompt。
+			// kap 的 profile 负责权限与蜂巢模式；persona 仍由适配器注入
+			// fresh 会话的首个 prompt。
 			"system_prompt": runtime.CapAdapterTranslated,
 			// prompt.plan_mode 服务端接受但不应用：plan 语义经 prompt 文本注入。
 			"modes":             runtime.CapAdapterTranslated,
@@ -134,6 +137,20 @@ type turnState struct {
 	// cannot be correlated safely and is intentionally not tracked here.
 	toolResults   map[string]struct{}
 	fileSnapshots map[string]fileSnapshot
+	subagents     map[string]map[string]any
+	subagentSeqs  map[int64]struct{}
+	children      map[string]*childTurnState
+}
+
+type childTurnState struct {
+	activeTurn  int64
+	activeSeen  bool
+	answer      strings.Builder
+	usageIn     int64
+	usageOut    int64
+	usageCached int64
+	pending     map[string]string
+	results     map[string]struct{}
 }
 
 type fileSnapshot struct {
@@ -163,7 +180,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 			m.sup.recycle()
 		}
 	}
-	state := &turnState{pendingTools: make(map[string]string), toolResults: make(map[string]struct{}), fileSnapshots: make(map[string]fileSnapshot)}
+	state := &turnState{pendingTools: make(map[string]string), toolResults: make(map[string]struct{}), fileSnapshots: make(map[string]fileSnapshot), subagents: make(map[string]map[string]any), subagentSeqs: make(map[int64]struct{}), children: make(map[string]*childTurnState)}
 	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
 	// 不得误报成 gateway_unavailable/io 失败（否则终态会变成 failed）。
 	ep, err := m.sup.Ensure(ex.Ctx)
@@ -228,6 +245,9 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 			}
 			return "", false, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: f}
 		}
+		if failure := applySessionDefaults(ex.Ctx, client, resumeID, defaultAgentConfig(ex)); failure != nil {
+			return "", false, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: failure}
+		}
 		// resume 命中：沿用原 ref 重报 SessionUpdate（runs_count 幂等语义：
 		// 每个新 run 重报同 ref，是会话轮换计数增长的必要输入）。会话创建即报
 		// （若后续 turn 崩溃，resume 锚点已固化，下轮仍可续）。
@@ -238,8 +258,8 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 		ex.Callbacks.OnSession(*state.sessionUpdate)
 		return resumeID, false, nil
 	}
-	// fresh：创建会话。metadata.cwd 必填；agent_config 服务端不应用（创建路由
-	// 完全忽略，/profile 也无 system_prompt 通道），不透传。
+	// fresh：create.agent_config 在 main 与 0.38 都是静默 no-op；这里只创建，
+	// 随后统一走 profile + status 的可验证默认值路径。
 	req := &createSessionRequest{Metadata: map[string]string{"cwd": m.cwd()}}
 	created, kerr := client.createSession(ex.Ctx, req)
 	if kerr != nil {
@@ -251,6 +271,11 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 		Params: map[string]any{"kap_session": sessionID},
 	}
 	ex.Callbacks.OnSession(*state.sessionUpdate)
+	if failure := applySessionDefaults(ex.Ctx, client, sessionID, defaultAgentConfig(ex)); failure != nil {
+		return "", false, &runtime.ExecResult{
+			Outcome: runtime.OutcomeFailed, Failure: failure, Session: state.sessionUpdate,
+		}
+	}
 	return sessionID, true, nil
 }
 
@@ -374,8 +399,10 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 				case runtime.ControlInput:
 					// steering：turn 进行中方有效；失败仅记日志（尽力而为）。
 					wctx := context.WithoutCancel(ex.Ctx)
+					policy := runtime.PolicySnapshotOf(ex.Run)
 					pr, kerr := client.submitPrompt(wctx, sessionID, &promptSubmitRequest{
-						Content: []promptContentPart{{Type: "text", Text: c.Instruction}},
+						Content:        []promptContentPart{{Type: "text", Text: c.Instruction}},
+						PermissionMode: permissionMode(policy),
 					})
 					if kerr != nil {
 						log.Printf("kimiapp: run %s steer submit: %v", ex.Run.ID, kerr)
@@ -524,6 +551,20 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "turn.started":
 		var ev evTurnStarted
 		_ = json.Unmarshal(frame.Payload, &ev)
+		if !isMainAgent(ev.AgentID) {
+			if ev.AgentID != "" {
+				c := p.child(ev.AgentID)
+				if c.activeTurn != ev.TurnID && (c.activeSeen || c.answer.Len() > 0 || len(c.pending) > 0 || len(c.results) > 0) {
+					p.closeChildTools(ev.AgentID, c, "cancelled")
+					c.answer.Reset()
+					c.usageIn, c.usageOut, c.usageCached = 0, 0, 0
+					c.pending = make(map[string]string)
+					c.results = make(map[string]struct{})
+				}
+				c.activeTurn, c.activeSeen = ev.TurnID, true
+			}
+			return false
+		}
 		switch {
 		case ev.PromptID != "" && ev.PromptID == p.state.promptID:
 			p.state.activeTurn, p.state.activeSeen = ev.TurnID, true
@@ -536,7 +577,17 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		// activeSeen=false 或 turnId 不匹配一律忽略。
 		var ev evTurnEnded
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				p.closeChildTools(ev.AgentID, c, ev.Reason)
+				if ev.Reason == "completed" && c.answer.Len() > 0 {
+					p.ex.Callbacks.OnEvent(domain.EventMessageCompleted, map[string]any{"role": "assistant", "text": c.answer.String(), "agent_id": ev.AgentID})
+				}
+				c.activeSeen = false
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		p.state.endReason = ev.Reason
@@ -563,7 +614,14 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "assistant.delta":
 		var ev evDelta
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": ev.Delta}}})
+				c.answer.WriteString(ev.Delta)
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		// raw.chunk 结构与前端 extractDeltaChunk 契约一致。
@@ -574,7 +632,13 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "thinking.delta":
 		var ev evDelta
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.state.activeSeen || ev.TurnID != p.state.activeTurn {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": ev.Delta}}})
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
@@ -586,7 +650,17 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		// turnEndResult 的 ExecResult.Usage。
 		var ev evStepCompleted
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if p.state.activeSeen && ev.TurnID == p.state.activeTurn && ev.Usage != nil {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil && ev.Usage != nil {
+				in := ev.Usage.InputOther + ev.Usage.InputCacheRead + ev.Usage.InputCacheCreation
+				c.usageIn += in
+				c.usageOut += ev.Usage.Output
+				c.usageCached += ev.Usage.InputCacheRead
+				p.ex.Callbacks.OnEvent(domain.EventUsageUpdated, map[string]any{"agent_id": ev.AgentID, "usage_in": c.usageIn, "usage_out": c.usageOut, "usage_cached": c.usageCached, "usage_basis": string(runtime.UsagePerRun)})
+			}
+			return false
+		}
+		if p.myTurn(ev.TurnID, ev.AgentID) && ev.Usage != nil {
 			p.state.usageIn += ev.Usage.InputOther + ev.Usage.InputCacheRead + ev.Usage.InputCacheCreation
 			p.state.usageOut += ev.Usage.Output
 			p.state.usageCached += ev.Usage.InputCacheRead
@@ -596,10 +670,31 @@ func (p *eventPump) handle(frame wsFrame) bool {
 				CachedTokens: p.state.usageCached, Basis: runtime.UsagePerRun,
 			})
 		}
+	case "subagent.spawned", "subagent.started", "subagent.suspended", "subagent.completed", "subagent.failed":
+		p.handleSubagent(frame)
 	case "tool.call.started":
 		var ev evToolCallStarted
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.myTurn(ev.TurnID) {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				if ev.ToolCallID != "" {
+					if _, terminal := c.results[ev.ToolCallID]; terminal {
+						return false
+					}
+					c.pending[ev.ToolCallID] = ev.Name
+				}
+				payload := map[string]any{"agent_id": ev.AgentID, "tool": ev.Name, "call_id": ev.ToolCallID}
+				if s := toolArgsSummary(ev.Description, ev.Args); s != "" {
+					payload["args_summary"] = s
+				}
+				if a := toolArgsJSON(ev.Args); a != "" {
+					payload["args"] = a
+				}
+				p.ex.Callbacks.OnEvent(domain.EventToolStarted, payload)
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		if ev.ToolCallID != "" {
@@ -614,6 +709,11 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		if a := toolArgsJSON(ev.Args); a != "" {
 			payload["args"] = a
 		}
+		if ev.Name == "AgentSwarm" {
+			if swarm := swarmMetadata(ev.ToolCallID, ev.Description, ev.Args); swarm != nil {
+				payload["swarm"] = swarm
+			}
+		}
 		if ev.ToolCallID != "" {
 			if snap, ok := captureFileBefore(p.m.cfg.WorkspaceRoot, ev.Name, ev.Args); ok {
 				p.state.fileSnapshots[ev.ToolCallID] = snap
@@ -623,7 +723,32 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "tool.result":
 		var ev evToolResult
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.myTurn(ev.TurnID) {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				if ev.ToolCallID != "" {
+					if _, seen := c.results[ev.ToolCallID]; seen {
+						return false
+					}
+					c.results[ev.ToolCallID] = struct{}{}
+				}
+				tool := c.pending[ev.ToolCallID]
+				delete(c.pending, ev.ToolCallID)
+				payload := map[string]any{"agent_id": ev.AgentID, "call_id": ev.ToolCallID}
+				if out := toolOutputText(ev.Output); out != "" {
+					payload["output"] = out
+					if stats := toolChangeStats(tool, out); stats != nil {
+						payload["change_stats"] = stats
+					}
+				}
+				if ev.IsError != nil && *ev.IsError {
+					p.ex.Callbacks.OnEvent(domain.EventToolFailed, payload)
+				} else {
+					p.ex.Callbacks.OnEvent(domain.EventToolCompleted, payload)
+				}
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		toolName := ""
@@ -659,7 +784,17 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	case "tool.progress":
 		var ev evToolProgress
 		_ = json.Unmarshal(frame.Payload, &ev)
-		if !p.myTurn(ev.TurnID) {
+		if !isMainAgent(ev.AgentID) {
+			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
+				payload := map[string]any{"agent_id": ev.AgentID, "call_id": ev.ToolCallID, "text": ev.Update.Text}
+				if ev.Update.Percent != nil {
+					payload["percent"] = *ev.Update.Percent
+				}
+				p.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
+			}
+			return false
+		}
+		if !p.myTurn(ev.TurnID, ev.AgentID) {
 			return false
 		}
 		payload := map[string]any{"call_id": ev.ToolCallID, "text": ev.Update.Text}
@@ -683,6 +818,180 @@ func (p *eventPump) handle(frame wsFrame) bool {
 	return false
 }
 
+func (p *eventPump) handleSubagent(frame wsFrame) {
+	if p.state == nil {
+		p.state = &turnState{}
+	}
+	if p.state.subagents == nil {
+		p.state.subagents = make(map[string]map[string]any)
+	}
+	if p.state.subagentSeqs == nil {
+		p.state.subagentSeqs = make(map[int64]struct{})
+	}
+	if frame.Seq > 0 {
+		if _, seen := p.state.subagentSeqs[frame.Seq]; seen {
+			return
+		}
+		p.state.subagentSeqs[frame.Seq] = struct{}{}
+	}
+	var raw map[string]any
+	if json.Unmarshal(frame.Payload, &raw) != nil {
+		return
+	}
+	get := func(names ...string) any {
+		for _, n := range names {
+			if v, ok := raw[n]; ok {
+				return v
+			}
+		}
+		return nil
+	}
+	str := func(names ...string) string { v, _ := get(names...).(string); return v }
+	id := str("subagentId", "subagent_id", "id")
+	if id == "" {
+		return
+	}
+	snapshot := p.state.subagents[id]
+	if snapshot == nil && frame.Type != "subagent.spawned" {
+		return
+	}
+	if snapshot == nil {
+		parentToolCallID := str("parentToolCallId", "parent_tool_call_id")
+		if parentToolCallID == "" || p.state.pendingTools[parentToolCallID] == "" {
+			return
+		}
+		snapshot = map[string]any{"runtime": "kimi", "subagent_id": id, "name": "", "parent_tool_call_id": "", "description": "", "run_in_background": false}
+		p.state.subagents[id] = snapshot
+	}
+	if v := str("subagentName", "name", "agentName", "agent_name"); v != "" {
+		snapshot["name"] = v
+	}
+	if v := str("parentToolCallId", "parent_tool_call_id"); v != "" {
+		snapshot["parent_tool_call_id"] = v
+	}
+	if v := str("description", "prompt"); v != "" {
+		snapshot["description"] = v
+	}
+	if v, ok := get("runInBackground", "run_in_background").(bool); ok {
+		snapshot["run_in_background"] = v
+	}
+	if n, ok := numberValue(get("swarmIndex", "swarm_index")); ok && n >= 1 {
+		snapshot["swarm_index"] = int(n)
+	}
+	if _, ok := snapshot["swarm_index"]; ok {
+		snapshot["role"] = "member"
+	} else {
+		snapshot["role"] = "child"
+	}
+	snapshot["status"] = subagentStatus(frame.Type)
+	// Each canonical update is a snapshot of the current lifecycle state.
+	// Never carry a previous invocation's result, wait reason, or failure into
+	// a resumed member with the same stable subagent id.
+	delete(snapshot, "summary")
+	delete(snapshot, "reason")
+	delete(snapshot, "error")
+	if summary := str("summary", "resultSummary", "result_summary"); summary != "" {
+		snapshot["summary"] = summary
+	}
+	if reason := str("reason"); reason != "" {
+		snapshot["reason"] = reason
+	}
+	if errText := errorText(get("error", "failure", "failure_reason")); errText != "" {
+		snapshot["error"] = errText
+	}
+	if frame.Seq > 0 {
+		snapshot["source_seq"] = frame.Seq
+	}
+	// Callback consumers may retain the map; emit a copy so later lifecycle
+	// updates cannot rewrite already-persisted canonical events.
+	emitted := make(map[string]any, len(snapshot))
+	for k, v := range snapshot {
+		emitted[k] = v
+	}
+	p.ex.Callbacks.OnEvent(domain.EventSubagentUpdated, emitted)
+}
+
+func subagentStatus(kind string) string {
+	switch kind {
+	case "subagent.spawned":
+		return "queued"
+	case "subagent.started":
+		return "running"
+	case "subagent.suspended":
+		return "waiting"
+	case "subagent.completed":
+		return "completed"
+	default:
+		return "failed"
+	}
+}
+
+func numberValue(v any) (int64, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n >= 0 && n == float64(int64(n)) {
+			return int64(n), true
+		}
+	case int:
+		if n >= 0 {
+			return int64(n), true
+		}
+	case json.Number:
+		i, e := n.Int64()
+		return i, e == nil && i >= 0
+	}
+	return 0, false
+}
+func errorText(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case map[string]any:
+		if s, ok := x["message"].(string); ok {
+			return s
+		}
+		b, _ := json.Marshal(x)
+		return string(b)
+	}
+	return ""
+}
+
+func swarmMetadata(callID, title string, args json.RawMessage) map[string]any {
+	var m map[string]any
+	if json.Unmarshal(args, &m) != nil {
+		m = map[string]any{}
+	}
+	if s, ok := m["description"].(string); ok && s != "" {
+		title = s
+	}
+	if title == "" {
+		title = "Kimi 蜂群"
+	}
+	items := []map[string]any{}
+	resumeCount := 0
+	if raw, ok := m["resume_agent_ids"].(map[string]any); ok {
+		resumeCount = len(raw)
+	}
+	for i := 0; i < resumeCount; i++ {
+		items = append(items, map[string]any{"index": i + 1, "description": "续接已有子 Agent"})
+	}
+	if raw, ok := m["items"].([]any); ok {
+		for i, item := range raw {
+			d := ""
+			if s, ok := item.(string); ok {
+				d = s
+			}
+			if d == "" {
+				if x, ok := item.(map[string]any); ok {
+					d, _ = x["description"].(string)
+				}
+			}
+			items = append(items, map[string]any{"index": resumeCount + i + 1, "description": d})
+		}
+	}
+	return map[string]any{"runtime": "kimi", "id": callID, "title": title, "total": len(items), "items": items}
+}
+
 // closePendingTools closes calls for which KAP ended the turn without a
 // terminal tool.result. This is presentation evidence only: turnEndResult
 // still derives the run outcome from turn.ended.reason.
@@ -702,10 +1011,50 @@ func (p *eventPump) closePendingTools(reason string) {
 	}
 }
 
+func (p *eventPump) child(agentID string) *childTurnState {
+	if p.state.children == nil {
+		p.state.children = make(map[string]*childTurnState)
+	}
+	c := p.state.children[agentID]
+	if c == nil {
+		c = &childTurnState{pending: make(map[string]string), results: make(map[string]struct{})}
+		p.state.children[agentID] = c
+	}
+	return c
+}
+
+func (p *eventPump) childIfActive(agentID string, turnID int64) *childTurnState {
+	if agentID == "" || isMainAgent(agentID) || p.state.children == nil {
+		return nil
+	}
+	c := p.state.children[agentID]
+	if c == nil || !c.activeSeen || c.activeTurn != turnID {
+		return nil
+	}
+	return c
+}
+
+func (p *eventPump) closeChildTools(agentID string, c *childTurnState, reason string) {
+	status := "failed"
+	if reason == "completed" || reason == "cancelled" {
+		status = "interrupted"
+	}
+	for callID, tool := range c.pending {
+		p.ex.Callbacks.OnEvent(domain.EventToolFailed, map[string]any{"agent_id": agentID, "call_id": callID, "tool": tool, "status": status, "failure_reason": "turn_ended_before_tool_result"})
+		delete(c.pending, callID)
+	}
+}
+
 // myTurn 只放行本轮 turn 的事件：prompt 排队/resume 期间，同会话旧 turn 的
 // 在途事件（tool.*/approval 等）不归入本 run 时间线（与 delta 过滤同一条件）。
-func (p *eventPump) myTurn(turnID int64) bool {
-	return p.state.activeSeen && turnID == p.state.activeTurn
+func (p *eventPump) myTurn(turnID int64, agentID string) bool {
+	return p.state.activeSeen && turnID == p.state.activeTurn && isMainAgent(agentID)
+}
+
+// KAP session streams multiplex the parent and every child. Turn ids are only
+// agent-local, so a missing identity is not safe to attribute to the parent.
+func isMainAgent(agentID string) bool {
+	return agentID == "main"
 }
 
 // handleApproval 把服务端审批请求映射为 engine 审批；发起失败立即拒绝，
@@ -800,8 +1149,34 @@ func personaOf(ex *runtime.ExecContext) string {
 // planDirective plan 模式的注入指令（prompt.plan_mode 服务端接受但不应用）。
 const planDirective = "Plan mode: analyze and produce a plan only; do not modify workspace files."
 
+func defaultAgentConfig(ex *runtime.ExecContext) agentConfig {
+	return agentConfig{
+		PermissionMode: permissionMode(runtime.PolicySnapshotOf(ex.Run)),
+		SwarmMode:      true,
+	}
+}
+
+func applySessionDefaults(ctx context.Context, client *restClient, sessionID string, defaults agentConfig) *runtime.Failure {
+	if kerr := client.updateProfile(ctx, sessionID, &sessionProfileRequest{AgentConfig: defaults}); kerr != nil {
+		return kapFailure(kerr)
+	}
+	status, kerr := client.getSessionStatus(ctx, sessionID)
+	if kerr != nil {
+		return kapFailure(kerr)
+	}
+	if status.Permission != defaults.PermissionMode || status.SwarmMode != defaults.SwarmMode {
+		return modFailure(
+			runtime.FamilyConfig,
+			"session_profile_not_applied",
+			fmt.Sprintf("Kimi profile 未生效：permission=%s swarm=%t", status.Permission, status.SwarmMode),
+			false,
+		)
+	}
+	return nil
+}
+
 // permissionMode 统一审批策略 → kap permission_mode 三档：
-// auto→yolo（免审批）、manual→manual（全审批）、默认（approve_high_risk）→auto。
+// auto→yolo（免审批）、manual→manual（全审批）、其余策略默认 yolo。
 func permissionMode(policy runtime.PolicySnapshot) string {
 	switch policy.ApprovalPolicy {
 	case "auto":
@@ -809,7 +1184,7 @@ func permissionMode(policy runtime.PolicySnapshot) string {
 	case "manual":
 		return "manual"
 	default:
-		return "auto"
+		return "yolo"
 	}
 }
 

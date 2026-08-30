@@ -7,7 +7,7 @@
 > 方法：`app.asar` 抽出静态分析（主 bundle `out/renderer/assets/styles-*.js` + CSS）+ 本机 `~/.zcode/cli/agents/**/transcript.jsonl` 事件序列统计。未改专有软件；下文只描述行为与可复查符号名。
 > 日期：2026-08-28。
 > 姊妹文档：[codex-desktop-rendering-comparison.md](./codex-desktop-rendering-comparison.md)（Codex/ChatGPT 桌面对照）；
-> 蜂群正文草案（本仓自拟，非 ZCode 行为）：[swarm-chat-body.md](./swarm-chat-body.md)。
+> Kimi 蜂群正文（本仓自拟并已生产落地，非 ZCode 行为）：[swarm-chat-body.md](./swarm-chat-body.md)。
 
 ---
 

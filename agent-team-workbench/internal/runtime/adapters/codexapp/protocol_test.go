@@ -44,6 +44,14 @@ func TestParseItemEventDistinguishesMessagesAndTools(t *testing.T) {
 	if !tool.isTool() || tool.Tool != "shell" || toolCompletionEvent(tool) != "tool.failed" {
 		t.Fatalf("tool = %+v", tool)
 	}
+	collab := parseItemEvent(json.RawMessage(`{"item":{"id":"a1","type":"collabAgentToolCall","tool":"spawn_agent","status":"completed","receiverThreadIds":["thread-child"],"agentsStates":{"thread-child":{"status":"running"}},"prompt":"计算 2+2"}}`))
+	if !collab.isTool() || collab.Tool != "agent" || collab.argsSummary() != "spawn_agent: 计算 2+2" {
+		t.Fatalf("collab = %+v summary=%q", collab, collab.argsSummary())
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(collab.resultOutput()), &result); err != nil || result["receiverThreadIds"] == nil || result["agentsStates"] == nil {
+		t.Fatalf("collab result = %q", collab.resultOutput())
+	}
 }
 
 func TestInitializeNegotiatesExperimentalAPI(t *testing.T) {

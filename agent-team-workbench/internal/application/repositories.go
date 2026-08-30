@@ -143,6 +143,7 @@ type EventRepo interface {
 // RunEventRecord 可选：Run 域事件追加进 run_events（同事务）。
 type RunEventRecord struct {
 	RunID     string
+	AgentID   string
 	EventType string
 	Payload   map[string]any
 }
@@ -150,6 +151,7 @@ type RunEventRecord struct {
 // RunEvent 是 run_events 的只读投影。
 type RunEvent struct {
 	RunSeq     int64          `json:"run_seq"`
+	AgentID    string         `json:"agent_id"`
 	EventType  string         `json:"event_type"`
 	Payload    map[string]any `json:"payload,omitempty"`
 	OccurredAt time.Time      `json:"occurred_at"`

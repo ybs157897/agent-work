@@ -3,6 +3,7 @@ import {
   CONTENT_BLOCK_VERSION,
   isSafeContentUrl,
   parseContentBlockDocument,
+  parseLanguageGuiFenceDocument,
   stripLanguageGuiFences,
 } from './content-blocks';
 
@@ -175,6 +176,24 @@ describe('parseContentBlockDocument', () => {
 });
 
 describe('content block URL and fence safety', () => {
+  it('infers v1 only when an explicit languagegui fence omits its redundant version', () => {
+    const source = JSON.stringify({
+      blocks: [{
+        type: 'table', title: '十道题汇总',
+        columns: [{ key: 'answer', label: '答案' }],
+        rows: [{ answer: 'x = 3' }],
+      }],
+    });
+    expect(parseContentBlockDocument(source)).toBeNull();
+    expect(parseLanguageGuiFenceDocument(source)).toMatchObject({
+      version: CONTENT_BLOCK_VERSION,
+      blocks: [{ type: 'table', title: '十道题汇总' }],
+    });
+    expect(parseLanguageGuiFenceDocument({ version: 'languagegui/v2', blocks: [] })).toBeNull();
+    expect(parseLanguageGuiFenceDocument({ blocks: [{ type: 'unknown' }] })).toBeNull();
+    expect(parseLanguageGuiFenceDocument({ rows: [] })).toBeNull();
+  });
+
   it('uses a narrow URL allowlist', () => {
     expect(isSafeContentUrl('https://example.com')).toBe(true);
     expect(isSafeContentUrl('http://localhost/file')).toBe(true);

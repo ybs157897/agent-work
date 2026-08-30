@@ -14,6 +14,10 @@ export function transcriptSegmentKey(seg: TranscriptSegment): string {
     case 'activity':
       // 同一批次追加后续工具时首条不变，避免 ActivityGroup 被 remount、丢失展开态。
       return `activity:${seg.runId}:${seg.items[0]?.key ?? 'empty'}`;
+    case 'swarm':
+      return `swarm:${seg.runId}:${seg.msg.swarm?.id ?? seg.msg.key}`;
+    case 'subagent':
+      return `subagent:${seg.runId}:${seg.msg.childAgent?.id ?? seg.msg.key}`;
     case 'thinking-placeholder':
       return `placeholder:${seg.runId}`;
     case 'turn-diff':

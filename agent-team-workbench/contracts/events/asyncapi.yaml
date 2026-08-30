@@ -49,6 +49,7 @@ components:
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
+        agent_id: { type: string, description: "Run 事件来源 Agent；缺省或 main 表示主 Agent" }
         type:
           type: string
           description: |
@@ -101,6 +102,7 @@ components:
             - tool.progress
             - tool.completed
             - tool.failed
+            - subagent.updated
             - file_changes.reverted
             # Approval
             - approval.requested

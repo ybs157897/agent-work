@@ -7,7 +7,7 @@
 - `references/zcode-desktop-interaction-report.md` —— 思考、工具与 final 的时间序交互基准；
 - `https://github.com/vixues/LeAgent/tree/1f16badc834abbd829d3cb7e9f8fcb5b2d57f443/frontend/src/components/chat` —— 消息骨架与 Markdown 交互基线（Apache-2.0）；
 - `references/zcode-desktop-interaction-report.md` —— ZCode 桌面思考/工具/final 交互逆向（给对齐 agent 用）；
-- `references/swarm-chat-body.md` —— 蜂群模式正文展示草案（静态 HTML，proposed）；
+- `references/swarm-chat-body.md` —— Kimi 蜂群正文生产实现索引与静态视觉稿；
 - `references/codex-desktop-rendering-comparison.md` —— Codex 桌面回合槽位对照；
 - `references/codex-desktop-markdown-tags-inventory.md` —— 历史 Markdown 格局来源，不再是当前视觉基线；
 - `frontend-design-md-redesign.md` —— 重设计方案与路线。
@@ -21,7 +21,7 @@
 
 ---
 
-## 1. 段层（TranscriptSegment，8 种 + meta-detail 为 meta 子变体）
+## 1. 段层（TranscriptSegment + meta-detail 子变体）
 
 | 段 | 触发 | 容器/表面 | 排版 | 动效 | 实现 |
 |---|---|---|---|---|---|
@@ -31,6 +31,8 @@
 | meta | error/system | 无容器，居中 | `caption`；错误 `status-error` 带 ✕ 前缀；时间戳 `tabular-nums` | — | transcript-view.tsx |
 | meta-detail | meta 附详情（`msg.detail` 子变体，非独立段类型） | `rounded-md` 底 `surface-base` 等宽块 `max-h-48` | mono 11/16 | — | transcript-view.tsx MetaLine |
 | activity | 同 run、同一阶段内的工具行；reasoning/text 是硬边界；展示层再按 Explore(Read/Search)、Execute(Bash/Code)、Changes(Write/Edit)、CUA、Agent 语义拆组 | WorkTimeline 内的 `ActivityGroup`；每组默认一条摘要，点击后才出现纵向工具日志与详情；默认合并 Explore/Execute、不合并 Changes | 摘要显示组别、工具族、总数、当前动宾动作与终态；展开后逐行显示序号、工具、摘要、耗时和状态 | 运行中动作扫光且可开合；running→terminal 自动收成摘要；progress/terminal 只更新原工具；无真实 CUA/subagent 子事件时不伪造嵌套 | tool-card.tsx |
+| swarm | Kimi `AgentSwarm` 父工具携带显式 `data.swarm.runtime=kimi`，成员事件同时满足 `runtime=kimi`、`role=member`、1-based 正整数 `swarm_index` | WorkTimeline 内的 `SwarmChatBlock`；巢头 + 两列蜂格 + 合流条；点击后打开 Chat 内联右侧 `SwarmMemberWorkspace` | 蜂格默认显示题号、原始任务、短结果 ticker 与文字状态；右栏显示身份/任务，并用唯一 `AgentTranscriptReader` 呈现与主正文一致的 thinking、ActivityGroup、Markdown/KaTeX 与 final | selection 使用 runId+swarmId+memberId 并从实时 messages 派生；按 agent_id scope 投影；与 ArtifactWorkspace 互斥；单一原子 live status；reduced-motion 取消旋转 | swarm-chat-block.tsx / swarm-member-workspace.tsx / transcript-view.tsx |
+| subagent | `subagent.updated(runtime=codex, role=child)`，`subagent_id` 等于 Codex child thread id；详情事件顶层 `agent_id=subagent_id` | WorkTimeline 内单张 `CodexAgentCard`；点击后复用同一右侧 `SwarmMemberWorkspace` 容器 | 卡片显示昵称/角色、真实状态、任务或结果 ticker；右栏用唯一 `AgentTranscriptReader` 呈现 child thinking、tools、interim 与 final | selection 使用 runId+parentThreadId+subagentId；与 Kimi 蜂格、ArtifactWorkspace 互斥；无 agent-scoped transcript 时明确显示生命周期摘要 | swarm-chat-block.tsx / swarm-member-workspace.tsx / transcript-view.tsx |
 | work-timeline | 单个 run 的 thinking、过程正文、activity、approval 与错误证据 | 44px Run 摘要头 + 原序工作日志；成功时只留摘要头 | 「工作中/已工作/运行失败/已中断」+ 真实 Run 时长与阶段/工具数量 | 运行中展开；成功折叠；失败/中断展开；用户可覆盖默认展开态 | work-activity-timeline.tsx |
 | thinking-placeholder | run 进行中无正文 | 无容器行 | 14px 扫光圆点 + `caption`「Thinking」+ shimmer 渐变文字 | 扫光 2.6s；shimmer 2s ease-in-out | thinking-placeholder.tsx |
 | turn-diff | 回合聚合 diff | 同 DiffCard（见 §4） | — | — | turn-diff-card.tsx |
@@ -70,6 +72,17 @@ Adapter 必须按 `call_id` 关闭每个工具生命周期。Kimi parent `turn.e
 pending 工具以 `tool.failed + status=interrupted` 收口；这只结束工具行，不把成功 Run 改成失败，
 也不允许前端把未观测结果伪装成 `tool.completed`。
 
+Kimi 蜂群与普通子 agent 的边界不由展示层推断。KAP session 流按 `(agentId, turnId)`
+复合归属父 turn；子 agent 与父 agent 可复用同一个 turnId，子 turn 的 delta/tool/usage/terminal
+不得进入父 Run。只有 `AgentSwarm` 的显式父工具元数据和
+KAP `swarmIndex` 成员事件生成 swarm 段；child 的 thinking/assistant/tool/usage/terminal 以
+`agent_id=subagentId` 写入同一 Run 的 canonical 时间线，并在右栏按 scope 过滤后复用通用正文
+投影。Codex collaboration child 通过 `collabAgentToolCall.receiverThreadIds` 建立身份，并在父
+turn terminal 后使用 `thread/list + thread/turns/list(itemsView=full)` 补齐标准 child transcript；
+它显示为普通子 Agent 卡片而不成为蜂群。Kimi 普通 `Agent` 后续也复用该投影，但不因此成为蜂群。
+`runInBackground`、并发数量、工具名正则或正文内容都不得作为蜂群判据。旧 Run 只有生命周期
+与结果摘要时，蜂格展开体显示“生命周期摘要”，不得伪造 thinking/tool。
+
 错误展示分三条通道：普通 `tool.failed` 只更新工具卡；`RunFailed` 的模型/供应商失败只在
 composer 上方 `RunErrorBanner` 展示，不再复制为 transcript 错误行；cancelled/interrupted/user stop
 只显示停止/信息语义。Banner 主文案上限 500 字符，可展开详情、复制、关闭；仅当后端
@@ -97,10 +110,10 @@ Final 正文默认完整展开，不按字符数或渲染高度裁切，也不�
 | 分割线 hr | `border-subtle` 1px；margin 1.6em | — |
 | 强调族 | strong=650；del=tertiary；mark=brand/18 软底；kbd=凹面+边框+底边 2px | sub/sup=.75em；abbr dotted underline |
 | Callout | `> [!TYPE]` 与 `:::type ... :::` | note/info/tip/success/warning/caution/danger/important；3px 语义色条、7% 软底、标题标记 |
-| 数学 | `remark-math` + KaTeX | 普通正文继续流式；未闭合 `$$` 块级数学尾部缓冲，闭合后即排版；display math 横向滚动 |
+| 数学 | `remark-math` + KaTeX | `$`/`$$` 原生渲染；Kimi 常见的 `\(...\)`/`\[...\]` 在 fenced/inline code 之外安全归一后渲染；普通正文继续流式，未闭合块级数学尾部缓冲，display math 横向滚动 |
 | Mermaid | `mermaid` fenced code | 未闭合 fence 不展示源码；闭合后即可动态加载并原子渲染，失败回落源码 |
 | 图片 | 标准 Markdown image | 最大宽度 100%、8px 圆角；无效 src 显示可读占位 |
-| LanguageGUI ContentBlock | 每条消息至多一个 `languagegui` fenced JSON，或 canonical `content_blocks` | 统一走 `chat-content-blocks-v1.md`；未闭合 JSON 不展示源码，闭合且合法即原子渲染；canonical 完成态在同源 fence 原位置接管；多 fence 违反输出契约时保留原始顺序，不猜测重排 |
+| LanguageGUI ContentBlock | 每条消息至多一个 `languagegui` fenced JSON，或 canonical `content_blocks` | 统一走 `chat-content-blocks-v1.md`；显式 fence 已声明协议族，若仅漏顶层 `version` 且 `blocks` 可通过 v1 白名单校验则窄化补为 v1；显式未知版本、任意 JSON 与非法块仍回落源码；canonical 完成态在同源 fence 原位置接管 |
 | details | 边框 + 凹面软底，summary 可聚焦/可展开 | 不开放危险 raw HTML；只消费解析器产生的安全节点 |
 | 崩溃兜底 | MarkdownErrorBoundary 内联 fallback（`<pre>` mono 13 纯文本块，`resetKey` 复位） | 按 resetKey 清错误态重试 |
 

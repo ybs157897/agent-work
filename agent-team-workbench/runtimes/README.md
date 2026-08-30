@@ -27,6 +27,8 @@ runtimes/
 
 - macOS Apple Silicon → `runtimes/*/darwin-arm64/`
 - Windows x64 → `runtimes/*/windows-amd64/`
+- Codex app-server → 始终启用稳定 `multi_agent`；原生 OpenAI/Codex provider 额外启用 `multi_agent_v2`，第三方 Responses provider 显式关闭 v2；未配置 effort 时默认 `ultra`，显式 effort 保留。
+- Kimi app-server → 每轮 profile 默认 `permission_mode=yolo`、`swarm_mode=true`；显式 manual 权限仍保留。
 
 覆盖示例：
 

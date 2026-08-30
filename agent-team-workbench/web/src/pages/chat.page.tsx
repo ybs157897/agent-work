@@ -1,12 +1,13 @@
 import { BookOpen, Boxes, GitBranch, MessageSquare, Moon, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
 import { useEffect, useInsertionEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { TranscriptView } from '../components/chat/transcript-view';
+import { AgentTranscriptReader } from '../components/chat/transcript-view';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
+import { SwarmMemberWorkspace, isSameSwarmMemberSelection, type SwarmMemberSelection } from '../components/chat/swarm-member-workspace';
 import { PROMPT_LIBRARY, PromptBox } from '../components/chat/prompt-box';
 import { Avatar } from '../components/avatar';
 import { EmptyState } from '../components/ui';
@@ -26,6 +27,7 @@ import {
   injectPendingUsers,
   supplementUserFromTimeline,
 } from '../utils/chronological-transcript';
+import { buildAgentTranscriptProjection } from '../utils/agent-transcript-projection';
 import {
   projectWorkActivityTimeline,
   type PresentedTranscriptSegment,
@@ -503,6 +505,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
 
   const [draft, setDraft] = useState(initialPrompt);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [selectedSwarmMember, setSelectedSwarmMember] = useState<SwarmMemberSelection | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const followStreamRef = useRef(true);
@@ -535,6 +538,12 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   }, [runIds, watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
+  const selectedMember = useMemo(() => {
+    if (!selectedSwarmMember) return undefined;
+    const swarmMessage = messages.find((message) => message.runId === selectedSwarmMember.runId && message.kind === 'swarm' && message.swarm?.id === selectedSwarmMember.swarmId);
+    if (swarmMessage?.swarm) return swarmMessage.swarm.members.find((member) => member.id === selectedSwarmMember.memberId);
+    return messages.find((message) => message.runId === selectedSwarmMember.runId && message.kind === 'subagent' && message.childAgent?.id === selectedSwarmMember.memberId)?.childAgent;
+  }, [messages, selectedSwarmMember]);
   const liveStream = useMemo(
     () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
     [latestRunId, timelines],
@@ -618,6 +627,22 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     }
     return map;
   }, [runIds, runSnapshots, runs]);
+  const selectedMemberSegments = useMemo(() => {
+    if (!selectedSwarmMember || !selectedMember) return undefined;
+    const childStatus = selectedMember.status === 'completed' ? 'succeeded' : selectedMember.status === 'failed' ? 'failed' : selectedMember.status === 'stopped' ? 'interrupted' : selectedMember.status === 'waiting' ? 'waiting_approval' : selectedMember.status;
+    return buildAgentTranscriptProjection({
+      runId: selectedSwarmMember.runId,
+      agentId: selectedMember.id,
+      runStatus: childStatus,
+      timeline: timelines[selectedSwarmMember.runId] ?? [],
+      showReasoning,
+      toolGrouping: {
+        groupExplore: groupExploreTools,
+        groupExecute: groupTerminalTools,
+        groupChanges: groupChangesTools,
+      },
+    });
+  }, [groupChangesTools, groupExploreTools, groupTerminalTools, selectedMember, selectedSwarmMember, showReasoning, timelines]);
   const hasPendingApproval = runApprovals.some((a) => a.status === 'pending');
   const transcriptMessages = useMemo(() => {
     const supplemented = supplementUserFromTimeline(displayMessages, runIds, timelines);
@@ -659,6 +684,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   useEffect(() => {
     setApprovalAnchors({});
     approvalAnchorsRef.current = {};
+    setSelectedSwarmMember(null);
   }, [conversationId]);
 
   // 审批出现时钉住 anchor：之后的新输出排在审批卡之后（对齐 kanna inline approval）。
@@ -839,9 +865,10 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
             {conversationArtifacts.length > 0 && (
               <button
                 type="button"
-                onClick={() => setWorkspaceOpen((v) => !v)}
                 title={workspaceOpen ? '关闭工作区' : '打开工作区'}
                 aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                aria-pressed={workspaceOpen}
+                onClick={() => { setSelectedSwarmMember(null); setWorkspaceOpen((v) => !v); }}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
               >
                 <PanelRight className="h-4 w-4" />
@@ -884,10 +911,16 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
           </div>
         )}
         <div className="chat-thread space-y-3 pb-2">
-          <TranscriptView
+          <AgentTranscriptReader
             segments={presentedSegments}
             onFork={(key) => void forkConversation(key)}
             agent={agent ? { name: agent.name, avatar: agent.avatar } : undefined}
+            selectedSwarmMemberKey={selectedSwarmMember ? `${selectedSwarmMember.runId}:${selectedSwarmMember.swarmId}:${selectedSwarmMember.memberId}` : undefined}
+            onSelectSwarmMember={(runId, swarmId, member) => {
+              setWorkspaceOpen(false);
+              const next = { runId, swarmId, memberId: member.id };
+              setSelectedSwarmMember((current) => isSameSwarmMemberSelection(current, next) ? null : next);
+            }}
           />
           {latestRunId && latestRun && TERMINAL.has(latestRun.status) && (
             <FileChangesCard runId={latestRunId} />
@@ -912,7 +945,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
           )}
           {conversationArtifacts.length > 0 && (
             <div className="mb-2">
-              <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => setWorkspaceOpen(true)} />
+              <ArtifactShelf artifacts={conversationArtifacts} onOpen={() => { setSelectedSwarmMember(null); setWorkspaceOpen(true); }} />
             </div>
           )}
           <ChatBottomDock workflow={dock.workflow} runStatus={latestRun?.status} />
@@ -940,6 +973,9 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
       </div>
       {workspaceOpen && (
         <ArtifactWorkspace artifacts={conversationArtifacts} onClose={() => setWorkspaceOpen(false)} />
+      )}
+      {selectedSwarmMember && selectedMember && !workspaceOpen && (
+        <SwarmMemberWorkspace runId={selectedSwarmMember.runId} member={selectedMember} segments={selectedMemberSegments?.segments} onClose={() => setSelectedSwarmMember(null)} />
       )}
     </div>
   );

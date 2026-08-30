@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { TranscriptView } from './transcript-view';
-import { shouldAutoCollapseReasoning, WorkActivityTimeline } from './work-activity-timeline';
+import { AgentTranscriptReader } from './transcript-view';
+import { shouldAutoCollapseReasoning, WorkActivityTimeline, workElapsed } from './work-activity-timeline';
 import type { PresentedTranscriptSegment, WorkTimelineSegment } from '../../utils/work-activity-timeline';
 
 describe('production chat LanguageGUI skin', () => {
+  it('keeps a settled same-millisecond child timeline below one second', () => {
+    const at = '2026-08-30T01:49:35.460Z';
+    expect(workElapsed(at, at, Date.parse(at) + 180_000, false)).toBe('<1 秒');
+  });
+
   it('auto-collapses a newly settled reasoning phase unless the user interacted', () => {
     expect(shouldAutoCollapseReasoning(null, 'phase-1:settled', false)).toBe(true);
     expect(shouldAutoCollapseReasoning(null, 'phase-1:settled', true)).toBe(false);
@@ -26,7 +31,7 @@ describe('production chat LanguageGUI skin', () => {
     const html = renderToStaticMarkup(
       <div className="tx-scope chat-languagegui-skin">
         <div className="chat-thread">
-          <TranscriptView segments={segments} onFork={() => undefined} agent={{ name: 'Atlas' }} />
+          <AgentTranscriptReader segments={segments} onFork={() => undefined} agent={{ name: 'Atlas' }} />
         </div>
         <div className="chat-composer-stack" />
       </div>,
@@ -72,7 +77,7 @@ describe('production chat LanguageGUI skin', () => {
         contentBlocks: document,
       },
     }];
-    const html = renderToStaticMarkup(<TranscriptView segments={segments} agent={{ name: 'Atlas' }} />);
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={segments} agent={{ name: 'Atlas' }} />);
     expect(html).toContain('<p>这里是摘要。</p>');
     expect(html.match(/data-content-block="metric"/g)).toHaveLength(1);
     expect(html).not.toContain('language-languagegui');
@@ -119,9 +124,9 @@ describe('production chat LanguageGUI skin', () => {
       kind: 'assistant',
       msg: { key: 'final-success', runId: 'run-success', kind: 'assistant', text: '真正的 final answer', at: '2026-08-27T12:01:25Z' },
     };
-    const successHtml = renderToStaticMarkup(<TranscriptView segments={[successful, finalAnswer]} />);
-    const failureHtml = renderToStaticMarkup(<TranscriptView segments={[failed]} />);
-    const unknownHtml = renderToStaticMarkup(<TranscriptView segments={[unknown]} />);
+    const successHtml = renderToStaticMarkup(<AgentTranscriptReader segments={[successful, finalAnswer]} />);
+    const failureHtml = renderToStaticMarkup(<AgentTranscriptReader segments={[failed]} />);
+    const unknownHtml = renderToStaticMarkup(<AgentTranscriptReader segments={[unknown]} />);
 
     expect(successHtml).toContain('已工作 1 分 25 秒');
     expect(successHtml).toContain('aria-expanded="false"');
@@ -185,7 +190,7 @@ describe('production chat LanguageGUI skin', () => {
       ],
     };
 
-    const html = renderToStaticMarkup(<TranscriptView segments={[running]} />);
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={[running]} />);
     const thinkingIndex = html.indexOf('先分析项目结构');
     const interimIndex = html.indexOf('aria-label="过程正文"');
     const toolIndex = html.indexOf('data-variant="timeline"');
@@ -298,7 +303,7 @@ describe('production chat LanguageGUI skin', () => {
       { kind: 'thinking-placeholder', runId: 'run-live-final' },
     ];
 
-    const html = renderToStaticMarkup(<TranscriptView segments={live} />);
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={live} />);
     expect(html).toContain('第一段正文。');
     expect(html).toContain('第二段正在输出');
     expect(html).toContain('role="status" aria-live="polite"');
@@ -342,7 +347,7 @@ describe('production chat LanguageGUI skin', () => {
       ],
     };
 
-    const html = renderToStaticMarkup(<TranscriptView segments={[segment]} />);
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={[segment]} />);
     expect(html).toContain('当前最后一行');
     expect(html).not.toContain('上一行不应进入 ticker');
     expect(html).toContain('1 段思考');

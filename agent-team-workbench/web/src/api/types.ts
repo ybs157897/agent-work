@@ -300,6 +300,7 @@ export interface RunEvent {
   event_type: string;
   payload?: Record<string, unknown>;
   occurred_at: string;
+  agent_id?: string;
 }
 
 /** 文件变更投影：供回复尾部的 Codex 风格变更卡使用。 */
@@ -346,6 +347,7 @@ export interface CanonicalEvent {
   actor?: { kind: 'user' | 'runtime' | 'system'; id: string };
   correlation_id?: string;
   data?: Record<string, unknown>;
+  agent_id?: string;
 }
 
 /** SSE event name 白名单（与 domain/events.go 一致） */
@@ -388,6 +390,7 @@ export const EVENT_NAMES = [
   'tool.progress',
   'tool.completed',
   'tool.failed',
+  'subagent.updated',
   'approval.requested',
   'approval.resolved',
   'approval.expired',

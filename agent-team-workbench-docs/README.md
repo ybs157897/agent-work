@@ -17,7 +17,7 @@
 
 ## 待实现（方向已确认、尚未落地）
 
-- [待实现/README.md](./待实现/README.md)：待办索引（Obsidian 个人便携约定、蜂群 Chat 正文草案等）；单条正文与 `notes/proposed/` 决策 note 成对。
+- [待实现/README.md](./待实现/README.md)：待办索引（当前为 Obsidian 个人便携约定）；单条正文与 `notes/proposed/` 决策 note 成对。
 
 ## 时点快照（定格留痕，不随后续实现更新）
 

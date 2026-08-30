@@ -37,11 +37,40 @@ export interface PlanStepView {
   status: 'pending' | 'in_progress' | 'completed';
 }
 
+export type SwarmMemberStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
+
+export interface SwarmMemberProjection {
+  id: string;
+  index: number;
+  name: string;
+  description: string;
+  status: SwarmMemberStatus;
+  runInBackground?: boolean;
+  summary?: string;
+  error?: string;
+  reason?: string;
+  updatedAt: string;
+  /** 普通 runtime 的子 Agent 不属于 Kimi 蜂巢，但复用同一份详情投影。 */
+  runtime?: 'kimi' | 'codex';
+  parentThreadId?: string;
+}
+
+export interface SwarmProjection {
+  id: string;
+  runtime: 'kimi';
+  title: string;
+  total: number;
+  status: 'running' | 'completed' | 'failed' | 'stopped';
+  members: SwarmMemberProjection[];
+  startedAt: string;
+  completedAt?: string;
+}
+
 /** 对话消息气泡（由 run 事件时间线推导）。 */
 export interface ChatMessage {
   key: string;
   runId: string;
-  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'error' | 'system' | 'plan';
+  kind: 'user' | 'assistant' | 'thinking' | 'tool' | 'swarm' | 'subagent' | 'error' | 'system' | 'plan';
   text: string;
   /** 工具结果输出等附属正文（适配器已截断），渲染为等宽块。 */
   detail?: string;
@@ -72,6 +101,9 @@ export interface ChatMessage {
   phaseId?: string;
   /** 会话运维元信息（session.decision / compacted）：不在对话正文展示。 */
   sessionMeta?: boolean;
+  /** Kimi AgentSwarm 的显式投影；普通 Kimi/Codex 子 agent 不进入此字段。 */
+  swarm?: SwarmProjection;
+  childAgent?: SwarmMemberProjection;
 }
 
 export interface RunStreamParts {
@@ -121,6 +153,142 @@ export function parseFileChangeStats(data?: Record<string, unknown>): FileChange
     ...(bytes !== undefined ? { bytes } : {}),
     ...(operation !== undefined ? { operation } : {}),
     ...(path !== undefined ? { path } : {}),
+  };
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function swarmItemIndex(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : undefined;
+}
+
+function parseKimiSwarm(data: Record<string, unknown> | undefined, at: string): SwarmProjection | undefined {
+  const raw = objectRecord(data?.swarm);
+  if (!raw || raw.runtime !== 'kimi') return undefined;
+  const id = nonEmptyString(raw.id);
+  const total = nonNegativeInteger(raw.total);
+  if (!id || total === undefined || total < 1) return undefined;
+  const members: SwarmMemberProjection[] = [];
+  if (Array.isArray(raw.items)) {
+    for (const value of raw.items) {
+      const item = objectRecord(value);
+      const index = swarmItemIndex(item?.index);
+      const description = nonEmptyString(item?.description);
+      if (index === undefined || !description) continue;
+      members.push({
+        id: `queued:${id}:${index}`,
+        index,
+        name: `成员 ${index}`,
+        description,
+        status: 'queued',
+        updatedAt: at,
+      });
+    }
+  }
+  members.sort((left, right) => left.index - right.index);
+  return {
+    id,
+    runtime: 'kimi',
+    title: nonEmptyString(raw.title) ?? 'Kimi 蜂群',
+    total,
+    status: 'running',
+    members,
+    startedAt: at,
+  };
+}
+
+interface KimiSwarmMemberUpdate extends SwarmMemberProjection {
+  parentToolCallId: string;
+}
+
+const SWARM_MEMBER_STATUSES: ReadonlySet<string> = new Set([
+  'queued', 'running', 'waiting', 'completed', 'failed', 'stopped',
+]);
+
+function parseKimiSwarmMemberUpdate(
+  data: Record<string, unknown> | undefined,
+  at: string,
+): KimiSwarmMemberUpdate | undefined {
+  if ((data?.runtime !== 'kimi' && data?.runtime !== 'codex') || data.role !== 'member' && data.role !== 'child') return undefined;
+  const id = nonEmptyString(data.subagent_id);
+  const parentToolCallId = nonEmptyString(data.parent_tool_call_id);
+  const parsedIndex = data.runtime === 'codex'
+    ? swarmItemIndex(data.index) ?? 1
+    : swarmItemIndex(data.swarm_index);
+  const status = nonEmptyString(data.status);
+  if (!id || (data.runtime === 'kimi' && (!parentToolCallId || parsedIndex === undefined)) || !status || !SWARM_MEMBER_STATUSES.has(status)) {
+    return undefined;
+  }
+  return {
+    id,
+    parentToolCallId: parentToolCallId ?? '',
+    index: parsedIndex ?? 1,
+    name: nonEmptyString(data.name) ?? `成员 ${parsedIndex ?? 1}`,
+    description: nonEmptyString(data.description) ?? `蜂群成员 ${parsedIndex ?? 1}`,
+    status: status as SwarmMemberStatus,
+    ...(typeof data.run_in_background === 'boolean' ? { runInBackground: data.run_in_background } : {}),
+    ...(nonEmptyString(data.summary) ? { summary: nonEmptyString(data.summary) } : {}),
+    ...(nonEmptyString(data.error) ? { error: nonEmptyString(data.error) } : {}),
+    ...(nonEmptyString(data.reason) ? { reason: nonEmptyString(data.reason) } : {}),
+    updatedAt: at,
+    runtime: data.runtime as 'kimi' | 'codex',
+    ...(nonEmptyString(data.parent_thread_id) ? { parentThreadId: nonEmptyString(data.parent_thread_id) } : {}),
+  };
+}
+
+function findSwarmMessage(out: readonly ChatMessage[], runId: string, swarmId: string): number {
+  return out.findIndex((message) =>
+    message.runId === runId && message.kind === 'swarm' && message.swarm?.id === swarmId,
+  );
+}
+
+function upsertSwarmMember(
+  projection: SwarmProjection,
+  update: KimiSwarmMemberUpdate,
+): SwarmProjection {
+  const members = [...projection.members];
+  const index = members.findIndex((member) => member.id === update.id || member.index === update.index);
+  if (index >= 0) {
+    const current = members[index];
+    // AgentSwarm 父工具的 items 是任务事实源；subagent.spawned 的 description
+    // 常退化为“批次名 #N (preset)”，生命周期更新不得覆盖原题目。
+    members[index] = { ...update, description: current.description };
+  }
+  else members.push(update);
+  members.sort((left, right) => left.index - right.index);
+  return {
+    ...projection,
+    total: Math.max(projection.total, members.length),
+    members,
+  };
+}
+
+function settleSwarm(
+  projection: SwarmProjection,
+  status: SwarmProjection['status'],
+  at: string,
+): SwarmProjection {
+  const terminalMemberStatus: SwarmMemberStatus | undefined = status === 'stopped' || status === 'completed'
+    ? 'stopped'
+    : status === 'failed'
+      ? 'failed'
+      : undefined;
+  return {
+    ...projection,
+    status,
+    completedAt: at,
+    members: terminalMemberStatus
+      ? projection.members.map((member) =>
+          member.status === 'queued' || member.status === 'running' || member.status === 'waiting'
+            ? { ...member, status: terminalMemberStatus, updatedAt: at }
+            : member)
+      : projection.members,
   };
 }
 
@@ -285,12 +453,13 @@ export function isRunLive(status: string | undefined): boolean {
 }
 
 /** 聚合单个 run 时间线中的推理与回复草稿（message.completed/tool.started 后重置，仅保留当前段流式内容）。 */
-export function aggregateRunStream(entries: TimelineEntry[]): RunStreamParts {
+export function aggregateRunStream(entries: TimelineEntry[], agentId = 'main'): RunStreamParts {
   let reasoning = '';
   let answerDraft = '';
   let phaseId = '';
   let phaseStartedAt = '';
   for (const e of entries) {
+    if ((e.agent_id ?? 'main') !== agentId) continue;
     if (e.type === 'message.completed') {
       reasoning = '';
       answerDraft = '';
@@ -357,10 +526,12 @@ function foldedText(entry: TimelineEntry): string {
 }
 
 /** 从 run 时间线推导对话气泡（user 右 / assistant 左 / tool·error·system 居中细行）。 */
-export function buildMessages(runIds: string[], timelines: Record<string, TimelineEntry[]>): ChatMessage[] {
+export function buildMessages(runIds: string[], timelines: Record<string, TimelineEntry[]>, agentId = 'main'): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const runId of runIds) {
-    const entries = timelines[runId] ?? [];
+    const entries = (timelines[runId] ?? []).filter((entry) =>
+      (entry.agent_id ?? 'main') === agentId || (agentId === 'main' && entry.type === 'subagent.updated'),
+    );
     // Only the last completed assistant item is the formal answer. Earlier
     // completed items are narration checkpoints and remain in the ordered
     // work trace. Do this from the complete event list up front: relying on
@@ -612,6 +783,36 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
               : phaseId;
           }
           flushDraftAtBoundary(e);
+          const swarm = parseKimiSwarm(e.data, e.occurred_at);
+          if (swarm) {
+            const existingIndex = findSwarmMessage(out, runId, swarm.id);
+            if (existingIndex >= 0) {
+              const existing = out[existingIndex].swarm;
+              const merged = existing?.members.reduce(
+                (projection, member) => upsertSwarmMember(projection, {
+                  ...member,
+                  parentToolCallId: swarm.id,
+                }),
+                swarm,
+              ) ?? swarm;
+              out[existingIndex] = {
+                ...out[existingIndex],
+                key: `${runId}-swarm-${swarm.id}`,
+                text: merged.title,
+                swarm: merged,
+              };
+            } else {
+              out.push({
+                key: `${runId}-swarm-${swarm.id}`,
+                runId,
+                kind: 'swarm',
+                text: swarm.title,
+                at: e.occurred_at,
+                swarm,
+              });
+            }
+            break;
+          }
           const tool = typeof e.data?.tool === 'string' ? e.data.tool : 'tool';
           const argsSummary = typeof e.data?.args_summary === 'string' ? e.data.args_summary : '';
           const args = typeof e.data?.args === 'string' ? e.data.args : undefined;
@@ -636,11 +837,42 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           else out.push(started);
           break;
         }
+        case 'subagent.updated': {
+          const update = parseKimiSwarmMemberUpdate(e.data, e.occurred_at);
+          if (!update) break;
+          if (update.runtime === 'codex') {
+            const key = `${runId}-subagent-${update.id}`;
+            const existing = out.findIndex((message) => message.kind === 'subagent' && message.key === key);
+            const childAgent = { ...update };
+            const message: ChatMessage = {
+              key,
+              runId,
+              kind: 'subagent',
+              text: childAgent.summary ?? childAgent.description,
+              at: e.occurred_at,
+              childAgent,
+            };
+            if (existing >= 0) out[existing] = message;
+            else out.push(message);
+            break;
+          }
+          const idx = findSwarmMessage(out, runId, update.parentToolCallId);
+          // 双重证据门：成员快照只能更新由显式 tool.started.data.swarm
+          // 建立的 Kimi 蜂巢。孤立/跨 turn member 事件不得凭空创建蜂巢。
+          if (idx < 0) break;
+          const existing = out[idx].swarm;
+          if (existing) {
+            const swarm = upsertSwarmMember(existing, update);
+            out[idx] = { ...out[idx], text: swarm.title, swarm };
+          }
+          break;
+        }
         case 'tool.progress': {
           // 流式工具输出：无 call_id 或空文本的帧无法挂行，忽略。
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
           const text = typeof e.data?.text === 'string' ? e.data.text : '';
           if (!callId || !text) break;
+          if (findSwarmMessage(out, runId, callId) >= 0) break;
           const key = `${runId}-tool-${callId}`;
           const idx = out.findIndex((m) => m.kind === 'tool' && m.key === key);
           if (idx >= 0) {
@@ -670,6 +902,24 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           // 非零 exit 即使事件是 completed 也按 error 行渲染（终端语义：命令失败）；退出码本身由卡片层用 exitCode 字段渲染。
           const failedExit = exitCode !== undefined && exitCode !== 0;
           const callId = typeof e.data?.call_id === 'string' ? e.data.call_id : '';
+          const swarmIdx = callId ? findSwarmMessage(out, runId, callId) : -1;
+          if (swarmIdx >= 0) {
+            const existing = out[swarmIdx].swarm;
+            if (existing) {
+              const interrupted = e.type === 'tool.failed' && e.data?.status === 'interrupted';
+              const status: SwarmProjection['status'] = interrupted
+                ? 'stopped'
+                : e.type === 'tool.failed' || failedExit
+                  ? 'failed'
+                  : 'completed';
+              out[swarmIdx] = {
+                ...out[swarmIdx],
+                at: e.occurred_at,
+                swarm: settleSwarm(existing, status, e.occurred_at),
+              };
+            }
+            break;
+          }
           const key = callId ? `${runId}-tool-${callId}` : '';
           const idx = key ? out.findIndex((m) => m.kind === 'tool' && m.key === key) : -1;
           const liveOutput = idx >= 0 ? out[idx].liveOutput : undefined;

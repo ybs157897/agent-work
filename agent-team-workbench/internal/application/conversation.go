@@ -101,6 +101,7 @@ func (s *Service) conversationHistory(ctx context.Context, runs []*domain.Execut
 		if err != nil {
 			return nil, err
 		}
+		events = mainAgentEvents(events)
 		if user := userReplayText(run, events); user != "" {
 			messages = appendHistoryMessage(messages, "user", user)
 		}
@@ -370,7 +371,19 @@ func (s *Service) runFinalText(ctx context.Context, runID string) (string, error
 	if err != nil {
 		return "", err
 	}
-	return completedOrDeltaText(events), nil
+	return completedOrDeltaText(mainAgentEvents(events)), nil
+}
+
+// mainAgentEvents keeps provider history on the parent agent only. Empty AgentID
+// is the legacy/main value for in-memory records and pre-0015 rows.
+func mainAgentEvents(events []RunEvent) []RunEvent {
+	out := make([]RunEvent, 0, len(events))
+	for _, event := range events {
+		if event.AgentID == "" || event.AgentID == "main" {
+			out = append(out, event)
+		}
+	}
+	return out
 }
 
 // completedOrDeltaText 助手最终文本提取核心（conversationHistory 与

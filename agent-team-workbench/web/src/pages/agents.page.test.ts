@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeBinding } from '../api/types';
-import { buildWakePayload, formatTokenCount, isCodexRuntime, runtimeDisplayLabel, sessionDisplayName } from './agents.page';
+import { buildWakePayload, formatTokenCount, isCodexRuntime, normalizeReasoningEffort, runtimeDisplayLabel, sessionDisplayName } from './agents.page';
 
 describe('Agent runtime options', () => {
   it('renders the built-in Codex runtime with a product label', () => {
@@ -12,6 +12,13 @@ describe('Agent runtime options', () => {
     expect(isCodexRuntime('codex_local', null)).toBe(true);
     expect(isCodexRuntime('custom', { adapter_id: 'codex-appserver' } as RuntimeBinding)).toBe(true);
     expect(isCodexRuntime('dsh_local', { adapter_id: 'dsh' } as RuntimeBinding)).toBe(false);
+  });
+
+  it('defaults missing Codex effort to Ultra while preserving explicit values', () => {
+    expect(normalizeReasoningEffort()).toBe('ultra');
+    expect(normalizeReasoningEffort('HIGH')).toBe('high');
+    expect(normalizeReasoningEffort('ultra')).toBe('ultra');
+    expect(normalizeReasoningEffort('unknown')).toBe('ultra');
   });
 });
 

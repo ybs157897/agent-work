@@ -92,6 +92,28 @@ describe('buildTranscriptSegments', () => {
     ]);
   });
 
+  it('Kimi 蜂群形成独立 swarm 段，普通 Agent 子调用仍留在 activity', () => {
+    const messages: ChatMessage[] = [
+      msg({ key: 'u1', runId: 'r1', kind: 'user', text: '并行检查', at: 't1' }),
+      msg({
+        key: 'agent-1', runId: 'r1', kind: 'tool', text: '普通子 Agent', at: 't2',
+        tool: 'Agent', toolStatus: 'running',
+      }),
+      msg({
+        key: 'swarm-1', runId: 'r1', kind: 'swarm', text: 'Kimi 并行检查', at: 't3',
+        swarm: {
+          id: 'swarm-1', runtime: 'kimi', title: 'Kimi 并行检查', total: 2,
+          status: 'running', members: [], startedAt: 't3',
+        },
+      }),
+      msg({ key: 'a1', runId: 'r1', kind: 'assistant', text: '汇总', at: 't4' }),
+    ];
+
+    expect(buildTranscriptSegments(messages).map((segment) => segment.kind)).toEqual([
+      'user', 'activity', 'swarm', 'assistant',
+    ]);
+  });
+
   it('隐藏 session 运维元信息行（已开新会话等）', () => {
     const messages: ChatMessage[] = [
       msg({ key: 'u1', runId: 'r1', kind: 'user', text: 'hi', at: 't1' }),

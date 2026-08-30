@@ -15,6 +15,7 @@ type EventRepo struct{ store *Store }
 // stream_seq / event_id / type / aggregate 由列承载，读取时重组完整 envelope。
 type streamPayload struct {
 	RunSeq        int64              `json:"run_seq,omitempty"`
+	AgentID       string             `json:"agent_id,omitempty"`
 	Actor         *domain.EventActor `json:"actor,omitempty"`
 	CorrelationID string             `json:"correlation_id,omitempty"`
 	Data          map[string]any     `json:"data,omitempty"`
@@ -37,17 +38,17 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 
 	if runEvent != nil {
 		if err := r.store.queryRow(ctx, db,
-			`INSERT INTO run_events(run_id, run_seq, event_type, payload, occurred_at)
-			 VALUES (?, (SELECT COALESCE(MAX(run_seq),0)+1 FROM run_events WHERE run_id=?), ?, ?, ?)
+			`INSERT INTO run_events(run_id, agent_id, run_seq, event_type, payload, occurred_at)
+			 VALUES (?, NULLIF(?, ''), (SELECT COALESCE(MAX(run_seq),0)+1 FROM run_events WHERE run_id=?), ?, ?, ?)
 			 RETURNING run_seq`,
-			runEvent.RunID, runEvent.RunID, runEvent.EventType, jsonText(runEvent.Payload),
+			runEvent.RunID, runEvent.AgentID, runEvent.RunID, runEvent.EventType, jsonText(runEvent.Payload),
 			d.TimeParam(ev.OccurredAt)).Scan(&ev.RunSeq); err != nil {
 			return nil, r.store.mapErr(err)
 		}
 	}
 
 	payload, err := json.Marshal(streamPayload{
-		RunSeq: ev.RunSeq, Actor: ev.Actor, CorrelationID: ev.CorrelationID, Data: ev.Data,
+		RunSeq: ev.RunSeq, AgentID: ev.AgentID, Actor: ev.Actor, CorrelationID: ev.CorrelationID, Data: ev.Data,
 	})
 	if err != nil {
 		return nil, err
@@ -114,6 +115,12 @@ func (r *EventRepo) Since(ctx context.Context, workspaceID string, afterSeq int6
 			return nil, err
 		}
 		ev.RunSeq = p.RunSeq
+		ev.AgentID = p.AgentID
+		// Pre-0015 stream payloads have no agent identity; run events from
+		// those rows are legacy main-agent events just like run_events rows.
+		if ev.RunSeq > 0 && ev.AgentID == "" {
+			ev.AgentID = "main"
+		}
 		ev.Actor = p.Actor
 		ev.CorrelationID = p.CorrelationID
 		ev.Data = p.Data
@@ -174,7 +181,7 @@ func (r *EventRepo) ListActivities(ctx context.Context, workspaceID string, limi
 // ListRunEvents 按 run_seq 正序回放；payload 为 JSON 文本（可空）。
 func (r *EventRepo) ListRunEvents(ctx context.Context, runID string) ([]application.RunEvent, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT run_seq, event_type, payload, occurred_at FROM run_events WHERE run_id=? ORDER BY run_seq`, runID)
+		`SELECT run_seq, agent_id, event_type, payload, occurred_at FROM run_events WHERE run_id=? ORDER BY run_seq`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -183,9 +190,15 @@ func (r *EventRepo) ListRunEvents(ctx context.Context, runID string) ([]applicat
 	for rows.Next() {
 		var e application.RunEvent
 		var payload *string
+		var agentID *string
 		var occurred scanTime
-		if err := rows.Scan(&e.RunSeq, &e.EventType, &payload, &occurred); err != nil {
+		if err := rows.Scan(&e.RunSeq, &agentID, &e.EventType, &payload, &occurred); err != nil {
 			return nil, err
+		}
+		if agentID == nil || *agentID == "" {
+			e.AgentID = "main"
+		} else {
+			e.AgentID = *agentID
 		}
 		if payload != nil && *payload != "" {
 			_ = jsonInto(*payload, &e.Payload)

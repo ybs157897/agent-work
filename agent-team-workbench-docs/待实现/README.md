@@ -5,4 +5,3 @@
 | 条目 | 状态 | 文档 |
 | --- | --- | --- |
 | Obsidian 个人便携用法（不装系统、不进仓二进制） | proposed | [obsidian-portable-personal-use.md](./obsidian-portable-personal-use.md) |
-| 蜂群模式 Chat 正文（蜂巢巢） | proposed | [../references/swarm-chat-body.md](../references/swarm-chat-body.md) |

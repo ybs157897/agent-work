@@ -1,12 +1,40 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { MarkdownBody } from './markdown-body';
+import { MarkdownBody, normalizeKimiMathDelimiters } from './markdown-body';
 
 function render(markdown: string): string {
   return renderToStaticMarkup(<MarkdownBody text={markdown} />);
 }
 
 describe('MarkdownBody · LeAgent 内容覆盖', () => {
+  it('规范化 Kimi 数学分隔符但保留 fenced 与 inline code 原文', () => {
+    const source = [
+      String.raw`行内 \(x^2\)。`,
+      '',
+      String.raw`\[`,
+      '  y = mx + b',
+      String.raw`\]`,
+      '',
+      '`\\(not math\\)`',
+      String.raw`Escaped \\(not math\\).`,
+      '',
+      '```text',
+      String.raw`\[keep this source\]`,
+      '```',
+      '',
+      '~~~text title=sample',
+      String.raw`\(keep tilde source\)`,
+      '~~~',
+    ].join('\n');
+    const normalized = normalizeKimiMathDelimiters(source);
+    expect(normalized).toContain('行内 $x^2$');
+    expect(normalized).toContain('$$\n  y = mx + b\n$$');
+    expect(normalized).toContain('`\\(not math\\)`');
+    expect(normalized).toContain(String.raw`Escaped \\(not math\\).`);
+    expect(normalized).toContain('\\[keep this source\\]');
+    expect(normalized).toContain('\\(keep tilde source\\)');
+    expect(render(source)).toContain('class="katex"');
+  });
   it('渲染 GFM 正文标签、代码面板、表格和图片', () => {
     const html = render([
       '# 一级标题',

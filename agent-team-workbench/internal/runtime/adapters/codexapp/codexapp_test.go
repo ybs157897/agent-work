@@ -2,11 +2,13 @@ package codexapp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	runlib "runtime"
 	"strings"
 	"sync"
@@ -294,8 +296,9 @@ func TestModuleManifest(t *testing.T) {
 		"streaming": atwruntime.CapSupported, "interrupt": atwruntime.CapSupported,
 		"resume": atwruntime.CapSupported, "multi_turn": atwruntime.CapSupported,
 		"steering": atwruntime.CapSupported, "system_prompt": atwruntime.CapSupported,
-		"modes": atwruntime.CapSupported, "permissions": atwruntime.CapAdapterTranslated,
-		"approval": atwruntime.CapSupported, "workspace_files": atwruntime.CapSupported,
+		"modes": atwruntime.CapSupported, "subagents": atwruntime.CapSupported,
+		"permissions": atwruntime.CapAdapterTranslated,
+		"approval":    atwruntime.CapSupported, "workspace_files": atwruntime.CapSupported,
 		"terminal": atwruntime.CapUnavailable, "structured_output": atwruntime.CapAdapterTranslated,
 	}
 	if len(mf.Capabilities) != len(want) {
@@ -305,6 +308,19 @@ func TestModuleManifest(t *testing.T) {
 		if mf.Capabilities[k] != v {
 			t.Errorf("能力 %s = %s，期望 %s", k, mf.Capabilities[k], v)
 		}
+	}
+}
+
+func TestCommandArgsChooseProviderCompatibleMultiAgentProtocol(t *testing.T) {
+	if got, want := New(Config{}).commandArgs(atwruntime.ModelSnapshot{}), []string{"app-server", "--stdio", "--enable", "multi_agent", "--enable", "multi_agent_v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("default command args = %#v, want %#v", got, want)
+	}
+	if got, want := New(Config{}).commandArgs(atwruntime.ModelSnapshot{Provider: "moonshot"}), []string{"app-server", "--stdio", "--enable", "multi_agent", "--disable", "multi_agent_v2"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("custom Responses provider args = %#v, want %#v", got, want)
+	}
+	custom := []string{"fake-server", "--fixture"}
+	if got := New(Config{Args: custom}).commandArgs(atwruntime.ModelSnapshot{Provider: "moonshot"}); !reflect.DeepEqual(got, custom) {
+		t.Fatalf("custom command args changed: %#v", got)
 	}
 }
 
@@ -390,6 +406,172 @@ func TestExecuteHappyPath(t *testing.T) {
 	r.cb.mu.Unlock()
 	if !spawned || pid <= 0 || pgid <= 0 {
 		t.Fatalf("OnSpawn 未正确上报: spawned=%v pid=%d pgid=%d", spawned, pid, pgid)
+	}
+}
+
+func TestExecuteHydratesCodexChildTranscript(t *testing.T) {
+	t.Setenv("CODEX_FAKE_CHILD", "1")
+	m := newTestModule(t)
+	r := startExecute(t, m, nil, "", "")
+	res := r.wait(t, 15*time.Second)
+	if res.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("child run outcome = %s (%+v)", res.Outcome, res.Failure)
+	}
+	r.cb.mu.Lock()
+	events := append([]recEvent(nil), r.cb.events...)
+	r.cb.mu.Unlock()
+	var snapshot, final bool
+	reasoningCount, toolStartedCount, toolCompletedCount := 0, 0, 0
+	for _, ev := range events {
+		if ev.typ == domain.EventSubagentUpdated {
+			snapshot = snapshot || (ev.data["parent_thread_id"] == "th_fake_1" && ev.data["status"] == "completed" && ev.data["name"] == "coder" && ev.data["description"] == "检查 fixture" && ev.data["summary"] == "child final")
+			continue
+		}
+		if ev.data["agent_id"] != "th_child_1" {
+			continue
+		}
+		switch ev.typ {
+		case domain.EventMessageDelta:
+			if ev.data["raw"] != nil {
+				reasoningCount++
+			}
+		case domain.EventToolStarted:
+			if ev.data["call_id"] == "child_tool_1" {
+				toolStartedCount++
+			}
+		case domain.EventToolCompleted:
+			if ev.data["call_id"] == "child_tool_1" {
+				toolCompletedCount++
+			}
+		case domain.EventMessageCompleted:
+			final = ev.data["text"] == "child final"
+		}
+	}
+	if !snapshot || !final || reasoningCount != 1 || toolStartedCount != 1 || toolCompletedCount != 1 {
+		t.Fatalf("child transcript incomplete: snapshot=%v reasoning=%d tool=%d/%d final=%v events=%v", snapshot, reasoningCount, toolStartedCount, toolCompletedCount, final, r.cb.eventNames())
+	}
+}
+
+func TestExecuteScopesLiveCodexChildTranscriptByThread(t *testing.T) {
+	t.Setenv("CODEX_FAKE_CHILD", "1")
+	t.Setenv("CODEX_FAKE_LIVE_CHILD", "1")
+	m := newTestModule(t)
+	r := startExecute(t, m, nil, "", "")
+	res := r.wait(t, 15*time.Second)
+	if res.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("live child run outcome = %s (%+v)", res.Outcome, res.Failure)
+	}
+
+	r.cb.mu.Lock()
+	events := append([]recEvent(nil), r.cb.events...)
+	r.cb.mu.Unlock()
+
+	childCounts := map[string]int{}
+	mainFinals := []string{}
+	for _, ev := range events {
+		agent, _ := ev.data["agent_id"].(string)
+		if agent == "th_child_1" {
+			switch ev.typ {
+			case domain.EventMessageDelta:
+				if raw, ok := ev.data["raw"].(map[string]any); ok {
+					if chunk, ok := raw["chunk"].(map[string]any); ok {
+						if text, _ := chunk["text"].(string); text == "child live thinking" {
+							childCounts["reasoning"]++
+						}
+					}
+				}
+			case domain.EventToolStarted:
+				if ev.data["call_id"] == "live_child_tool" {
+					childCounts["tool.started"]++
+				}
+			case domain.EventToolProgress:
+				if ev.data["call_id"] == "live_child_tool" {
+					childCounts["tool.progress"]++
+				}
+			case domain.EventToolCompleted:
+				if ev.data["call_id"] == "live_child_tool" {
+					childCounts["tool.completed"]++
+				}
+			case domain.EventMessageCompleted:
+				if ev.data["text"] == "child live final" {
+					childCounts["final"]++
+				}
+			}
+			continue
+		}
+
+		if ev.typ == domain.EventMessageCompleted {
+			if text, _ := ev.data["text"].(string); text != "" {
+				mainFinals = append(mainFinals, text)
+			}
+		}
+		for _, childOnly := range []string{"child live thinking", "child live final", "child output"} {
+			encoded, _ := json.Marshal(ev.data)
+			if strings.Contains(string(encoded), childOnly) {
+				t.Fatalf("child payload leaked into main scope: type=%s data=%s", ev.typ, encoded)
+			}
+		}
+	}
+
+	for _, kind := range []string{"reasoning", "tool.started", "tool.progress", "tool.completed", "final"} {
+		if childCounts[kind] != 1 {
+			t.Errorf("child %s count = %d, want 1 (all=%v)", kind, childCounts[kind], r.cb.eventNames())
+		}
+	}
+	if !reflect.DeepEqual(mainFinals, []string{"fake codex 输出"}) {
+		t.Fatalf("child turn/completed ended or polluted parent: main finals=%v", mainFinals)
+	}
+}
+
+func TestCodexChildBelongsToCurrentTurn(t *testing.T) {
+	started := time.Unix(1_788_052_500, 0).UTC()
+	if !codexChildBelongsToTurn("child-new", float64(1_788_052_500), started, nil) {
+		t.Fatal("numeric createdAt from current turn must be included")
+	}
+	if codexChildBelongsToTurn("child-old", float64(1_788_052_400), started, nil) {
+		t.Fatal("old child must not leak into resumed run")
+	}
+	if codexChildBelongsToTurn("child-unknown", nil, started, nil) {
+		t.Fatal("missing fallback identity time must fail closed")
+	}
+	exact := map[string]struct{}{"child-exact": {}}
+	if !codexChildBelongsToTurn("child-exact", float64(1), started, exact) {
+		t.Fatal("live receiverThreadIds must be authoritative")
+	}
+	if codexChildBelongsToTurn("child-other", float64(1_788_052_500), started, exact) {
+		t.Fatal("unlisted child must not enter an exact live set")
+	}
+}
+
+func TestExecuteDefaultsToUltraMultiAgentEffort(t *testing.T) {
+	t.Setenv("CODEX_EXPECT_EFFORT", "ultra")
+	m := newTestModule(t)
+	r := startExecute(t, m, nil, "", "")
+	res := r.wait(t, 15*time.Second)
+	if res.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("默认 Codex 子 Agent 模式应使用 ultra: %s (%+v)", res.Outcome, res.Failure)
+	}
+}
+
+func TestExecutePreservesExplicitReasoningEffort(t *testing.T) {
+	t.Setenv("CODEX_EXPECT_EFFORT", "high")
+	m := newTestModule(t)
+	r := startExecute(t, m, map[string]any{
+		"model": map[string]any{"reasoning_effort": "high"},
+	}, "", "")
+	res := r.wait(t, 15*time.Second)
+	if res.Outcome != atwruntime.OutcomeSucceeded {
+		t.Fatalf("显式 Codex effort 应保留: %s (%+v)", res.Outcome, res.Failure)
+	}
+}
+
+func TestCodexTurnReasoningEffort(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"", "ultra"}, {"unknown", "ultra"}, {"HIGH", "high"}, {"ultra", "ultra"},
+	} {
+		if got := codexTurnReasoningEffort(tc.input); got != tc.want {
+			t.Errorf("codexTurnReasoningEffort(%q)=%q want %q", tc.input, got, tc.want)
+		}
 	}
 }
 
@@ -663,6 +845,52 @@ type discardCloser struct{}
 
 func (discardCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (discardCloser) Close() error                { return nil }
+
+type recordingCloser struct{ bytes.Buffer }
+
+func (recordingCloser) Close() error { return nil }
+
+func TestPumpTurnStartUsesUltraEffortWithoutDeprecatedMode(t *testing.T) {
+	stdin := &recordingCloser{}
+	cb := &recordCallbacks{}
+	s := &execStream{
+		module: New(Config{}), ctx: context.Background(), reasoningEffort: "ultra",
+		ex: &atwruntime.ExecContext{
+			Ctx: context.Background(), Run: newRun(nil), Instruction: "codex fake run", Callbacks: cb,
+		},
+		stdin: stdin, pendingRequests: map[int64]string{}, approvals: map[string]chan bool{},
+	}
+	res := s.pump(bufio.NewReader(strings.NewReader(strings.Join([]string{
+		`{"id":1,"result":{"userAgent":"codex-cli/0.149.0-fake"}}`,
+		`{"id":2,"result":{"thread":{"id":"th_1","sessionId":"th_1"}}}`,
+		`{"id":3,"result":{"turn":{"id":"turn_1","status":"inProgress"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"th_1","turn":{"id":"turn_1","status":"completed"}}}`,
+	}, "\n") + "\n")))
+	if !res.finished {
+		t.Fatalf("pump did not finish: %+v", res)
+	}
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(stdin.String()), "\n") {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			t.Fatal(err)
+		}
+		if frame["method"] != "turn/start" {
+			continue
+		}
+		found = true
+		params := frame["params"].(map[string]any)
+		if params["effort"] != "ultra" {
+			t.Fatalf("turn/start effort = %#v", params["effort"])
+		}
+		if _, ok := params["multiAgentMode"]; ok {
+			t.Fatal("turn/start must not send deprecated multiAgentMode")
+		}
+	}
+	if !found {
+		t.Fatalf("turn/start request not recorded: %s", stdin.String())
+	}
+}
 
 // 未识别的 app-server 通知不得静默丢弃：default 分支记 warn OnLog（含 method
 // 名，params 截 200），且通知流继续消费到 turn/completed。

@@ -94,6 +94,13 @@ def main():
                 "thread": {"id": thread_id, "sessionId": thread_id},
                 "model": "gpt-fake", "modelProvider": "openai", "cwd": "/tmp"}})
         elif method == "turn/start":
+            expected_effort = os.environ.get("CODEX_EXPECT_EFFORT")
+            if expected_effort and params.get("effort") != expected_effort:
+                rpc_error(rid, "unexpected effort: {}".format(params.get("effort")))
+                continue
+            if "multiAgentMode" in params:
+                rpc_error(rid, "deprecated multiAgentMode must not be sent")
+                continue
             send({"id": rid, "result": {"turn": {
                 "id": "turn_fake_1", "status": "inProgress", "items": [], "error": None}}})
             send({"method": "turn/started", "params": {
@@ -101,6 +108,53 @@ def main():
                 "turn": {"id": "turn_fake_1", "status": "inProgress", "items": []}}})
             if os.environ.get("CODEX_FAKE_HANG") == "1":
                 continue
+
+            if os.environ.get("CODEX_FAKE_CHILD") == "1":
+                send({"method": "item/started", "params": {"item": {
+                    "id": "collab_1", "type": "collabAgentToolCall", "tool": "spawn_agent",
+                    "status": "inProgress", "receiverThreadIds": ["th_child_1"],
+                    "agentsStates": {"th_child_1": {"status": "running"}},
+                    "prompt": "inspect fixture"}}})
+
+                # Codex app-server multiplexes parent and child notifications on
+                # the same stdout stream. Reuse the root turn id deliberately:
+                # threadId, rather than turnId, is the agent-scope authority.
+                if os.environ.get("CODEX_FAKE_LIVE_CHILD") == "1":
+                    child_id = "th_child_1"
+                    send({"method": "turn/started", "params": {
+                        "threadId": child_id,
+                        "turn": {"id": "turn_fake_1", "status": "inProgress", "items": []}}})
+                    send({"method": "item/started", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "item": {"id": "live_child_reason", "type": "reasoning", "status": "inProgress"}}})
+                    send({"method": "item/reasoning/summaryTextDelta", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "itemId": "live_child_reason", "delta": "child live thinking"}})
+                    send({"method": "item/started", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "item": {"id": "live_child_tool", "type": "commandExecution",
+                                 "command": "echo child", "cwd": "/tmp", "status": "inProgress"}}})
+                    send({"method": "item/commandExecution/outputDelta", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "itemId": "live_child_tool", "delta": "child output\n"}})
+                    send({"method": "item/completed", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "item": {"id": "live_child_tool", "type": "commandExecution",
+                                 "command": "echo child", "cwd": "/tmp", "status": "completed",
+                                 "aggregatedOutput": "child output\n", "exitCode": 0}}})
+                    send({"method": "item/started", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "item": {"id": "live_child_msg", "type": "agentMessage", "status": "inProgress"}}})
+                    send({"method": "item/agentMessage/delta", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "itemId": "live_child_msg", "delta": "child live final"}})
+                    send({"method": "item/completed", "params": {
+                        "threadId": child_id, "turnId": "turn_fake_1",
+                        "item": {"id": "live_child_msg", "type": "agentMessage",
+                                 "status": "completed", "text": "child live final"}}})
+                    send({"method": "turn/completed", "params": {
+                        "threadId": child_id,
+                        "turn": {"id": "turn_fake_1", "status": "completed"}}})
 
             send({"method": "item/reasoning/summaryTextDelta",
                   "params": {"threadId": thread_id, "turnId": "turn_fake_1",
@@ -152,6 +206,13 @@ def main():
                   "params": {"threadId": thread_id, "turnId": "turn_fake_1",
                              "itemId": "msg_1", "delta": "fake codex 输出"}})
 
+            if os.environ.get("CODEX_FAKE_CHILD") == "1":
+                send({"method": "item/completed", "params": {"item": {
+                    "id": "collab_1", "type": "collabAgentToolCall", "tool": "spawn_agent",
+                    "status": "completed", "receiverThreadIds": ["th_child_1"],
+                    "agentsStates": {"th_child_1": {"status": "completed"}},
+                    "prompt": "inspect fixture"}}})
+
             if os.environ.get("CODEX_FAKE_APPROVAL") == "1":
                 send({"id": 500, "method": "item/commandExecution/requestApproval",
                       "params": {"threadId": thread_id, "turnId": "turn_fake_1",
@@ -184,6 +245,22 @@ def main():
             send({"method": "item/completed", "params": {"item": {
                 "id": "msg_steer", "type": "agentMessage", "text": "steered"}}})
             complete_turn(thread_id)
+        elif method == "thread/turns/list":
+            if params.get("threadId") != "th_child_1":
+                rpc_error(rid, "unknown child thread")
+                continue
+            if params.get("cursor"):
+                send({"id": rid, "result": {"data": [{"id": "child_turn_1", "status": "completed", "items": [
+                    {"id": "child_reason_1", "type": "reasoning", "status": "completed", "summary": ["child thinking"], "content": []},
+                    {"id": "child_msg_1", "type": "agentMessage", "status": "completed", "text": "child final"}
+                ]}], "nextCursor": None}})
+            else:
+                send({"id": rid, "result": {"data": [{"id": "child_turn_1", "status": "completed", "items": [
+                    {"id": "child_reason_1", "type": "reasoning", "status": "completed", "summary": ["child thinking"], "content": []},
+                    {"id": "child_tool_1", "type": "commandExecution", "status": "completed", "command": "echo child", "aggregatedOutput": "child output", "exitCode": 0}
+                ]}], "nextCursor": "page-2"}})
+        elif method == "thread/list":
+            send({"id": rid, "result": {"data": [{"id": "th_child_1", "agentNickname": "调查员", "agentRole": "coder", "preview": "检查 fixture", "parentThreadId": "th_fake_1", "createdAt": 4102444800}]}})
         elif method == "turn/interrupt":
             if not params.get("turnId"):
                 rpc_error(rid, "turnId required")

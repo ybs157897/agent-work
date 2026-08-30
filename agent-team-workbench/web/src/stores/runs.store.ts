@@ -14,6 +14,7 @@ export interface TimelineEntry {
   role?: string;
   text?: string;
   data?: Record<string, unknown>;
+  agent_id?: string;
 }
 
 const TIMELINE_CAP = 500;
@@ -98,16 +99,31 @@ function mergeTimeline(history: TimelineEntry[], live: TimelineEntry[]): Timelin
     else noSeq.push(e);
   }
   const merged = [...bySeq.values()].sort((a, b) => (a.run_seq ?? 0) - (b.run_seq ?? 0));
-  return capTimeline([...merged, ...noSeq]);
+  const scoped = new Map<string, TimelineEntry[]>();
+  for (const entry of [...merged, ...noSeq]) {
+    const scope = entry.agent_id ?? 'main';
+    const entries = scoped.get(scope) ?? [];
+    entries.push(entry);
+    scoped.set(scope, entries);
+  }
+  return [...scoped.values()].flatMap((entries) => capTimeline(entries)).sort((a, b) => (a.run_seq ?? 0) - (b.run_seq ?? 0));
 }
 
 const TOOL_EVENT_TYPES = new Set(['tool.started', 'tool.progress', 'tool.completed', 'tool.failed']);
 const TOOL_TERMINAL_TYPES = new Set(['tool.completed', 'tool.failed']);
 const STRUCTURAL_EVENT_TYPES = new Set(['run.created', 'message.completed']);
+const SUBAGENT_EVENT_TYPE = 'subagent.updated';
 
 function toolCallId(entry: TimelineEntry): string | undefined {
   const value = entry.data?.call_id;
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === 'string' && value.length > 0 ? `${entry.agent_id ?? 'main'}:${value}` : undefined;
+}
+
+function subagentSnapshotKey(entry: TimelineEntry): string | undefined {
+  const value = entry.data?.subagent_id;
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  const parent = entry.data?.parent_tool_call_id;
+  return typeof parent === 'string' && parent.length > 0 ? `${parent}:${value}` : value;
 }
 
 function entryIdentity(entry: TimelineEntry): string {
@@ -116,6 +132,13 @@ function entryIdentity(entry: TimelineEntry): string {
 
 function entryPhaseId(entry: TimelineEntry): string {
   return entry.run_seq === undefined ? entry.event_id : `run-seq-${entry.run_seq}`;
+}
+function scopeKey(runId: string, agentId?: string): string {
+  return `${runId}:${agentId ?? 'main'}`;
+}
+function clearRunFoldBuffers(runId: string): void {
+  for (const key of liveTextFoldBuffers.keys()) if (key.startsWith(`${runId}:`)) liveTextFoldBuffers.delete(key);
+  for (const key of liveReasoningFoldBuffers.keys()) if (key.startsWith(`${runId}:`)) liveReasoningFoldBuffers.delete(key);
 }
 
 function eventIdentity(event: Pick<CanonicalEvent, 'event_id' | 'run_seq'>): string {
@@ -297,6 +320,17 @@ function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
     if (latest) selected.add(identity(latest));
   }
 
+  // subagent.updated is a self-contained snapshot. Retain only the newest
+  // snapshot per member so a long Kimi swarm can always rebuild every hive
+  // cell without preserving redundant lifecycle history.
+  const latestSubagentSnapshots = new Map<string, TimelineEntry>();
+  for (const entry of entries) {
+    if (entry.type !== SUBAGENT_EVENT_TYPE) continue;
+    const key = subagentSnapshotKey(entry);
+    if (key) latestSubagentSnapshots.set(key, entry);
+  }
+  for (const entry of latestSubagentSnapshots.values()) selected.add(identity(entry));
+
   // If an unusually large transcript contains more anchors than the cap, keep
   // the newest anchors first while retaining run.created when possible.
   if (selected.size > TIMELINE_CAP) {
@@ -323,7 +357,11 @@ function capTimeline(entries: TimelineEntry[]): TimelineEntry[] {
   // preserves the visible tail without allowing it to evict a call lifecycle.
   const remaining = TIMELINE_CAP - selected.size;
   if (remaining > 0) {
-    const tail = entries.filter((entry) => !selected.has(identity(entry)) && !TOOL_EVENT_TYPES.has(entry.type));
+    const tail = entries.filter((entry) =>
+      !selected.has(identity(entry))
+      && !TOOL_EVENT_TYPES.has(entry.type)
+      && entry.type !== SUBAGENT_EVENT_TYPE,
+    );
     for (const entry of tail.slice(-remaining)) selected.add(identity(entry));
   }
 
@@ -352,8 +390,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       const watching = { ...s.watching };
       if (n <= 0) delete watching[runId];
       else watching[runId] = n;
-      if (n <= 0) liveTextFoldBuffers.delete(runId);
-      if (n <= 0) liveReasoningFoldBuffers.delete(runId);
+      if (n <= 0) clearRunFoldBuffers(runId);
       if (n <= 0) liveEventKeys.delete(runId);
       return { watching };
     }),
@@ -396,6 +433,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         run_seq: e.run_seq,
         type: e.event_type,
         occurred_at: e.occurred_at,
+        agent_id: e.agent_id,
         role: typeof e.payload?.role === 'string' ? e.payload.role : undefined,
         text: typeof e.payload?.text === 'string' ? e.payload.text : undefined,
         data: e.payload,
@@ -418,6 +456,8 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
 
     if (runId) {
       const beforeTimeline = get().timelines[runId] ?? [];
+      const currentScope = scopeKey(runId, ev.agent_id);
+      const beforeScopeLength = beforeTimeline.filter((entry) => scopeKey(runId, entry.agent_id) === currentScope).length;
       const existingEntry = beforeTimeline.find((entry) =>
         ev.run_seq !== undefined && entry.run_seq !== undefined
           ? entry.run_seq === ev.run_seq
@@ -427,8 +467,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       const seenEvents = liveEventKeys.get(runId) ?? new Set<string>();
       const duplicate = existingEntry !== undefined || seenEvents.has(eventKey);
       if (ev.type === 'run.created' && !duplicate) {
-        liveTextFoldBuffers.delete(runId);
-        liveReasoningFoldBuffers.delete(runId);
+        clearRunFoldBuffers(runId);
         liveEventKeys.delete(runId);
         observedRunTerminals.delete(runId);
         runTerminalRefreshQueued.delete(runId);
@@ -439,8 +478,8 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       const delta = ev.type === 'message.delta' ? extractDeltaChunk(ev.data) : null;
       const duplicateDelta = Boolean(delta && duplicate);
       if (!duplicateDelta && delta?.type === 'text-delta' && delta.text) {
-        const previous = liveTextFoldBuffers.get(runId);
-        liveTextFoldBuffers.set(runId, {
+        const previous = liveTextFoldBuffers.get(currentScope);
+        liveTextFoldBuffers.set(currentScope, {
           text: `${previous?.text ?? ''}${delta.text}`,
           startedAt: previous?.startedAt ?? ev.occurred_at,
           phaseId: previous?.phaseId ?? entryPhaseId({
@@ -453,8 +492,8 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         });
       }
       if (!duplicateDelta && delta?.type === 'reasoning-delta' && delta.text) {
-        const previous = liveReasoningFoldBuffers.get(runId);
-        liveReasoningFoldBuffers.set(runId, {
+        const previous = liveReasoningFoldBuffers.get(currentScope);
+        liveReasoningFoldBuffers.set(currentScope, {
           text: `${previous?.text ?? ''}${delta.text}`,
           startedAt: previous?.startedAt ?? ev.occurred_at,
           completedAt: ev.occurred_at,
@@ -468,12 +507,12 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
         });
       }
       const liveTextFold = (ev.type === 'tool.started' || ev.type === 'message.completed')
-        ? liveTextFoldBuffers.get(runId)
+        ? liveTextFoldBuffers.get(currentScope)
         : undefined;
       const liveReasoningFold = (ev.type === 'tool.started' || ev.type === 'message.completed')
-        ? liveReasoningFoldBuffers.get(runId)
+        ? liveReasoningFoldBuffers.get(currentScope)
         : undefined;
-      const eventData = (liveTextFold || liveReasoningFold) && beforeTimeline.length >= TIMELINE_CAP
+      const eventData = (liveTextFold || liveReasoningFold) && beforeScopeLength >= TIMELINE_CAP
         ? {
             ...ev.data,
             ...(liveReasoningFold ? {
@@ -510,6 +549,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
                 run_seq: ev.run_seq,
                 type: ev.type,
                 occurred_at: ev.occurred_at,
+                agent_id: ev.agent_id,
                 role: entryRole(ev),
                 text: entryText(ev),
                 data: retainedEventData,
@@ -525,14 +565,13 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
           : entry.event_id === ev.event_id,
       );
       if (!duplicate && (ev.type === 'tool.started' || ev.type === 'message.completed') && liveTextFold) {
-        if (retained || beforeTimeline.length < TIMELINE_CAP) liveTextFoldBuffers.delete(runId);
+        if (retained || beforeScopeLength < TIMELINE_CAP) liveTextFoldBuffers.delete(currentScope);
       }
       if (!duplicate && (ev.type === 'tool.started' || ev.type === 'message.completed') && liveReasoningFold) {
-        if (retained || beforeTimeline.length < TIMELINE_CAP) liveReasoningFoldBuffers.delete(runId);
+        if (retained || beforeScopeLength < TIMELINE_CAP) liveReasoningFoldBuffers.delete(currentScope);
       }
       if (terminalEvent && !duplicate) {
-        liveTextFoldBuffers.delete(runId);
-        liveReasoningFoldBuffers.delete(runId);
+        clearRunFoldBuffers(runId);
       }
       if (isOutputTraceEnabled()) {
         traceOutput({

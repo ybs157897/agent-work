@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"sync"
 	"time"
 
@@ -46,14 +47,37 @@ func (s *Service) SetDispatcher(d Dispatcher) { s.dispatcher = d }
 
 // emit 在事务内追加 Canonical Event（stream_events + outbox 同事务）。
 func (s *Service) emit(ctx context.Context, workspaceID, evType, aggType, aggID string, aggVersion int, runEvent *RunEventRecord, data map[string]any) error {
+	if runEvent != nil {
+		if runEvent.AgentID == "" {
+			if id, ok := data["agent_id"].(string); ok && id != "" {
+				runEvent.AgentID = id
+			} else {
+				runEvent.AgentID = "main"
+			}
+		}
+		data = withoutAgentID(data)
+		runEvent.Payload = data
+	}
 	ev, err := domain.NewCanonicalEvent(workspaceID, evType, aggType, aggID, aggVersion, data)
 	if err != nil {
 		return err
+	}
+	if runEvent != nil {
+		ev.AgentID = runEvent.AgentID
 	}
 	if _, err := s.store.Events().Append(ctx, ev, runEvent); err != nil {
 		return err
 	}
 	return nil
+}
+
+func withoutAgentID(data map[string]any) map[string]any {
+	if len(data) == 0 {
+		return data
+	}
+	out := maps.Clone(data)
+	delete(out, "agent_id")
+	return out
 }
 
 // activity 写 activity 流并发布 activity.appended 事件（无归因形态）。

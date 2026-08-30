@@ -528,6 +528,31 @@ export function parseContentBlockDocument(input: unknown): ContentBlockDocument 
   return blocks.length ? { version: CONTENT_BLOCK_VERSION, blocks } : null;
 }
 
+/**
+ * A fenced `languagegui` block already declares the protocol family. Some
+ * providers omit only the redundant top-level version while still returning
+ * a valid, fully whitelisted `blocks` envelope. Infer v1 only for that exact
+ * omission; explicit unknown versions and arbitrary JSON remain rejected.
+ */
+export function parseLanguageGuiFenceDocument(input: unknown): ContentBlockDocument | null {
+  const strict = parseContentBlockDocument(input);
+  if (strict) return strict;
+  let value = input;
+  if (typeof input === 'string') {
+    if (input.length > 250_000) return null;
+    try {
+      value = JSON.parse(input) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  const envelope = record(value);
+  if (!envelope || Object.prototype.hasOwnProperty.call(envelope, 'version') || !Array.isArray(envelope.blocks)) {
+    return null;
+  }
+  return parseContentBlockDocument({ ...envelope, version: CONTENT_BLOCK_VERSION });
+}
+
 function languageGuiFencePattern(): RegExp {
   return /^ {0,3}(`{3,}|~{3,})(?:languagegui|lgui)(?:[ \t][^\r\n]*)?[ \t]*\r?\n[\s\S]*?^ {0,3}\1[ \t]*$/gim;
 }
