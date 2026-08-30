@@ -428,9 +428,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           <div className="flex items-center gap-3 shrink-0">
             <span className="text-caption text-text-secondary">启用</span>
             <Toggle checked={enabled} onChange={onToggle} disabled={toggling} />
-            <Button type="button" onClick={() => setSessionsOpen(true)} title="查看/重置该 Agent 的跨 Run 会话锚点">
+            <Button type="button" onClick={() => setSessionsOpen(true)} title="查看/重置该 Agent 的 Task 会话锚点">
               <History className="w-4 h-4" />
-              会话
+              任务会话
             </Button>
             <Button
               type="button"
@@ -736,7 +736,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   );
 }
 
-/** 会话锚点面板：查看该 Agent 的跨 Run 会话，支持按 (adapter, task_key) 重置。 */
+/** Task 会话锚点面板：只管理 Task 的跨 Run 会话；Chat 会话不进入该投影。 */
 function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: () => void; agent: AgentProfile }) {
   const [items, setItems] = useState<TaskSession[] | null>(null);
   const [resetting, setResetting] = useState<string | null>(null);
@@ -760,13 +760,13 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
   }, [open, agent.id]);
 
   const onReset = async (session: TaskSession) => {
-    if (!window.confirm(`重置任务 ${session.task_key} 的会话锚点？该任务下一轮将开启全新会话，历史不再续接。`)) return;
+    if (!window.confirm(`重置任务 ${session.task_key} 的会话锚点？该任务下一轮运行将开启全新会话，历史不再续接。`)) return;
     setResetting(session.id);
     try {
       await resetTaskSession(agent.id, { task_key: session.task_key, adapter_id: session.adapter_id });
       const { items } = await listTaskSessions(agent.id);
       setItems(items);
-      toast.success('会话锚点已重置');
+      toast.success('任务会话锚点已重置');
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : '重置失败');
     } finally {
@@ -775,13 +775,13 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
   };
 
   return (
-    <Drawer open={open} onClose={onClose} title={`${agent.name} 的会话锚点`} width={560}>
+    <Drawer open={open} onClose={onClose} title={`${agent.name} 的任务会话锚点`} width={560}>
       <div className="p-comfortable">
         {items === null ? (
           <p className="text-caption text-text-tertiary py-comfortable text-center">加载中…</p>
         ) : items.length === 0 ? (
           <p className="text-caption text-text-tertiary py-comfortable text-center">
-            暂无活跃会话锚点（重置后的墓碑不展示）
+            暂无活跃任务会话锚点（重置后的墓碑不展示）
           </p>
         ) : (
           <div className="space-y-snug max-h-[50vh] overflow-y-auto">
@@ -822,7 +822,7 @@ function TaskSessionsModal({ open, onClose, agent }: { open: boolean; onClose: (
           </div>
         )}
         <p className="mt-comfortable text-caption text-text-tertiary">
-          重置写入墓碑：下一轮对话将开启全新会话（触发轮换/失忆排查时使用）。
+          此处只管理 Task 会话；重置写入墓碑后，该任务下一轮运行将开启全新会话。Chat 会话不在此处展示或重置。
         </p>
       </div>
     </Drawer>
@@ -840,10 +840,11 @@ function WakeAgentModal({ open, onClose, agent }: { open: boolean; onClose: () =
   useEffect(() => {
     if (!open || !workspace) return;
     let cancelled = false;
-    listWorkItems(workspace.id)
+    listWorkItems(workspace.id, { record_kind: 'task' })
       .then(({ items }) => {
         if (cancelled) return;
-        const active = (items ?? []).filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+        const active = (items ?? []).filter((t) =>
+          t.record_kind === 'task' && t.status !== 'completed' && t.status !== 'cancelled');
         setTasks(active);
         setTaskKey((cur) => (active.some((t) => t.id === cur) ? cur : active[0]?.id ?? ''));
       })

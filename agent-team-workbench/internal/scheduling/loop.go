@@ -225,10 +225,13 @@ func (s *Scheduler) ProduceTimers(ctx context.Context, now time.Time) {
 }
 
 // ConsumeOne 消费单条唤醒请求，返回最终 outcome。流程：
-//  1. 源门控——timer/automation 走完整心跳链（enabled → claim 间隔）；
+//  1. 源门控——timer/普通 automation 走完整心跳链（enabled → claim 间隔）；
 //     assignment/on_demand 是事件驱动唤醒，不受心跳间隔门控，仅兜底校验各自开关；
-//  2. 活跃 run（活跃 lease 或进程内执行）→ coalesced，context 中的 instruction
-//     先经 ForwardInput 转发 steering，失败降级附加进审计 context；zombie 穿透继续；
+//     settlement automation 是控制平面必达收口，既不依赖 heartbeat，也不因活跃
+//     run coalesced 丢弃，而是保持 queued 等待下一轮重试；
+//  2. 活跃 run（活跃 lease 或进程内执行）→ 普通唤醒 coalesced，context 中的
+//     instruction 先经 ForwardInput 转发 steering，失败降级附加进审计 context；
+//     settlement automation 保持 queued；zombie 穿透继续；
 //  3. CAS 占位（queued → consumed）占住本唤醒——占不住视为已被并发消费，直接返回；
 //  4. 渲染 prompt → CreateRunForWakeup：成功收尾；失败补偿（唤醒退回 queued +
 //     回滚心跳 claim）后按超龄策略重试/合并，不烧心跳槽。
@@ -240,9 +243,27 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 	}
 
 	policy := profile.Heartbeat()
+	settlement := isSettlementWakeup(w)
 	claimed := false
 	switch w.Source {
-	case domain.WakeupSourceTimer, domain.WakeupSourceAutomation:
+	case domain.WakeupSourceTimer:
+		if !policy.Enabled {
+			return s.coalesce(ctx, w, "heartbeat 已禁用")
+		}
+		claimed, err = s.Store.ClaimHeartbeat(ctx, w.AgentProfileID, s.heartbeatInterval(policy.IntervalSec), now)
+		if err != nil {
+			s.logf("wakeup %s: ClaimHeartbeat 失败: %v", w.ID, err)
+			return s.retryOrExpire(ctx, w, now)
+		}
+		if !claimed {
+			return s.coalesce(ctx, w, "距上次心跳不足间隔")
+		}
+	case domain.WakeupSourceAutomation:
+		if settlement {
+			// settlement 是由已完成成员触发的必达控制面工作，不受 agent 的
+			// 自主 heartbeat 开关或间隔约束。
+			break
+		}
 		if !policy.Enabled {
 			return s.coalesce(ctx, w, "heartbeat 已禁用")
 		}
@@ -282,6 +303,12 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 		return s.retryOrExpire(ctx, w, now)
 	}
 	if alive {
+		if settlement {
+			// 汇总 run 不能被活跃 lead/同任务 run 合并吞掉；保持 queued，待
+			// 活跃 run 终态释放任务锁后由下一轮消费。
+			s.logf("wakeup %s: settlement 等待活跃 run %s，保持 queued", w.ID, runID)
+			return OutcomeQueued, nil
+		}
 		// 活跃 run：instruction 先转发 steering（失败降级落审计），再记 coalesced 审计。
 		s.forwardOrAudit(ctx, w, runID)
 		return s.coalesce(ctx, w, "已有活跃 run "+runID)
@@ -354,10 +381,26 @@ func (s *Scheduler) coalesce(ctx context.Context, w domain.WakeupRequest, reason
 
 // retryOrExpire 失败兜底：保持 queued 下轮重试；超过 maxWakeupAge 标记 coalesced 防堆积。
 func (s *Scheduler) retryOrExpire(ctx context.Context, w domain.WakeupRequest, now time.Time) (Outcome, error) {
+	// settlement 是控制平面的必达收口，不能因为暂时无法加载 agent 或创建
+	// run 而在超龄策略中标记 coalesced；保持 queued 交给后续 tick 重试。
+	if isSettlementWakeup(w) {
+		return OutcomeQueued, nil
+	}
 	if w.WakeAt.Before(now.Add(-maxWakeupAge)) {
 		return s.coalesce(ctx, w, "超龄未消费（>1h）")
 	}
 	return OutcomeQueued, nil
+}
+
+// isSettlementWakeup 识别 S3 内部必达汇总唤醒。该标记只由 application 的
+// settlement 收口钩子写入 automation context；普通 automation 仍沿用 heartbeat
+// 策略，避免为未来自动化源改变既有门控语义。
+func isSettlementWakeup(w domain.WakeupRequest) bool {
+	if w.Source != domain.WakeupSourceAutomation {
+		return false
+	}
+	id, _ := w.Context[domain.WakeupContextSettlementDispatchID].(string)
+	return strings.TrimSpace(id) != ""
 }
 
 // workItemTitle 从唤醒 context 取工作项标题（入队时可携带），缺省用 taskKey 占位。

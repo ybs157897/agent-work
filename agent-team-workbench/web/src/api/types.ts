@@ -9,6 +9,8 @@ export type AgentPresence = 'idle' | 'busy' | 'degraded' | 'offline';
 export type WorkItemStatus = 'todo' | 'in_progress' | 'blocked' | 'completed' | 'cancelled';
 export type WorkItemPhase = 'execution' | 'review' | 'acceptance' | '';
 export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+/** WorkItem 的持久化记录类型；Chat 与 Task 共用执行内核但不共享记录入口。 */
+export type WorkItemRecordKind = 'chat' | 'task';
 
 export type RunStatus =
   | 'queued'
@@ -61,6 +63,8 @@ export interface TaskSession {
   display_id?: string;
   runs_count: number;
   input_tokens_cum: number;
+  /** 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际 +1）。 */
+  segment_seq: number;
   created_at: string;
   updated_at: string;
 }
@@ -111,6 +115,8 @@ export interface Blocker {
 export interface WorkItem {
   id: string;
   workspace_id: string;
+  /** 不可变记录类型；所有列表、导航与终态副作用均以此为硬边界。 */
+  record_kind: WorkItemRecordKind;
   title: string;
   description: string;
   status: WorkItemStatus;
@@ -127,6 +133,8 @@ export interface WorkItem {
   blocker?: Blocker;
   runs_count: number;
   latest_run_id?: string;
+  /** 任务台账滚动摘要（S2 确定性生成）：仅详情响应携带，列表/bootstrap 省略。 */
+  rolling_digest?: string;
   version: number;
   created_at: string;
   updated_at: string;
@@ -164,6 +172,74 @@ export interface Plan {
   version: number;
   created_at: string;
   updated_at: string;
+}
+
+// ── Dispatch（会话元模型 S1：一次发送形成的执行批次）──────────────────
+
+export type DispatchTrigger = 'user_message' | 'lead_plan' | 'wakeup';
+export type DispatchStatus = 'running' | 'collecting' | 'completed' | 'degraded' | 'cancelled';
+
+/** 派发成员 run 摘要（会话组；服务端按 created_at 升序）。 */
+export interface DispatchRun {
+  id: string;
+  work_item_id: string;
+  agent_profile_id?: string;
+  agent_name?: string;
+  status: RunStatus;
+  /** 一行摘要（S1 为 run 指令摘录，确定性生成）。 */
+  summary?: string;
+}
+
+/** 触发消息摘录（锚回来源 run）。 */
+export interface DispatchTriggerMessage {
+  run_id?: string;
+  excerpt: string;
+}
+
+/** GET /work-items/{id}/dispatches 的卡片（新→旧）。 */
+export interface DispatchCard {
+  id: string;
+  work_item_id: string;
+  trigger: DispatchTrigger;
+  /** 接诊 run / plan source run；@直达批次省略。 */
+  lead_run_id?: string;
+  status: DispatchStatus;
+  trigger_message?: DispatchTriggerMessage;
+  runs: DispatchRun[];
+  created_at: string;
+  closed_at?: string;
+}
+
+// ── 决策台账（会话元模型 S2：任务级共享记忆的用户原话引文）────────────
+
+/** GET/POST /work-items/{id}/decisions 的台账行。 */
+export interface DecisionEntry {
+  id: string;
+  work_item_id: string;
+  /** 用户原话（引文保真；服务端只 trim，不改写）。 */
+  quote: string;
+  /** 钉出来源轮次；缺省时未钉来源。 */
+  source_run_id?: string;
+  /** 链回片段内位置（消息序号等）。 */
+  source_ref?: string;
+  created_at: string;
+}
+
+// ── FTS 检索（会话元模型 S4：索引为派生存储，纯请求-响应，无 SSE）────
+
+export type SearchKind = 'segment_summary' | 'decision' | 'artifact';
+
+/** GET /workspaces/{id}/search 的命中项。 */
+export interface SearchItem {
+  kind: SearchKind;
+  /** 命中归属任务（decision/artifact 也定位到其 work item）。 */
+  work_item_id: string;
+  /** 决策 id / work item id（segment_summary）/ artifact id。 */
+  source_id: string;
+  /** 任务标题 / quote 前 80 字 / logical_path。 */
+  title: string;
+  /** 正文命中摘录：[] 包裹命中词、… 截断省略。 */
+  snippet: string;
 }
 
 export interface RunFailure {
@@ -373,6 +449,11 @@ export const EVENT_NAMES = [
   'plan.waiting',
   'plan.finished',
   'plan.failed',
+  // dispatch 域（会话元模型 S1）；updated 的生产者随 S3 状态收口接入，先行进白名单。
+  'dispatch.created',
+  'dispatch.updated',
+  // 决策台账（会话元模型 S2）：用户原话钉为决策时发布。
+  'decision.created',
   'session.decision',
   'session.compacted',
   'run.created',

@@ -146,6 +146,11 @@ paths:
         - { name: status, in: query, schema: { type: string } }
         - { name: priority, in: query, schema: { type: string } }
         - { name: assignee, in: query, schema: { type: string } }
+        - name: record_kind
+          in: query
+          required: false
+          schema: { type: string, enum: [chat, task] }
+          description: 缺省为 task；Chat 与 Task 列表不得混读，Chat 调用方必须显式传 chat。
         - name: parent_id
           in: query
           required: false
@@ -371,6 +376,34 @@ paths:
       responses:
         "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
 
+  /work-items/{work_item_id}/dispatches:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItemDispatches
+      summary: 派发卡片时间线（批次 + 成员 runs 摘要 + 触发消息摘录；新→旧）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DispatchCardList" } } } }
+
+  /work-items/{work_item_id}/decisions:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItemDecisions
+      summary: 决策台账（用户原话引文；创建时间升序；只读投影）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionList" } } } }
+    post:
+      tags: [work-items]
+      operationId: recordWorkItemDecision
+      description: 决策原话落台账（S2）。quote 必填且 trim 后非空；source_run_id 可选但必须属于该 work item。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/DecisionCreate" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/DecisionEntry" } } } }
+        "422": { description: quote 为空 / source_run_id 不存在或不属于该任务, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "404": { description: 任务不存在, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
   /runs/{run_id}:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     get:
@@ -530,6 +563,22 @@ paths:
       parameters: [{ $ref: "#/components/parameters/Cursor" }]
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ActivityList" } } } }
+
+  /workspaces/{workspace_id}/search:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: searchWorkspace
+      summary: FTS 检索（片段摘要/决策台账/产物标题；snippet 带 [] 高亮标记）
+      description: 索引为派生存储（定点重写），q 为空或纯符号返回空 items；不发 SSE 事件。
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string }, description: 检索词（空格分词 AND 语义） }
+        - { name: record_kind, in: query, required: false, schema: { type: string, enum: [task] }, description: 缺省或 task；Chat 记录不属于任务搜索面 }
+        - { name: work_item_id, in: query, schema: { type: string }, description: 可选，限定单任务 }
+        - { name: kind, in: query, schema: { type: string, enum: [segment_summary, decision, artifact] } }
+        - { name: limit, in: query, schema: { type: integer, default: 20, maximum: 100 } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/SearchList" } } } }
 
   /workspaces/{workspace_id}/runtime-bindings:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -1117,11 +1166,14 @@ components:
       required: [title]
       properties:
         title: { type: string }
+        record_kind: { type: string, enum: [chat, task], default: task, description: 新记录类型；省略时兼容旧任务创建语义 }
         description: { type: string }
         status: { $ref: "#/components/schemas/WorkItemStatus", default: todo }
         priority: { $ref: "#/components/schemas/Priority", default: medium }
         due_date: { type: string, format: date }
         agent_profile_id: { type: string, nullable: true }
+        parent_id: { type: string, nullable: true, description: 同类型父记录 id }
+        client_key: { type: string, description: 实体级幂等键 }
 
     WorkItemPatch:
       type: object
@@ -1145,6 +1197,7 @@ components:
       properties:
         id: { type: string }
         workspace_id: { type: string }
+        record_kind: { type: string, enum: [chat, task], description: 不可变记录类型 }
         parent_id: { type: string, nullable: true, description: 父任务 id；根任务缺省 }
         title: { type: string }
         description: { type: string }
@@ -1169,9 +1222,49 @@ components:
             created_at: { type: string, format: date-time }
         runs_count: { type: integer }
         latest_run_id: { type: string, nullable: true }
+        rolling_digest: { type: string, description: 任务台账滚动摘要（S2 确定性生成，无 LLM；仅详情响应携带，列表省略） }
         version: { type: integer }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    DecisionCreate:
+      type: object
+      required: [quote]
+      properties:
+        quote: { type: string, description: 用户原话（必填，trim 后非空；禁止 LLM 转述进 quote） }
+        source_run_id: { type: string, description: 可选钉出来源轮次；必须属于该 work item }
+        source_ref: { type: string, description: 可选链回片段内位置（消息序号等） }
+
+    DecisionEntry:
+      type: object
+      description: 决策台账行（S2）：任务级共享记忆的用户原话引文。
+      properties:
+        id: { type: string, description: "dec_ 前缀" }
+        work_item_id: { type: string }
+        quote: { type: string }
+        source_run_id: { type: string, description: 缺省时未钉来源 }
+        source_ref: { type: string }
+        created_at: { type: string, format: date-time }
+
+    DecisionList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DecisionEntry" } }
+
+    SearchList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/SearchItem" } }
+
+    SearchItem:
+      type: object
+      description: 检索命中项（S4）；索引为派生存储，定点重写幂等，不发 SSE 事件。
+      properties:
+        kind: { type: string, enum: [segment_summary, decision, artifact] }
+        work_item_id: { type: string }
+        source_id: { type: string, description: 决策 id / work item id（segment_summary）/ artifact id }
+        title: { type: string, description: 任务标题 / quote 前 80 字 / logical_path }
+        snippet: { type: string, description: "正文命中摘录，[] 包裹命中词、… 省略号" }
 
     RunCreate:
       type: object
@@ -1314,6 +1407,41 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/ExecutionRun" } }
 
+    DispatchCardList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/DispatchCard" } }
+
+    DispatchCard:
+      type: object
+      description: 派发卡片（会话元模型 S1）：一次发送形成的执行批次 + 成员会话组摘要。
+      properties:
+        id: { type: string, description: "disp_ 前缀" }
+        work_item_id: { type: string }
+        trigger: { type: string, enum: [user_message, lead_plan, wakeup] }
+        lead_run_id: { type: string, description: 接诊 run / plan source run；@直达批次省略 }
+        status: { type: string, enum: [running, collecting, completed, degraded, cancelled] }
+        trigger_message:
+          type: object
+          description: 触发消息摘录（接诊/lead_plan 取 lead run 指令；@直达取最早成员 run）
+          properties:
+            run_id: { type: string }
+            excerpt: { type: string }
+        runs:
+          type: array
+          description: 成员 runs（会话组；created_at 升序）
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              work_item_id: { type: string }
+              agent_profile_id: { type: string }
+              agent_name: { type: string }
+              status: { type: string }
+              summary: { type: string, description: 一行摘要（S1 为 run 指令摘录，确定性生成） }
+        created_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time, nullable: true }
+
     RunChanges:
       type: object
       required: [file_count, additions, deletions, files, state, can_revert, version]
@@ -1413,6 +1541,7 @@ components:
         display_id: { type: string, description: provider 侧人类可读会话 id }
         runs_count: { type: integer, description: 本代会话已被多少 Run 使用（轮换阈值输入；轮换后清零重起） }
         input_tokens_cum: { type: integer, format: int64, description: 本代累计输入 token（轮换阈值输入） }
+        segment_seq: { type: integer, description: 参与线片段序号——同一 task_key 下第 N 段会话（轮换代际 +1，缺省 1） }
         created_at: { type: string, format: date-time, description: 本代会话代际起点（72h 轮换阈值基准） }
         updated_at: { type: string, format: date-time }
 

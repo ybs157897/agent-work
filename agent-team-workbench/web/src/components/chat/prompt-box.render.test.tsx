@@ -42,6 +42,7 @@ describe('PromptBox', () => {
     expect(html).toContain('aria-label="加入发送队列"');
     expect(html).toContain('加入队列');
     expect(html).toContain('12k tokens');
+    expect(html).not.toContain('提及智能体');
   });
 
   it('keeps an empty idle composer send-disabled and ships useful Library prompts', () => {

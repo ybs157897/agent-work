@@ -41,16 +41,17 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
   viewMode: 'kanban',
   selectedTaskId: null,
 
-  hydrate: (items) => set({ items, loaded: true }),
+  hydrate: (items) => set({ items: items.filter((item) => item.record_kind === 'task'), loaded: true }),
 
   refresh: async () => {
     const wsId = useWorkspaceStore.getState().workspace?.id;
     if (!wsId) return;
     const { filter } = get();
     const isStale = refreshGuard.begin();
-    const { items } = await listWorkItems(wsId, { ...filter });
+    const { items } = await listWorkItems(wsId, { ...filter, record_kind: 'task' });
     if (isStale()) return; // 期间已发出更新的 refresh（如筛选已变）：丢弃旧响应
-    set({ items, loaded: true });
+    // Fail closed if a server or proxy returns records outside the requested kind.
+    set({ items: items.filter((item) => item.record_kind === 'task'), loaded: true });
   },
 
   setFilter: (filter) => {
@@ -61,12 +62,14 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
   setViewMode: (viewMode) => set({ viewMode }),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
 
-  upsert: (item) =>
+  upsert: (item) => {
+    if (item.record_kind !== 'task') return;
     set((s) => ({
       items: s.items.some((t) => t.id === item.id)
         ? s.items.map((t) => (t.id === item.id ? item : t))
         : [...s.items, item],
-    })),
+    }));
+  },
 
   getById: (id) => get().items.find((t) => t.id === id),
 

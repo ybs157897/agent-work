@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -176,6 +177,37 @@ func jsonResult(v any) (*mcp.CallToolResult, error) {
 	return mcp.NewToolResultText(string(b)), nil
 }
 
+// requireTaskWorkItem makes the MCP task surface fail closed for Chat records.
+// MCP exposes task-board semantics only; Chat keeps its Run/Session contract on
+// the Chat surface and must never be discovered or mutated through task tools.
+func (d *toolDeps) requireTaskWorkItem(ctx context.Context, workItemID string) (*domain.WorkItem, error) {
+	wi, err := d.store.WorkItems().Get(ctx, workItemID)
+	if err != nil {
+		return nil, err
+	}
+	kind := wi.RecordKind
+	if kind == "" {
+		// Direct in-process callers predating record_kind are historical tasks;
+		// persisted migration rows are normalized before reaching this surface.
+		kind = domain.RecordKindTask
+	}
+	if kind != domain.RecordKindTask {
+		return nil, fmt.Errorf("%w: record_kind=%s 不是 Task 记录", domain.ErrValidation, kind)
+	}
+	return wi, nil
+}
+
+func (d *toolDeps) requireTaskRun(ctx context.Context, runID string) (*domain.ExecutionRun, error) {
+	run, err := d.store.Runs().Get(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := d.requireTaskWorkItem(ctx, run.WorkItemID); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
 func (d *toolDeps) workspaceList(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	ids, err := d.store.Workspaces().ListIDs(ctx)
 	if err != nil {
@@ -197,7 +229,7 @@ func (d *toolDeps) taskList(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return mcp.NewToolResultError("workspace_id 必填: " + err.Error()), nil
 	}
-	filter := application.WorkItemFilter{}
+	filter := application.WorkItemFilter{RecordKind: domain.RecordKindTask}
 	if status := req.GetString("status", ""); status != "" {
 		st, ok := workItemStatuses[status]
 		if !ok {
@@ -217,7 +249,7 @@ func (d *toolDeps) taskGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	if err != nil {
 		return mcp.NewToolResultError("work_item_id 必填: " + err.Error()), nil
 	}
-	wi, err := d.store.WorkItems().Get(ctx, id)
+	wi, err := d.requireTaskWorkItem(ctx, id)
 	if err != nil {
 		return toolErr(err)
 	}
@@ -228,6 +260,9 @@ func (d *toolDeps) runList(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	wiID, err := req.RequireString("work_item_id")
 	if err != nil {
 		return mcp.NewToolResultError("work_item_id 必填: " + err.Error()), nil
+	}
+	if _, err := d.requireTaskWorkItem(ctx, wiID); err != nil {
+		return toolErr(err)
 	}
 	runs, err := d.store.Runs().ListByWorkItem(ctx, wiID)
 	if err != nil {
@@ -244,7 +279,7 @@ func (d *toolDeps) runGet(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	if err != nil {
 		return mcp.NewToolResultError("run_id 必填: " + err.Error()), nil
 	}
-	run, err := d.store.Runs().Get(ctx, runID)
+	run, err := d.requireTaskRun(ctx, runID)
 	if err != nil {
 		return toolErr(err)
 	}
@@ -262,6 +297,9 @@ func (d *toolDeps) runEventsTail(ctx context.Context, req mcp.CallToolRequest) (
 	}
 	if limit > eventsTailMaxLimit {
 		limit = eventsTailMaxLimit
+	}
+	if _, err := d.requireTaskRun(ctx, runID); err != nil {
+		return toolErr(err)
 	}
 	evs, err := d.store.Events().ListRunEvents(ctx, runID)
 	if err != nil {
@@ -282,6 +320,9 @@ func (d *toolDeps) approvalList(ctx context.Context, req mcp.CallToolRequest) (*
 	runID, err := req.RequireString("run_id")
 	if err != nil {
 		return mcp.NewToolResultError("run_id 必填: " + err.Error()), nil
+	}
+	if _, err := d.requireTaskRun(ctx, runID); err != nil {
+		return toolErr(err)
 	}
 	approvals, err := d.store.Runs().ListApprovals(ctx, runID)
 	if err != nil {

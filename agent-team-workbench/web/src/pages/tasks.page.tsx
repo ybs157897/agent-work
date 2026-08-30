@@ -16,6 +16,7 @@ import { formatDueDate } from '../utils/format';
 import { BlockTaskModal } from './tasks/block-modal';
 import { CreateTaskModal } from './tasks/create-task-modal';
 import { TaskDetail } from './tasks/task-detail';
+import { TaskSearch } from './tasks/search-panel';
 
 // 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
 export { sortTasksTree, childCountByParent } from '../utils/task-tree';
@@ -159,6 +160,7 @@ export default function TasksPage() {
         </div>
 
         <div className="flex items-center gap-snug">
+          <TaskSearch onOpenTask={selectTask} />
           <span className="text-caption uppercase tracking-widest text-text-tertiary">筛选</span>
           <FilterSelect
             label="优先级"

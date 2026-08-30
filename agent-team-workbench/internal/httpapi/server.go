@@ -87,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/bootstrap", s.guard(security.PermRead, s.handleBootstrap))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/dashboard", s.guard(security.PermRead, s.handleDashboard))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/activities", s.guard(security.PermRead, s.handleActivities))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/search", s.guard(security.PermRead, s.handleSearch))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/events", s.guard(security.PermRead, s.handleSSE))
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/agent-profiles", s.guard(security.PermRead, s.handleListAgents))
@@ -119,6 +120,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRunControl, s.handleCreateRun))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRead, s.handleListWorkItemRuns))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/dispatches", s.guard(security.PermRead, s.handleListWorkItemDispatches))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/decisions", s.guard(security.PermRead, s.handleListWorkItemDecisions))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/decisions", s.guard(security.PermWorkItemWrite, s.handleRecordDecision))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}", s.guard(security.PermRead, s.handleGetRun))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/events", s.guard(security.PermRead, s.handleListRunEvents))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/input", s.guard(security.PermRunControl, s.handleRunInput))
@@ -427,7 +431,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	for _, a := range agents {
 		agentDTOs = append(agentDTOs, toAgentDTO(a))
 	}
-	items, _, err := s.svc.WorkItems(r.Context(), wsID, application.WorkItemFilter{Limit: 100})
+	items, _, err := s.svc.WorkItems(r.Context(), wsID, application.WorkItemFilter{
+		RecordKind: domain.RecordKindTask,
+		Limit:      100,
+	})
 	if err != nil {
 		fail(w, r, err)
 		return

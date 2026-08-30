@@ -346,6 +346,8 @@ func TestContractGuardEventNamesMatchAsyncAPI(t *testing.T) {
 		domain.AggregateArtifact:       true,
 		domain.AggregateRuntimeBinding: true,
 		domain.AggregateRunner:         true,
+		domain.AggregateDispatch:       true,
+		domain.AggregateDecision:       true,
 	}
 	aggSchema := envelope.Properties["aggregate"]
 	if aggSchema == nil || aggSchema.Properties["type"] == nil {

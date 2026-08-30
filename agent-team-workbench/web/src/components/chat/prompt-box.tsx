@@ -22,7 +22,10 @@ import {
   type RefObject,
 } from 'react';
 import type { QueuedMessage } from '../../stores/chat.store';
+import { useAgentsStore } from '../../stores/agents.store';
 import { formatBytes } from '../../utils/artifact-visuals';
+import { activeMention, applyMention, mentionableAgents, type MentionState } from '../../utils/mention';
+import { Avatar } from '../avatar';
 import { Button } from '../ui';
 import { validatePromptFiles, type PromptFileDescriptor } from './prompt-files';
 
@@ -78,6 +81,8 @@ export interface PromptBoxProps {
   stopping: boolean;
   onStop: () => void;
   usageText: string | null;
+  /** 仅 Task 编排入口开启 @Agent；独立 Chat 默认不提供调度候选。 */
+  mentionsEnabled?: boolean;
 }
 
 export function PromptBox({
@@ -95,6 +100,7 @@ export function PromptBox({
   stopping,
   onStop,
   usageText,
+  mentionsEnabled = false,
 }: PromptBoxProps) {
   const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
   const [fileError, setFileError] = useState('');
@@ -103,6 +109,10 @@ export function PromptBox({
   const [speechSupported, setSpeechSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const [speechError, setSpeechError] = useState('');
+  // @ 提及弹层：mention = 光标处提及态（null 关闭）；mentionIndex = 键盘高亮行。
+  const [mention, setMention] = useState<MentionState | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const agents = useAgentsStore((s) => (mentionsEnabled ? s.agents : []));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const appsRef = useRef<HTMLDivElement>(null);
@@ -128,6 +138,24 @@ export function PromptBox({
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  // 提及候选：只列能被服务端 @直达 命中的名字（无空白），按已输入 query 过滤。
+  const mentionAgents = mentionsEnabled ? mentionableAgents(agents) : [];
+  const filteredAgents = mention
+    ? mentionAgents.filter((a) => a.name.toLowerCase().includes(mention.query.toLowerCase()))
+    : [];
+  const mentionOpen = mention !== null && filteredAgents.length > 0;
+  const activeMentionId = mentionOpen
+    ? `chat-mention-option-${filteredAgents[Math.min(mentionIndex, filteredAgents.length - 1)].id}`
+    : undefined;
+
+  // 草稿被整段替换（语音转写 / Library 提示词）时重算提及态，防弹层锚点失真。
+  useEffect(() => {
+    if (!mention) return;
+    const textarea = inputRef.current;
+    const caret = textarea?.selectionStart ?? draft.length;
+    if (!activeMention(draft, caret)) setMention(null);
+  }, [draft, mention, inputRef]);
 
   useEffect(() => {
     const textarea = inputRef.current;
@@ -200,8 +228,62 @@ export function PromptBox({
     addFiles(Array.from(event.dataTransfer.files));
   };
 
+  const updateMention = (value: string, caret: number | null) => {
+    if (!mentionsEnabled) {
+      setMention(null);
+      return;
+    }
+    setMention(activeMention(value, caret ?? value.length));
+    setMentionIndex(0);
+  };
+
+  // 光标在文本内移动（方向键 / 点击）时重算提及态，弹层随之开合。
+  const syncMentionFromDom = () => {
+    if (!mentionsEnabled) {
+      setMention(null);
+      return;
+    }
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    setMention(activeMention(textarea.value, textarea.selectionStart ?? textarea.value.length));
+  };
+
+  const selectMention = (name: string) => {
+    if (!mention) return;
+    const textarea = inputRef.current;
+    const caret = textarea?.selectionStart ?? draft.length;
+    const insertion = applyMention(draft, mention, caret, name);
+    onDraftChange(insertion.text);
+    setMention(null);
+    if (textarea) {
+      // 受控 value 落 DOM 后把光标归位到插入词尾。
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(insertion.caret, insertion.caret);
+      });
+    }
+  };
+
   const onInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (mentionOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        setMentionIndex((index) => Math.min(Math.max(index + delta, 0), filteredAgents.length - 1));
+        return;
+      }
+      if (event.key === 'Escape') {
+        setMention(null);
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        selectMention(filteredAgents[Math.min(mentionIndex, filteredAgents.length - 1)].name);
+        return;
+      }
+    }
+    if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
     if (attachments.length === 0) onSend();
   };
@@ -285,13 +367,54 @@ export function PromptBox({
       <textarea
         ref={inputRef}
         value={draft}
-        onChange={(event) => onDraftChange(event.target.value)}
+        onChange={(event) => {
+          onDraftChange(event.target.value);
+          updateMention(event.target.value, event.target.selectionStart);
+        }}
+        onSelect={syncMentionFromDom}
+        onBlur={() => setMention(null)}
         onKeyDown={onInputKeyDown}
         rows={1}
         placeholder={placeholder}
         aria-label="输入消息"
+        aria-haspopup={mentionsEnabled ? 'listbox' : undefined}
+        aria-expanded={mentionsEnabled ? mentionOpen : undefined}
+        aria-activedescendant={mentionsEnabled ? activeMentionId : undefined}
         className="chat-composer-input"
       />
+      {mentionOpen && (
+        <div
+          className="absolute bottom-full left-0 right-0 z-40 mb-2 overflow-hidden rounded-card border border-border-subtle bg-surface-raised shadow-level-3"
+          role="listbox"
+          aria-label="提及智能体"
+        >
+          <ul className="max-h-64 overflow-y-auto py-micro">
+            {filteredAgents.map((agent, index) => (
+              <li key={agent.id}>
+                <button
+                  type="button"
+                  role="option"
+                  id={`chat-mention-option-${agent.id}`}
+                  aria-selected={index === mentionIndex}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectMention(agent.name)}
+                  onMouseEnter={() => setMentionIndex(index)}
+                  className={`flex w-full items-center gap-2 px-snug py-tight text-left transition-colors ${
+                    index === mentionIndex ? 'bg-brand-primary/10' : 'hover:bg-surface-base'
+                  }`}
+                >
+                  <Avatar name={agent.name} url={agent.avatar} size={22} />
+                  <span className="shrink-0 text-body text-text-primary">{agent.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-caption text-text-tertiary">{agent.role}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <div className="border-t border-border-subtle bg-surface-sunken/55 px-snug py-micro text-caption text-text-tertiary">
+            ↑↓ 选择，Enter 确认，Esc 关闭；@名字 需位于消息开头才会直达该 agent
+          </div>
+        </div>
+      )}
       {attachments.length > 0 && (
         <ul className="chat-prompt-attachments" aria-label="待处理附件">
           {attachments.map((attachment) => (

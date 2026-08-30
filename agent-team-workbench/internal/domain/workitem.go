@@ -2,6 +2,28 @@ package domain
 
 import "time"
 
+// WorkItemRecordKind 区分工作台中的独立对话记录与任务发布记录。
+// 这是持久化边界，不是 UI 展示模式：同一记录创建后不可在两类之间切换。
+type WorkItemRecordKind string
+
+const (
+	// RecordKindChat 是单 Agent 多轮对话记录；只共享 Run/Session 执行基础。
+	RecordKindChat WorkItemRecordKind = "chat"
+	// RecordKindTask 是任务发布记录；启用计划、派发、台账与任务状态机。
+	RecordKindTask WorkItemRecordKind = "task"
+)
+
+// Valid 报告记录类型是否在持久化闭集内。
+func (k WorkItemRecordKind) Valid() bool {
+	return k == RecordKindChat || k == RecordKindTask
+}
+
+// IsTask 报告该记录是否属于任务发布域。
+func (k WorkItemRecordKind) IsTask() bool { return k == RecordKindTask }
+
+// IsChat 报告该记录是否属于独立对话域。
+func (k WorkItemRecordKind) IsChat() bool { return k == RecordKindChat }
+
 // WorkItemStatus 是看板业务真相；只由控制平面状态机变更。
 type WorkItemStatus string
 
@@ -49,9 +71,15 @@ var workItemTransitions = map[WorkItemStatus][]WorkItemStatus{
 // （防同一任务双跑）。锁归属 run 而非 agent——属主活性复用 run 状态/lease
 // 判定面，不引入第二套判定；属主 run 落终态即死锁可抢占。锁是并发原语，
 // 不参与 version 乐观锁比较，但读写必须与状态变更同一事务。
+//
+// RollingDigest 是任务台账滚动摘要（会话元模型 S2）：确定性生成（无 LLM），
+// 终态钩子全量重算覆盖写；转述只允许进这里，决策原话走 decision_entries。
 type WorkItem struct {
-	ID             string
-	WorkspaceID    string
+	ID          string
+	WorkspaceID string
+	// RecordKind 是不可变的 Chat/Task 记录边界；空值仅兼容迁移前的内存对象，
+	// 应用层读取时按 task 解释，新建对象必须显式归一化。
+	RecordKind     WorkItemRecordKind
 	ParentID       string
 	Title          string
 	Description    string
@@ -63,6 +91,7 @@ type WorkItem struct {
 	ClientKey      string
 	LockedByRunID  string
 	LockedAt       *time.Time
+	RollingDigest  string
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
@@ -100,6 +129,9 @@ func (s WorkItemStatus) IsTerminal() bool {
 
 // Transition 执行状态迁移；终态不可逆。
 func (w *WorkItem) Transition(to WorkItemStatus, now time.Time) error {
+	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
+		return &TransitionError{Entity: "work_item", From: string(w.Status), To: string(to)}
+	}
 	if w.Status.IsTerminal() {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: string(to)}
 	}
@@ -118,6 +150,9 @@ func (w *WorkItem) Transition(to WorkItemStatus, now time.Time) error {
 
 // EnterReview：Run succeeded 后进入评审投影；WorkItem 仍处 in_progress。
 func (w *WorkItem) EnterReview(now time.Time) error {
+	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
+		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "review"}
+	}
 	if w.Status != WorkItemInProgress {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "review"}
 	}
@@ -130,6 +165,9 @@ func (w *WorkItem) EnterReview(now time.Time) error {
 // 仅 review 可入（评估 run succeeded 先经 EnterReview 既有联动）；WorkItem 仍处
 // in_progress，唯一完工路径仍是 Accept()。
 func (w *WorkItem) EnterAcceptance(now time.Time) error {
+	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
+		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "acceptance"}
+	}
 	if w.Status != WorkItemInProgress || w.Phase != PhaseReview {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "acceptance"}
 	}
@@ -141,6 +179,9 @@ func (w *WorkItem) EnterAcceptance(now time.Time) error {
 // BeginExecution 在同一 WorkItem/会话创建下一轮 Run 时，把评审投影切回执行态。
 // WorkItem 仍保持 in_progress；每一轮 Run 仍是不可覆盖的独立审计记录。
 func (w *WorkItem) BeginExecution(now time.Time) {
+	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
+		return
+	}
 	if w.Status != WorkItemInProgress || w.Phase == PhaseExecution {
 		return
 	}
@@ -150,6 +191,9 @@ func (w *WorkItem) BeginExecution(now time.Time) {
 
 // Accept：Reviewer / 人工验收通过，唯一进入 completed 的路径。
 func (w *WorkItem) Accept(now time.Time) error {
+	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
+		return &TransitionError{Entity: "work_item", From: string(w.Status), To: string(WorkItemCompleted)}
+	}
 	if w.Status != WorkItemInProgress || w.Phase == "" || w.Phase == PhaseExecution {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "completed"}
 	}

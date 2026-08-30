@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -116,12 +117,55 @@ func (s *Server) setAvailability(w http.ResponseWriter, r *http.Request, enabled
 
 // ── WorkItem ─────────────────────────────────────────────────────────
 
+func parseWorkItemRecordKind(raw string) (domain.WorkItemRecordKind, error) {
+	if raw == "" {
+		return "", nil
+	}
+	kind := domain.WorkItemRecordKind(raw)
+	if !kind.Valid() {
+		return "", fmt.Errorf("%w: record_kind 必须为 chat 或 task", domain.ErrValidation)
+	}
+	return kind, nil
+}
+
+func normalizedWorkItemRecordKind(w *domain.WorkItem) domain.WorkItemRecordKind {
+	if w == nil || w.RecordKind == "" {
+		return domain.RecordKindTask
+	}
+	return w.RecordKind
+}
+
+func requireTaskWorkItemHTTP(w *domain.WorkItem) error {
+	if w == nil {
+		return fmt.Errorf("%w: work item required", domain.ErrValidation)
+	}
+	kind := normalizedWorkItemRecordKind(w)
+	if !kind.Valid() {
+		return fmt.Errorf("%w: work item %s 的 record_kind 无效", domain.ErrValidation, w.ID)
+	}
+	if kind != domain.RecordKindTask {
+		return fmt.Errorf("%w: record_kind=chat 不支持任务操作", domain.ErrValidation)
+	}
+	return nil
+}
+
 func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 	wsID := r.PathValue("workspace_id")
+	recordKind, err := parseWorkItemRecordKind(r.URL.Query().Get("record_kind"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if recordKind == "" {
+		// The public task-list endpoint is task-only by default. Chat callers
+		// must opt into the independent conversation surface explicitly.
+		recordKind = domain.RecordKindTask
+	}
 	f := application.WorkItemFilter{
-		Status:   domain.WorkItemStatus(r.URL.Query().Get("status")),
-		Priority: domain.Priority(r.URL.Query().Get("priority")),
-		Assignee: r.URL.Query().Get("assignee"),
+		Status:     domain.WorkItemStatus(r.URL.Query().Get("status")),
+		Priority:   domain.Priority(r.URL.Query().Get("priority")),
+		Assignee:   r.URL.Query().Get("assignee"),
+		RecordKind: recordKind,
 		// parent_id：缺省不过滤；none = 只看根任务（无父链接）。
 		ParentID: r.URL.Query().Get("parent_id"),
 		Cursor:   r.URL.Query().Get("cursor"),
@@ -144,7 +188,13 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.enrichWorkItem(r, wi))
+	dto := s.enrichWorkItem(r, wi)
+	// 台账摘要只在详情响应携带（S2）：enrichWorkItem 被列表路径共用，
+	// 4KB 级摘要不得进列表/bootstrap 载荷。
+	if normalizedWorkItemRecordKind(wi) == domain.RecordKindTask {
+		dto.RollingDigest = wi.RollingDigest
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 // enrichWorkItem 附带 blocker 与 run 计数（只读投影）。
@@ -167,10 +217,15 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
 		}
+		recordKind, err := parseWorkItemRecordKind(req.RecordKind)
+		if err != nil {
+			return problemBytes(err)
+		}
 		p := application.CreateWorkItemParams{
 			Title: req.Title, Description: req.Description,
 			Status: domain.WorkItemStatus(req.Status), Priority: domain.Priority(req.Priority),
 			AgentProfileID: req.AgentProfileID, ParentID: req.ParentID, ClientKey: req.ClientKey,
+			RecordKind: recordKind,
 		}
 		if req.DueDate != nil {
 			if d, err := time.Parse("2006-01-02", *req.DueDate); err == nil {
@@ -319,6 +374,9 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Instruction:        req.Input.Instruction,
 			AcceptanceCriteria: req.Input.AcceptanceCriteria,
 			ClientKey:          req.ClientKey,
+			// HTTP 建 run 即用户消息入口：同事务落派发批次并做 @直达/接诊路由
+			//（会话元模型 S1）。
+			DispatchTrigger: domain.DispatchTriggerUserMessage,
 		}
 		if req.RuntimePreference != nil {
 			p.RuntimePreference = &domain.RuntimePreference{
@@ -379,6 +437,67 @@ func (s *Server) handleListWorkItemRuns(w http.ResponseWriter, r *http.Request) 
 	items := make([]runDTO, 0, len(runs))
 	for _, run := range runs {
 		items = append(items, toRunDTO(run))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleListWorkItemDispatches 派发卡片时间线（会话元模型 S1）：任务全部批次
+// 新→旧；卡片 = 批次 + 成员 runs（会话组）摘要 + 触发消息摘录。
+func (s *Server) handleListWorkItemDispatches(w http.ResponseWriter, r *http.Request) {
+	wiID := r.PathValue("work_item_id")
+	ctx := r.Context()
+	wi, err := s.store.WorkItems().Get(ctx, wiID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	if err := requireTaskWorkItemHTTP(wi); err != nil {
+		fail(w, r, err)
+		return
+	}
+	dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, wiID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	agentList, err := s.store.Agents().List(ctx, wi.WorkspaceID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	agentNames := make(map[string]string, len(agentList))
+	for _, a := range agentList {
+		agentNames[a.ID] = a.Name
+	}
+	items := make([]dispatchCardDTO, 0, len(dispatches))
+	// ListByWorkItem 升序，时间线倒序输出（新→旧）。
+	for i := len(dispatches) - 1; i >= 0; i-- {
+		d := dispatches[i]
+		runs, err := s.store.Runs().ListByDispatch(ctx, d.ID)
+		if err != nil {
+			fail(w, r, err)
+			return
+		}
+		// 触发消息：接诊/lead_plan 批次取 lead run（不在成员列时单独读取，
+		// 如 lead_plan 兜底批的 source run）；@直达批次取最早成员 run。
+		var trigger *domain.ExecutionRun
+		if d.LeadRunID != "" {
+			for _, run := range runs {
+				if run.ID == d.LeadRunID {
+					trigger = run
+					break
+				}
+			}
+			if trigger == nil {
+				if lead, err := s.store.Runs().Get(ctx, d.LeadRunID); err == nil {
+					trigger = lead
+				}
+			}
+		}
+		if trigger == nil && len(runs) > 0 {
+			trigger = runs[0]
+		}
+		items = append(items, toDispatchCardDTO(d, runs, trigger, agentNames))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

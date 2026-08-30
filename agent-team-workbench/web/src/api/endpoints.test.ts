@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Plan, WorkItem } from './types';
 import {
   acceptWorkItem,
+  createDecision,
   createPlan,
   getPlan,
   getRunChangeDiff,
   getWorkItemPlan,
   getWorkItemTree,
   listRunChanges,
+  listWorkItemDecisions,
   listWorkItems,
   returnWorkItem,
   revertRunChanges,
+  searchWorkspace,
 } from './endpoints';
 
 const json = (body: unknown, status = 200) =>
@@ -19,6 +22,7 @@ const json = (body: unknown, status = 200) =>
 const workItem: WorkItem = {
   id: 'wi_1',
   workspace_id: 'ws_1',
+  record_kind: 'task',
   title: '主任务',
   description: '',
   status: 'in_progress',
@@ -125,15 +129,15 @@ describe('plan / tree endpoints', () => {
     expect(got.id).toBe('plan_1');
   });
 
-  it('listWorkItems: parent_id=none 只查根任务，任务 id 精确匹配', async () => {
+  it('listWorkItems: record_kind 与 parent_id 均按查询条件透传', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [], next_cursor: null })));
     vi.stubGlobal('fetch', fetchMock);
 
-    await listWorkItems('ws_1', { parent_id: 'none' });
-    await listWorkItems('ws_1', { parent_id: 'wi_parent' });
+    await listWorkItems('ws_1', { record_kind: 'task', parent_id: 'none' });
+    await listWorkItems('ws_1', { record_kind: 'chat', parent_id: 'wi_parent' });
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
-    expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?parent_id=none');
-    expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?parent_id=wi_parent');
+    expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=task&parent_id=none');
+    expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=chat&parent_id=wi_parent');
   });
 });
 
@@ -173,6 +177,75 @@ describe('work item accept / return commands', () => {
     await returnWorkItem('wi_1', undefined, 8);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(init.body as string)).toEqual({ expected_version: 8 });
+  });
+});
+
+describe('decision ledger endpoints（会话元模型 S2）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('createDecision: POST /work-items/{id}/decisions，body 只含 quote/source_run_id，幂等键按意图透传', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ id: 'dec_1', work_item_id: 'wi_1', quote: '以周会结论为准', source_run_id: 'run_1', created_at: '' }, 201),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const got = await createDecision(
+      'wi_1',
+      { quote: '以周会结论为准', source_run_id: 'run_1' },
+      'decision:wi_1:run_1-2',
+    );
+    expect(got.id).toBe('dec_1');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_1/decisions');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('decision:wi_1:run_1-2');
+    expect(JSON.parse(init.body as string)).toEqual({ quote: '以周会结论为准', source_run_id: 'run_1' });
+  });
+
+  it('createDecision: 幂等键缺省时网络层自动生成（写命令必带）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ id: 'dec_1', work_item_id: 'wi_1', quote: 'q', created_at: '' }, 201),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createDecision('wi_1', { quote: 'q' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
+    expect(JSON.parse(init.body as string)).toEqual({ quote: 'q' }); // 无来源时不带 source_run_id 字段
+  });
+
+  it('listWorkItemDecisions: GET /work-items/{id}/decisions，读命令不带幂等键', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listWorkItemDecisions('wi_1');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_1/decisions');
+    expect(init.method).toBe('GET');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeUndefined();
+  });
+});
+
+describe('workspaces FTS search endpoint（会话元模型 S4）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('searchWorkspace: GET /workspaces/{id}/search，q 必带、可选参数按需拼接', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await searchWorkspace('ws_1', { q: '上线窗口', record_kind: 'task', workItemId: 'wi_1', kind: 'decision', limit: 50 });
+    await searchWorkspace('ws_1', { q: '上线窗口' });
+    const [full, minimal] = fetchMock.mock.calls as [[string, RequestInit], [string, RequestInit]];
+    expect(decodeURIComponent(String(full[0]))).toBe(
+      '/api/v1/workspaces/ws_1/search?q=上线窗口&record_kind=task&work_item_id=wi_1&kind=decision&limit=50',
+    );
+    expect(decodeURIComponent(String(minimal[0]))).toBe('/api/v1/workspaces/ws_1/search?q=上线窗口');
+    expect(minimal[1].method).toBe('GET');
+    expect((minimal[1].headers as Record<string, string>)['Idempotency-Key']).toBeUndefined(); // 读命令不带幂等键
   });
 });
 

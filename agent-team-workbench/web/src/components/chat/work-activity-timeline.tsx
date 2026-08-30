@@ -1,6 +1,6 @@
 import { Check, ChevronDown, CircleStop, CircleX, LoaderCircle, Wrench } from 'lucide-react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { MarkdownBody } from './markdown-body';
+import { AgentOutput } from './agent-output';
 import { ActivityGroup } from './tool-card';
 import { ApprovalCard } from './approval-card';
 import { CodexAgentCard, SwarmChatBlock } from './swarm-chat-block';
@@ -265,9 +265,13 @@ function Item({
     case 'assistant':
       return (
         <article className={`chat-assistant-turn ${css.assistant}`} aria-label="过程正文">
-          <div className="chat-prose">
-            <MarkdownBody text={item.msg.text} streaming={item.streaming} runId={item.msg.runId} messageId={item.renderKey ?? item.msg.key} />
-          </div>
+          <AgentOutput
+            text={item.msg.text}
+            streaming={item.streaming}
+            contentBlocks={item.msg.contentBlocks}
+            runId={item.msg.runId}
+            messageId={item.renderKey ?? item.msg.key}
+          />
         </article>
       );
     case 'approval':

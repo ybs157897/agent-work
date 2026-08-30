@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -42,7 +43,11 @@ func shouldRotateSession(ts *domain.TaskSession) bool {
 // EffectiveInstruction 的轮换档将以此代替全量历史注入新会话。
 func buildHandoffSummary(wi *domain.WorkItem, history []map[string]any) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "【任务】%s（状态：%s）\n", wi.Title, string(wi.Status))
+	if isTaskWorkItem(wi) {
+		fmt.Fprintf(&b, "【任务】%s（状态：%s）\n", wi.Title, string(wi.Status))
+	} else {
+		fmt.Fprintf(&b, "【对话】%s\n", wi.Title)
+	}
 	if len(history) > 0 {
 		b.WriteString("【近期对话】\n")
 		start := len(history) - handoffMaxMessages
@@ -63,7 +68,11 @@ func buildHandoffSummary(wi *domain.WorkItem, history []map[string]any) string {
 			fmt.Fprintf(&b, "%s：%s\n", role, truncateRunes(text, handoffMaxRunesPerMsg))
 		}
 	}
-	b.WriteString("【继续指令】会话已轮换，请基于以上摘要继续推进该任务。")
+	if isTaskWorkItem(wi) {
+		b.WriteString("【继续指令】会话已轮换，请基于以上摘要继续推进该任务。")
+	} else {
+		b.WriteString("【继续指令】会话已轮换，请基于以上摘要继续这段对话。")
+	}
 	return b.String()
 }
 
@@ -158,6 +167,13 @@ func (s *Service) RecordRunSessionUpdate(ctx context.Context, runID string, upda
 		if err != nil {
 			return err
 		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
 		workspaceID = r.WorkspaceID
 		if update.Clear {
 			// 墓碑而非删除：空 __ref 让下一轮 fresh，同时阻断播种兜底复活旧会话。
@@ -234,6 +250,13 @@ func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtim
 		if err != nil {
 			return err
 		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
 		workspaceID = r.WorkspaceID
 		// 锚点输入 token 幂等累计：同一 run 有两条上报路径（Callbacks.OnUsage 与
 		// ExecResult.Usage），且次数不限。按「本次值 − 该 run 上次已计入值」的差值
@@ -253,6 +276,7 @@ func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtim
 			"usage_in": usage.InputTokens, "usage_out": usage.OutputTokens,
 			"usage_cached": usage.CachedTokens, "usage_basis": string(usage.Basis),
 		}
+		data["record_kind"] = string(workItemRecordKind(wi))
 		// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventUsageUpdated,
 			domain.AggregateExecutionRun, r.ID, r.Version+1,
@@ -279,12 +303,22 @@ func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtim
 // ResetTaskSession 手动清除会话锚点（设置页 / 自愈路径）；写入墓碑，下一轮 Run 开新会话
 // 且不会被旧 run 的 session_ref 播种兜底复活。
 func (s *Service) ResetTaskSession(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string) error {
+	wi, err := s.store.WorkItems().Get(ctx, taskKey)
+	if err != nil {
+		return err
+	}
+	if wi.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return err
+	}
 	return s.store.InTx(ctx, func(ctx context.Context) error {
 		if err := s.writeAnchorTombstone(ctx, workspaceID, agentProfileID, adapterID, taskKey, "manual_reset"); err != nil {
 			return err
 		}
-		return s.activity(ctx, workspaceID, "task_session.reset",
-			fmt.Sprintf("已重置会话锚点（task %s / adapter %s）", taskKey, adapterID))
+		message := fmt.Sprintf("已重置会话锚点（task %s / adapter %s）", taskKey, adapterID)
+		return s.activityFor(ctx, workspaceID, wi.ID, "task_session.reset", message)
 	})
 }
 
@@ -306,9 +340,28 @@ func (s *Service) writeAnchorTombstone(ctx context.Context, workspaceID, agentPr
 	})
 }
 
-// TaskSessionsByAgent 列出 agent 名下全部会话锚点（设置页展示）。
+// TaskSessionsByAgent 列出 Agent 名下 Task 的会话锚点（设置页展示）。Chat
+// session 仍由同一表作为执行基座续接，但不进入这个 Task 管理投影。
 func (s *Service) TaskSessionsByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error) {
-	return s.store.TaskSessions().ListByAgent(ctx, workspaceID, agentProfileID)
+	sessions, err := s.store.TaskSessions().ListByAgent(ctx, workspaceID, agentProfileID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.TaskSession, 0, len(sessions))
+	for _, session := range sessions {
+		wi, err := s.store.WorkItems().Get(ctx, session.TaskKey)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				continue // orphan/tombstone task key is not a visible Task session
+			}
+			return nil, err
+		}
+		if wi.WorkspaceID != workspaceID || !isTaskWorkItem(wi) {
+			continue
+		}
+		out = append(out, session)
+	}
+	return out, nil
 }
 
 // maybeSelfHeal：session_unknown 失败（provider 会话已丢失，resume 依据失效）的
@@ -348,11 +401,11 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 	p.RuntimePreference = runtimePreferenceOf(r.Input["runtime_preference"])
 	retry, err := s.CreateRun(healCtx, r.WorkItemID, p)
 	if err != nil {
-		_ = s.activity(healCtx, r.WorkspaceID, "run.self_heal_failed",
+		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_heal_failed",
 			fmt.Sprintf("session_unknown 自愈重试创建失败（源 run %s）：%v", r.ID, err))
 		return
 	}
-	_ = s.activity(healCtx, r.WorkspaceID, "run.self_healed",
+	_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_healed",
 		fmt.Sprintf("会话丢失（session_unknown）已自愈重试：%s → %s", r.ID, retry.ID))
 }
 

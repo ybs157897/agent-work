@@ -3,7 +3,7 @@
 > 日期：2026-08-29
 > 类型：安全债清理 / 工具链适配
 > 分支：zcode/security-gate-triage
-> 触发：提交 `notes/proposed/architecture/2026-08-29-session-meta-model.md` 时被 Mimosa Git 门禁拦截（12 高危 + 1 中危）
+> 触发：提交 `notes/implemented/architecture/2026-08-29-session-meta-model.md`（当时位于 proposed/）时被 Mimosa Git 门禁拦截（12 高危 + 1 中危）
 
 ---
 

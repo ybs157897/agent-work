@@ -101,6 +101,9 @@ func (s *Service) activityFor(ctx context.Context, workspaceID, workItemID, kind
 		}
 		if workItemID != "" {
 			data["work_item_id"] = workItemID
+			if wi, err := s.store.WorkItems().Get(ctx, workItemID); err == nil {
+				data["record_kind"] = string(workItemRecordKind(wi))
+			}
 		}
 		return s.emit(ctx, workspaceID, domain.EventActivityCreated,
 			domain.AggregateWorkspace, workspaceID, 0, nil, data)
@@ -352,6 +355,61 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, patch AgentPa
 
 // ── WorkItem ─────────────────────────────────────────────────────────
 
+// defaultWorkItemRecordKind preserves the historical application-level meaning
+// of a WorkItem created without an explicit kind: direct/internal callers have
+// always created task-board work. Public Chat callers must pass chat explicitly.
+func defaultWorkItemRecordKind(kind domain.WorkItemRecordKind) (domain.WorkItemRecordKind, error) {
+	if kind == "" {
+		return domain.RecordKindTask, nil
+	}
+	if !kind.Valid() {
+		return "", fmt.Errorf("%w: record_kind 必须为 chat 或 task", domain.ErrValidation)
+	}
+	return kind, nil
+}
+
+// workItemRecordKind treats an empty pre-record_kind in-memory object as the
+// historical task kind. Persisted rows are always assigned an explicit
+// chat/task value by migration; this normalization only protects direct
+// test/in-process callers that construct a legacy zero-value object.
+func workItemRecordKind(w *domain.WorkItem) domain.WorkItemRecordKind {
+	if w == nil || w.RecordKind == "" {
+		return domain.RecordKindTask
+	}
+	return w.RecordKind
+}
+
+func requireValidWorkItemRecordKind(w *domain.WorkItem) error {
+	if w == nil {
+		return fmt.Errorf("%w: work item required", domain.ErrValidation)
+	}
+	if !workItemRecordKind(w).Valid() {
+		return fmt.Errorf("%w: work item %s 的 record_kind 无效", domain.ErrValidation, w.ID)
+	}
+	return nil
+}
+
+func requireTaskWorkItem(w *domain.WorkItem) error {
+	if err := requireValidWorkItemRecordKind(w); err != nil {
+		return err
+	}
+	if workItemRecordKind(w) != domain.RecordKindTask {
+		return fmt.Errorf("%w: record_kind=chat 不支持任务操作", domain.ErrValidation)
+	}
+	return nil
+}
+
+func isTaskWorkItem(w *domain.WorkItem) bool {
+	return w != nil && workItemRecordKind(w) == domain.RecordKindTask
+}
+
+func workItemNoun(w *domain.WorkItem) string {
+	if w != nil && workItemRecordKind(w) == domain.RecordKindChat {
+		return "对话"
+	}
+	return "任务"
+}
+
 type CreateWorkItemParams struct {
 	Title          string
 	Description    string
@@ -364,11 +422,18 @@ type CreateWorkItemParams struct {
 	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有实体
 	// （防队列 drain 重试/分叉双击这类业务意图重复建卡；命令级 Idempotency-Key 防的是请求重放）。
 	ClientKey string
+	// RecordKind 是不可变的记录边界。空值保留内部/历史调用的 task 语义；
+	// Chat 创建入口必须显式传 RecordKindChat。
+	RecordKind domain.WorkItemRecordKind
 }
 
 func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p CreateWorkItemParams) (*domain.WorkItem, error) {
 	if p.Title == "" {
 		return nil, fmt.Errorf("%w: title required", domain.ErrValidation)
+	}
+	recordKind, err := defaultWorkItemRecordKind(p.RecordKind)
+	if err != nil {
+		return nil, err
 	}
 	status := p.Status
 	if status == "" {
@@ -386,16 +451,24 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		if parent.WorkspaceID != workspaceID {
 			return nil, fmt.Errorf("%w: parent work item 不属于当前 workspace", domain.ErrValidation)
 		}
+		if err := requireValidWorkItemRecordKind(parent); err != nil {
+			return nil, err
+		}
+		if workItemRecordKind(parent) != recordKind {
+			return nil, fmt.Errorf("%w: parent work item 的 record_kind=%s，与子项=%s 不一致",
+				domain.ErrValidation, workItemRecordKind(parent), recordKind)
+		}
 	}
 	now := time.Now().UTC()
 	wi := &domain.WorkItem{
 		ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: workspaceID,
-		Title: p.Title, Description: p.Description, Status: status, Priority: priority,
+		RecordKind: recordKind,
+		Title:      p.Title, Description: p.Description, Status: status, Priority: priority,
 		DueDate: p.DueDate, AgentProfileID: p.AgentProfileID, ParentID: p.ParentID,
 		ClientKey: p.ClientKey, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	err := s.store.InTx(ctx, func(ctx context.Context) error {
+	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		if err := s.store.WorkItems().Create(ctx, wi); err != nil {
 			return err
 		}
@@ -403,7 +476,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			domain.AggregateWorkItem, wi.ID, wi.Version, nil, workItemEventData(wi)); err != nil {
 			return err
 		}
-		return s.activity(ctx, workspaceID, "work_item.created", "创建任务「"+wi.Title+"」")
+		return s.activityFor(ctx, workspaceID, wi.ID, "work_item.created", "创建"+workItemNoun(wi)+"「"+wi.Title+"」")
 	})
 	if err != nil {
 		return nil, err
@@ -427,6 +500,14 @@ func (s *Service) CreateWorkItemIdempotent(ctx context.Context, workspaceID stri
 	if gerr != nil {
 		return nil, false, err // 查回失败时报告原始冲突错误
 	}
+	requestedKind, kerr := defaultWorkItemRecordKind(p.RecordKind)
+	if kerr != nil {
+		return nil, false, kerr
+	}
+	if workItemRecordKind(existing) != requestedKind {
+		return nil, false, fmt.Errorf("%w: client_key 已属于 record_kind=%s，不能重放为 %s",
+			domain.ErrIdempotencyConflict, workItemRecordKind(existing), requestedKind)
+	}
 	return existing, true, nil
 }
 
@@ -436,6 +517,9 @@ func (s *Service) MoveWorkItem(ctx context.Context, workItemID string, to domain
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		w, err := s.store.WorkItems().Get(ctx, workItemID)
 		if err != nil {
+			return err
+		}
+		if err := requireTaskWorkItem(w); err != nil {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -458,11 +542,12 @@ func (s *Service) MoveWorkItem(ctx context.Context, workItemID string, to domain
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemMoved,
 			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"from": string(from), "to": string(to), "status": string(to)}); err != nil {
+			map[string]any{"from": string(from), "to": string(to), "status": string(to),
+				"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
 		wi = w
-		return s.activity(ctx, w.WorkspaceID, "work_item.moved",
+		return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.moved",
 			fmt.Sprintf("任务「%s」移动到 %s", w.Title, to))
 	})
 	if err != nil {
@@ -477,6 +562,9 @@ func (s *Service) AssignWorkItem(ctx context.Context, workItemID, agentID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		w, err := s.store.WorkItems().Get(ctx, workItemID)
 		if err != nil {
+			return err
+		}
+		if err := requireTaskWorkItem(w); err != nil {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -517,7 +605,7 @@ func (s *Service) assignLocked(ctx context.Context, w *domain.WorkItem, agentID 
 	}
 	return s.emit(ctx, w.WorkspaceID, domain.EventWorkItemAssigned,
 		domain.AggregateWorkItem, w.ID, w.Version, nil,
-		map[string]any{"agent_profile_id": agentID})
+		map[string]any{"agent_profile_id": agentID, "record_kind": string(workItemRecordKind(w))})
 }
 
 type BlockParams struct {
@@ -531,6 +619,9 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		w, err := s.store.WorkItems().Get(ctx, workItemID)
 		if err != nil {
+			return err
+		}
+		if err := requireTaskWorkItem(w); err != nil {
 			return err
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
@@ -568,7 +659,8 @@ func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockPa
 	}
 	if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemBlocked,
 		domain.AggregateWorkItem, w.ID, w.Version, nil,
-		map[string]any{"code": p.Code, "message": p.Message}); err != nil {
+		map[string]any{"code": p.Code, "message": p.Message,
+			"record_kind": string(workItemRecordKind(w))}); err != nil {
 		return err
 	}
 	// blocker activity 归因到任务（M4：plan_parse_failed / verdict_parse_failed /
@@ -584,6 +676,9 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 		if err != nil {
 			return err
 		}
+		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
@@ -597,7 +692,8 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 			return err
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemUnblocked,
-			domain.AggregateWorkItem, w.ID, w.Version, nil, nil); err != nil {
+			domain.AggregateWorkItem, w.ID, w.Version, nil,
+			map[string]any{"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
 		wi = w
@@ -618,6 +714,9 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 		if err != nil {
 			return err
 		}
+		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
@@ -631,12 +730,13 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 			return err
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemCompleted,
-			domain.AggregateWorkItem, w.ID, w.Version, nil, nil); err != nil {
+			domain.AggregateWorkItem, w.ID, w.Version, nil,
+			map[string]any{"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
 		s.audit(ctx, w.WorkspaceID, "work_item.accepted", w.ID, map[string]any{"title": w.Title})
 		wi = w
-		return s.activity(ctx, w.WorkspaceID, "work_item.completed", "任务「"+w.Title+"」验收通过")
+		return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.completed", "任务「"+w.Title+"」验收通过")
 	})
 	if err != nil {
 		return nil, err
@@ -706,5 +806,18 @@ func (s *Service) UpdateWorkItemFields(ctx context.Context, workItemID string, p
 func workItemEventData(w *domain.WorkItem) map[string]any {
 	return map[string]any{
 		"title": w.Title, "status": string(w.Status), "priority": string(w.Priority),
+		"record_kind": string(workItemRecordKind(w)),
 	}
+}
+
+// withWorkItemRecordKind annotates run/aggregate event payloads with the
+// durable Chat/Task boundary. Event consumers can fail closed without first
+// guessing which projection owns a run.
+func withWorkItemRecordKind(data map[string]any, w *domain.WorkItem) map[string]any {
+	out := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		out[k] = v
+	}
+	out["record_kind"] = string(workItemRecordKind(w))
+	return out
 }

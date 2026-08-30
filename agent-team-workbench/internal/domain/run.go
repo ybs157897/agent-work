@@ -73,14 +73,17 @@ type ExecutionRun struct {
 	// ErrorFamily 跨 adapter 统一错误族，驱动重试与自愈策略。
 	ErrorFamily string
 	ClientKey   string
-	Progress    *float64
-	RetryOf     string
-	Failure     *RunFailure
-	Input       map[string]any
-	Version     int
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	FinishedAt  *time.Time
+	// DispatchID 派发批次归属（会话元模型 S1）：同批次 run 免树遍历成组；
+	// wakeup / 重试 / 存量 run 可为空。
+	DispatchID string
+	Progress   *float64
+	RetryOf    string
+	Failure    *RunFailure
+	Input      map[string]any
+	Version    int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	FinishedAt *time.Time
 }
 
 func (s RunStatus) IsTerminal() bool {

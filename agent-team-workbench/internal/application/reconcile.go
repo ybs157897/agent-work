@@ -93,6 +93,13 @@ func (s *Service) markOrphanTerminal(ctx context.Context, runID string) error {
 		if err != nil {
 			return err
 		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
 		if r.Status.IsTerminal() {
 			return nil // 并发方已收尾
 		}
@@ -135,17 +142,19 @@ func (s *Service) markOrphanTerminal(ctx context.Context, runID string) error {
 				"message": "控制平面重启对账：无租约非终态 run 判定 lost（可 resume 重建）",
 			}
 		}
+		data["record_kind"] = string(workItemRecordKind(wi))
 		if err := s.emit(ctx, r.WorkspaceID, evType,
 			domain.AggregateExecutionRun, r.ID, r.Version,
 			&RunEventRecord{RunID: r.ID, EventType: evType, Payload: data},
-			map[string]any{"from": string(from), "status": string(target)}); err != nil {
+			map[string]any{"from": string(from), "status": string(target),
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 		// presence 投影对齐 transitionRunLocked：终态回 idle。
 		if r.AgentProfileID != "" {
 			_ = s.store.Agents().SetPresence(ctx, r.AgentProfileID, domain.PresenceIdle)
 		}
-		return s.activity(ctx, r.WorkspaceID, "run.reconciled",
+		return s.activityFor(ctx, r.WorkspaceID, r.WorkItemID, "run.reconciled",
 			fmt.Sprintf("启动对账：run %s 由 %s 收敛到 %s（进程重启孤儿）", r.ID, from, target))
 	})
 }

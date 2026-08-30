@@ -35,6 +35,13 @@ type CreateRunParams struct {
 	// Evaluation 表示本 run 是 plan finish{evaluation:true} 触发的评估 run；
 	// 固化进 input.evaluation（verdict 提取以此门控），对齐 wakeup/auto_heal_of 惯例。
 	Evaluation bool
+	// DispatchTrigger 非空（当前仅 user_message）表示本 run 是 Task 的「用户消息
+	// 入口」：同事务创建 trigger=user_message 的派发批次，并按 @名字前缀做直达/
+	// 接诊路由（会话元模型 S1）。Chat 记录会忽略该标记，不创建派发批次。
+	DispatchTrigger domain.DispatchTrigger
+	// DispatchID 非空表示挂到既有批次（plan 执行器 dispatch verb 派生的子 run
+	// 继承父批次）；与 DispatchTrigger 互斥使用。
+	DispatchID string
 	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有 run
 	// （队列 drain 重试等场景；撞键时事务整体回滚，不产生重复事件与重复分派）。
 	ClientKey string
@@ -145,6 +152,14 @@ func (s *Service) emitSessionDecision(ctx context.Context, r *domain.ExecutionRu
 	if stats != nil {
 		data["history_stats"] = map[string]any{"turns": stats.Turns, "est_tokens": stats.EstTokens}
 	}
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return err
+	}
+	data["record_kind"] = string(workItemRecordKind(wi))
 	return s.emit(ctx, r.WorkspaceID, domain.EventSessionDecision,
 		domain.AggregateExecutionRun, r.ID, r.Version, nil, data)
 }
@@ -160,8 +175,34 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if err := wi.CheckVersion(p.ExpectedWorkItemVer); err != nil {
 		return nil, err
 	}
-	if wi.Status.IsTerminal() {
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return nil, err
+	}
+	taskRecord := isTaskWorkItem(wi)
+	if taskRecord && wi.Status.IsTerminal() {
 		return nil, fmt.Errorf("%w: work item is terminal", domain.ErrValidation)
+	}
+	// HTTP 的历史入口会为每条用户消息填 user_message；只有 Task 才能拥有
+	// dispatch_id/@路由，Chat 必须在事务内剥离该上层标记。
+	if !taskRecord {
+		if p.DispatchID != "" {
+			return nil, fmt.Errorf("%w: chat run 不能加入 task dispatch", domain.ErrValidation)
+		}
+		p.DispatchTrigger = ""
+	}
+	// 会话元模型 S1 用户消息路由：instruction 以 @名字 开头且命中本 workspace
+	// agent（大小写不敏感）→ 直达该 agent；未命中/无 @ 保持既有 assignee 行为
+	//（接诊）。必须在 agent 校验与 runtime 选择之前改写目标。
+	atMention := ""
+	if taskRecord && p.DispatchTrigger == domain.DispatchTriggerUserMessage {
+		var err error
+		atMention, err = s.resolveAtMentionAgent(ctx, wi.WorkspaceID, p.Instruction)
+		if err != nil {
+			return nil, err
+		}
+		if atMention != "" {
+			p.AgentProfileID = atMention
+		}
 	}
 	var agent *domain.AgentProfile
 	if p.AgentProfileID != "" {
@@ -344,49 +385,92 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if err := s.emitSessionDecision(ctx, r, p.AutoHealOf, resumeRef, outcome, resumeSupported, historyTier, stats); err != nil {
 		return nil, err
 	}
+	// 派发批次同事务落库（先于成员 run 行：dispatch_id 外键指向本表）。
+	// 接诊批次与 run 互指（lead_run_id ↔ dispatch_id）：建批时 lead_run_id 落
+	// NULL，run 行落库后同事务回填；@直达批次 lead_run_id 恒为 NULL。
+	var newDispatch *domain.Dispatch
+	leadRunID := ""
+	if taskRecord && p.DispatchTrigger == domain.DispatchTriggerUserMessage {
+		newDispatch = &domain.Dispatch{
+			ID: domain.NewID(domain.PrefixDispatch), WorkItemID: wi.ID,
+			Trigger: domain.DispatchTriggerUserMessage, Status: domain.DispatchRunning,
+			CreatedAt: now,
+		}
+		if atMention == "" {
+			leadRunID = runID
+		}
+		if err := s.store.Dispatches().Create(ctx, newDispatch); err != nil {
+			return nil, err
+		}
+		r.DispatchID = newDispatch.ID
+	} else if p.DispatchID != "" {
+		r.DispatchID = p.DispatchID
+	}
 	if err := s.store.Runs().Create(ctx, r); err != nil {
 		return nil, err
+	}
+	if newDispatch != nil {
+		if leadRunID != "" {
+			newDispatch.LeadRunID = leadRunID
+			if err := s.store.Dispatches().SetLeadRun(ctx, newDispatch.ID, leadRunID); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.emitDispatchCreated(ctx, wi.WorkspaceID, newDispatch); err != nil {
+			return nil, err
+		}
 	}
 	if caps != nil {
 		if err := s.store.Caps().Create(ctx, caps); err != nil {
 			return nil, err
 		}
 	}
-	// 首版串行策略：创建 Run 时把 todo 推进到 in_progress。
-	if wi.Status == domain.WorkItemTodo {
-		if err := wi.Transition(domain.WorkItemInProgress, now); err != nil {
-			return nil, err
+	// 任务状态机只属于 Task；Chat 记录保持自己的消息生命周期，不被
+	// in_progress/review/acceptance 这些任务投影污染。
+	if taskRecord {
+		// 首版串行策略：创建 Run 时把 todo 推进到 in_progress。
+		if wi.Status == domain.WorkItemTodo {
+			if err := wi.Transition(domain.WorkItemInProgress, now); err != nil {
+				return nil, err
+			}
+			if err := s.store.WorkItems().Update(ctx, wi, wi.Version-1); err != nil {
+				return nil, err
+			}
+			if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemMoved,
+				domain.AggregateWorkItem, wi.ID, wi.Version, nil,
+				map[string]any{"from": "todo", "to": "in_progress", "record_kind": string(workItemRecordKind(wi))}); err != nil {
+				return nil, err
+			}
+		} else if wi.Status == domain.WorkItemInProgress && wi.Phase != domain.PhaseExecution {
+			expected := wi.Version
+			wi.BeginExecution(now)
+			if err := s.store.WorkItems().Update(ctx, wi, expected); err != nil {
+				return nil, err
+			}
+			if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
+				domain.AggregateWorkItem, wi.ID, wi.Version, nil,
+				map[string]any{"phase": string(wi.Phase), "record_kind": string(workItemRecordKind(wi))}); err != nil {
+				return nil, err
+			}
 		}
-		if err := s.store.WorkItems().Update(ctx, wi, wi.Version-1); err != nil {
-			return nil, err
-		}
-		if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemMoved,
-			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-			map[string]any{"from": "todo", "to": "in_progress"}); err != nil {
-			return nil, err
-		}
-	} else if wi.Status == domain.WorkItemInProgress && wi.Phase != domain.PhaseExecution {
-		expected := wi.Version
-		wi.BeginExecution(now)
-		if err := s.store.WorkItems().Update(ctx, wi, expected); err != nil {
-			return nil, err
-		}
-		if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
-			domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-			map[string]any{"phase": string(wi.Phase)}); err != nil {
+	} else {
+		// Keep Chat conversations ordered by their latest message without changing
+		// any task state, phase, lock, or optimistic version.
+		if err := s.store.WorkItems().TouchUpdatedAt(ctx, wi.ID, now); err != nil {
 			return nil, err
 		}
 	}
 	if err := s.emit(ctx, wi.WorkspaceID, domain.EventRunCreated,
 		domain.AggregateExecutionRun, r.ID, r.Version,
 		&RunEventRecord{RunID: r.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
-			"instruction": p.Instruction,
+			"instruction": p.Instruction, "record_kind": string(workItemRecordKind(wi)),
 		}},
-		map[string]any{"work_item_id": wi.ID, "status": string(r.Status), "instruction": p.Instruction}); err != nil {
+		map[string]any{"work_item_id": wi.ID, "status": string(r.Status), "instruction": p.Instruction,
+			"record_kind": string(workItemRecordKind(wi))}); err != nil {
 		return nil, err
 	}
-	if err := s.activity(ctx, wi.WorkspaceID, "run.created",
-		fmt.Sprintf("任务「%s」创建运行 %s", wi.Title, r.ID)); err != nil {
+	if err := s.activityFor(ctx, wi.WorkspaceID, wi.ID, "run.created",
+		fmt.Sprintf("%s「%s」创建运行 %s", workItemNoun(wi), wi.Title, r.ID)); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -447,6 +531,13 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 	if err != nil {
 		return nil, err
 	}
+	wi, err := s.store.WorkItems().Get(ctx, parent.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return nil, err
+	}
 	if !parent.Status.IsTerminal() {
 		return nil, fmt.Errorf("%w: only terminal runs can be retried", domain.ErrValidation)
 	}
@@ -473,12 +564,21 @@ func (s *Service) RetryRun(ctx context.Context, runID string) (*domain.Execution
 		if err := s.store.Runs().Create(ctx, r); err != nil {
 			return err
 		}
+		if !isTaskWorkItem(wi) {
+			// Retry is another Chat turn; keep its list ordering current without
+			// applying the Task status/phase/lock projection.
+			if err := s.store.WorkItems().TouchUpdatedAt(ctx, wi.ID, now); err != nil {
+				return err
+			}
+		}
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunCreated,
 			domain.AggregateExecutionRun, r.ID, r.Version,
 			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunCreated, Payload: map[string]any{
 				"instruction": parent.Input["instruction"],
+				"record_kind": string(workItemRecordKind(wi)),
 			}},
-			map[string]any{"retry_of": parent.ID, "instruction": parent.Input["instruction"]}); err != nil {
+			map[string]any{"retry_of": parent.ID, "instruction": parent.Input["instruction"],
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 		retry = r
@@ -556,12 +656,20 @@ func (s *Service) ControlRun(ctx context.Context, runID string, action string) (
 
 // transitionRunLocked 在事务内迁移 Run 并发布事件；终态联动 WorkItem 与 presence。
 func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRun, to domain.RunStatus, data map[string]any) error {
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		return err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return err
+	}
+	taskRecord := isTaskWorkItem(wi)
 	expected := r.Version
 	from := r.Status
 	// F1 任务锁：run 首次进 running（queued/starting → running）先裁决任务执行锁，
 	// 防同一任务双跑。被活跃锁拒绝时不留半态——本 run 直接落 failed(work_item_locked)
 	// 终态，保证任何推进尝试都有终态归宿（红线：任何 Outcome 必须能落终态）。
-	if to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
+	if taskRecord && to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
 		if err := s.acquireTaskLock(ctx, r); err != nil {
 			if !errors.Is(err, ErrWorkItemLocked) {
 				return err
@@ -607,15 +715,17 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 	case domain.RunLost:
 		evType = domain.EventRunLost
 	}
+	statusData := map[string]any{"from": string(from), "status": string(to),
+		"record_kind": string(workItemRecordKind(wi))}
 	if err := s.emit(ctx, r.WorkspaceID, evType,
 		domain.AggregateExecutionRun, r.ID, r.Version,
-		&RunEventRecord{RunID: r.ID, EventType: evType, Payload: data},
-		map[string]any{"from": string(from), "status": string(to)}); err != nil {
+		&RunEventRecord{RunID: r.ID, EventType: evType, Payload: withWorkItemRecordKind(data, wi)},
+		statusData); err != nil {
 		return err
 	}
 	// F1 任务锁：run 落终态时释放其持有的任务执行锁（同事务；属主已被抢占/回收
 	// 时不误伤他人的锁）。
-	if to.IsTerminal() {
+	if taskRecord && to.IsTerminal() {
 		if err := s.releaseTaskLock(ctx, r); err != nil {
 			return err
 		}
@@ -623,7 +733,9 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 	if to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunStarted,
 			domain.AggregateExecutionRun, r.ID, r.Version,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunStarted}, nil); err != nil {
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunStarted,
+				Payload: map[string]any{"record_kind": string(workItemRecordKind(wi))}},
+			map[string]any{"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 	}
@@ -642,7 +754,7 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		}
 	}
 	// Run 成功 → WorkItem 进入评审投影；completed 只能由验收门决定。
-	if to == domain.RunSucceeded {
+	if taskRecord && to == domain.RunSucceeded {
 		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
 		if err != nil {
 			return err
@@ -654,7 +766,7 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 				}
 				if err := s.emit(ctx, wi.WorkspaceID, domain.EventWorkItemUpdated,
 					domain.AggregateWorkItem, wi.ID, wi.Version, nil,
-					map[string]any{"phase": string(wi.Phase)}); err != nil {
+					map[string]any{"phase": string(wi.Phase), "record_kind": string(workItemRecordKind(wi))}); err != nil {
 					return err
 				}
 			}
@@ -705,12 +817,20 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	}
 	// session_unknown 失败自愈：终态落库后清锚点并一次性 fresh 重试（maybeSelfHeal 自带防循环）。
 	s.maybeSelfHeal(ctx, r)
-	// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
-	s.maybeAdvancePlans(ctx, r)
-	// M2 评估：verdict 处理先行（phase 迁移不依赖新 plan）。
-	s.maybeProcessVerdict(ctx, r)
-	// M2 lead-as-planner：从 lead 最终文本提取 plan（source_run_id 唯一索引兜底幂等）。
-	s.maybeExtractPlan(ctx, r)
+	if r != nil {
+		if wi, werr := s.store.WorkItems().Get(ctx, r.WorkItemID); werr == nil && isTaskWorkItem(wi) {
+			// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
+			s.maybeAdvancePlans(ctx, r)
+			// M2 评估：verdict 处理先行（phase 迁移不依赖新 plan）。
+			s.maybeProcessVerdict(ctx, r)
+			// M2 lead-as-planner：从 lead 最终文本提取 plan（source_run_id 唯一索引兜底幂等）。
+			s.maybeExtractPlan(ctx, r)
+			// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
+			s.maybeSummarizeSegment(ctx, r)
+			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
+			s.maybeSettleDispatch(ctx, r)
+		}
+	}
 	return nil
 }
 
@@ -728,6 +848,13 @@ func (s *Service) RecordRunProgress(ctx context.Context, runID string, progress 
 		if err != nil {
 			return err
 		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
 		if r.Status.IsTerminal() {
 			return nil
 		}
@@ -740,8 +867,9 @@ func (s *Service) RecordRunProgress(ctx context.Context, runID string, progress 
 		// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
 		return s.emit(ctx, r.WorkspaceID, domain.EventRunProgressUpdated,
 			domain.AggregateExecutionRun, r.ID, r.Version+1,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunProgressUpdated},
-			map[string]any{"progress": progress})
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunProgressUpdated,
+				Payload: map[string]any{"progress": progress, "record_kind": string(workItemRecordKind(wi))}},
+			map[string]any{"progress": progress, "record_kind": string(workItemRecordKind(wi))})
 	})
 	if err != nil {
 		return err
@@ -759,13 +887,29 @@ func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data
 		if err != nil {
 			return err
 		}
-		workspaceID = r.WorkspaceID
-		if evType == domain.EventArtifactCreated {
-			s.projectArtifactEvent(ctx, r, data)
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
 		}
-		return s.emit(ctx, r.WorkspaceID, evType,
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
+		workspaceID = r.WorkspaceID
+		eventData := withWorkItemRecordKind(data, wi)
+		if evType == domain.EventArtifactCreated {
+			s.projectArtifactEvent(ctx, r, eventData)
+		}
+		if err := s.emit(ctx, r.WorkspaceID, evType,
 			domain.AggregateExecutionRun, r.ID, r.Version,
-			&RunEventRecord{RunID: r.ID, EventType: evType, Payload: data}, data)
+			&RunEventRecord{RunID: r.ID, EventType: evType, Payload: eventData}, eventData); err != nil {
+			return err
+		}
+		if evType == domain.EventMessageDelta && eventData["role"] == "user" && !isTaskWorkItem(wi) {
+			if err := s.store.WorkItems().TouchUpdatedAt(ctx, wi.ID, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -802,6 +946,30 @@ func (s *Service) projectArtifactEvent(ctx context.Context, r *domain.ExecutionR
 	}
 	if err := s.store.Runs().CreateArtifact(ctx, art); err != nil {
 		log.Printf("artifact: run %s artifact.created 投影失败: %v", r.ID, err)
+		return
+	}
+	s.indexArtifact(ctx, r, art)
+}
+
+// indexArtifact 是两条产物入口共用的 S4 投影：mock 的 artifact.created
+// 事件和真实 Runner 的 artifact.manifest 都必须用相同的 (kind, source_id)
+// 定点索引，避免只在其中一条入口可搜到产物。
+func (s *Service) indexArtifact(ctx context.Context, r *domain.ExecutionRun, art *domain.Artifact) {
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		log.Printf("artifact: run %s 读取 work item %s 失败，跳过 Task 搜索索引: %v", r.ID, r.WorkItemID, err)
+		return
+	}
+	if !isTaskWorkItem(wi) {
+		return
+	}
+	// artifact 条目标题为 logical_path，正文暂为空；索引失败不阻塞产物事件/记录，
+	// 可由后续投影重放或定点重写补齐。
+	if err := s.store.Search().IndexEntry(ctx, &SearchEntry{
+		WorkItemID: r.WorkItemID, Kind: SearchKindArtifact, SourceID: art.ID,
+		Title: art.LogicalPath, Body: "",
+	}); err != nil {
+		log.Printf("artifact: run %s 检索索引写入失败（artifact %s）: %v", r.ID, art.ID, err)
 	}
 }
 
@@ -816,6 +984,13 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		r, err := s.store.Runs().Get(ctx, runID)
 		if err != nil {
+			return err
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
 			return err
 		}
 		grant, err = s.store.ApprovalGrants().Matching(ctx, r.WorkspaceID, r.AgentProfileID, r.WorkItemID, kind, summary)
@@ -838,8 +1013,10 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 		}
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventApprovalRequested,
 			domain.AggregateApproval, a.ID, 1,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventApprovalRequested},
-			map[string]any{"kind": kind, "risk": risk, "summary": summary}); err != nil {
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventApprovalRequested,
+				Payload: map[string]any{"record_kind": string(workItemRecordKind(wi))}},
+			map[string]any{"kind": kind, "risk": risk, "summary": summary,
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 		approval = a
@@ -926,17 +1103,25 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 			resolveWS = resolvePlan.WorkspaceID
 			if err := s.emit(ctx, resolveWS, domain.EventApprovalResolved,
 				domain.AggregateApproval, a.ID, 1, nil,
-				map[string]any{"decision": string(decision), "resolved_by": by}); err != nil {
+				map[string]any{"decision": string(decision), "resolved_by": by,
+					"record_kind": string(domain.RecordKindTask)}); err != nil {
 				return err
 			}
 			s.audit(ctx, resolveWS, "approval.resolved", a.ID,
 				map[string]any{"decision": string(decision), "approver": by, "reason": reason, "risk": a.Risk})
 			result = a
-			return s.activity(ctx, resolveWS, "approval.resolved",
+			return s.activityFor(ctx, resolveWS, resolvePlan.WorkItemID, "approval.resolved",
 				fmt.Sprintf("审批 %s：%s", a.ID, decision))
 		}
 		r, err := s.store.Runs().Get(ctx, a.RunID)
 		if err != nil {
+			return err
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
 			return err
 		}
 		if approved {
@@ -953,8 +1138,10 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		}
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventApprovalResolved,
 			domain.AggregateApproval, a.ID, 1,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventApprovalResolved},
-			map[string]any{"decision": string(decision), "resolved_by": by}); err != nil {
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventApprovalResolved,
+				Payload: map[string]any{"record_kind": string(workItemRecordKind(wi))}},
+			map[string]any{"decision": string(decision), "resolved_by": by,
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
 			return err
 		}
 		// scope≠once 且 approved：同事务创建「总是允许」授权（pattern 锚定本次
@@ -982,7 +1169,7 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		if reason != "" {
 			msg += "（" + reason + "）"
 		}
-		return s.activity(ctx, r.WorkspaceID, "approval.resolved", msg)
+		return s.activityFor(ctx, r.WorkspaceID, r.WorkItemID, "approval.resolved", msg)
 	})
 	if err != nil {
 		return nil, err
@@ -1024,6 +1211,13 @@ func (s *Service) RecordArtifact(ctx context.Context, runID string, art *domain.
 		if err != nil {
 			return err
 		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
 		workspaceID = r.WorkspaceID
 		art.ID = domain.NewID(domain.PrefixArtifact)
 		art.RunID = r.ID
@@ -1032,10 +1226,11 @@ func (s *Service) RecordArtifact(ctx context.Context, runID string, art *domain.
 		if err := s.store.Runs().CreateArtifact(ctx, art); err != nil {
 			return err
 		}
+		s.indexArtifact(ctx, r, art)
+		eventData := withWorkItemRecordKind(map[string]any{"logical_path": art.LogicalPath, "size": art.Size}, wi)
 		return s.emit(ctx, r.WorkspaceID, domain.EventArtifactCreated,
 			domain.AggregateArtifact, art.ID, 1,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventArtifactCreated},
-			map[string]any{"logical_path": art.LogicalPath, "size": art.Size})
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventArtifactCreated, Payload: eventData}, eventData)
 	})
 	if err != nil {
 		return err
@@ -1086,7 +1281,7 @@ func (s *Service) SendRunInput(ctx context.Context, runID, instruction string) e
 		return err
 	}
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
-		return s.activity(ctx, run.WorkspaceID, "run.input",
+		return s.activityFor(ctx, run.WorkspaceID, run.WorkItemID, "run.input",
 			fmt.Sprintf("运行 %s 收到用户输入", runID))
 	})
 	if err != nil {

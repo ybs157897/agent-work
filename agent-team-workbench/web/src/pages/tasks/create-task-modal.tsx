@@ -49,6 +49,7 @@ export function CreateTaskModal({
     try {
       await createWorkItem(workspace.id, {
         title: title.trim(),
+        record_kind: 'task',
         description: description.trim(),
         status: initialStatus,
         priority,

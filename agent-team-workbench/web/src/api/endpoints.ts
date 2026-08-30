@@ -7,6 +7,8 @@ import type {
   Artifact,
   Bootstrap,
   Dashboard,
+  DecisionEntry,
+  DispatchCard,
   DSHCatalog,
   ExecutionRun,
   Me,
@@ -18,9 +20,12 @@ import type {
   RunChanges,
   RunChangeDiff,
   RuntimeBinding,
+  SearchKind,
+  SearchItem,
   TaskSession,
   WakeResult,
   WorkItem,
+  WorkItemRecordKind,
   WorkItemStatus,
   Workspace,
 } from './types';
@@ -76,6 +81,8 @@ export interface WorkItemFilter {
   status?: WorkItemStatus;
   priority?: Priority;
   assignee?: string;
+  /** 记录类型硬过滤：Chat 与 Task 列表不得混读。 */
+  record_kind?: WorkItemRecordKind;
   /** 父任务过滤：任务 id 精确匹配；`'none'` 表示只看根任务（协议 §5.2）。 */
   parent_id?: string | 'none';
   cursor?: string;
@@ -86,6 +93,7 @@ export const listWorkItems = (workspaceId: string, filter: WorkItemFilter = {}) 
   if (filter.status) params.set('status', filter.status);
   if (filter.priority) params.set('priority', filter.priority);
   if (filter.assignee) params.set('assignee', filter.assignee);
+  if (filter.record_kind) params.set('record_kind', filter.record_kind);
   if (filter.parent_id) params.set('parent_id', filter.parent_id);
   if (filter.cursor) params.set('cursor', filter.cursor);
   const qs = params.toString();
@@ -104,6 +112,8 @@ export const patchWorkItem = (
 
 export interface CreateWorkItemInput {
   title: string;
+  /** 新建记录必须显式声明 chat 或 task，避免入口默认混用。 */
+  record_kind: WorkItemRecordKind;
   description?: string;
   status?: WorkItemStatus;
   priority?: Priority;
@@ -279,6 +289,58 @@ export const revertRunChanges = (runId: string, idempotencyKey: string) =>
 /** 一个任务的全部 Run（对话轮次历史）。 */
 export const listWorkItemRuns = (workItemId: string) =>
   apiFetch<{ items: ExecutionRun[] }>(`/work-items/${workItemId}/runs`);
+
+/** 派发卡片列表（会话元模型 S1；一次发送 = 一个执行批次，新→旧）。 */
+export const listWorkItemDispatches = (workItemId: string) =>
+  apiFetch<{ items: DispatchCard[] }>(`/work-items/${workItemId}/dispatches`);
+
+// ── 决策台账（会话元模型 S2）────────────────────────────────────────
+
+/** 决策原话列表（创建时间升序；只读投影）。 */
+export const listWorkItemDecisions = (workItemId: string) =>
+  apiFetch<{ items: DecisionEntry[] }>(`/work-items/${workItemId}/decisions`);
+
+export interface CreateDecisionInput {
+  /** 用户原话（必填，trim 后非空；禁止转述进 quote）。 */
+  quote: string;
+  /** 钉出来源轮次；必须属于该 work item，否则 422。 */
+  source_run_id?: string;
+  /** 链回片段内位置（消息序号等）。 */
+  source_ref?: string;
+}
+
+/** 钉为决策（201 回显）；幂等键照 createRun client_key 惯例由调用方按意图生成。 */
+export const createDecision = (workItemId: string, input: CreateDecisionInput, idempotencyKey?: string) =>
+  apiFetch<DecisionEntry>(`/work-items/${workItemId}/decisions`, {
+    method: 'POST',
+    body: input,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  });
+
+// ── FTS 检索（会话元模型 S4）────────────────────────────────────────
+
+export interface WorkspaceSearchFilter {
+  /** 检索词（空格分词 AND 语义）；空/纯符号服务端返回空 items。 */
+  q: string;
+  /** 记录类型硬过滤；任务搜索不得命中独立 Chat 记录。 */
+  record_kind?: WorkItemRecordKind;
+  /** 可选，限定单任务。 */
+  workItemId?: string;
+  kind?: SearchKind;
+  /** 服务端缺省 20、上限 100。 */
+  limit?: number;
+}
+
+/** FTS 检索（片段摘要/决策台账/产物标题）；读命令，无幂等键。 */
+export const searchWorkspace = (workspaceId: string, filter: WorkspaceSearchFilter) => {
+  const params = new URLSearchParams();
+  params.set('q', filter.q);
+  if (filter.record_kind) params.set('record_kind', filter.record_kind);
+  if (filter.workItemId) params.set('work_item_id', filter.workItemId);
+  if (filter.kind) params.set('kind', filter.kind);
+  if (filter.limit != null) params.set('limit', String(filter.limit));
+  return apiFetch<{ items: SearchItem[] }>(`/workspaces/${workspaceId}/search?${params.toString()}`);
+};
 
 // ── Agent 配置（agents/ 目录为真相源）──────────────────────────────
 

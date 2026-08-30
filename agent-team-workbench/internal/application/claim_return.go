@@ -32,6 +32,9 @@ func (s *Service) ClaimWorkItem(ctx context.Context, workItemID, agentID string,
 		if err != nil {
 			return err
 		}
+		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
@@ -73,6 +76,9 @@ func (s *Service) ReturnWorkItem(ctx context.Context, workItemID string, reason 
 		if err != nil {
 			return err
 		}
+		if err := requireTaskWorkItem(w); err != nil {
+			return err
+		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
@@ -89,7 +95,8 @@ func (s *Service) ReturnWorkItem(ctx context.Context, workItemID string, reason 
 		}
 		if err := s.emit(ctx, w.WorkspaceID, domain.EventWorkItemUpdated,
 			domain.AggregateWorkItem, w.ID, w.Version, nil,
-			map[string]any{"phase": string(w.Phase), "returned_from": string(from)}); err != nil {
+			map[string]any{"phase": string(w.Phase), "returned_from": string(from),
+				"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
 		wi = w
@@ -97,7 +104,7 @@ func (s *Service) ReturnWorkItem(ctx context.Context, workItemID string, reason 
 		if reason != "" {
 			message += "：" + reason
 		}
-		return s.activity(ctx, w.WorkspaceID, "work_item.returned", message)
+		return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.returned", message)
 	})
 	if err != nil {
 		return nil, err

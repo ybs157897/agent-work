@@ -56,6 +56,7 @@ type blockerDTO struct {
 type workItemDTO struct {
 	ID             string  `json:"id"`
 	WorkspaceID    string  `json:"workspace_id"`
+	RecordKind     string  `json:"record_kind"`
 	ParentID       string  `json:"parent_id,omitempty"`
 	Title          string  `json:"title"`
 	Description    string  `json:"description"`
@@ -70,14 +71,23 @@ type workItemDTO struct {
 	Blocker       *blockerDTO `json:"blocker,omitempty"`
 	RunsCount     int         `json:"runs_count"`
 	LatestRunID   string      `json:"latest_run_id,omitempty"`
-	Version       int         `json:"version"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	// RollingDigest 任务台账滚动摘要（S2，确定性生成）。仅详情响应携带
+	//（enrichWorkItem 填充）；列表/bootstrap 不带，防 4KB 级摘要撑爆列表载荷。
+	RollingDigest string    `json:"rolling_digest,omitempty"`
+	Version       int       `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func toWorkItemDTO(w *domain.WorkItem) workItemDTO {
+	recordKind := w.RecordKind
+	// Direct/in-process callers predating the discriminator represented task
+	// board records; persisted rows are always normalized by migration 0019.
+	if recordKind == "" {
+		recordKind = domain.RecordKindTask
+	}
 	d := workItemDTO{
-		ID: w.ID, WorkspaceID: w.WorkspaceID, ParentID: w.ParentID,
+		ID: w.ID, WorkspaceID: w.WorkspaceID, RecordKind: string(recordKind), ParentID: w.ParentID,
 		Title: w.Title, Description: w.Description,
 		Status: string(w.Status), Phase: string(w.Phase), Priority: string(w.Priority),
 		AgentProfileID: w.AgentProfileID,
@@ -199,6 +209,7 @@ type createAgentRequest struct {
 
 type createWorkItemRequest struct {
 	Title          string  `json:"title"`
+	RecordKind     string  `json:"record_kind"`
 	Description    string  `json:"description"`
 	Status         string  `json:"status"`
 	Priority       string  `json:"priority"`
@@ -279,8 +290,10 @@ type taskSessionDTO struct {
 	DisplayID      string         `json:"display_id,omitempty"`
 	RunsCount      int            `json:"runs_count"`
 	InputTokensCum int64          `json:"input_tokens_cum"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// SegmentSeq 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际 +1）。
+	SegmentSeq int       `json:"segment_seq"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // toTaskSessionDTO 输出锚点投影；SessionParams 保留 __ref/__fingerprint 供诊断。
@@ -288,7 +301,7 @@ func toTaskSessionDTO(t *domain.TaskSession) taskSessionDTO {
 	return taskSessionDTO{
 		ID: t.ID, AgentProfileID: t.AgentProfileID, AdapterID: t.AdapterID, TaskKey: t.TaskKey,
 		SessionRef: t.SessionRef(), SessionParams: t.SessionParams, DisplayID: t.DisplayID,
-		RunsCount: t.RunsCount, InputTokensCum: t.InputTokensCum,
+		RunsCount: t.RunsCount, InputTokensCum: t.InputTokensCum, SegmentSeq: t.SegmentSeq,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 }
@@ -343,6 +356,123 @@ func toPlanDTO(p *domain.Plan) planDTO {
 		Status: string(p.Status), SupersededBy: p.SupersededBy,
 		Guardrails: p.Guardrails, Error: p.Error,
 		Steps: steps, Version: p.Version, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
+}
+
+// ── Dispatch（派发卡片，会话元模型 S1）────────────────────────────────
+
+type dispatchRunDTO struct {
+	ID             string `json:"id"`
+	WorkItemID     string `json:"work_item_id"`
+	AgentProfileID string `json:"agent_profile_id,omitempty"`
+	AgentName      string `json:"agent_name,omitempty"`
+	Status         string `json:"status"`
+	// Summary 成员一行摘要（S1 确定性生成：run 指令摘录；不引入 LLM 转述）。
+	Summary string `json:"summary,omitempty"`
+}
+
+// dispatchExcerptDTO 触发消息摘录（锚回来源 run）。
+type dispatchExcerptDTO struct {
+	RunID   string `json:"run_id,omitempty"`
+	Excerpt string `json:"excerpt"`
+}
+
+type dispatchCardDTO struct {
+	ID         string `json:"id"`
+	WorkItemID string `json:"work_item_id"`
+	Trigger    string `json:"trigger"`
+	// LeadRunID 接诊 run / plan source run；@直达批次省略。
+	LeadRunID string `json:"lead_run_id,omitempty"`
+	Status    string `json:"status"`
+	// TriggerMessage 触发消息摘录：接诊/lead_plan 批次取 lead run 指令
+	//（不在成员列时单独读取）；@直达批次取最早成员 run。
+	TriggerMessage *dispatchExcerptDTO `json:"trigger_message,omitempty"`
+	// Runs 成员 runs（会话组），created_at 升序。
+	Runs      []dispatchRunDTO `json:"runs"`
+	CreatedAt time.Time        `json:"created_at"`
+	ClosedAt  *time.Time       `json:"closed_at,omitempty"`
+}
+
+// dispatchExcerptMaxRunes 触发消息与成员摘要的截断宽度（一行卡片可读）。
+const dispatchExcerptMaxRunes = 200
+
+// runInstructionExcerpt run 的一行摘要：instruction 摘录（按 rune 截断）。
+func runInstructionExcerpt(run *domain.ExecutionRun) string {
+	instr, _ := run.Input["instruction"].(string)
+	runes := []rune(instr)
+	if len(runes) <= dispatchExcerptMaxRunes {
+		return instr
+	}
+	return string(runes[:dispatchExcerptMaxRunes]) + "…"
+}
+
+// toDispatchCardDTO 组装派发卡片：成员 runs 摘要 + 触发消息摘录。
+func toDispatchCardDTO(d *domain.Dispatch, runs []*domain.ExecutionRun, trigger *domain.ExecutionRun,
+	agentNames map[string]string) dispatchCardDTO {
+	members := make([]dispatchRunDTO, 0, len(runs))
+	for _, run := range runs {
+		members = append(members, dispatchRunDTO{
+			ID: run.ID, WorkItemID: run.WorkItemID,
+			AgentProfileID: run.AgentProfileID,
+			AgentName:      agentNames[run.AgentProfileID],
+			Status:         string(run.Status),
+			Summary:        runInstructionExcerpt(run),
+		})
+	}
+	card := dispatchCardDTO{
+		ID: d.ID, WorkItemID: d.WorkItemID, Trigger: string(d.Trigger),
+		LeadRunID: d.LeadRunID, Status: string(d.Status),
+		Runs: members, CreatedAt: d.CreatedAt, ClosedAt: d.ClosedAt,
+	}
+	if trigger != nil {
+		card.TriggerMessage = &dispatchExcerptDTO{RunID: trigger.ID, Excerpt: runInstructionExcerpt(trigger)}
+	}
+	return card
+}
+
+// ── Decision（决策台账，会话元模型 S2）────────────────────────────────
+
+type decisionEntryDTO struct {
+	ID string `json:"id"`
+	// WorkItemID 台账归属任务；决策不属于任何会话。
+	WorkItemID string `json:"work_item_id"`
+	// Quote 用户原话（引文保真；服务端只 trim，不改写）。
+	Quote string `json:"quote"`
+	// SourceRunID/SourceRef 可选：钉出来源轮次与片段内位置。
+	SourceRunID string    `json:"source_run_id,omitempty"`
+	SourceRef   string    `json:"source_ref,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func toDecisionEntryDTO(e *domain.DecisionEntry) decisionEntryDTO {
+	return decisionEntryDTO{
+		ID: e.ID, WorkItemID: e.WorkItemID, Quote: e.Quote,
+		SourceRunID: e.SourceRunID, SourceRef: e.SourceRef, CreatedAt: e.CreatedAt,
+	}
+}
+
+type createDecisionRequest struct {
+	Quote       string `json:"quote"`
+	SourceRunID string `json:"source_run_id"`
+	SourceRef   string `json:"source_ref"`
+}
+
+// ── Search（FTS 检索，会话元模型 S4）────────────────────────────────
+
+type searchItemDTO struct {
+	Kind       string `json:"kind"`
+	WorkItemID string `json:"work_item_id"`
+	SourceID   string `json:"source_id"`
+	Title      string `json:"title"`
+	// Snippet 正文命中摘录：[] 包裹命中词、… 省略号（SQLite snippet() /
+	// PG ts_headline 生成，高亮语义两端一致）。
+	Snippet string `json:"snippet"`
+}
+
+func toSearchItemDTO(s *application.SearchResult) searchItemDTO {
+	return searchItemDTO{
+		Kind: s.Kind, WorkItemID: s.WorkItemID, SourceID: s.SourceID,
+		Title: s.Title, Snippet: s.Snippet,
 	}
 }
 

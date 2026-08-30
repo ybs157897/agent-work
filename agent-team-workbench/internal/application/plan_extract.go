@@ -85,6 +85,10 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 		return
 	}
 	wctx := context.WithoutCancel(ctx)
+	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
+	if err != nil || !isTaskWorkItem(wi) {
+		return
+	}
 	agent, err := s.store.Agents().Get(wctx, r.AgentProfileID)
 	if err != nil || agent.Role != AgentRoleLead {
 		return

@@ -55,8 +55,8 @@ func insertWorkItem(t *testing.T, db *sql.DB, id string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(
-		`INSERT INTO work_items(id, workspace_id, title, status, priority, version, created_at, updated_at)
-		 VALUES (?,'ws_wk','t','todo','medium',1,?,?)`, id, now, now); err != nil {
+		`INSERT INTO work_items(id, workspace_id, record_kind, title, status, priority, version, created_at, updated_at)
+			 VALUES (?,'ws_wk','task','t','todo','medium',1,?,?)`, id, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -525,8 +525,8 @@ func insertAssignedWorkItem(t *testing.T, db *sql.DB, id, agentID, title, status
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(
-		`INSERT INTO work_items(id, workspace_id, title, status, priority, agent_profile_id, version, created_at, updated_at)
-		 VALUES (?,'ws_wk',?,?,'medium',?,1,?,?)`, id, title, status, agentID, now, now); err != nil {
+		`INSERT INTO work_items(id, workspace_id, record_kind, title, status, priority, agent_profile_id, version, created_at, updated_at)
+			 VALUES (?,'ws_wk','task',?,?,'medium',?,1,?,?)`, id, title, status, agentID, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -564,6 +564,12 @@ func TestWakeupProducerQueries(t *testing.T) {
 	insertAssignedWorkItem(t, db, "wi_block", "agent_hb", "阻塞", "blocked")
 	insertAssignedWorkItem(t, db, "wi_done", "agent_hb", "已完成", "completed")
 	insertAssignedWorkItem(t, db, "wi_other", "agent_nohb", "别人的", "todo")
+	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(
+		`INSERT INTO work_items(id, workspace_id, record_kind, title, status, priority, agent_profile_id, version, created_at, updated_at)
+			 VALUES ('wi_chat_assigned','ws_wk','chat','Chat 对话','todo','medium','agent_hb',1,?,?)`, nowText, nowText); err != nil {
+		t.Fatal(err)
+	}
 
 	tasks, err := store.Wakeups().AssignedTasks(ctx, "agent_hb")
 	if err != nil {

@@ -41,6 +41,12 @@ func RenderPrompt(template string, agent *domain.AgentProfile, workItemTitle str
 	}
 }
 
+// SettlementPromptTemplate S3 worker→lead 回流汇总的唤醒提示词模板：
+// {{context.settlement_lines}} 由应用侧逐成员渲染（agent 名、终态、一行结果
+// 摘要）后注入。渲染走 RenderPrompt 同一纪律——未知变量原样保留、context 键
+// 缺失替换空串，不报错、不硬造。
+const SettlementPromptTemplate = "任务「{{work_item.title}}」的派发批次已收尾，请汇总各成员结局：\n{{context.settlement_lines}}\n请标注失败项与缺口，给出简明汇总结论与下一步建议。"
+
 // renderVar 渲染单个 {{...}} 变量；未识别的语法原样返回（含花括号）。
 func renderVar(inner string, agent *domain.AgentProfile, workItemTitle string, wakeContext map[string]any) string {
 	var name, role, slug string

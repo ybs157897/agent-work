@@ -26,6 +26,16 @@ const (
 	EventWorkItemLocked        = "work_item.locked"
 	EventWorkItemLockPreempted = "work_item.lock_preempted"
 
+	// EventDispatchCreated / EventDispatchUpdated 派发批次（会话元模型 S1）：
+	// 批次创建与行变更。S1 生产者只有 created；updated 的发布点随 S3 状态收口
+	//（running→collecting→终态）接入。
+	EventDispatchCreated = "dispatch.created"
+	EventDispatchUpdated = "dispatch.updated"
+
+	// EventDecisionCreated 决策台账写入（会话元模型 S2）：用户原话钉为决策时
+	// 发布；载荷带 work_item_id/quote，前端台账区据此增量刷新。
+	EventDecisionCreated = "decision.created"
+
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
@@ -84,6 +94,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventWorkItemCreated: {}, EventWorkItemUpdated: {}, EventWorkItemMoved: {},
 	EventWorkItemAssigned: {}, EventWorkItemBlocked: {}, EventWorkItemUnblocked: {},
 	EventWorkItemCompleted: {}, EventWorkItemLocked: {}, EventWorkItemLockPreempted: {},
+	EventDispatchCreated: {}, EventDispatchUpdated: {}, EventDecisionCreated: {},
 	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
@@ -117,6 +128,8 @@ const (
 	AggregateArtifact       = "artifact"
 	AggregateRuntimeBinding = "runtime_binding"
 	AggregateRunner         = "runner"
+	AggregateDispatch       = "dispatch"
+	AggregateDecision       = "decision"
 )
 
 // CanonicalEvent 是工作台投影事实源（asyncapi CanonicalEventEnvelope）。

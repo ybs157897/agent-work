@@ -12,11 +12,13 @@ type RunRepo struct{ store *Store }
 const runCols = `id, workspace_id, work_item_id, agent_profile_id, status, runtime_label,
 	adapter_id, provider, capability_snapshot_id, session_ref, session_before, session_after,
 	usage_in, usage_out, usage_cached, usage_basis, error_family, client_key, progress, retry_of,
-	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at`
+	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at,
+	dispatch_id`
 
 func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.ExecutionRun) error {
 	var agentID, runtimeLabel, adapterID, provider, capsID, sessionRef, retryOf, fCode, fMsg *string
 	var sessionBefore, sessionAfter, usageBasis, errorFamily, clientKey *string
+	var dispatchID *string
 	var usageIn, usageOut, usageCached sql.NullInt64
 	var fRetry *bool
 	var input string
@@ -26,7 +28,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 		&sessionBefore, &sessionAfter,
 		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily, &clientKey,
 		&run.Progress, &retryOf, &fCode, &fMsg, &fRetry, &input,
-		&run.Version, &created, &updated, &finished); err != nil {
+		&run.Version, &created, &updated, &finished, &dispatchID); err != nil {
 		return err
 	}
 	setStr := func(dst *string, src *string) {
@@ -45,6 +47,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	setStr(&run.UsageBasis, usageBasis)
 	setStr(&run.ErrorFamily, errorFamily)
 	setStr(&run.ClientKey, clientKey)
+	setStr(&run.DispatchID, dispatchID)
 	run.UsageIn, run.UsageOut, run.UsageCached = usageIn.Int64, usageOut.Int64, usageCached.Int64
 	if retryOf != nil {
 		run.RetryOf = *retryOf
@@ -75,7 +78,7 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		failureRetry = &run.Failure.Retryable
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkspaceID, run.WorkItemID, nullString(run.AgentProfileID), run.Status,
 		nullString(run.RuntimeLabel), nullString(run.AdapterID), nullString(run.Provider),
 		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef),
@@ -83,7 +86,8 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
 		nullString(run.ClientKey), run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
-		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt))
+		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt),
+		nullString(run.DispatchID))
 	return r.store.mapErr(err)
 }
 
@@ -161,6 +165,11 @@ func (r *RunRepo) ListByWorkItem(ctx context.Context, workItemID string) ([]*dom
 	return r.list(ctx, "work_item_id=?", workItemID)
 }
 
+// ListByDispatch 按创建时间升序返回派发批次的成员 run（会话组 = WHERE dispatch_id）。
+func (r *RunRepo) ListByDispatch(ctx context.Context, dispatchID string) ([]*domain.ExecutionRun, error) {
+	return r.list(ctx, "dispatch_id=?", dispatchID)
+}
+
 // ActiveByAgent 返回未终态 Run（disable 策略处置活动 Run 时使用）。
 func (r *RunRepo) ActiveByAgent(ctx context.Context, agentProfileID string) ([]*domain.ExecutionRun, error) {
 	return r.list(ctx,
@@ -180,8 +189,12 @@ func (r *RunRepo) LeaselessActive(ctx context.Context) ([]*domain.ExecutionRun, 
 func (r *RunRepo) ActiveCount(ctx context.Context, workspaceID string) (int, error) {
 	var n int
 	err := r.store.queryRow(ctx, r.store.exec(ctx),
-		`SELECT count(*) FROM execution_runs WHERE workspace_id=?
-		 AND status NOT IN ('succeeded','interrupted','cancelled','lost','failed')`, workspaceID).Scan(&n)
+		`SELECT count(*)
+		 FROM execution_runs r
+		 JOIN work_items wi ON wi.id=r.work_item_id
+		 WHERE r.workspace_id=? AND wi.record_kind=?
+			 AND r.status NOT IN ('succeeded','interrupted','cancelled','lost','failed')`,
+		workspaceID, domain.RecordKindTask).Scan(&n)
 	return n, r.store.mapErr(err)
 }
 

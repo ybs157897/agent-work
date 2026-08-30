@@ -85,6 +85,9 @@ const (
 	DefaultHeartbeatIntervalSec = 1800
 	// DefaultPromptTemplate 缺省唤醒提示词模板；agent prompt_template 为空时生效。
 	DefaultPromptTemplate = "{{agent.name}}，按你的职责（{{agent.role}}）检查任务「{{work_item.title}}」的当前状态，若有可推进的工作项请继续推进；没有则简短报告现状。"
+	// WakeupContextSettlementDispatchID 标识 S3 必达汇总 automation；调度器据此
+	// 绕过 heartbeat 门控并在活跃 run 冲突时保持 queued 重试。
+	WakeupContextSettlementDispatchID = "settle_dispatch_id"
 )
 
 // HeartbeatPolicy 从 AgentProfile 投影的心跳/唤醒策略（调度循环只读快照）。
