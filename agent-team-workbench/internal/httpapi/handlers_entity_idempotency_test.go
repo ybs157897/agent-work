@@ -28,7 +28,7 @@ func TestCreateWorkItemClientKeyReplay(t *testing.T) {
 	mux := s.Routes()
 	wsID, agentID, _ := seedPlanHTTPEnv(t, s)
 
-	body := `{"title":"分叉会话","agent_profile_id":"` + agentID + `","client_key":"fork:wi_1:msg_1"}`
+	body := `{"title":"分叉会话","record_kind":"chat","agent_profile_id":"` + agentID + `","client_key":"fork:wi_1:msg_1"}`
 	first := postWorkItem(t, mux, wsID, body)
 	if first.Code != http.StatusCreated {
 		t.Fatalf("首次创建应 201，实际 %d: %s", first.Code, first.Body.String())
@@ -54,7 +54,7 @@ func TestCreateWorkItemClientKeyReplay(t *testing.T) {
 	}
 
 	third := postWorkItem(t, mux, wsID,
-		`{"title":"另一张卡","agent_profile_id":"`+agentID+`","client_key":"fork:wi_1:msg_2"}`)
+		`{"title":"另一张卡","record_kind":"chat","agent_profile_id":"`+agentID+`","client_key":"fork:wi_1:msg_2"}`)
 	if third.Code != http.StatusCreated {
 		t.Fatalf("不同 client_key 应新建 201，实际 %d", third.Code)
 	}
@@ -65,7 +65,7 @@ func TestCreateWorkItemParentIDPassthrough(t *testing.T) {
 	mux := s.Routes()
 	wsID, agentID, _ := seedPlanHTTPEnv(t, s)
 
-	parent := postWorkItem(t, mux, wsID, `{"title":"父任务","agent_profile_id":"`+agentID+`"}`)
+	parent := postWorkItem(t, mux, wsID, `{"title":"父任务","record_kind":"chat","agent_profile_id":"`+agentID+`"}`)
 	if parent.Code != http.StatusCreated {
 		t.Fatalf("父任务创建失败: %d", parent.Code)
 	}
@@ -75,7 +75,7 @@ func TestCreateWorkItemParentIDPassthrough(t *testing.T) {
 	}
 
 	child := postWorkItem(t, mux, wsID,
-		`{"title":"分叉会话","agent_profile_id":"`+agentID+`","parent_id":"`+parentBody["id"].(string)+`"}`)
+		`{"title":"分叉会话","record_kind":"chat","agent_profile_id":"`+agentID+`","parent_id":"`+parentBody["id"].(string)+`"}`)
 	if child.Code != http.StatusCreated {
 		t.Fatalf("合法 parent_id 应 201，实际 %d: %s", child.Code, child.Body.String())
 	}
@@ -88,7 +88,7 @@ func TestCreateWorkItemParentIDPassthrough(t *testing.T) {
 	}
 
 	orphan := postWorkItem(t, mux, wsID,
-		`{"title":"孤儿","agent_profile_id":"`+agentID+`","parent_id":"wi_missing"}`)
+		`{"title":"孤儿","record_kind":"chat","agent_profile_id":"`+agentID+`","parent_id":"wi_missing"}`)
 	if orphan.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("不存在的 parent 应 422（ErrValidation 的既有映射），实际 %d", orphan.Code)
 	}

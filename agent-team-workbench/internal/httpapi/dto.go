@@ -21,28 +21,32 @@ func toWorkspaceDTO(w *domain.Workspace) workspaceDTO {
 }
 
 type agentDTO struct {
-	ID                string                   `json:"id"`
-	Slug              string                   `json:"slug,omitempty"`
-	Name              string                   `json:"name"`
-	Role              string                   `json:"role"`
-	Skills            []string                 `json:"skills"`
-	Instructions      string                   `json:"instructions,omitempty"`
-	Availability      string                   `json:"availability"`
-	Presence          string                   `json:"presence"`
-	Avatar            string                   `json:"avatar,omitempty"`
-	RuntimePreference domain.RuntimePreference `json:"runtime_preference,omitempty"`
-	ModelOverride     domain.ModelRef          `json:"model_override,omitempty"`
-	Policy            domain.AgentPolicy       `json:"policy,omitempty"`
-	Version           int                      `json:"version"`
+	ID                   string                   `json:"id"`
+	Slug                 string                   `json:"slug,omitempty"`
+	Kind                 string                   `json:"kind,omitempty"`
+	IsSystem             bool                     `json:"is_system,omitempty"`
+	Name                 string                   `json:"name"`
+	Role                 string                   `json:"role"`
+	Skills               []string                 `json:"skills"`
+	Instructions         string                   `json:"instructions,omitempty"`
+	Availability         string                   `json:"availability"`
+	Presence             string                   `json:"presence"`
+	Avatar               string                   `json:"avatar,omitempty"`
+	RuntimePreference    domain.RuntimePreference `json:"runtime_preference,omitempty"`
+	ModelOverride        domain.ModelRef          `json:"model_override,omitempty"`
+	Policy               domain.AgentPolicy       `json:"policy,omitempty"`
+	InstructionsEditable bool                     `json:"instructions_editable"`
+	Version              int                      `json:"version"`
 }
 
 func toAgentDTO(a *domain.AgentProfile) agentDTO {
 	return agentDTO{
-		ID: a.ID, Slug: a.Slug, Name: a.Name, Role: a.Role, Skills: a.Skills,
+		ID: a.ID, Slug: a.Slug, Kind: string(a.Kind), IsSystem: a.Kind.IsSystem(), Name: a.Name, Role: a.Role, Skills: a.Skills,
 		Instructions: a.Instructions,
 		Availability: string(a.Availability), Presence: string(a.Presence),
 		Avatar: a.Avatar, RuntimePreference: a.RuntimePreference,
-		ModelOverride: a.ModelOverride, Policy: a.Policy, Version: a.Version,
+		ModelOverride: a.ModelOverride, Policy: a.Policy,
+		InstructionsEditable: !a.Kind.IsSystem(), Version: a.Version,
 	}
 }
 
@@ -208,15 +212,16 @@ type createAgentRequest struct {
 }
 
 type createWorkItemRequest struct {
-	Title          string  `json:"title"`
-	RecordKind     string  `json:"record_kind"`
-	Description    string  `json:"description"`
-	Status         string  `json:"status"`
-	Priority       string  `json:"priority"`
-	DueDate        *string `json:"due_date"`
-	AgentProfileID string  `json:"agent_profile_id"`
-	ParentID       string  `json:"parent_id"`
-	ClientKey      string  `json:"client_key"`
+	Title              string   `json:"title"`
+	RecordKind         string   `json:"record_kind"`
+	Description        string   `json:"description"`
+	Status             string   `json:"status"`
+	Priority           string   `json:"priority"`
+	DueDate            *string  `json:"due_date"`
+	AgentProfileID     string   `json:"agent_profile_id"`
+	ParentID           string   `json:"parent_id"`
+	ClientKey          string   `json:"client_key"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
 }
 
 type moveWorkItemRequest struct {
@@ -398,6 +403,26 @@ const dispatchExcerptMaxRunes = 200
 
 // runInstructionExcerpt run 的一行摘要：instruction 摘录（按 rune 截断）。
 func runInstructionExcerpt(run *domain.ExecutionRun) string {
+	if run == nil {
+		return ""
+	}
+	if control, ok := run.Input["task_coordinator"].(map[string]any); ok {
+		if role, _ := control["role"].(string); role == "coordinator" {
+			action, _ := control["action"].(string)
+			switch action {
+			case "recover":
+				return "系统 Coordinator 正在诊断失败并重新规划"
+			case "evaluation":
+				return "系统 Coordinator 正在评估任务交付结果"
+			case "message":
+				return "系统 Coordinator 正在合并用户补充并重新规划"
+			case "wakeup":
+				return "系统 Coordinator 正在汇总 Worker 结果"
+			default:
+				return "系统 Coordinator 已自动接取并开始规划"
+			}
+		}
+	}
 	instr, _ := run.Input["instruction"].(string)
 	runes := []rune(instr)
 	if len(runes) <= dispatchExcerptMaxRunes {

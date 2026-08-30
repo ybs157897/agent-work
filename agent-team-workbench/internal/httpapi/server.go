@@ -100,6 +100,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/agent-profiles/{agent_profile_id}/commands/wake", s.guard(security.PermAgentWrite, s.handleWakeAgent))
 	mux.HandleFunc("GET /api/v1/agent-profiles/{agent_profile_id}/task-sessions", s.guard(security.PermRead, s.handleListTaskSessions))
 	mux.HandleFunc("POST /api/v1/agent-profiles/{agent_profile_id}/task-sessions/reset", s.guard(security.PermAgentWrite, s.handleResetTaskSession))
+	// 系统级 Task Coordinator：配置仅允许 runtime/model/reasoning，读取为
+	// Task 控制线快照；Chat WorkItem 会被 handler fail-closed 拒绝。
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/coordinator", s.guard(security.PermRead, s.handleGetCoordinatorConfig))
+	mux.HandleFunc("PATCH /api/v1/workspaces/{workspace_id}/coordinator", s.guard(security.PermRuntimeManage, s.handlePatchCoordinatorConfig))
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermRead, s.handleListWorkItems))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermWorkItemWrite, s.handleCreateWorkItem))
@@ -114,6 +118,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/accept", s.guard(security.PermApproval, s.handleAcceptWorkItem))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/tree", s.guard(security.PermRead, s.handleWorkItemTree))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/plan", s.guard(security.PermRead, s.handleWorkItemPlan))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/coordinator", s.guard(security.PermRead, s.handleGetCoordinatorSnapshot))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/coordinator/events", s.guard(security.PermRead, s.handleListCoordinatorEvents))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/coordinator/messages", s.guard(security.PermWorkItemWrite, s.handleSendCoordinatorInstruction))
 
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/plans", s.guard(security.PermWorkItemWrite, s.handleCreatePlan))
 	mux.HandleFunc("GET /api/v1/plans/{plan_id}", s.guard(security.PermRead, s.handleGetPlan))

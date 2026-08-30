@@ -53,6 +53,14 @@ func seedPlanHTTPEnv(t *testing.T, s *Server) (wsID, leadID, workerID string) {
 	if err := s.store.Agents().Create(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.store.Bindings().Create(ctx, &domain.RuntimeBinding{
+		ID: "rb_plan_mock", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock",
+		Provider: "mock", Model: "mock", Status: domain.BindingReady,
+		Capabilities: map[string]string{"resume": string(atwruntime.CapSupported)},
+		Version:      1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return ws.ID, lead.ID, worker.ID
 }
 

@@ -45,7 +45,7 @@ components:
           type: object
           required: [type, id, version]
           properties:
-            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision] }
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision, task_coordinator] }
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
@@ -80,6 +80,17 @@ components:
             - dispatch.updated
             # Decision（会话元模型 S2：决策台账写入）
             - decision.created
+            # Task Coordinator（系统控制线与失败恢复）
+            - coordinator.queued
+            - coordinator.started
+            - coordinator.message_received
+            - coordinator.plan_updated
+            - coordinator.attempt_updated
+            - coordinator.retry_scheduled
+            - coordinator.recovery_started
+            - coordinator.blocked
+            - coordinator.completed
+            - coordinator.state_changed
             # Run
             - run.created
             - run.started
