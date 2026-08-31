@@ -4,7 +4,7 @@
 
 | 产物 | 路径 |
 | --- | --- |
-| 静态展示 | [swarm-chat-body-demo.html](./swarm-chat-body-demo.html) |
+| 静态展示 | [swarm-chat-body-demo.html](../archive/design/swarm-chat-body-demo.html) |
 | 决策 note（implemented） | [../../notes/implemented/feature/2026-08-29-swarm-chat-body.md](../../notes/implemented/feature/2026-08-29-swarm-chat-body.md) |
 | 通用正文架构 | [../../notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md](../../notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md) |
 | 生产组件 | [../../agent-team-workbench/web/src/components/chat/swarm-chat-block.tsx](../../agent-team-workbench/web/src/components/chat/swarm-chat-block.tsx) |
@@ -12,7 +12,7 @@
 | 通用正文投影 | [../../agent-team-workbench/web/src/utils/agent-transcript-projection.ts](../../agent-team-workbench/web/src/utils/agent-transcript-projection.ts) |
 | 唯一正文阅读器 | [../../agent-team-workbench/web/src/components/chat/transcript-view.tsx](../../agent-team-workbench/web/src/components/chat/transcript-view.tsx) |
 | Kimi 事件投影 | [../../agent-team-workbench/internal/runtime/adapters/kimiapp/kimiapp.go](../../agent-team-workbench/internal/runtime/adapters/kimiapp/kimiapp.go) |
-| 渲染规格入口 | [../chat-rendering-spec.md](../chat-rendering-spec.md) |
+| 渲染规格入口 | [chat-rendering-spec.md](../frontend/chat-rendering-spec.md) |
 | ZCode 交互对照 | [zcode-desktop-interaction-report.md](./zcode-desktop-interaction-report.md) |
 
 ## 一句话
