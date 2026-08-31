@@ -1,16 +1,63 @@
--- 0010_plan_join_guardrails.sql — M4 编排层：join 动词 + plans 预算护栏列 +
--- plan_dispatch 闸门审批的 run_id 放宽。
--- guardrails：{max_dispatch?, max_tokens?} 提交时固化；error 记 plan 级失败原因码
---（budget_exceeded；步骤级失败原因仍在 plan_steps.error）。
+-- 0010_plan_join_guardrails.sql — M4 编排层（SQLite）。
+-- SQLite 的 CHECK 与
+-- NOT NULL 不可 ALTER，重建 plan_steps / approvals 换宽约束（两表均无下游引用，
+-- 重建安全）。
 
-ALTER TABLE plans ADD COLUMN guardrails JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE plans ADD COLUMN guardrails TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE plans ADD COLUMN error TEXT;
 
--- join 进入 verb 白名单（0009 的 CHECK 未命名约束名沿 PG 缺省命名重建）。
-ALTER TABLE plan_steps DROP CONSTRAINT IF EXISTS plan_steps_verb_check;
-ALTER TABLE plan_steps ADD CONSTRAINT plan_steps_verb_check
-    CHECK (verb IN ('dispatch','defer','finish','consult_knowledge','join'));
+CREATE TABLE plan_steps_new (
+    plan_id             TEXT NOT NULL REFERENCES plans(id),
+    seq                 INTEGER NOT NULL,
+    verb                TEXT NOT NULL CHECK (verb IN ('dispatch','defer','finish','consult_knowledge','join')),
+    payload             TEXT NOT NULL DEFAULT '{}',
+    status              TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','executed','skipped','failed')),
+    result_work_item_id TEXT,
+    result_run_id       TEXT,
+    error               TEXT,
+    created_at          DATETIME NOT NULL,
+    executed_at         DATETIME,
+    PRIMARY KEY (plan_id, seq)
+);
 
--- plan_dispatch 闸门审批（kind=plan_dispatch，M4 审批护栏）无关联 run：
--- run_id 放宽为可空（FK 保留，非空值仍校验指向真实 run）。
-ALTER TABLE approvals ALTER COLUMN run_id DROP NOT NULL;
+INSERT INTO plan_steps_new (plan_id, seq, verb, payload, status, result_work_item_id,
+                            result_run_id, error, created_at, executed_at)
+    SELECT plan_id, seq, verb, payload, status, result_work_item_id,
+           result_run_id, error, created_at, executed_at
+    FROM plan_steps;
+
+DROP TABLE plan_steps;
+ALTER TABLE plan_steps_new RENAME TO plan_steps;
+
+-- approvals.run_id 放宽为可空（plan_dispatch 闸门审批无 run；FK 保留）。
+CREATE TABLE approvals_new (
+    id                  TEXT PRIMARY KEY,
+    run_id              TEXT REFERENCES execution_runs(id),
+    work_item_id        TEXT NOT NULL REFERENCES work_items(id),
+    kind                TEXT NOT NULL,
+    risk                TEXT NOT NULL CHECK (risk IN ('low','medium','high')),
+    status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','expired')),
+    summary             TEXT NOT NULL,
+    requested_by        TEXT NOT NULL DEFAULT '{}',
+    sensitive_input_ref TEXT,
+    policy_snapshot_id  TEXT,
+    expires_at          DATETIME,
+    resolved_at         DATETIME,
+    resolved_by         TEXT,
+    resolve_reason      TEXT,
+    created_at          DATETIME NOT NULL
+);
+
+INSERT INTO approvals_new (id, run_id, work_item_id, kind, risk, status, summary,
+                           requested_by, sensitive_input_ref, policy_snapshot_id,
+                           expires_at, resolved_at, resolved_by, resolve_reason, created_at)
+    SELECT id, run_id, work_item_id, kind, risk, status, summary,
+           requested_by, sensitive_input_ref, policy_snapshot_id,
+           expires_at, resolved_at, resolved_by, resolve_reason, created_at
+    FROM approvals;
+
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX idx_approvals_run ON approvals(run_id);
+CREATE INDEX idx_approvals_pending ON approvals(status) WHERE status = 'pending';

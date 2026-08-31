@@ -24,7 +24,7 @@ func TestRunnerV2OwnershipMigrationUpgradesHistoricalLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	files, err := discoverMigrations(repoMigrationsDir(t, "migrations", "sqlite"))
+	files, err := discoverMigrations(repoMigrationsDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

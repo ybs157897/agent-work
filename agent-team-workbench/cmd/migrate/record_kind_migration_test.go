@@ -22,7 +22,7 @@ func TestRecordKindMigrationBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir := repoMigrationsDir(t, "migrations", "sqlite")
+	dir := repoMigrationsDir(t)
 	files, err := discoverMigrations(dir)
 	if err != nil {
 		t.Fatal(err)
