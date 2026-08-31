@@ -38,7 +38,7 @@ func TestTaskCommentCursorAllocateRevisionsMonotonically(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	seedCommentTree(t, ctx, store, "ws_wk", "wi_cmt_root")
 
@@ -109,7 +109,7 @@ func TestTaskCommentRevisionConcurrentAppendNoDuplicate(t *testing.T) {
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	seedCommentTree(t, ctx, store, "ws_wk", "wi_cmt_race")
 
@@ -161,7 +161,7 @@ func TestTaskCommentAppendOnlyAndPagination(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	seedCommentTree(t, ctx, store, "ws_wk", "wi_cmt_page")
 
@@ -215,7 +215,7 @@ func TestTaskCommentClientKeyReplayAndConflict(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	seedCommentTree(t, ctx, store, "ws_wk", "wi_cmt_idem")
 
@@ -259,7 +259,7 @@ func TestTaskCommentUnconsumedActionableQueries(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	seedCommentTree(t, ctx, store, "ws_wk", "wi_cmt_watermark")
 
@@ -301,7 +301,7 @@ func TestTaskCommentAppendRejectsCrossWorkspaceScope(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	// 第二个 workspace 的 work item 挂到 ws_wk 的 cursor 根 → 存储侧归属校验拒绝。
 	now := time.Now().UTC()

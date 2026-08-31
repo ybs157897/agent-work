@@ -61,7 +61,7 @@ func TestDispatchUserMessageRouting(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	wsID, aliceID, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
 
@@ -152,7 +152,7 @@ func TestPlanDispatchChildrenInheritDispatch(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	wsID, aliceID, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
 
@@ -209,7 +209,7 @@ func TestPlanDispatchLeadPlanFallback(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	wsID, aliceID, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
 

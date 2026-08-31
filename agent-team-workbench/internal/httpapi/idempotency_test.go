@@ -18,7 +18,7 @@ import (
 )
 
 // openIdempotencyTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现
-// migrations/sqlite，新增迁移免同步清单）。MaxOpenConns(1) + busy_timeout
+// migrations，新增迁移免同步清单）。MaxOpenConns(1) + busy_timeout
 // 规避并发写下的 SQLITE_BUSY。
 func openIdempotencyTestDB(t *testing.T) *sqlstore.Store {
 	t.Helper()
@@ -32,7 +32,7 @@ func openIdempotencyTestDB(t *testing.T) *sqlstore.Store {
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	return sqlstore.New(db, sqlstore.SQLiteDialect())
+	return sqlstore.New(db)
 }
 
 func newIdempotentHandler(s *Server, scope string, exec func() (int, []byte)) http.HandlerFunc {

@@ -1,5 +1,4 @@
-// Package sqlstore 以 database/sql 实现 application.Store，
-// 通过 Dialect 抽象同时支持 PostgreSQL（生产）与 SQLite（本地验证）。
+// Package sqlstore 以 SQLite/database/sql 实现 application.Store。
 // 事务模型：InTx 把 *sql.Tx 放进 context，仓储方法自动复用同一事务，
 // 保证 状态变更 + run_events + outbox + idempotency 同事务提交。
 package sqlstore
@@ -8,16 +7,92 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
+	_ "modernc.org/sqlite"
 )
 
 type txKey struct{}
+
+const (
+	// DefaultDSN 是本地控制平面的默认持久化位置。
+	DefaultDSN   = "sqlite://workbench.db"
+	sqlitePrefix = "sqlite://"
+)
+
+// Open 打开本地 SQLite 数据库。仅接受 sqlite:// DSN，所有入口都统一启用
+// 外键、写锁等待与 WAL，并把单个进程内的写入串行到一个连接。
+func Open(ctx context.Context, dsn string) (*sql.DB, error) {
+	driverDSN, err := sqliteDriverDSN(dsn)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", driverDSN)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := verifySQLiteConnectionContract(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func verifySQLiteConnectionContract(ctx context.Context, db *sql.DB) error {
+	var foreignKeys, busyTimeout int
+	var journalMode string
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("读取 SQLite foreign_keys 失败: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout); err != nil {
+		return fmt.Errorf("读取 SQLite busy_timeout 失败: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		return fmt.Errorf("读取 SQLite journal_mode 失败: %w", err)
+	}
+	if foreignKeys != 1 || busyTimeout != 5000 || !strings.EqualFold(journalMode, "wal") {
+		return fmt.Errorf("SQLite 连接契约未生效: foreign_keys=%d busy_timeout=%d journal_mode=%q",
+			foreignKeys, busyTimeout, journalMode)
+	}
+	return nil
+}
+
+func sqliteDriverDSN(dsn string) (string, error) {
+	if !strings.HasPrefix(dsn, sqlitePrefix) {
+		return "", fmt.Errorf("SQLite DSN 必须以 %q 开头", sqlitePrefix)
+	}
+	pathAndQuery := strings.TrimPrefix(dsn, sqlitePrefix)
+	path, rawQuery, hasQuery := strings.Cut(pathAndQuery, "?")
+	if strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("SQLite DSN 缺少数据库路径")
+	}
+	query := make(url.Values)
+	if hasQuery {
+		var err error
+		query, err = url.ParseQuery(rawQuery)
+		if err != nil {
+			return "", fmt.Errorf("SQLite DSN query 非法: %w", err)
+		}
+	}
+	// Pragma 是存储契约，不接受调用方覆盖。普通 SQLite URI 参数（如
+	// cache=shared）保留；全部自定义 _pragma 清除后写入唯一可信集合。
+	query.Del("_pragma")
+	query.Add("_pragma", "foreign_keys(1)")
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	return path + "?" + query.Encode(), nil
+}
 
 // executor 是 *sql.DB 与 *sql.Tx 的公共子集。
 type executor interface {
@@ -26,59 +101,8 @@ type executor interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Dialect 收敛两种数据库的差异。
-type Dialect struct {
-	Name      string
-	TimeParam func(time.Time) any
-	// AdvisoryLock 串行化序号分配；query 已由 Store.ph 翻译占位符。
-	AdvisoryLock    func(ctx context.Context, db executor, query string, arg any) error
-	UniqueViolation func(error) bool
-}
-
-func (d Dialect) NullTimeParam(t *time.Time) any {
-	if t == nil {
-		return nil
-	}
-	return d.TimeParam(*t)
-}
-
-// PostgresDialect：时间为原生 timestamptz；写并发用 advisory lock 串行化序号分配。
-func PostgresDialect() Dialect {
-	return Dialect{
-		Name:      "postgres",
-		TimeParam: func(t time.Time) any { return t.UTC() },
-		AdvisoryLock: func(ctx context.Context, db executor, query string, arg any) error {
-			_, err := db.ExecContext(ctx, query, arg)
-			return err
-		},
-		UniqueViolation: func(err error) bool {
-			var pq *pgconn.PgError
-			return errors.As(err, &pq) && pq.Code == "23505"
-		},
-	}
-}
-
-// SQLiteDialect：时间存 RFC3339Nano 文本（UTC 定宽可字典序比较）；
-// SQLite 写入天然串行，无需 advisory lock。
-func SQLiteDialect() Dialect {
-	return Dialect{
-		Name: "sqlite",
-		TimeParam: func(t time.Time) any {
-			return t.UTC().Format(time.RFC3339Nano)
-		},
-		AdvisoryLock: func(ctx context.Context, db executor, query string, arg any) error {
-			return nil
-		},
-		UniqueViolation: func(err error) bool {
-			return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
-				strings.Contains(err.Error(), "constraint failed: PRIMARY KEY")
-		},
-	}
-}
-
 type Store struct {
 	db           *sql.DB
-	dialect      Dialect
 	workspaces   *WorkspaceRepo
 	agents       *AgentRepo
 	workItems    *WorkItemRepo
@@ -108,9 +132,9 @@ type Store struct {
 
 var _ application.Store = (*Store)(nil)
 
-// New 构造 Store；SQL 统一使用 ? 占位符，postgres 方言翻译为 $N。
-func New(db *sql.DB, dialect Dialect) *Store {
-	s := &Store{db: db, dialect: dialect}
+// New 构造 SQLite Store；SQL 统一使用 SQLite 的 ? 占位符。
+func New(db *sql.DB) *Store {
+	s := &Store{db: db}
 	s.workspaces = &WorkspaceRepo{store: s}
 	s.agents = &AgentRepo{store: s}
 	s.workItems = &WorkItemRepo{store: s}
@@ -192,54 +216,31 @@ func (s *Store) exec(ctx context.Context) executor {
 	return s.db
 }
 
-// q 按方言翻译占位符后执行查询。
+// q 使用 SQLite ? 占位符执行查询。
 func (s *Store) query(ctx context.Context, db executor, sqlText string, args ...any) (*sql.Rows, error) {
-	return db.QueryContext(ctx, s.ph(sqlText), args...)
+	return db.QueryContext(ctx, sqlText, args...)
 }
 
 func (s *Store) queryRow(ctx context.Context, db executor, sqlText string, args ...any) *sql.Row {
-	return db.QueryRowContext(ctx, s.ph(sqlText), args...)
+	return db.QueryRowContext(ctx, sqlText, args...)
 }
 
 func (s *Store) execStmt(ctx context.Context, db executor, sqlText string, args ...any) (sql.Result, error) {
-	return db.ExecContext(ctx, s.ph(sqlText), args...)
-}
-
-func (s *Store) ph(sqlText string) string {
-	if s.dialect.Name != "postgres" {
-		return sqlText
-	}
-	var b strings.Builder
-	n := 0
-	for _, ch := range sqlText {
-		if ch == '?' {
-			n++
-			b.WriteString("$" + itoa(n))
-		} else {
-			b.WriteRune(ch)
-		}
-	}
-	return b.String()
-}
-
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
+	return db.ExecContext(ctx, sqlText, args...)
 }
 
 func (s *Store) mapErr(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ErrNotFound
 	}
-	if err != nil && s.dialect.UniqueViolation(err) {
+	if sqliteUniqueViolation(err) {
 		return domain.ErrIdempotencyConflict
 	}
 	return err
 }
 
-// scanTime 兼容 PostgreSQL（time.Time）与 SQLite（RFC3339 文本）的时间列。
+// scanTime 读取 SQLite DATETIME/RFC3339 文本；modernc 在不同列形状下可能提供
+// time.Time、字节或字符串，因此三个形式都接受。
 type scanTime struct {
 	T     time.Time
 	Valid bool
@@ -278,4 +279,20 @@ func optTime(s scanTime) *time.Time {
 		return nil
 	}
 	return &s.T
+}
+
+func timeParam(t time.Time) any {
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func nullTimeParam(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return timeParam(*t)
+}
+
+func sqliteUniqueViolation(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "UNIQUE constraint failed") ||
+		strings.Contains(err.Error(), "constraint failed: PRIMARY KEY"))
 }

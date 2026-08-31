@@ -15,7 +15,7 @@ func TestWorkItemRecordKindPersistenceAndFilter(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 
@@ -72,7 +72,7 @@ func TestWorkItemTouchUpdatedAtDoesNotMutateTaskState(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	created := time.Date(2026, time.January, 1, 1, 2, 3, 0, time.UTC)
 	item := &domain.WorkItem{
@@ -112,7 +112,7 @@ func TestTaskAggregatesExcludeChatRecords(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	now := time.Now().UTC()
 	create := func(id string, kind domain.WorkItemRecordKind, status domain.WorkItemStatus) {

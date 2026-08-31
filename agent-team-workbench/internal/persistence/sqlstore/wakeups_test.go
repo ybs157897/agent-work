@@ -18,7 +18,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
 )
 
-// openWakeupTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现 migrations/sqlite，
+// openWakeupTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现 migrations，
 // 新增迁移免同步清单）。并发写用例（MarkWakeupStatus CAS）对齐生产 sqlite DSN：
 // busy_timeout + 单连接写串行。
 func openWakeupTestDB(t *testing.T) *sql.DB {
@@ -100,7 +100,7 @@ func TestClaimHeartbeatIntervalGating(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_hb", WorkspaceID: "ws_wk", Name: "HB", Role: "developer",
@@ -154,7 +154,7 @@ func TestActiveRunKeyForAgentTaskStates(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_ar", WorkspaceID: "ws_wk", Name: "AR", Role: "developer",
@@ -231,7 +231,7 @@ func TestWakeupEnqueueDueMarkRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_rq", WorkspaceID: "ws_wk", Name: "RQ", Role: "developer",
@@ -339,7 +339,7 @@ func TestActiveRunKeyTreatsReconnectingSucceedingActive(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_rs", WorkspaceID: "ws_wk", Name: "RS", Role: "developer",
@@ -385,7 +385,7 @@ func TestMarkWakeupStatusConcurrentSingleWinner(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_cas", WorkspaceID: "ws_wk", Name: "CAS", Role: "developer",
@@ -443,7 +443,7 @@ func TestSetWakeupContextRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_ctx", WorkspaceID: "ws_wk", Name: "CTX", Role: "developer",
@@ -482,7 +482,7 @@ func TestReleaseHeartbeatClaim(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_rel", WorkspaceID: "ws_wk", Name: "REL", Role: "developer",
@@ -538,7 +538,7 @@ func TestWakeupProducerQueries(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	mk := func(id string, heartbeat bool, availability domain.AgentAvailability) *domain.AgentProfile {
 		return &domain.AgentProfile{
@@ -614,7 +614,7 @@ func TestAgentProfileWakeupColumnsRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 
 	lastHB := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
@@ -688,7 +688,7 @@ func TestAgentProfileWakeupColumnsRoundtrip(t *testing.T) {
 	}
 
 	// 迁移缺省值：绕过 Go 写入的行应带列缺省（0/0/1/1/0/''/NULL）。
-	// 注：sqlite 版 0001 的 created_at 无 DEFAULT（postgres 有 now()），需显式提供。
+	// 0001 的 created_at 无 DEFAULT，需显式提供。
 	defNow := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.Exec(
 		`INSERT INTO agent_profiles(id, workspace_id, name, role, created_at, updated_at)

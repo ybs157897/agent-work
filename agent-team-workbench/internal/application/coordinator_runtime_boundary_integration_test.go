@@ -173,7 +173,7 @@ func TestCoordinatorLazilyProbesBuiltinRuntimeBeforeFirstRun(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	registry := atwruntime.NewRegistry()
 	registry.Register("mock", mock.NewWithStep(time.Millisecond))
 	dispatcher := &captureDispatcher{}

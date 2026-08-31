@@ -39,13 +39,13 @@ func TestSearchEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.svc.RecordDecision(ctx, wi.ID, application.RecordDecisionParams{
-		Quote: "Chose PostgreSQL for the storage layer.",
+		Quote: "Chose SQLite for the storage layer.",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// 命中形状。
-	code, body := getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=PostgreSQL")
+	code, body := getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=SQLite")
 	if code != http.StatusOK {
 		t.Fatalf("search 应 200，实际 %d: %v", code, body)
 	}
@@ -63,7 +63,7 @@ func TestSearchEndpoint(t *testing.T) {
 		t.Fatalf("命中项归属异常: %v", item)
 	}
 	for _, kind := range []string{"task", "chat", "other"} {
-		code, _ = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=PostgreSQL&record_kind="+kind)
+		code, _ = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=SQLite&record_kind="+kind)
 		if kind == "task" && code != http.StatusOK {
 			t.Fatalf("record_kind=task 应 200，实际 %d", code)
 		}
@@ -73,7 +73,7 @@ func TestSearchEndpoint(t *testing.T) {
 	}
 
 	// kind 过滤：artifact 无命中。
-	code, body = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=PostgreSQL&kind=artifact")
+	code, body = getSearchJSONWith(t, mux, "/api/v1/workspaces/"+wsID+"/search?q=SQLite&kind=artifact")
 	if code != http.StatusOK {
 		t.Fatalf("search 应 200，实际 %d", code)
 	}

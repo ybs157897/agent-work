@@ -185,7 +185,7 @@ func (r *TaskCoordinatorRepo) EnsureConfig(ctx context.Context, workspaceID stri
 			domain.AgentEnabled, domain.PresenceIdle, "{}", "{}",
 			`{"tools":[],"approval_policy":"manual","sandbox":"read-only"}`,
 			false, 0, false, false, false, "", nil, 1,
-			r.store.dialect.TimeParam(now), r.store.dialect.TimeParam(now),
+			timeParam(now), timeParam(now),
 			domain.TaskCoordinatorPromptVersion, false)
 		if err != nil {
 			return r.store.mapErr(err)
@@ -207,7 +207,7 @@ func (r *TaskCoordinatorRepo) EnsureConfig(ctx context.Context, workspaceID stri
 			 ON CONFLICT (workspace_id) DO NOTHING`,
 			coordinatorConfigID(workspaceID), workspaceID, profileID,
 			domain.TaskCoordinatorPromptVersion, runtimeLabel, nil, jsonText(modelRef), "{}", "medium", 1,
-			r.store.dialect.TimeParam(now), r.store.dialect.TimeParam(now))
+			timeParam(now), timeParam(now))
 		if err != nil {
 			return r.store.mapErr(err)
 		}
@@ -272,7 +272,7 @@ func (r *TaskCoordinatorRepo) UpdateConfig(ctx context.Context, c *domain.TaskCo
 			model_ref=?, fallback_model_ref=?, reasoning_effort=?, version=version+1, updated_at=?
 		 WHERE workspace_id=? AND version=?`,
 		c.RuntimeLabel, nullString(c.FallbackRuntimeLabel), jsonText(model), jsonText(fallbackModel), reasoning,
-		r.store.dialect.TimeParam(timeNow()), c.WorkspaceID, expectedVersion)
+		timeParam(timeNow()), c.WorkspaceID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -331,10 +331,10 @@ func (r *TaskCoordinatorRepo) CreateState(ctx context.Context, state *domain.Tas
 		state.ID, state.WorkspaceID, state.RootWorkItemID, state.CoordinatorAgentID,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
 		nullString(state.CurrentAgentID), nullString(state.CurrentRunID), state.Attempt,
-		r.store.dialect.NullTimeParam(state.NextActionAt), state.BlockerCode,
+		nullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
 		state.ConsumedCommentRevision,
-		state.Version, r.store.dialect.TimeParam(state.CreatedAt), r.store.dialect.TimeParam(state.UpdatedAt))
+		state.Version, timeParam(state.CreatedAt), timeParam(state.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -399,10 +399,10 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 		 WHERE root_work_item_id=? AND version=?`,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
 		nullString(state.CurrentAgentID), nullString(state.CurrentRunID), state.Attempt,
-		r.store.dialect.NullTimeParam(state.NextActionAt), state.BlockerCode,
+		nullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
 		state.ConsumedCommentRevision,
-		r.store.dialect.TimeParam(timeNow()), state.RootWorkItemID, expectedVersion)
+		timeParam(timeNow()), state.RootWorkItemID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -455,11 +455,8 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 	}
 	// Keep the control-action predicate in SQL so a large number of idle
 	// running checkpoints cannot consume the LIMIT before a real queued/retry
-	// state is returned. The JSON column needs a dialect-specific accessor.
+	// state is returned.
 	actionText := `NULLIF(TRIM(COALESCE(json_extract(data, '$.control_action'), '')), '') IS NOT NULL`
-	if r.store.dialect.Name == "postgres" {
-		actionText = `NULLIF(BTRIM(COALESCE(data->>'control_action', '')), '') IS NOT NULL`
-	}
 	// RFC §7.7：running 且无 current Run 的 observation checkpoint 若有未消费
 	// actionable 评论，也是 durable due 候选（恢复循环兜底，避免永久悬置）。
 	unconsumedActionable := `EXISTS (SELECT 1 FROM task_comments tc
@@ -472,7 +469,7 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 		(status=? AND COALESCE(current_run_id,'')='' AND ` + unconsumedActionable + `))
 		AND (next_action_at IS NULL OR next_action_at <= ?))`
 	args := []any{domain.CoordinatorQueued, domain.CoordinatorWaitingRetry,
-		domain.CoordinatorRunning, domain.CoordinatorRunning, r.store.dialect.TimeParam(now)}
+		domain.CoordinatorRunning, domain.CoordinatorRunning, timeParam(now)}
 	if workspaceID != "" {
 		where += ` AND workspace_id=?`
 		args = append(args, workspaceID)
@@ -558,8 +555,8 @@ func (r *TaskCoordinatorRepo) AppendEvent(ctx context.Context, event *domain.Tas
 		`INSERT INTO task_coordinator_events(`+coordinatorEventCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		event.ID, event.WorkspaceID, event.RootWorkItemID, event.WorkItemID,
 		event.Kind, event.Summary, nullString(event.RunID), nullString(event.AgentID),
-		event.Attempt, event.Reason, r.store.dialect.NullTimeParam(event.NextActionAt),
-		jsonText(event.Data), r.store.dialect.TimeParam(event.OccurredAt))
+		event.Attempt, event.Reason, nullTimeParam(event.NextActionAt),
+		jsonText(event.Data), timeParam(event.OccurredAt))
 	return r.store.mapErr(err)
 }
 

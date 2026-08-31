@@ -4,44 +4,32 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"flag"
 	"log"
 	"os"
-	"strings"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/mark3labs/mcp-go/server"
-	_ "modernc.org/sqlite"
 
 	"github.com/ybs/agent-team-workbench/internal/mcpserver"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 )
 
 func main() {
-	dsn := flag.String("dsn", os.Getenv("DATABASE_URL"), "数据库 DSN（sqlite:// 前缀走 SQLite，否则 postgres）")
+	dsnDefault := os.Getenv("DATABASE_URL")
+	if dsnDefault == "" {
+		dsnDefault = sqlstore.DefaultDSN
+	}
+	dsn := flag.String("dsn", dsnDefault, "SQLite 数据库 DSN（sqlite://）")
 	flag.Parse()
-	if *dsn == "" {
-		log.Fatal("DATABASE_URL 或 -dsn 必须提供")
-	}
-
-	sqlDSN, driverName, dialect := *dsn, "pgx", sqlstore.PostgresDialect()
-	if strings.HasPrefix(*dsn, "sqlite://") {
-		driverName = "sqlite"
-		sqlDSN = strings.TrimPrefix(*dsn, "sqlite://") + "?_pragma=foreign_keys(1)"
-		dialect = sqlstore.SQLiteDialect()
-	}
-	db, err := sql.Open(driverName, sqlDSN)
+	db, err := sqlstore.Open(context.Background(), *dsn)
 	if err != nil {
 		log.Fatalf("打开数据库失败: %v", err)
 	}
 	defer db.Close()
-	if err := db.Ping(); err != nil {
-		log.Fatalf("数据库不可达: %v", err)
-	}
 
-	log.Printf("atw-mcp %s: stdio MCP server 启动（driver=%s）", mcpserver.Version, driverName)
-	if err := server.ServeStdio(mcpserver.New(sqlstore.New(db, dialect))); err != nil {
+	log.Printf("atw-mcp %s: SQLite stdio MCP server 启动", mcpserver.Version)
+	if err := server.ServeStdio(mcpserver.New(sqlstore.New(db))); err != nil {
 		log.Fatalf("serve stdio 失败: %v", err)
 	}
 }

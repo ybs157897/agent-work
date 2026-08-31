@@ -28,18 +28,18 @@ func TestSearchIndexPipelines(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	wi := seedRunEnv(t, ctx, svc, store)
 
 	// decision：写入即索引（title=quote 前 80 字，body=quote 全文）。
 	entry, err := svc.RecordDecision(ctx, wi.ID, application.RecordDecisionParams{
-		Quote: "Storage engine: use PostgreSQL 16, no second database.",
+		Quote: "Storage engine: use SQLite WAL, no second database.",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hits := searchHits(t, ctx, store, "ws_"+t.Name(), "PostgreSQL", "decision")
+	hits := searchHits(t, ctx, store, "ws_"+t.Name(), "SQLite", "decision")
 	if len(hits) != 1 || hits[0].SourceID != entry.ID || hits[0].Kind != "decision" {
 		t.Fatalf("decision 应可搜到: %#v", hits)
 	}

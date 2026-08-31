@@ -36,7 +36,7 @@ func TestRollingDigestRefreshOnTerminalSegment(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -121,7 +121,7 @@ func TestRollingDigestConcurrentRefresh(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	base := sqlstore.New(db, sqlstore.SQLiteDialect())
+	base := sqlstore.New(db)
 	counter := &atomic.Int32{}
 	counter.Store(2)
 	store := &conflictOnceStore{Store: base, remaining: counter}
@@ -198,7 +198,7 @@ func TestRecordDecisionValidation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -217,12 +217,12 @@ func TestRecordDecisionValidation(t *testing.T) {
 
 	// 正常写入：quote 原文保真（仅 trim），来源轮次与片段位置落库。
 	entry, err := svc.RecordDecision(ctx, wi.ID, application.RecordDecisionParams{
-		Quote: "  用 PostgreSQL，不引入第二套数据库  ", SourceRunID: run.ID, SourceRef: "msg:2",
+		Quote: "  用 SQLite，不引入第二套数据库  ", SourceRunID: run.ID, SourceRef: "msg:2",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry.Quote != "用 PostgreSQL，不引入第二套数据库" || entry.SourceRunID != run.ID || entry.SourceRef != "msg:2" {
+	if entry.Quote != "用 SQLite，不引入第二套数据库" || entry.SourceRunID != run.ID || entry.SourceRef != "msg:2" {
 		t.Fatalf("决策行内容失真: %+v", entry)
 	}
 

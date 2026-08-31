@@ -27,12 +27,11 @@ func (r *DispatchRepo) scan(row interface{ Scan(...any) error }, d *domain.Dispa
 // Create 落库派发批次；必须在创建成员 run 的同一事务内、且先于成员行
 // （execution_runs.dispatch_id 外键指向本表）。
 func (r *DispatchRepo) Create(ctx context.Context, d *domain.Dispatch) error {
-	dm := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO dispatches(id, work_item_id, trigger, lead_run_id, status, created_at, closed_at)
 		 VALUES (?,?,?,?,?,?,?)`,
 		d.ID, d.WorkItemID, d.Trigger, nullString(d.LeadRunID), d.Status,
-		dm.TimeParam(d.CreatedAt), dm.NullTimeParam(d.ClosedAt))
+		timeParam(d.CreatedAt), nullTimeParam(d.ClosedAt))
 	return r.store.mapErr(err)
 }
 
@@ -90,10 +89,9 @@ func (r *DispatchRepo) MarkCollecting(ctx context.Context, id string) (bool, err
 // cancelled），单向写入（终态行不可再被本路径改写）。0 行 = 已被并发方收口
 // → 调用方 no-op。返回是否真正收口。
 func (r *DispatchRepo) CloseStatus(ctx context.Context, id string, to domain.DispatchStatus, closedAt time.Time) (bool, error) {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE dispatches SET status=?, closed_at=? WHERE id=? AND status IN ('running','collecting')`,
-		to, d.TimeParam(closedAt), id)
+		to, timeParam(closedAt), id)
 	if err != nil {
 		return false, r.store.mapErr(err)
 	}

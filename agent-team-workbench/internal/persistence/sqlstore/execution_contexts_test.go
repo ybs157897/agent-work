@@ -17,7 +17,7 @@ func ctxTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 	t.Helper()
 	db := openWakeupTestDB(t)
 	seedWorkspace(t, db)
-	return db, sqlstore.New(db, sqlstore.SQLiteDialect())
+	return db, sqlstore.New(db)
 }
 
 func mustEnsureLocalHost(t *testing.T, store *sqlstore.Store, now time.Time) *domain.ExecutionHost {

@@ -21,12 +21,11 @@ var _ application.ExecutionHostRepo = (*ExecutionHostRepo)(nil)
 // bootstrap 迁移（0021）同形状：name=local、kind=local、status=ready、空
 // enrollment_ref。已存在时不覆盖既有行（hello/启动重复调用安全）。
 func (r *ExecutionHostRepo) EnsureLocalHost(ctx context.Context, now time.Time) (*domain.ExecutionHost, error) {
-	d := r.store.dialect
 	if _, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO execution_hosts(id, name, kind, status, enrollment_ref, version, created_at, updated_at)
 		 VALUES (?,?,?,?,?,1,?,?) ON CONFLICT (id) DO NOTHING`,
 		domain.LocalHostID, "local", domain.HostKindLocal, domain.HostStatusReady, "",
-		d.TimeParam(now), d.TimeParam(now)); err != nil {
+		timeParam(now), timeParam(now)); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 	return r.Get(ctx, domain.LocalHostID)
@@ -52,23 +51,21 @@ func (r *ExecutionHostRepo) Get(ctx context.Context, id string) (*domain.Executi
 
 // Create 仅受保护 enrollment 命令调用；ID 冲突映射 ErrIdempotencyConflict。
 func (r *ExecutionHostRepo) Create(ctx context.Context, h *domain.ExecutionHost) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO execution_hosts(id, name, kind, status, enrollment_ref, version, created_at, updated_at)
 		 VALUES (?,?,?,?,?,?,?,?)`,
 		h.ID, h.Name, h.Kind, h.Status, h.EnrollmentRef, h.Version,
-		d.TimeParam(h.CreatedAt), d.TimeParam(h.UpdatedAt))
+		timeParam(h.CreatedAt), timeParam(h.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
 // Update 乐观锁写回身份/健康字段；0 行 = 版本冲突（既有风格不区分不存在行）。
 func (r *ExecutionHostRepo) Update(ctx context.Context, h *domain.ExecutionHost, expectedVersion int) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE execution_hosts SET name=?, kind=?, status=?, enrollment_ref=?,
 		 version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
-		h.Name, h.Kind, h.Status, h.EnrollmentRef, d.TimeParam(timeNow()), h.ID, expectedVersion)
+		h.Name, h.Kind, h.Status, h.EnrollmentRef, timeParam(timeNow()), h.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -104,17 +101,15 @@ func (r *ExecutionHostRepo) List(ctx context.Context) ([]*domain.ExecutionHost, 
 }
 
 func (r *ExecutionHostRepo) SetStatus(ctx context.Context, id string, status domain.HostStatus, at time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE execution_hosts SET status=?, updated_at=? WHERE id=?`,
-		status, d.TimeParam(at), id)
+		status, timeParam(at), id)
 	return r.store.mapErr(err)
 }
 
 // UpsertMount 按 (host, alias) 覆盖广告投影（hello 上报换代，全列覆盖；
 // checkouts/supported_ref_kinds 存 JSON 数组文本，nil 归一为 []）。
 func (r *ExecutionHostRepo) UpsertMount(ctx context.Context, m *domain.HostMount) error {
-	d := r.store.dialect
 	kinds := m.SupportedRefKinds
 	if kinds == nil {
 		kinds = []domain.RefKind{}
@@ -125,7 +120,7 @@ func (r *ExecutionHostRepo) UpsertMount(ctx context.Context, m *domain.HostMount
 	}
 	var lastSeen any
 	if !m.LastSeenAt.IsZero() {
-		lastSeen = d.TimeParam(m.LastSeenAt)
+		lastSeen = timeParam(m.LastSeenAt)
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO execution_host_mounts(execution_host_id, alias, repository_identity, display_label,
@@ -232,12 +227,11 @@ func scanWorkspaceLocation(row interface{ Scan(...any) error }) (*domain.Workspa
 }
 
 func (r *WorkspaceLocationRepo) Create(ctx context.Context, l *domain.WorkspaceLocation) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO workspace_locations(`+workspaceLocationCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.WorkspaceID, l.ExecutionHostID, l.MountAlias, l.MountGeneration,
 		l.RepositoryIdentity, l.IsDefault, l.Status, l.Version,
-		d.TimeParam(l.CreatedAt), d.TimeParam(l.UpdatedAt))
+		timeParam(l.CreatedAt), timeParam(l.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -254,13 +248,12 @@ func (r *WorkspaceLocationRepo) Get(ctx context.Context, id string) (*domain.Wor
 // Update 乐观锁写回（含 is_default——同一 Workspace 的默认唯一性由应用层保证，
 // 仓储只忠实写入；并发切换撞 idx_workspace_locations_default 唯一索引映射冲突）。
 func (r *WorkspaceLocationRepo) Update(ctx context.Context, l *domain.WorkspaceLocation, expectedVersion int) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE workspace_locations SET execution_host_id=?, mount_alias=?, mount_generation=?,
 		 repository_identity=?, is_default=?, status=?, version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
 		l.ExecutionHostID, l.MountAlias, l.MountGeneration,
-		l.RepositoryIdentity, l.IsDefault, l.Status, d.TimeParam(timeNow()),
+		l.RepositoryIdentity, l.IsDefault, l.Status, timeParam(timeNow()),
 		l.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
@@ -304,10 +297,9 @@ func (r *WorkspaceLocationRepo) DefaultFor(ctx context.Context, workspaceID stri
 }
 
 func (r *WorkspaceLocationRepo) SetStatus(ctx context.Context, id string, status domain.LocationStatus, at time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE workspace_locations SET status=?, updated_at=? WHERE id=?`,
-		status, d.TimeParam(at), id)
+		status, timeParam(at), id)
 	return r.store.mapErr(err)
 }
 
@@ -318,7 +310,6 @@ var _ application.WorkItemContextRepo = (*WorkItemContextRepo)(nil)
 // Upsert 按 work_item_id 整体替换 DevelopmentContext（ref 变更 = 新行覆盖；
 // created_at 保持首次创建）。ref 组合的域校验在应用层，CHECK 约束兜底。
 func (r *WorkItemContextRepo) Upsert(ctx context.Context, c *domain.DevelopmentContext) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO work_item_contexts(work_item_id, context_owner_id, workspace_location_id,
 		 ref_kind, branch_name, checkout_ref, worktree_ref, base_revision, version, created_at, updated_at)
@@ -332,7 +323,7 @@ func (r *WorkItemContextRepo) Upsert(ctx context.Context, c *domain.DevelopmentC
 			updated_at=excluded.updated_at`,
 		c.WorkItemID, c.ContextOwnerID, c.WorkspaceLocationID, c.RefKind,
 		nullString(c.BranchName), nullString(c.CheckoutRef), nullString(c.WorktreeRef),
-		nullString(c.BaseRevision), c.Version, d.TimeParam(c.CreatedAt), d.TimeParam(c.UpdatedAt))
+		nullString(c.BaseRevision), c.Version, timeParam(c.CreatedAt), timeParam(c.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -409,7 +400,6 @@ func (r *ContextSnapshotRepo) Create(ctx context.Context, s *domain.ExecutionCon
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO execution_context_snapshots(`+ctxSnapshotCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.RunID, s.SchemaVersion, s.WorkspaceID, nullString(s.WorkspaceLocationID),
@@ -417,7 +407,7 @@ func (r *ContextSnapshotRepo) Create(ctx context.Context, s *domain.ExecutionCon
 		nullString(s.MountAlias), nullString(s.RepositoryIdentity),
 		s.RefKind, nullString(s.BranchName), nullString(s.CheckoutRef), nullString(s.WorktreeRef),
 		nullString(s.BaseRevision), s.ContextGeneration, s.Source, nullString(s.SourceSnapshotID),
-		s.SnapshotDigest, d.TimeParam(s.CreatedAt))
+		s.SnapshotDigest, timeParam(s.CreatedAt))
 	return r.store.mapErr(err)
 }
 

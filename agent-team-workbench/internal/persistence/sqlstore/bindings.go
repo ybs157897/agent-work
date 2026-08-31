@@ -32,13 +32,12 @@ func (r *BindingRepo) scan(row interface{ Scan(...any) error }, b *domain.Runtim
 }
 
 func (r *BindingRepo) Create(ctx context.Context, b *domain.RuntimeBinding) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO runtime_bindings(`+bindingCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		b.ID, b.WorkspaceID, b.RuntimeLabel, b.AdapterID, b.AdapterVersion,
 		nullString(b.ProviderVersion), b.Provider, b.Model, nullString(b.CredentialRef),
 		jsonText(b.Capabilities), b.Status, b.Version,
-		d.TimeParam(b.CreatedAt), d.TimeParam(b.UpdatedAt))
+		timeParam(b.CreatedAt), timeParam(b.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -83,7 +82,6 @@ func (r *BindingRepo) List(ctx context.Context, workspaceID string) ([]*domain.R
 
 // Update 乐观锁：version 不匹配时更新 0 行 → ErrVersionConflict。
 func (r *BindingRepo) Update(ctx context.Context, b *domain.RuntimeBinding, expectedVersion int) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE runtime_bindings SET runtime_label=?, adapter_id=?, adapter_version=?, provider_version=?,
 			provider=?, model=?, credential_ref=?, capabilities=?, status=?,
@@ -91,7 +89,7 @@ func (r *BindingRepo) Update(ctx context.Context, b *domain.RuntimeBinding, expe
 		 WHERE id=? AND version=?`,
 		b.RuntimeLabel, b.AdapterID, b.AdapterVersion, nullString(b.ProviderVersion),
 		b.Provider, b.Model, nullString(b.CredentialRef), jsonText(b.Capabilities), b.Status,
-		d.TimeParam(timeNow()), b.ID, expectedVersion)
+		timeParam(timeNow()), b.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}

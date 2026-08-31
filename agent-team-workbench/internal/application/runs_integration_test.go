@@ -34,7 +34,7 @@ func TestCreateRunBuildsMultiTurnResumeSnapshot(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -127,7 +127,7 @@ func TestTaskSessionAnchorLifecycle(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()
@@ -233,7 +233,7 @@ func TestSessionRotationHandoff(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -354,7 +354,7 @@ func TestHistoryBudgetTriggersRotation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -434,7 +434,7 @@ func TestSessionUnknownSelfHeal(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -566,7 +566,7 @@ func TestWakeupSchedulingChain(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -707,7 +707,7 @@ func TestRecordRunEventPersistsAgentIdentityAcrossRunAndStream(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	wi := seedRunEnv(t, ctx, svc, store)
 	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{AgentProfileID: wi.AgentProfileID, Instruction: "identity"})
@@ -757,7 +757,7 @@ func TestDisableAgentWithQueuedRun(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -784,7 +784,7 @@ func TestControlRunQueuedInterrupt(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -809,7 +809,7 @@ func TestResumeLostRunReexecutes(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -860,7 +860,7 @@ func TestMoveWorkItemCompletedGate(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -900,15 +900,14 @@ func openTestDB(t *testing.T) *sql.DB {
 	// The application integration fixtures deliberately exercise asynchronous
 	// approval resolution. Keep the file-backed SQLite connection serialized so
 	// the polling reader cannot race the grant resolver's write transaction into
-	// SQLITE_BUSY. This mirrors SQLite's one-writer deployment semantics while
-	// leaving the PostgreSQL path unaffected.
+	// SQLITE_BUSY. This mirrors the SQLite-only one-writer deployment semantics.
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db")+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	// migtest 动态发现 migrations/sqlite 全量清单，新增迁移免同步文件名列表。
+	// migtest 动态发现 migrations 全量清单，新增迁移免同步文件名列表。
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
@@ -921,7 +920,7 @@ func TestSystemPromptInjection(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()
@@ -1011,7 +1010,7 @@ func TestSystemPromptChangeTriggersSessionDrift(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 

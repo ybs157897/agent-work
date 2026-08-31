@@ -28,12 +28,11 @@ func (r *DecisionRepo) scan(row interface{ Scan(...any) error }, e *domain.Decis
 
 // Create 落库决策原话；须与 decision.created 事件同事务。
 func (r *DecisionRepo) Create(ctx context.Context, e *domain.DecisionEntry) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO decision_entries(id, work_item_id, quote, source_run_id, source_ref, created_at)
 		 VALUES (?,?,?,?,?,?)`,
 		e.ID, e.WorkItemID, e.Quote, nullString(e.SourceRunID), nullString(e.SourceRef),
-		d.TimeParam(e.CreatedAt))
+		timeParam(e.CreatedAt))
 	return r.store.mapErr(err)
 }
 

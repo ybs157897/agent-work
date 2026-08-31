@@ -1,5 +1,5 @@
 // Package application 承载用例与事务边界（控制平面模块）。
-// 仓储接口在此定义、由 persistence/postgres 实现，
+// 仓储接口在此定义、由 persistence/sqlstore 的 SQLite 实现，
 // 保证领域逻辑不依赖存储细节。
 package application
 
@@ -448,8 +448,8 @@ type SearchEntry struct {
 	Body       string
 }
 
-// SearchResult 检索命中项；Snippet 是带 [] 高亮标记、… 省略号的正文摘录
-// （SQLite snippet() / PG ts_headline 生成，标记语义两端一致）。
+// SearchResult 检索命中项；Snippet 是 SQLite snippet() 生成的正文摘录，
+// 使用 [] 高亮标记与 … 省略号。
 type SearchResult struct {
 	WorkItemID string
 	Kind       string
@@ -458,8 +458,8 @@ type SearchResult struct {
 	Snippet    string
 }
 
-// SearchRepo FTS 检索索引（会话元模型 S4）：索引是派生存储，可随时全量重建，
-// 不发 SSE 事件；PG 用 tsv 生成列 + GIN，SQLite 用 FTS5 虚表。
+// SearchRepo FTS5 检索索引（会话元模型 S4）：索引是派生存储，可随时全量重建，
+// 不发 SSE 事件。
 type SearchRepo interface {
 	// IndexEntry 定点重写（delete by (kind, source_id) + insert），天然幂等。
 	IndexEntry(ctx context.Context, e *SearchEntry) error

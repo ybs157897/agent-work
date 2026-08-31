@@ -17,7 +17,7 @@ func TestCreateLeaseAllowsOneActiveFenceAndMonotonicReissue(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_fence", WorkspaceID: "ws_wk", Name: "Fence", Role: "developer",
@@ -126,7 +126,7 @@ func TestRenewLeasesByRunner(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_renew", WorkspaceID: "ws_wk", Name: "RN", Role: "developer",
@@ -208,7 +208,7 @@ func TestRenewLeasesSweeperAndZombieInteraction(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	agent := &domain.AgentProfile{
 		ID: "agent_zb", WorkspaceID: "ws_wk", Name: "ZB", Role: "developer",

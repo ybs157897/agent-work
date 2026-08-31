@@ -34,7 +34,7 @@ func TestSQLiteHelloThenRemoteDispatch(t *testing.T) {
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	const (
 		workspaceID = "ws_runner_gateway"

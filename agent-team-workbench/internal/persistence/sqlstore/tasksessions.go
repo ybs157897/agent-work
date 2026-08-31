@@ -58,7 +58,6 @@ func (r *TaskSessionRepo) Get(ctx context.Context, workspaceID, agentProfileID, 
 // session material is intentionally preserved: claiming a newer Run must not
 // erase its resumable provider reference before that Run reports a replacement.
 func (r *TaskSessionRepo) ClaimAnchor(ctx context.Context, t *domain.TaskSession) (*domain.TaskSession, error) {
-	d := r.store.dialect
 	row := r.store.queryRow(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, segment_seq,
@@ -74,7 +73,7 @@ func (r *TaskSessionRepo) ClaimAnchor(ctx context.Context, t *domain.TaskSession
 		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID), t.RunsCount, t.InputTokensCum, segmentSeq(t),
 		nullString(t.ContextSnapshotID), t.ContextGeneration, nullString(t.LastRunID), t.AnchorRunSequence,
-		d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		timeParam(t.CreatedAt), timeParam(t.UpdatedAt))
 	claimed, err := r.scan(row)
 	if err != nil {
 		return nil, r.store.mapErr(err)
@@ -86,7 +85,6 @@ func (r *TaskSessionRepo) ClaimAnchor(ctx context.Context, t *domain.TaskSession
 // when no anchor was observed, and a concurrent ClaimAnchor must win without
 // having its provider session material replaced by a stale tombstone.
 func (r *TaskSessionRepo) InsertIfAbsent(ctx context.Context, t *domain.TaskSession) (bool, error) {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, segment_seq,
@@ -96,7 +94,7 @@ func (r *TaskSessionRepo) InsertIfAbsent(ctx context.Context, t *domain.TaskSess
 		t.ID, t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, nullString(t.ParentAnchorID),
 		jsonText(t.SessionParams), nullString(t.DisplayID), t.RunsCount, t.InputTokensCum, segmentSeq(t),
 		nullString(t.ContextSnapshotID), t.ContextGeneration, nullString(t.LastRunID), t.AnchorRunSequence,
-		d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		timeParam(t.CreatedAt), timeParam(t.UpdatedAt))
 	if err != nil {
 		return false, r.store.mapErr(err)
 	}
@@ -117,7 +115,6 @@ func segmentSeq(t *domain.TaskSession) int {
 // 的写点，通用 session 更新、墓碑和播种都不得把新 owner/sequence 回退。
 // segment_seq 非冲突路径按传入值（首段 1）落库，冲突（续接）路径保持不变。
 func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, segment_seq,
@@ -134,7 +131,7 @@ func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) err
 		jsonText(t.SessionParams), nullString(t.DisplayID),
 		t.RunsCount, t.InputTokensCum, segmentSeq(t),
 		nullString(t.ContextSnapshotID), t.ContextGeneration, nullString(t.LastRunID), t.AnchorRunSequence,
-		d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		timeParam(t.CreatedAt), timeParam(t.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -142,14 +139,13 @@ func (r *TaskSessionRepo) Upsert(ctx context.Context, t *domain.TaskSession) err
 // callback that lost the race to a newer Run must not resurrect its session ref,
 // clear the newer ref, or roll anchor ownership back.
 func (r *TaskSessionRepo) UpdateIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error) {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE task_sessions SET parent_anchor_id=?, session_params=?, display_id=?,
 		 runs_count=runs_count+?, input_tokens_cum=input_tokens_cum+?, updated_at=?
 		 WHERE workspace_id=? AND agent_profile_id=? AND adapter_id=? AND task_key=?
 		   AND last_run_id=? AND anchor_run_sequence=?`,
 		nullString(t.ParentAnchorID), jsonText(t.SessionParams), nullString(t.DisplayID),
-		t.RunsCount, t.InputTokensCum, d.TimeParam(t.UpdatedAt),
+		t.RunsCount, t.InputTokensCum, timeParam(t.UpdatedAt),
 		t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, runID, sequence)
 	if err != nil {
 		return false, r.store.mapErr(err)
@@ -162,7 +158,6 @@ func (r *TaskSessionRepo) UpdateIfAnchorOwner(ctx context.Context, t *domain.Tas
 // 重起、created_at 重置（新代际的轮换阈值从零计量；仅轮换 run 首次会话上报时
 // 调用）。冲突路径不改 owner/context；这些列仅由 ClaimAnchor 改写。
 func (r *TaskSessionRepo) StartGeneration(ctx context.Context, t *domain.TaskSession) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO task_sessions(id, workspace_id, agent_profile_id, adapter_id, task_key, parent_anchor_id,
 			session_params, display_id, runs_count, input_tokens_cum, segment_seq,
@@ -181,7 +176,7 @@ func (r *TaskSessionRepo) StartGeneration(ctx context.Context, t *domain.TaskSes
 		jsonText(t.SessionParams), nullString(t.DisplayID),
 		t.RunsCount, t.InputTokensCum, segmentSeq(t),
 		nullString(t.ContextSnapshotID), t.ContextGeneration, nullString(t.LastRunID), t.AnchorRunSequence,
-		d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt))
+		timeParam(t.CreatedAt), timeParam(t.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -189,14 +184,13 @@ func (r *TaskSessionRepo) StartGeneration(ctx context.Context, t *domain.TaskSes
 // UpdateIfAnchorOwner. The claim already installed the new context/owner, so
 // this CAS only rotates session material and counters while ownership remains.
 func (r *TaskSessionRepo) StartGenerationIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error) {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE task_sessions SET parent_anchor_id=?, session_params=?, display_id=?,
 		 runs_count=?, input_tokens_cum=?, segment_seq=segment_seq+1, created_at=?, updated_at=?
 		 WHERE workspace_id=? AND agent_profile_id=? AND adapter_id=? AND task_key=?
 		   AND last_run_id=? AND anchor_run_sequence=?`,
 		nullString(t.ParentAnchorID), jsonText(t.SessionParams), nullString(t.DisplayID),
-		t.RunsCount, t.InputTokensCum, d.TimeParam(t.CreatedAt), d.TimeParam(t.UpdatedAt),
+		t.RunsCount, t.InputTokensCum, timeParam(t.CreatedAt), timeParam(t.UpdatedAt),
 		t.WorkspaceID, t.AgentProfileID, t.AdapterID, t.TaskKey, runID, sequence)
 	if err != nil {
 		return false, r.store.mapErr(err)
