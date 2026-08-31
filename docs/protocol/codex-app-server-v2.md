@@ -8,7 +8,7 @@ Transport: child-process stdio, newline-delimited JSON
 Protocol: bidirectional JSON-RPC 2.0 with the `jsonrpc` field omitted  
 Baseline: Codex CLI `0.149.0`, experimental v2 schema SHA-256 `6f76cce25156d405f1da54f205751e38f7b9eb42246ac0742b9958dd60275350`
 
-Official protocol references: the docs entry <https://developers.openai.com/docs/app-server> and the canonical in-repo README <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md> (raw-fetchable; tracks main between releases). A project-local digest of the official surface, including the upgrade procedure, lives in `agent-team-workbench-docs/references/codex-appserver-official-protocol-reference.md`. The executable remains the source of truth for the pinned version:
+Official protocol references: the docs entry <https://developers.openai.com/docs/app-server> and the canonical in-repo README <https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md> (raw-fetchable; tracks main between releases). A project-local digest of the official surface, including the upgrade procedure, lives in [`codex-appserver-official-protocol-reference.md`](../references/codex-appserver-official-protocol-reference.md). The executable remains the source of truth for the pinned version:
 
 ```sh
 codex app-server generate-json-schema --experimental --out ./schemas

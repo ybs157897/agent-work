@@ -2,7 +2,7 @@
 
 Status: implemented
 
-设计依据：`agent-team-workbench-docs/architecture/clawteam-borrowings-design.md` F1 节。
+设计依据：[`docs/architecture/clawteam-borrowings-design.md`](../../../docs/architecture/clawteam-borrowings-design.md) F1 节。
 锁归属 **run**（非 agent）：属主活性复用 run 状态/lease 面（终态=死），不引入第二套
 活性判定。迁移 0014（双目录语义等价）：`work_items.locked_by_run_id/locked_at`。
 

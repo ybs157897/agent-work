@@ -12,13 +12,13 @@ turn 内累计、收尾一次写入 `ExecResult.Usage`（`Basis: per_run`，与 
 
 ### 协议形状的证据链（为什么不是 token_count）
 
-1. `contracts/runtime/codex-app-server-v2.md` 事件投影表与
+1. [`docs/protocol/codex-app-server-v2.md`](../../../docs/protocol/codex-app-server-v2.md) 事件投影表与
    `testdata/providers/codex/fake_server.py` 回放桩均无 token 用量通知——文档/桩双双缺位，
    不能照抄。
 2. vendored 二进制（`runtimes/codex/darwin-arm64/codex`，0.149.0）strings 抽查：
    app-server v2 的 ServerNotification 方法枚举里有 `thread/tokenUsage/updated`，
    **没有** `token_count` 方法名；`TokenCount`/`token_count` 是 codex-core 协议事件
-   （桌面端/IDE 扩展协议，见 `agent-team-workbench-docs/references/codex-desktop-rendering-comparison.md`
+   （桌面端/IDE 扩展协议，见 [`docs/references/codex-desktop-rendering-comparison.md`](../../../docs/references/codex-desktop-rendering-comparison.md)
    §Q9 的 `codex/event/token_count`）——两种协议共享同一 `TokenUsageInfo` 结构。
 3. 决定性证据（契约文档钦定的 source of truth）：用 vendored 0.149.0 执行
    `codex app-server generate-json-schema --experimental` 得到的 v2 schema：

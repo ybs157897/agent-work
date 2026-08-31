@@ -3,10 +3,10 @@
 Status: implemented
 
 静态视觉稿（用户 2026-08-29 确认「可以的」）：
-[swarm-chat-body-demo.html](../../../../agent-team-workbench-docs/references/swarm-chat-body-demo.html)
+[swarm-chat-body-demo.html](../../../docs/archive/design/swarm-chat-body-demo.html)
 
 对照调研：
-[zcode-desktop-interaction-report.md](../../../../agent-team-workbench-docs/references/zcode-desktop-interaction-report.md)
+[zcode-desktop-interaction-report.md](../../../docs/references/zcode-desktop-interaction-report.md)
 （ZCode 子 agent 是单路 `agentToolCall`+子会话，不是多路并排巢）；
 LanguageGUI / Ant Design X / CopilotKit 均无现成「蜂群正文」成品，故自拟草案。
 

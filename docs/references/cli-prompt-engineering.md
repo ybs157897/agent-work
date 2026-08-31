@@ -2,7 +2,7 @@
 
 > 2026-08-28 三路调研收口（Codex CLI 0.149.0 二进制提取 + GitHub main 对照；Kimi Code CLI v0.38.0
 > 二进制提取 + 本机源码克隆核对）。用途：为 workbench 的 agent 提示词与 languagegui/v1
-> 输出契约设计提供业界对照。原文资产在 `prompt-library/` 子目录。
+> 输出契约设计提供业界对照。原文资产归档在 [`../archive/prompt-library/`](../archive/prompt-library/)。
 
 ## 1. 资产清单与出处
 
@@ -10,21 +10,21 @@
 
 | 文件 | 出处 | 说明 |
 |---|---|---|
-| `prompt-library/codex/base-instructions-generic.actual.md` | **本机 rollout 实证**（`.agent-work/codex/sessions/.../session_meta.base_instructions`） | ★ 最高保真件：我们生产 run（含 kimi/deepseek 中转）实际收到的通用底座提示词 |
-| `prompt-library/codex/gpt_5_2_prompt.upstream.md` | GitHub main `codex-rs/core/gpt_5_2_prompt.md`（与本地二进制逐字 1 行差） | GPT-5.2 家族：篇幅三档硬限额所在 |
-| `prompt-library/codex/gpt_5_codex_prompt.upstream.md` | GitHub main `codex-rs/core/gpt_5_codex_prompt.md` | gpt-5-codex 短版底座 |
-| `prompt-library/codex/collab-family-extracted.md` | 本地二进制 instructions_template | 协作家族（桌面/云）：50–70 行总硬顶所在 |
-| `prompt-library/codex/cloud-desktop-family-extracted.md` | 本地二进制（上游无对应文件，疑随模型元数据下发） | 含 Personality/Writing style/Visualizations 全章 |
-| `prompt-library/codex/collab-agent.experimental.md` | 上游 `templates/collab/experimental_prompt.md` | 多智能体协作提示词 |
+| `../archive/prompt-library/codex/base-instructions-generic.actual.md` | **本机 rollout 实证**（`.agent-work/codex/sessions/.../session_meta.base_instructions`） | ★ 最高保真件：我们生产 run（含 kimi/deepseek 中转）实际收到的通用底座提示词 |
+| `../archive/prompt-library/codex/gpt_5_2_prompt.upstream.md` | GitHub main `codex-rs/core/gpt_5_2_prompt.md`（与本地二进制逐字 1 行差） | GPT-5.2 家族：篇幅三档硬限额所在 |
+| `../archive/prompt-library/codex/gpt_5_codex_prompt.upstream.md` | GitHub main `codex-rs/core/gpt_5_codex_prompt.md` | gpt-5-codex 短版底座 |
+| `../archive/prompt-library/codex/collab-family-extracted.md` | 本地二进制 instructions_template | 协作家族（桌面/云）：50–70 行总硬顶所在 |
+| `../archive/prompt-library/codex/cloud-desktop-family-extracted.md` | 本地二进制（上游无对应文件，疑随模型元数据下发） | 含 Personality/Writing style/Visualizations 全章 |
+| `../archive/prompt-library/codex/collab-agent.experimental.md` | 上游 `templates/collab/experimental_prompt.md` | 多智能体协作提示词 |
 
 ### Kimi Code（MoonshotAI/kimi-code，MIT）
 
 | 文件 | 出处 | 说明 |
 |---|---|---|
-| `prompt-library/kimi-code/system.agent.md` | 本机 v0.38.0 会话落盘 wire.jsonl 完整渲染版 | 主 profile 渲染产物 |
-| `prompt-library/kimi-code/system.coder.md` | 同上 | coder 子代理（含交接完整性要求） |
-| `prompt-library/kimi-code/system.explore.md` | 同上 | explore 只读子代理 |
-| `prompt-library/kimi-code/system.expert-*.md` | 二进制内嵌模板提取 | expert teams 系列（架构师/产品经理/评审组长） |
+| `../archive/prompt-library/kimi-code/system.agent.md` | 本机 v0.38.0 会话落盘 wire.jsonl 完整渲染版 | 主 profile 渲染产物 |
+| `../archive/prompt-library/kimi-code/system.coder.md` | 同上 | coder 子代理（含交接完整性要求） |
+| `../archive/prompt-library/kimi-code/system.explore.md` | 同上 | explore 只读子代理 |
+| `../archive/prompt-library/kimi-code/system.expert-*.md` | 二进制内嵌模板提取 | expert teams 系列（架构师/产品经理/评审组长） |
 
 源码克隆：`~/Documents/ybs/code/kimi-code-2`（fork，`agent/v2-upgrade`，可对照
 `packages/agent-core-v2`）。注意本机克隆比 v0.38.0 二进制旧，机制一致、文案有漂移。

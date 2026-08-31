@@ -272,7 +272,7 @@ Task Coordinator 是系统级 Agent。配置面只开放 Codex/Kimi runtime、�
 
 - `.btn-*` / `.ui-card*` / `.input-field` / `.status-pill`：迁移中的遗留组件类。**新代码禁止使用**，用 `ui/` 组件替代；引用归零后删除。
 - `.page-shell` / `.page-header` / `.config-*`：**布局语言**，保留使用。
-- `.chat-*`：**对话渲染子系统**，渲染清单与逐件样式规格以 `../../agent-team-workbench-docs/chat-rendering-spec.md` 为准（当前基线为 LeAgent `1f16badc`），本文件不重复定义；改它之前先读规格文档。
+- `.chat-*`：**对话渲染子系统**，渲染清单与逐件样式规格以 `../../docs/frontend/chat-rendering-spec.md` 为准（当前基线为 LeAgent `1f16badc`），本文件不重复定义；改它之前先读规格文档。
 
 `ui/` 组件的变体契约见 frontmatter `components:`；新增变体必须同时更新 frontmatter（变体作为独立条目）。
 
@@ -330,7 +330,7 @@ Task Coordinator 是系统级 Agent。配置面只开放 Codex/Kimi runtime、�
 
 1. **AE 动效资产**：当前只冻结目录与消费边界；真实 Lottie/WebM 需有可审计源资产后逐件接入。
 2. **空态插画体系**：可用同一水墨资产族，但不得用不相关插画填空。
-3. **对话渲染细节**：归 `agent-team-workbench-docs/chat-rendering-spec.md` 管，不在本文件范围。
+3. **对话渲染细节**：归 `docs/frontend/chat-rendering-spec.md` 管，不在本文件范围。
 4. **水墨素材扩展**：新增素材必须与宣纸/山水同一笔触体系并做体积预算，禁止随页随机生成。
 5. **成果内容预览**：后端只暴露 artifact 元数据（无内容端点），工作区只做清单；预览器等后端补内容面后再立项。
 6. **移动端**：对话/配置分栏不收折，<1024px 布局不成立；移动适配未立项前不承诺断点行为。

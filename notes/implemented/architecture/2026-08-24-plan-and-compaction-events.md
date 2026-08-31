@@ -18,7 +18,7 @@ app-server v2 通知源，事件名登记三处：`internal/domain/events.go` �
 
 ## 协议形状的证据链
 
-1. `contracts/runtime/codex-app-server-v2.md` 与
+1. [`docs/protocol/codex-app-server-v2.md`](../../../docs/protocol/codex-app-server-v2.md) 与
    `testdata/providers/codex/fake_server.py` 均无这两个通知——文档/桩缺位，
    不能照抄；桌面研究文档的名字（`turn/plan/updated`）本波经权威 schema 证实。
 2. 决定性证据（vendor 契约文档钦定的 source of truth）：vendored 0.149.0 执行

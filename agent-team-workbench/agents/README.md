@@ -62,4 +62,4 @@ make run-control-plane
 ```
 
 Web「模型」页保存的 API Key 写入 `.agent-work/credentials.local.yaml`，启动时注入 `api_key_env` 供 DSH/Kimi 使用。
-完整映射与协议边界见 `contracts/runtime/codex-app-server-v2.md`。
+完整映射与协议边界见 [`docs/protocol/codex-app-server-v2.md`](../../docs/protocol/codex-app-server-v2.md)。

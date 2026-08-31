@@ -42,7 +42,7 @@
 ### 文档与流程事实
 
 - 正式产品法典目录 `knowledge/prd/` 目前只有 `.gitkeep`，没有可引用的 PRD 条目。
-- `../agent-team-workbench-docs/end-goal.md` 的 2026-08-23 对账表仍把子任务树、OrchestrationPlan、评估 Run、知识检索等列为待做，但仓库代码、迁移和提交显示这些能力已有落地痕迹。
+- [`docs/product/end-goal.md`](../../docs/product/end-goal.md) 的 2026-08-23 对账表仍把子任务树、OrchestrationPlan、评估 Run、知识检索等列为待做，但仓库代码、迁移和提交显示这些能力已有落地痕迹。
 - 架构借鉴文档记录 F3/F5/F1 已实施或合入主干，F2 挂起，F4 砍掉；说明团队有阶段性取舍记录。
 - AGENTS.md 要求 CI 位于 `.github/workflows/ci.yml`，但该目录当前没有 workflow 文件。
 - Git 工作区在 `main` 上有大量未提交修改，包含后端、前端、Agent 配置和多个新增前端模块，不符合“一任务一分支”和“分刀提交”约束。

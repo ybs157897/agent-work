@@ -4,7 +4,7 @@ package runnergateway
 //
 // Ownership：本文件归蜂群任务 W1-A「契约与红测先行」executor 所有，后续波次
 // 不得改动；契约事实源为 contracts/runner/v2/schema.json（task-control-surface
-// RFC §8，决策权威 agent-team-workbench-docs/architecture/
+// RFC §8，决策权威 docs/architecture/
 // task-control-surface-context-design.md）。
 //
 // I0 波只钉契约形状：v2 schema 可解析、关键 required 字段（host/epoch 身份、

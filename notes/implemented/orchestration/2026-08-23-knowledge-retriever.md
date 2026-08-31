@@ -13,7 +13,7 @@ Supersede 感知：默认只返回 status=effective（Query.Status 可指定其�
 ## 放弃了什么
 
 - **索引库（bleve / SQLite FTS 等）**：语料几十条，遍历打分亚毫秒；索引引入构建时机、写后失效、额外存储三个新概念，M3 阶段没有一个换得回。
-- **向量检索（embedding 召回）**：法典条目短且术语受宪章约束（三值用词 + 术语不造同义词，见 [product-agent-charter.md](../../../agent-team-workbench-docs/product-agent-charter.md) §3.4），精确词命中已够召回；embedding 依赖外部服务、打分不可解释，与「法典是决策真相源」的可审计要求冲突。
+- **向量检索（embedding 召回）**：法典条目短且术语受宪章约束（三值用词 + 术语不造同义词，见 [product-agent-charter.md](../../../docs/product/product-agent-charter.md) §3.4），精确词命中已够召回；embedding 依赖外部服务、打分不可解释，与「法典是决策真相源」的可审计要求冲突。
 - **TF-IDF / BM25 统计排序**：语料规模下 IDF 无意义（高频领域词几乎每条都含），固定权重更可预测、可解释、可手工验证。
 - **坏条目静默跳过 + 告警**：检索侧静默降级会掩盖语料腐化（字段名 typo 落默认值混进结果），与 [resume 探测永不静默降级](../architecture/2026-08-23-resume-never-silent-degrade.md) 是同一红线。
 

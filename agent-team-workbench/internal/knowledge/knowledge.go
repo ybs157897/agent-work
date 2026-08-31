@@ -2,7 +2,7 @@
 //
 // 语料布局：knowledge 根目录下每个子目录是一个 corpus（如 prd/、arch/），
 // 内放 markdown 条目（YAML frontmatter + 正文二级节），条目规范以
-// agent-team-workbench-docs/product-agent-charter.md §3 为唯一依据。
+// docs/product/product-agent-charter.md §3 为唯一依据。
 package knowledge
 
 import "context"

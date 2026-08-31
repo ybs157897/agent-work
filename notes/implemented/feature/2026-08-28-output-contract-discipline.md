@@ -3,7 +3,7 @@
 Status: implemented
 
 任务分支 `zcode/output-contract-discipline`（42fb973）。前序调研归档：
-`agent-team-workbench-docs/references/cli-prompt-engineering.md`（支线 zcode/cli-prompt-references）。
+[`docs/references/cli-prompt-engineering.md`](../../../docs/references/cli-prompt-engineering.md)（支线 zcode/cli-prompt-references）。
 
 ## 背景与诊断
 

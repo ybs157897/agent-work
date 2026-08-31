@@ -4,7 +4,7 @@ Status: implemented — architecture and implementation review complete
 
 Baseline: `main@0366666b4ed41762fe93692ffef43a25307f5358`
 
-Decision note: `agent-team-workbench/notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md`
+Decision note: [`2026-08-30-task-control-surface-completion-plan.md`](../../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md)
 
 External behavior reference: `chuspeeism/dashi-taskboard@9c0972605ed6da8f14c2cd8e2f74aa52411c7922`（Apache-2.0）
 

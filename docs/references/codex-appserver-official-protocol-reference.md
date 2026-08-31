@@ -2,7 +2,7 @@
 
 > 目的：把 workbench 对 codex app-server 协议的认知锚定到 OpenAI 官方文档，替代早期
 > 「读源码 + 抓流量」的手工契约认知。适配契约（钉版本与 schema SHA）在
-> `agent-team-workbench/contracts/runtime/codex-app-server-v2.md`；本文是官方面的
+> [`docs/protocol/codex-app-server-v2.md`](../protocol/codex-app-server-v2.md)；本文是官方面的
 > 检索地图与升级同步规程。核订日期：2026-08-28，对应官方 main。
 
 ## 权威入口
@@ -91,7 +91,7 @@ Item 全族：`userMessage` `agentMessage` `plan` `reasoning` `commandExecution`
 
 1. 新 CLI 跑 `codex app-server generate-json-schema --experimental --out DIR`，与旧 schema diff，
    关注 workbench 在用的方法/事件/字段是否改名或删除；
-2. 更新 `contracts/runtime/codex-app-server-v2.md` 头部基线（版本号 + 新 schema SHA-256）；
+2. 更新 [`docs/protocol/codex-app-server-v2.md`](../protocol/codex-app-server-v2.md) 头部基线（版本号 + 新 schema SHA-256）；
 3. 修订 `internal/runtime/adapters/codexapp/protocol.go` 投影并跑 `go test -race
    ./internal/runtime/adapters/codexapp/...`；
 4. 回到本文核对新增官方能力（usage/diff/plan 等通知面是否值得接入）。

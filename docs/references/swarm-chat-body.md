@@ -5,8 +5,8 @@
 | 产物 | 路径 |
 | --- | --- |
 | 静态展示 | [swarm-chat-body-demo.html](./swarm-chat-body-demo.html) |
-| 决策 note（implemented） | [../../agent-team-workbench/notes/implemented/feature/2026-08-29-swarm-chat-body.md](../../agent-team-workbench/notes/implemented/feature/2026-08-29-swarm-chat-body.md) |
-| 通用正文架构 | [../../agent-team-workbench/notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md](../../agent-team-workbench/notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md) |
+| 决策 note（implemented） | [../../notes/implemented/feature/2026-08-29-swarm-chat-body.md](../../notes/implemented/feature/2026-08-29-swarm-chat-body.md) |
+| 通用正文架构 | [../../notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md](../../notes/implemented/architecture/2026-08-29-agent-scoped-transcript-reader.md) |
 | 生产组件 | [../../agent-team-workbench/web/src/components/chat/swarm-chat-block.tsx](../../agent-team-workbench/web/src/components/chat/swarm-chat-block.tsx) |
 | 子 Agent 右栏 | [../../agent-team-workbench/web/src/components/chat/swarm-member-workspace.tsx](../../agent-team-workbench/web/src/components/chat/swarm-member-workspace.tsx) |
 | 通用正文投影 | [../../agent-team-workbench/web/src/utils/agent-transcript-projection.ts](../../agent-team-workbench/web/src/utils/agent-transcript-projection.ts) |
@@ -22,7 +22,7 @@
 ## 本地预览
 
 ```bash
-cd agent-team-workbench-docs/references
+cd docs/archive/design
 python3 -m http.server 8768 --bind 127.0.0.1
 # 打开 http://127.0.0.1:8768/swarm-chat-body-demo.html
 ```

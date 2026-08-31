@@ -54,7 +54,7 @@ ZCode 对话中的思考、正文和工具调用必须按 Run 的真实事件顺
 
 ## 验收依据
 
-纯投影测试覆盖 `thinking → tool → thinking + interim assistant → tool → thinking → final`，并验证连续工具只生成一个 ActivityGroup、重复 `message.completed` 不重复输出，以及 phaseId 支持 live→settled key 稳定。视觉与交互规则以 `web/DESIGN.md` 和 `agent-team-workbench-docs/chat-rendering-spec.md` 为事实源。
+纯投影测试覆盖 `thinking → tool → thinking + interim assistant → tool → thinking → final`，并验证连续工具只生成一个 ActivityGroup、重复 `message.completed` 不重复输出，以及 phaseId 支持 live→settled key 稳定。视觉与交互规则以 [`agent-team-workbench/web/DESIGN.md`](../../../agent-team-workbench/web/DESIGN.md) 和 [`docs/frontend/chat-rendering-spec.md`](../../../docs/frontend/chat-rendering-spec.md) 为事实源。
 
 真实 1325 事件会话验证：11 段 reasoning 保持独立；ZCode 默认分组把 82 个工具投影为
 14 个 Agent/Explore/Execute 组；reasoning 折叠体在 300ms 退场后卸载；Final Answer

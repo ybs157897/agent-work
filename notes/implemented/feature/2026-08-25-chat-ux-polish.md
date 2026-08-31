@@ -5,7 +5,7 @@ Status: implemented
 输入：知乎开放平台 CLI 站内调研（AG-UI 活动面板分离、Chat UI≠Agent UI、
 生成式 UI 83% 偏好实验）+ 本地浏览器实测诊断（transcript 文档化、全白无
 层次、空态冷、composer 素）。方案见
-`agent-team-workbench-docs/frontend-design-md-redesign.md` §6。
+[`docs/archive/design/frontend-design-md-redesign.md`](../../../docs/archive/design/frontend-design-md-redesign.md) §6。
 
 ## 决策与理由
 

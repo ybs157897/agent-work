@@ -1,5 +1,7 @@
 # 前端架构与交互重设计方案 —— DESIGN.md 法典化与组件库重构
 
+> 归档快照（2026-08-26）。当前视觉与交互事实以 [`agent-team-workbench/web/DESIGN.md`](../../../agent-team-workbench/web/DESIGN.md) 为准；本文中的待办和暗色模式判断不代表当前状态。
+
 日期：2026-08-26
 状态：M0 已实施（见 §5 提交清单），M1/M2 已陆续实施（§1.3 §4 已更新为当前状态）；水墨视觉基线见仓库根 `notes/implemented/feature/2026-08-26-ink-wash-visual-system.md`
 输入：
@@ -7,7 +9,7 @@
 - Anthropic 官方提示词工程教程（`anthropics/prompt-eng-interactive-tutorial`，补充来源）
 - 本仓库 `.cursor/skills/`（`ui-design-brain`、`using-ui-stack` 等 66 个技能）
 - 前端现状摸底（`agent-team-workbench/web/`）
-- 产品评审留痕 `agent-team-workbench/notes/product/2026-08-24-project-review.md`
+- 产品评审留痕 [`2026-08-24-project-review.md`](../../../notes/product/2026-08-24-project-review.md)
 
 > 维护说明（2026-08-26）：本文保留 2026-08-24 前端法典化与组件迁移方案的历史上下文。本文早期章节中的冷蓝视觉描述是当时的基线；当前生效的视觉事实源是 `agent-team-workbench/web/DESIGN.md`，水墨化的取舍与边界见上方状态行链接的决策笔记。本文的"待办/规划"条目已按 2026-08-26 代码现状逐条核验（见 §3 §6 §7 §1.3）。
 

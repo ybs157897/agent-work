@@ -118,7 +118,7 @@ Planner 不是裸的 provider 调用，也不是可被用户删除、改提示�
 
 ## 4. 知识层
 
-MVP：workspace 级 `docs/` 目录 + 关键词检索；接口定成 `KnowledgeRetriever` 一层，实现可换，后续升 embedding。知识 agent（如配置示例中的 A）负责沉淀，所有 agent 经 `consult_knowledge` 消费。
+MVP：workspace 级 `knowledge/` 语料目录 + 关键词检索；接口定成 `KnowledgeRetriever` 一层，实现可换，后续升 embedding。知识 agent（如配置示例中的 A）负责沉淀，所有 agent 经 `consult_knowledge` 消费。仓库根 `docs/` 是维护者文档，不进入运行时检索。
 
 ## 现状对账（2026-08-31 核订）
 
@@ -150,7 +150,7 @@ MVP：workspace 级 `docs/` 目录 + 关键词检索；接口定成 `KnowledgeRe
 
 ## 参考与决策留痕
 
-- 任务控制面补全架构：`architecture/task-control-surface-context-design.md`
-- 会话预算/轮换决策：`notes/implemented/architecture/2026-08-23-model-context-history-budget.md`
-- resume 永不静默降级：`notes/implemented/architecture/2026-08-23-resume-never-silent-degrade.md`
+- 任务控制面补全架构：[`task-control-surface-context-design.md`](../architecture/task-control-surface-context-design.md)
+- 会话预算/轮换决策：[`2026-08-23-model-context-history-budget.md`](../../notes/implemented/architecture/2026-08-23-model-context-history-budget.md)
+- resume 永不静默降级：[`2026-08-23-resume-never-silent-degrade.md`](../../notes/implemented/architecture/2026-08-23-resume-never-silent-degrade.md)
 - 编排架构参考：Paperclip（orchestrator + taskKey 会话锚点）、SpineCodex（模型自决压缩、前缀稳定纪律——取其教训，弃其单 harness 内嵌路线）

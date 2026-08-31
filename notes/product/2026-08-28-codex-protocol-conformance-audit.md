@@ -1,7 +1,7 @@
 # Codex app-server Adapter 协议合规审计（对照官方文档）
 
 - 日期：2026-08-28
-- 范围：`internal/runtime/adapters/codexapp/`（生产路径）、`contracts/runtime/codex-app-server-v2.md`
+- 范围：`internal/runtime/adapters/codexapp/`（生产路径）、[`docs/protocol/codex-app-server-v2.md`](../../docs/protocol/codex-app-server-v2.md)
 - 基准：官方 `codex-rs/app-server/README.md`（main，2026-08-28 快照）+ `developers.openai.com/docs/app-server`；钉版行为以 0.149.0 tag 源码仲裁；vendored CLI 实测 `codex-cli 0.149.0`
 - 结论：**实现与钉定基线 0.149.0 高度吻合，未发现对基线行为不符的硬伤**；风险集中在官方 main 已发生的漂移会在升级时集中爆发。
 
@@ -10,7 +10,7 @@
 此前协议认知靠「读源码 + 抓流量」手工对账；OpenAI 现已把 App Server 立为正式产品面
 （公告 + developers.openai.com/docs/app-server + 仓库 README）。本次审计是第一次把
 实现逐条对照官方文档核验。官方锚点与同步规程见
-`agent-team-workbench-docs/references/codex-appserver-official-protocol-reference.md`。
+[`docs/references/codex-appserver-official-protocol-reference.md`](../../docs/references/codex-appserver-official-protocol-reference.md)。
 
 ## 合规面（摘要）
 

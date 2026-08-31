@@ -12,7 +12,7 @@ Baseline: `main@0366666b4ed41762fe93692ffef43a25307f5358`
 
 Branch: `codex/task-control-surface`
 
-Architecture source: `agent-team-workbench-docs/architecture/task-control-surface-context-design.md`
+Architecture source: [`docs/architecture/task-control-surface-context-design.md`](../../../docs/architecture/task-control-surface-context-design.md)
 
 ## 决策与理由
 
@@ -48,11 +48,11 @@ Architecture source: `agent-team-workbench-docs/architecture/task-control-surfac
 ## 1. 开工前必读
 
 1. `AGENTS.md`
-2. `agent-team-workbench-docs/architecture/task-control-surface-context-design.md`
-3. `agent-team-workbench-docs/end-goal.md`
-4. `agent-team-workbench-docs/architecture/c4-container-diagram.md`
-5. `agent-team-workbench/notes/implemented/architecture/2026-08-30-system-task-coordinator.md`
-6. `agent-team-workbench/notes/implemented/architecture/2026-08-30-chat-task-record-isolation.md`
+2. [`docs/architecture/task-control-surface-context-design.md`](../../../docs/architecture/task-control-surface-context-design.md)
+3. [`docs/product/end-goal.md`](../../../docs/product/end-goal.md)
+4. [`docs/architecture/c4-container-diagram.md`](../../../docs/architecture/c4-container-diagram.md)
+5. [`2026-08-30-system-task-coordinator.md`](2026-08-30-system-task-coordinator.md)
+6. [`2026-08-30-chat-task-record-isolation.md`](2026-08-30-chat-task-record-isolation.md)
 7. `agent-team-workbench/web/DESIGN.md`
 
 Architecture RFC 是本任务的决策权威。若源码事实与 RFC 冲突：
