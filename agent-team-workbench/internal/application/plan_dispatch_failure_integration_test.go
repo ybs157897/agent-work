@@ -30,7 +30,7 @@ func TestPlanDispatchFailureDoesNotStrandLaterCommittedRuns(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &failSecondPlanDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)

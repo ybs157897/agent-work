@@ -536,8 +536,7 @@ type searchItemDTO struct {
 	WorkItemID string `json:"work_item_id"`
 	SourceID   string `json:"source_id"`
 	Title      string `json:"title"`
-	// Snippet 正文命中摘录：[] 包裹命中词、… 省略号（SQLite snippet() /
-	// PG ts_headline 生成，高亮语义两端一致）。
+	// Snippet 正文命中摘录：SQLite snippet() 用 [] 包裹命中词、… 省略号。
 	Snippet string `json:"snippet"`
 }
 

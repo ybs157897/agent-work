@@ -1,13 +1,8 @@
--- 0019_record_kind.sql — Chat / Task 记录边界。
--- 新记录默认按 Chat 处理，避免把已有单 Agent 对话误纳入任务台账；只有有
--- 计划根、计划步骤产物或确定的非 fork 任务父子证据时才回填 Task。
+-- 0019_record_kind.sql — Chat / Task 记录边界（SQLite）。
+-- 新记录默认按 Chat 处理；Plan 根、Plan step 结果及确定的非 fork 后代回填 Task。
 
-ALTER TABLE work_items
-    ADD COLUMN record_kind TEXT NOT NULL DEFAULT 'chat';
+ALTER TABLE work_items ADD COLUMN record_kind TEXT NOT NULL DEFAULT 'chat';
 
--- Plan 根和 dispatch 步骤产出的 WorkItem 是任务事实；其下没有 fork 标记的
--- 后代沿任务树继承 Task。fork 会话同时带 client_key= fork:* 和上下文标记，
--- 必须留在 Chat，不从标题/优先级推断。
 WITH RECURSIVE task_items(id) AS (
     SELECT wi.id
     FROM work_items wi
@@ -46,47 +41,45 @@ UPDATE work_items
 SET record_kind = 'task'
 WHERE id IN (SELECT id FROM task_items);
 
-ALTER TABLE work_items
-    ADD CONSTRAINT work_items_record_kind_check
-    CHECK (record_kind IN ('chat', 'task'));
-
 CREATE INDEX idx_work_items_ws_record_kind
     ON work_items(workspace_id, record_kind, created_at DESC, id DESC);
 
--- record_kind 是创建时的不可变聚合边界；父子记录也必须同类。
-CREATE OR REPLACE FUNCTION validate_work_item_record_kind()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+-- SQLite ALTER TABLE 无法可靠地为既有列追加跨行 CHECK；触发器同时提供
+-- 闭集校验、不可变约束与父子同类约束。
+CREATE TRIGGER work_items_record_kind_valid_insert
+BEFORE INSERT ON work_items
+WHEN NEW.record_kind NOT IN ('chat', 'task')
 BEGIN
-    IF NEW.record_kind IS DISTINCT FROM OLD.record_kind THEN
-        RAISE EXCEPTION 'work_items.record_kind is immutable';
-    END IF;
-    RETURN NEW;
+    SELECT RAISE(ABORT, 'work_items.record_kind must be chat or task');
 END;
-$$;
 
 CREATE TRIGGER work_items_record_kind_immutable
 BEFORE UPDATE OF record_kind ON work_items
-FOR EACH ROW EXECUTE FUNCTION validate_work_item_record_kind();
-
-CREATE OR REPLACE FUNCTION validate_work_item_parent_record_kind()
-RETURNS trigger
-LANGUAGE plpgsql
-AS $$
+WHEN NEW.record_kind <> OLD.record_kind
 BEGIN
-    IF NEW.parent_id IS NOT NULL AND EXISTS (
-        SELECT 1
-        FROM work_items parent
-        WHERE parent.id = NEW.parent_id
-          AND parent.record_kind <> NEW.record_kind
-    ) THEN
-        RAISE EXCEPTION 'work_items parent and child record_kind must match';
-    END IF;
-    RETURN NEW;
+    SELECT RAISE(ABORT, 'work_items.record_kind is immutable');
 END;
-$$;
 
 CREATE TRIGGER work_items_parent_record_kind_check
-BEFORE INSERT OR UPDATE OF parent_id, record_kind ON work_items
-FOR EACH ROW EXECUTE FUNCTION validate_work_item_parent_record_kind();
+BEFORE INSERT ON work_items
+WHEN NEW.parent_id IS NOT NULL
+ AND EXISTS (
+    SELECT 1 FROM work_items parent
+    WHERE parent.id = NEW.parent_id
+      AND parent.record_kind <> NEW.record_kind
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'work_items parent and child record_kind must match');
+END;
+
+CREATE TRIGGER work_items_parent_record_kind_update_check
+BEFORE UPDATE OF parent_id ON work_items
+WHEN NEW.parent_id IS NOT NULL
+ AND EXISTS (
+    SELECT 1 FROM work_items parent
+    WHERE parent.id = NEW.parent_id
+      AND parent.record_kind <> NEW.record_kind
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'work_items parent and child record_kind must match');
+END;

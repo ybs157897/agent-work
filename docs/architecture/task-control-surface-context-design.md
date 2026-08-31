@@ -75,7 +75,7 @@ External behavior reference: `chuspeeism/dashi-taskboard@9c0972605ed6da8f14c2cd8
 flowchart LR
   UI[Web UI] --> API[Control Plane API]
   API --> APP[Application Services]
-  APP --> DB[(PostgreSQL / SQLite)]
+  APP --> DB[(SQLite / WAL)]
   APP --> COORD[Task Coordinator]
   APP --> DISP[Host-aware Dispatcher]
   DISP -->|host=local| LOCAL[Local Host Resolver]
@@ -644,7 +644,8 @@ risks 100
 
 ## 6. 持久化与迁移
 
-当前基线迁移到 0020。建议用两个独立迁移，PostgreSQL 与 SQLite 双目录语义等价。
+当前基线迁移到 0020。SQLite 是唯一存储后端，所有迁移按编号直接位于
+`migrations/`；不存在方言副本。
 
 ### 6.1 0021：Execution Context
 
@@ -759,9 +760,8 @@ DB 与 application 双重验证：
 
 ### 6.3 迁移门禁
 
-- 双目录表、列、索引、CHECK、trigger 语义对账。
-- PostgreSQL 使用行锁或 advisory lock 分配 comment revision。
-- SQLite 依赖写事务串行，但仍通过 cursor 行 UPDATE 取 revision。
+- 单目录迁移的编号、slug、顺序与幂等记录必须唯一。
+- SQLite 依赖写事务串行，但仍通过 cursor 行 UPDATE 取 comment revision。
 - migration test 必须覆盖全新数据库和 0020 升级数据库。
 - 迁移不读取当前进程环境猜测多个 Workspace 的路径。
 
@@ -1740,7 +1740,7 @@ Task Detail 内独立只读 section：
 - TaskSession context generation 与旧回调 CAS。
 - comment revision 并发无重复。
 - comment append-only、cursor 分页、幂等重放。
-- PostgreSQL/SQLite 语义等价。
+- SQLite fresh/upgrade、写竞争与 FTS5/CJK fallback 语义。
 
 ### 15.2 Gateway / Runner
 

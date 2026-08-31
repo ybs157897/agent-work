@@ -9,7 +9,7 @@
 - Run 状态机 13 态是唯一权威；ModuleRunner 是进程内唯一推进点；任何 Outcome 必须能落终态。
 - task_sessions 只写墓碑不 DELETE；runs_count/usage 按 run 维度幂等。
 - 取消一律经控制面前转 + adapter 取消面。
-- 迁移走 `migrations/` 与 `migrations/sqlite/` 双目录语义等价。
+- 迁移只走 `migrations/` 中的 SQLite DDL，不维护数据库方言副本。
 - 借鉴只引入**数据面/调度面增量**，不改变中心化控制平面路线（ClawTeam 的文件系统控制面、prompt 驱动协调明确不借）。
 
 ---
@@ -18,7 +18,7 @@
 
 ### 现状与差距
 
-- `work_items`（migrations/sqlite/0001_init.sql:54）：`status` 5 态 + `agent_profile_id`（assignee）+ `version` 乐观锁；M4 的 `ClaimWorkItem`（internal/application/claim_return.go:20）是「todo 且无 assignee」的一次性指派。
+- `work_items`（migrations/0001_init.sql:54）：`status` 5 态 + `agent_profile_id`（assignee）+ `version` 乐观锁；M4 的 `ClaimWorkItem`（internal/application/claim_return.go:20）是「todo 且无 assignee」的一次性指派。
 - **缺口**：任务进入执行后没有任何锁。owner agent 宕机/卡死时，任务永远停在 `in_progress`，无人感知、无人能接。ClawTeam 的 `locked_by/locked_at` + 死 owner 抢占 + `release_stale_locks()` 正是填这个洞。
 
 ### 设计
@@ -40,7 +40,7 @@ ALTER TABLE work_items ADD COLUMN locked_at DATETIME;
 
 ### 实施步骤
 
-1. 双目录迁移 + `sqlstore` work item 读写的锁字段。
+1. SQLite 迁移 + `sqlstore` work item 读写的锁字段。
 2. application：`AcquireExecutionLock`（run 启动事务内）/释放（终态事务内）/抢占判定纯函数（`lockStealable(lockRun status, leaseExpiry, now)`）。
 3. httpapi：409 冲突语义；ClaimWorkItem 增加抢占分支。
 4. web：任务卡锁标记。

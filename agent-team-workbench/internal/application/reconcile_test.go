@@ -102,7 +102,7 @@ func TestReconcileOrphanRunsMarksLeaselessLost(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	agentID, wiA, wiB := seedReconcileFixture(t, ctx, svc, store, db)
 
@@ -164,7 +164,7 @@ func TestReconcileLegacyContextRunsPrecedesGenericOrphans(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	agentID, wiA, _ := seedReconcileFixture(t, ctx, svc, store, db)
 	insertOrphanRun(t, store, "run_legacy_context", agentID, wiA, domain.RunRunning)
@@ -195,7 +195,7 @@ func TestReconcileOrphanRunsTransitionalStatesConvergeToLost(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	agentID, wiA, _ := seedReconcileFixture(t, ctx, svc, store, db)
 

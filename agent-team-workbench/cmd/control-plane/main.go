@@ -1,10 +1,9 @@
 // cmd/control-plane 启动 Go 控制平面：HTTP API + SSE + Mock Adapter（M1）。
-// 存储：DATABASE_URL 支持 postgres:// 与 sqlite://（本地验证）。
+// 存储：DATABASE_URL 只接受 sqlite:// DSN。
 package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -17,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -41,7 +39,6 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/runtime/adapters/zcode"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
 	"github.com/ybs/agent-team-workbench/internal/sse"
-	_ "modernc.org/sqlite"
 )
 
 func env(key, fallback string) string {
@@ -88,17 +85,18 @@ func main() {
 // run 承载全部启动与生命周期：资源清理走 defer，保证启动失败路径（返回 error）
 // 与信号退出路径都先释放 dsh 网关进程、DB 连接再退出。
 func run() error {
-	dsn := env("DATABASE_URL", "sqlite://workbench.db")
+	dsn := env("DATABASE_URL", sqlstore.DefaultDSN)
 	addr := env("LISTEN_ADDR", ":8080")
 
 	// 优雅退出：SIGINT/SIGTERM 触发 ctx 取消，调度循环 / outbox publisher / HTTP 依次收尾。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	db, store, err := openStore(ctx, dsn)
+	db, err := sqlstore.Open(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("初始化存储失败: %w", err)
 	}
 	defer db.Close()
+	store := sqlstore.New(db)
 	hub := sse.NewHub()
 
 	// 先构造 Service（无 dispatcher）；SPI v2：ModuleRunner 是唯一执行面，
@@ -411,33 +409,6 @@ func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun
 		return err
 	}
 	return nil
-}
-
-// openStore 按 DSN 前缀选择驱动：postgres:// → pgx stdlib；sqlite:// → 本地文件。
-func openStore(ctx context.Context, dsn string) (*sql.DB, application.Store, error) {
-	switch {
-	case strings.HasPrefix(dsn, "sqlite://"):
-		path := strings.TrimPrefix(dsn, "sqlite://")
-		db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
-		if err != nil {
-			return nil, nil, err
-		}
-		// 本地验证库：写串行避免锁竞争。
-		db.SetMaxOpenConns(1)
-		if err := db.PingContext(ctx); err != nil {
-			return nil, nil, err
-		}
-		return db, sqlstore.New(db, sqlstore.SQLiteDialect()), nil
-	default:
-		db, err := sql.Open("pgx", dsn)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := db.PingContext(ctx); err != nil {
-			return nil, nil, err
-		}
-		return db, sqlstore.New(db, sqlstore.PostgresDialect()), nil
-	}
 }
 
 // seed 在无数据时创建演示 Workspace、角色团队与看板任务。

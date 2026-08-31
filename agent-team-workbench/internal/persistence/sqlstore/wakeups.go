@@ -39,23 +39,21 @@ func (r *WakeupRepo) scan(row interface{ Scan(...any) error }) (*domain.WakeupRe
 
 // EnqueueWakeup 插入一条唤醒请求；context 为 nil 时落 '{}'。
 func (r *WakeupRepo) EnqueueWakeup(ctx context.Context, w *domain.WakeupRequest) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO agent_wakeup_requests(id, workspace_id, agent_profile_id, source, task_key,
 			context, status, wake_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		w.ID, w.WorkspaceID, w.AgentProfileID, w.Source, w.TaskKey,
-		w.ContextJSON(), w.Status, d.TimeParam(w.WakeAt), d.TimeParam(w.CreatedAt), d.TimeParam(w.UpdatedAt))
+		w.ContextJSON(), w.Status, timeParam(w.WakeAt), timeParam(w.CreatedAt), timeParam(w.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
 // DueTimers 返回到期的 queued 唤醒（全部来源：timer 由循环驱动，assignment/on_demand
 // 由事件入队后经同一循环消费，保证单消费者串行、coalescing 判定一致），按 wake_at 升序。
 func (r *WakeupRepo) DueTimers(ctx context.Context, now time.Time, limit int) ([]domain.WakeupRequest, error) {
-	d := r.store.dialect
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
 		`SELECT `+wakeupCols+` FROM agent_wakeup_requests
 		 WHERE status=? AND wake_at<=? ORDER BY wake_at LIMIT ?`,
-		domain.WakeupStatusQueued, d.TimeParam(now), limit)
+		domain.WakeupStatusQueued, timeParam(now), limit)
 	if err != nil {
 		return nil, r.store.mapErr(err)
 	}
@@ -75,10 +73,9 @@ func (r *WakeupRepo) DueTimers(ctx context.Context, now time.Time, limit int) ([
 // 仅当仍处于 queued 时生效。RowsAffected=0（已被并发消费者占住/迁移）返回
 // domain.ErrWakeupNotQueued，调用方应视为已处理、不再建 run。
 func (r *WakeupRepo) MarkWakeupStatus(ctx context.Context, id string, status domain.WakeupStatus) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_wakeup_requests SET status=?, updated_at=? WHERE id=? AND status=?`,
-		status, d.TimeParam(timeNow()), id, domain.WakeupStatusQueued)
+		status, timeParam(timeNow()), id, domain.WakeupStatusQueued)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -92,10 +89,9 @@ func (r *WakeupRepo) MarkWakeupStatus(ctx context.Context, id string, status dom
 // ReleaseHeartbeatClaim 使用，保证唤醒不因一次瞬时故障被烧掉）。
 // 仅当仍处于 consumed 时生效，不会覆盖并发方的其他迁移。
 func (r *WakeupRepo) RequeueWakeup(ctx context.Context, id string) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_wakeup_requests SET status=?, updated_at=? WHERE id=? AND status=?`,
-		domain.WakeupStatusQueued, d.TimeParam(timeNow()), id, domain.WakeupStatusConsumed)
+		domain.WakeupStatusQueued, timeParam(timeNow()), id, domain.WakeupStatusConsumed)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -108,11 +104,10 @@ func (r *WakeupRepo) RequeueWakeup(ctx context.Context, id string) error {
 // SetWakeupContext 覆写请求的 context 列。coalescing 降级审计用：转发失败时把
 // instruction 附加进 context 落库，避免静默丢弃。
 func (r *WakeupRepo) SetWakeupContext(ctx context.Context, id string, wakeContext map[string]any) error {
-	d := r.store.dialect
 	w := &domain.WakeupRequest{Context: wakeContext}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_wakeup_requests SET context=?, updated_at=? WHERE id=?`,
-		w.ContextJSON(), d.TimeParam(timeNow()), id)
+		w.ContextJSON(), timeParam(timeNow()), id)
 	return r.store.mapErr(err)
 }
 
@@ -168,11 +163,10 @@ func (r *WakeupRepo) AssignedTasks(ctx context.Context, agentProfileID string) (
 
 // RecentByAgentTask 返回该 (agent, task_key) 自 since 以来的唤醒记录（含已合并，审计用），按创建时间倒序。
 func (r *WakeupRepo) RecentByAgentTask(ctx context.Context, agentProfileID, taskKey string, since time.Time) ([]domain.WakeupRequest, error) {
-	d := r.store.dialect
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
 		`SELECT `+wakeupCols+` FROM agent_wakeup_requests
 		 WHERE agent_profile_id=? AND task_key=? AND created_at>=? ORDER BY created_at DESC`,
-		agentProfileID, taskKey, d.TimeParam(since))
+		agentProfileID, taskKey, timeParam(since))
 	if err != nil {
 		return nil, r.store.mapErr(err)
 	}
@@ -191,12 +185,11 @@ func (r *WakeupRepo) RecentByAgentTask(ctx context.Context, agentProfileID, task
 // ClaimHeartbeat 原子心跳 claim：单条 UPDATE 同时完成「检查间隔 + 写入心跳时间」，
 // 距上次心跳不足 minInterval（rows affected=0）返回 false。last_heartbeat_at 为 NULL 视为可 claim。
 func (r *WakeupRepo) ClaimHeartbeat(ctx context.Context, agentProfileID string, minInterval time.Duration, now time.Time) (bool, error) {
-	d := r.store.dialect
 	deadline := now.Add(-minInterval)
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_profiles SET last_heartbeat_at=?
 		 WHERE id=? AND (last_heartbeat_at IS NULL OR last_heartbeat_at<=?)`,
-		d.TimeParam(now), agentProfileID, d.TimeParam(deadline))
+		timeParam(now), agentProfileID, timeParam(deadline))
 	if err != nil {
 		return false, r.store.mapErr(err)
 	}
@@ -212,11 +205,10 @@ func (r *WakeupRepo) ClaimHeartbeat(ctx context.Context, agentProfileID string, 
 // 防止覆盖其他消费者随后写入的新 claim。复位后下一次 claim 立即可命中，
 // 唤醒可在下一 tick 重试而不是白等一个心跳周期。
 func (r *WakeupRepo) ReleaseHeartbeatClaim(ctx context.Context, agentProfileID string, claimedAt time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_profiles SET last_heartbeat_at=NULL
 		 WHERE id=? AND last_heartbeat_at=?`,
-		agentProfileID, d.TimeParam(claimedAt))
+		agentProfileID, timeParam(claimedAt))
 	return r.store.mapErr(err)
 }
 
@@ -229,7 +221,6 @@ func (r *WakeupRepo) ReleaseHeartbeatClaim(ctx context.Context, agentProfileID s
 // 非终态判定用 NOT IN 终态集：reconnecting（runner 断线重连窗口）与 succeeding
 // （成功收尾窗口）都算活动，防止这两个窗口被判「无活跃 run」穿透双跑。
 func (r *WakeupRepo) ActiveRunKeyForAgentTask(ctx context.Context, agentProfileID, taskKey string) (runID string, alive bool, err error) {
-	d := r.store.dialect
 	var id string
 	var activeLease, anyLease bool
 	err = r.store.queryRow(ctx, r.store.exec(ctx),
@@ -241,7 +232,7 @@ func (r *WakeupRepo) ActiveRunKeyForAgentTask(ctx context.Context, agentProfileI
 		 JOIN work_items wi ON wi.id=r.work_item_id
 		 WHERE r.agent_profile_id=? AND r.work_item_id=? AND wi.record_kind=? AND r.status NOT IN `+terminalRunStatuses+`
 		 ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
-		d.TimeParam(timeNow()), agentProfileID, taskKey, domain.RecordKindTask).
+		timeParam(timeNow()), agentProfileID, taskKey, domain.RecordKindTask).
 		Scan(&id, &activeLease, &anyLease)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

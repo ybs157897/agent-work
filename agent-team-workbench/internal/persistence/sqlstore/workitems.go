@@ -61,7 +61,6 @@ func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkI
 }
 
 func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
-	d := r.store.dialect
 	recordKind := wi.RecordKind
 	// Direct/in-process callers predating record_kind represent task-board
 	// work items; public Chat callers are normalized by application before
@@ -86,9 +85,9 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		wi.ID, wi.WorkspaceID, recordKind, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
 		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey),
-		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.RollingDigest,
-		acceptance, d.NullTimeParam(wi.PhaseEnteredAt), wi.Version,
-		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
+		nullString(wi.LockedByRunID), nullTimeParam(wi.LockedAt), wi.RollingDigest,
+		acceptance, nullTimeParam(wi.PhaseEnteredAt), wi.Version,
+		timeParam(wi.CreatedAt), timeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -154,7 +153,7 @@ func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f applicati
 		if err != nil {
 			return nil, "", err
 		}
-		args = append(args, r.store.dialect.TimeParam(createdAt), r.store.dialect.TimeParam(createdAt), id)
+		args = append(args, timeParam(createdAt), timeParam(createdAt), id)
 		where = append(where, "(created_at < ? OR (created_at = ? AND id < ?))")
 	}
 	args = append(args, limit+1)
@@ -188,7 +187,6 @@ func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f applicati
 }
 
 func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expectedVersion int) error {
-	d := r.store.dialect
 	var due any
 	if wi.DueDate != nil {
 		due = wi.DueDate.Format("2006-01-02")
@@ -204,9 +202,9 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 		version=version+1, updated_at=?
 		WHERE id=? AND version=?`,
 		wi.Title, wi.Description, wi.Status, nullString(string(wi.Phase)), wi.Priority,
-		due, nullString(wi.AgentProfileID), nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt),
-		wi.RollingDigest, acceptance, d.NullTimeParam(wi.PhaseEnteredAt),
-		d.TimeParam(timeNow()), wi.ID, expectedVersion)
+		due, nullString(wi.AgentProfileID), nullString(wi.LockedByRunID), nullTimeParam(wi.LockedAt),
+		wi.RollingDigest, acceptance, nullTimeParam(wi.PhaseEnteredAt),
+		timeParam(timeNow()), wi.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -220,7 +218,7 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 // Chat 新消息使用该写点保持最近对话置顶，同时不套用任务状态机。
 func (r *WorkItemRepo) TouchUpdatedAt(ctx context.Context, workItemID string, at time.Time) error {
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`UPDATE work_items SET updated_at=? WHERE id=?`, r.store.dialect.TimeParam(at), workItemID)
+		`UPDATE work_items SET updated_at=? WHERE id=?`, timeParam(at), workItemID)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -282,18 +280,16 @@ func (r *WorkItemRepo) ActiveBlocker(ctx context.Context, workItemID string) (*d
 }
 
 func (r *WorkItemRepo) CreateBlocker(ctx context.Context, b *domain.Blocker) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO blockers(id, work_item_id, code, message, source, created_at) VALUES (?,?,?,?,?,?)`,
-		b.ID, b.WorkItemID, b.Code, b.Message, b.Source, d.TimeParam(b.CreatedAt))
+		b.ID, b.WorkItemID, b.Code, b.Message, b.Source, timeParam(b.CreatedAt))
 	return r.store.mapErr(err)
 }
 
 func (r *WorkItemRepo) ResolveBlockers(ctx context.Context, workItemID string, at time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE blockers SET resolved_at=? WHERE work_item_id=? AND resolved_at IS NULL`,
-		d.TimeParam(at), workItemID)
+		timeParam(at), workItemID)
 	return r.store.mapErr(err)
 }
 
@@ -311,7 +307,7 @@ var runTerminalStatuses = []string{
 func (r *WorkItemRepo) ReleaseStaleLocks(ctx context.Context, olderThan time.Time) (int, error) {
 	placeholders := strings.Repeat("?,", len(runTerminalStatuses))
 	args := make([]any, 0, len(runTerminalStatuses)+1)
-	args = append(args, r.store.dialect.TimeParam(olderThan))
+	args = append(args, timeParam(olderThan))
 	for _, s := range runTerminalStatuses {
 		args = append(args, s)
 	}
@@ -366,7 +362,7 @@ func (r *WorkItemRepo) CompletedToday(ctx context.Context, workspaceID string, d
 	var n int
 	err := r.store.queryRow(ctx, r.store.exec(ctx),
 		`SELECT count(*) FROM work_items WHERE workspace_id=? AND record_kind=? AND status='completed' AND updated_at >= ?`,
-		workspaceID, domain.RecordKindTask, r.store.dialect.TimeParam(day)).Scan(&n)
+		workspaceID, domain.RecordKindTask, timeParam(day)).Scan(&n)
 	return n, r.store.mapErr(err)
 }
 

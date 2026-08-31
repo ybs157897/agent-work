@@ -11,7 +11,6 @@ import (
 type RunnerRepo struct{ store *Store }
 
 func (r *RunnerRepo) Upsert(ctx context.Context, rn *application.Runner) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO runners(id, workspace_id, execution_host_id, connection_epoch, boot_id, label, runner_version, os, arch, slots, status, last_seen_at, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -23,7 +22,7 @@ func (r *RunnerRepo) Upsert(ctx context.Context, rn *application.Runner) error {
 		 WHERE runners.execution_host_id IS NULL OR runners.execution_host_id=excluded.execution_host_id`,
 		rn.ID, nil, nullString(rn.ExecutionHostID), nullString(rn.ConnectionEpoch), nullString(rn.BootID),
 		rn.Label, rn.RunnerVersion, rn.OS, rn.Arch, rn.Slots,
-		rn.Status, d.NullTimeParam(rn.LastSeenAt), d.TimeParam(timeNow()))
+		rn.Status, nullTimeParam(rn.LastSeenAt), timeParam(timeNow()))
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -72,10 +71,9 @@ func (r *RunnerRepo) Get(ctx context.Context, runnerID string) (*application.Run
 }
 
 func (r *RunnerRepo) SetStatus(ctx context.Context, runnerID, status string, at time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE runners SET status=?, last_seen_at=? WHERE id=?`,
-		status, d.TimeParam(at), runnerID)
+		status, timeParam(at), runnerID)
 	return r.store.mapErr(err)
 }
 
@@ -132,26 +130,20 @@ func (r *RunnerRepo) List(ctx context.Context, workspaceID string) ([]*applicati
 
 // CreateLease 分配递增 fencing_token：同一 run 的新 lease 总是大于旧值。
 func (r *RunnerRepo) CreateLease(ctx context.Context, l *application.RunLease) error {
-	// PG advisory_xact_lock 只有与 INSERT 保持同一 transaction 才能串行化
-	// MAX(fencing_token)+1；直接仓储调用也必须补这一层 transaction，避免调用者
-	// 漏包事务后锁在 INSERT 前释放。SQLite 的 Store.InTx 同样保证写序。
+	// 递增 fence 与 INSERT 保持在同一 transaction；直接仓储调用也补事务，
+	// 避免调用方拆分序号分配与写入。SQLite 在写入时串行化这条 INSERT...SELECT。
 	if ctx.Value(txKey{}) == nil {
 		return r.store.InTx(ctx, func(txCtx context.Context) error {
 			return r.CreateLease(txCtx, l)
 		})
 	}
-	d := r.store.dialect
 	db := r.store.exec(ctx)
-	if err := d.AdvisoryLock(ctx, db,
-		r.store.ph(`SELECT pg_advisory_xact_lock(hashtext(?))`), "run-lease:"+l.RunID); err != nil {
-		return r.store.mapErr(err)
-	}
 	err := r.store.queryRow(ctx, db,
 		`INSERT INTO run_leases(lease_id, run_id, runner_id, fencing_token, acquired_at, renewed_until)
 		 VALUES (?, ?, ?, (SELECT COALESCE(MAX(fencing_token),0)+1 FROM run_leases WHERE run_id=?), ?, ?)
 		 RETURNING fencing_token`,
 		l.LeaseID, l.RunID, l.RunnerID, l.RunID,
-		d.TimeParam(timeNow()), d.TimeParam(l.RenewedUntil)).Scan(&l.FencingToken)
+		timeParam(timeNow()), timeParam(l.RenewedUntil)).Scan(&l.FencingToken)
 	return r.store.mapErr(err)
 }
 
@@ -205,14 +197,12 @@ func (r *RunnerRepo) ListActiveLeasesByRunner(ctx context.Context, runnerID stri
 }
 
 func (r *RunnerRepo) ReleaseLease(ctx context.Context, leaseID string, at time.Time) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`UPDATE run_leases SET released_at=? WHERE lease_id=?`, d.TimeParam(at), leaseID)
+		`UPDATE run_leases SET released_at=? WHERE lease_id=?`, timeParam(at), leaseID)
 	return r.store.mapErr(err)
 }
 
 func (r *RunnerRepo) ReleaseActiveLeasesByRunner(ctx context.Context, runnerID string, at time.Time) ([]string, error) {
-	d := r.store.dialect
 	db := r.store.exec(ctx)
 	rows, err := r.store.query(ctx, db,
 		`SELECT DISTINCT run_id FROM run_leases WHERE runner_id=? AND released_at IS NULL ORDER BY run_id`, runnerID)
@@ -232,18 +222,17 @@ func (r *RunnerRepo) ReleaseActiveLeasesByRunner(ctx context.Context, runnerID s
 		return nil, r.store.mapErr(err)
 	}
 	if _, err := r.store.execStmt(ctx, db,
-		`UPDATE run_leases SET released_at=? WHERE runner_id=? AND released_at IS NULL`, d.TimeParam(at), runnerID); err != nil {
+		`UPDATE run_leases SET released_at=? WHERE runner_id=? AND released_at IS NULL`, timeParam(at), runnerID); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 	return runIDs, nil
 }
 
 func (r *RunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string, error) {
-	d := r.store.dialect
 	db := r.store.exec(ctx)
 	rows, err := r.store.query(ctx, db,
 		`SELECT run_id FROM run_leases WHERE released_at IS NULL AND renewed_until < ?`,
-		d.TimeParam(now))
+		timeParam(now))
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +251,7 @@ func (r *RunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string,
 	}
 	if _, err := r.store.execStmt(ctx, db,
 		`UPDATE run_leases SET released_at=? WHERE released_at IS NULL AND renewed_until < ?`,
-		d.TimeParam(now), d.TimeParam(now)); err != nil {
+		timeParam(now), timeParam(now)); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 	return runIDs, rows.Err()
@@ -278,7 +267,6 @@ type AuditRepo struct{ store *Store }
 // 释放即可续——续租由 runner 存活证据驱动，而非 lease 新鲜度；runner 真正失联后
 // 无心跳 → sweeper 释放路径保持不变。
 func (r *RunnerRepo) RenewLeasesByRunner(ctx context.Context, runnerID string, renewUntil time.Time) (int, error) {
-	d := r.store.dialect
 	db := r.store.exec(ctx)
 	// 终态 run 的残留 lease：回收（finalizeIfTerminal 之外的路径置为终态时兜底）。
 	if _, err := r.store.execStmt(ctx, db,
@@ -286,7 +274,7 @@ func (r *RunnerRepo) RenewLeasesByRunner(ctx context.Context, runnerID string, r
 		  WHERE runner_id=? AND released_at IS NULL
 		    AND run_id IN (SELECT id FROM execution_runs
 		                    WHERE status IN ('succeeded','interrupted','cancelled','lost','failed'))`,
-		d.TimeParam(timeNow()), runnerID); err != nil {
+		timeParam(timeNow()), runnerID); err != nil {
 		return 0, r.store.mapErr(err)
 	}
 	// 非终态 run 的活跃 lease：推进 renewed_until。
@@ -295,7 +283,7 @@ func (r *RunnerRepo) RenewLeasesByRunner(ctx context.Context, runnerID string, r
 		  WHERE runner_id=? AND released_at IS NULL
 		    AND run_id IN (SELECT id FROM execution_runs
 		                    WHERE status NOT IN ('succeeded','interrupted','cancelled','lost','failed'))`,
-		d.TimeParam(renewUntil), runnerID)
+		timeParam(renewUntil), runnerID)
 	if err != nil {
 		return 0, r.store.mapErr(err)
 	}
@@ -320,23 +308,21 @@ func (r *RunnerRepo) RenewLeasesByRunnerIfEpoch(ctx context.Context, runnerID, e
 
 // Append 写不可变审计记录（协议文档 §10.1）。
 func (r *AuditRepo) Append(ctx context.Context, workspaceID string, actor map[string]any, action, target string, detail map[string]any) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO audit_logs(workspace_id, actor, action, target, detail, occurred_at)
 		 VALUES (?,?,?,?,?,?)`,
 		nullString(workspaceID), jsonText(actor), action, nullString(target),
-		jsonText(detail), d.TimeParam(timeNow()))
+		jsonText(detail), timeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 
 type CapsRepo struct{ store *Store }
 
 func (r *CapsRepo) Create(ctx context.Context, s *application.CapabilitySnapshot) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO capability_snapshots(id, run_id, required, advertised, created_at)
 		 VALUES (?,?,?,?,?)`,
-		s.ID, nullString(s.RunID), jsonText(s.Required), jsonText(s.Advertised), d.TimeParam(timeNow()))
+		s.ID, nullString(s.RunID), jsonText(s.Required), jsonText(s.Advertised), timeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 

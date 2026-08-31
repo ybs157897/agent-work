@@ -28,13 +28,6 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 		return nil, domain.ErrValidation
 	}
 	db := r.store.exec(ctx)
-	d := r.store.dialect
-
-	// 串行化同一 workspace 的序号分配（Postgres advisory lock；SQLite 写串行）。
-	if err := d.AdvisoryLock(ctx, db,
-		r.store.ph(`SELECT pg_advisory_xact_lock(hashtext(?))`), ev.WorkspaceID); err != nil {
-		return nil, err
-	}
 
 	if runEvent != nil {
 		if err := r.store.queryRow(ctx, db,
@@ -42,7 +35,7 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 			 VALUES (?, NULLIF(?, ''), (SELECT COALESCE(MAX(run_seq),0)+1 FROM run_events WHERE run_id=?), ?, ?, ?)
 			 RETURNING run_seq`,
 			runEvent.RunID, runEvent.AgentID, runEvent.RunID, runEvent.EventType, jsonText(runEvent.Payload),
-			d.TimeParam(ev.OccurredAt)).Scan(&ev.RunSeq); err != nil {
+			timeParam(ev.OccurredAt)).Scan(&ev.RunSeq); err != nil {
 			return nil, r.store.mapErr(err)
 		}
 	}
@@ -61,14 +54,14 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 			?, ?, ?, ?, ?, ?)
 		 RETURNING stream_seq`,
 		ev.WorkspaceID, ev.WorkspaceID, ev.EventID, ev.Type, ev.AggregateType, ev.AggregateID,
-		string(payload), d.TimeParam(ev.OccurredAt)).Scan(&ev.StreamSeq); err != nil {
+		string(payload), timeParam(ev.OccurredAt)).Scan(&ev.StreamSeq); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 
 	// Outbox：至少一次投递，publisher 可重复发布。
 	if _, err := r.store.execStmt(ctx, db,
 		`INSERT INTO outbox_messages(event_id, topic, payload, created_at) VALUES (?,?,?,?)`,
-		ev.EventID, ev.WorkspaceID, string(payload), d.TimeParam(ev.OccurredAt)); err != nil {
+		ev.EventID, ev.WorkspaceID, string(payload), timeParam(ev.OccurredAt)); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 	return ev, nil
@@ -143,10 +136,9 @@ func (r *EventRepo) AppendActivity(ctx context.Context, workspaceID, kind, messa
 
 // AppendActivityFor 带 work item 归因写入（M4）；workItemID 空串落 NULL。
 func (r *EventRepo) AppendActivityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO activities(id, workspace_id, work_item_id, kind, message, occurred_at) VALUES (?,?,?,?,?,?)`,
-		domain.NewID(domain.PrefixEvent), workspaceID, nullString(workItemID), kind, message, d.TimeParam(timeNow()))
+		domain.NewID(domain.PrefixEvent), workspaceID, nullString(workItemID), kind, message, timeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 
@@ -239,11 +231,10 @@ func (r *IdempotencyRepo) Check(ctx context.Context, workspaceID, key string) (*
 }
 
 func (r *IdempotencyRepo) Record(ctx context.Context, workspaceID, key string, rec application.IdempotencyRecord) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
 		 VALUES (?,?,?,?,?,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
-		workspaceID, key, rec.RequestHash, rec.ResultBody, rec.StatusCode, d.TimeParam(timeNow()))
+		workspaceID, key, rec.RequestHash, rec.ResultBody, rec.StatusCode, timeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 
@@ -256,12 +247,11 @@ func (r *IdempotencyRepo) Record(ctx context.Context, workspaceID, key string, r
 //
 // 若并发对手刚好在占位冲突与读回之间 Release 了行（窗口极小），重试一次 INSERT。
 func (r *IdempotencyRepo) Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, error) {
-	d := r.store.dialect
 	for attempt := 0; attempt < 2; attempt++ {
 		res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 			`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
 			 VALUES (?,?,?,NULL,NULL,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
-			workspaceID, key, requestHash, d.TimeParam(timeNow()))
+			workspaceID, key, requestHash, timeParam(timeNow()))
 		if err != nil {
 			return false, nil, r.store.mapErr(err)
 		}

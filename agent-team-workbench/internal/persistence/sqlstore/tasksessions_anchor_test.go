@@ -28,7 +28,7 @@ func TestTaskSessionClaimAnchorIsAtomicAndOwnerGuarded(t *testing.T) {
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	now := time.Now().UTC()
 	if err := store.WorkItems().Create(ctx, &domain.WorkItem{

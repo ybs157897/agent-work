@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Storage backend note: superseded by [SQLite 单一存储后端](../simplification/2026-08-31-sqlite-only-storage.md)。
+
 ## 决策与理由
 
 派发汇总是控制平面的必达收口，不再借用可选 heartbeat 作为准入门槛。lead-only
@@ -25,8 +27,8 @@ Agent 会话列表合并“任务指派”与该 Agent 的 task session 参与�
   额外制造 timer Run。
 - 不让 lead-only 批次再自我汇总：小事直接回答不需要第二轮模型调用。
 - 不继续用 worker instruction 冒充结果：任务描述不是交付证据。
-- 不只给 SQLite 换 tokenizer：PostgreSQL/SQLite 必须维持同一用户语义；中文子串走显式
-  fallback，ASCII/结构化 token 仍走 FTS。
+- 当时不让两种数据库的检索语义分叉；SQLite-only 收口后保留中文子串 fallback，
+  ASCII/结构化 token 继续走 FTS5。
 - 不通过改任务 assignee 表达 `@mention` 参与关系：指派与参与是两种事实，目标 Agent 的
   会话入口从 task session 补齐。
 

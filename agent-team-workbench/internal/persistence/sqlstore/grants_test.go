@@ -14,8 +14,8 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 )
 
-// openGrantsTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现 migrations/sqlite，
-// 新增迁移免同步清单；等价性由 cmd/migrate 的守卫测试兜底）。
+// openGrantsTestDB 临时文件 sqlite + 全量迁移（migtest 动态发现 migrations，
+// 新增迁移免同步清单；历史版本与幂等性由 cmd/migrate 守卫测试兜底）。
 func openGrantsTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 	t.Helper()
 	db, err := sql.Open("sqlite",
@@ -28,7 +28,7 @@ func openGrantsTestDB(t *testing.T) (*sql.DB, *sqlstore.Store) {
 	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	return db, sqlstore.New(db, sqlstore.SQLiteDialect())
+	return db, sqlstore.New(db)
 }
 
 // seedGrantEnv 落 workspace/两个 agent/两个 work item（授权匹配的锚点行）。

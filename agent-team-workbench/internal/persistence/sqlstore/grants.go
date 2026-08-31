@@ -19,7 +19,7 @@ func (r *ApprovalGrantRepo) Create(ctx context.Context, g *domain.ApprovalGrant)
 		`INSERT INTO approval_grants(id, workspace_id, agent_profile_id, work_item_id, scope, kind, pattern, created_at)
 		 VALUES (?,?,?,?,?,?,?,?)`,
 		g.ID, g.WorkspaceID, g.AgentProfileID, nullString(g.WorkItemID), string(g.Scope),
-		g.Kind, g.Pattern, r.store.dialect.TimeParam(g.CreatedAt))
+		g.Kind, g.Pattern, timeParam(g.CreatedAt))
 	return r.store.mapErr(err)
 }
 

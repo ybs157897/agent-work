@@ -35,7 +35,7 @@ func TestEvaluationEvidenceReadFailureBlocksInsteadOfFailingOpen(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	base := sqlstore.New(db, sqlstore.SQLiteDialect())
+	base := sqlstore.New(db)
 	events := &failRunEventsRepo{EventRepo: base.Events()}
 	store := &failRunEventsStore{Store: base, events: events}
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
@@ -64,7 +64,7 @@ func TestCoordinatorPlanEvidenceReadFailureBlocksInsteadOfAccepting(t *testing.T
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	base := sqlstore.New(db, sqlstore.SQLiteDialect())
+	base := sqlstore.New(db)
 	events := &failRunEventsRepo{EventRepo: base.Events()}
 	store := &failRunEventsStore{Store: base, events: events}
 	dispatcher := &captureDispatcher{}

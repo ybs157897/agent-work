@@ -12,9 +12,9 @@ C4Container
     System_Boundary(atw, "Agent Team Workbench") {
         Container(web, "Web 工作台", "React 18 + TypeScript + Zustand, Vite 构建", "任务看板 / 智能体与 Host/Location 设置 / 运行面板；REST 命令查询 + SSE 订阅；Review Queue 与 Delivery Brief 验收面、TaskComment 评论线")
         Container(cp, "Control Plane", "Go 1.26 / net/http（cmd/control-plane）", "REST API（problem+json、Idempotency-Key）、SSE Hub、运行调度与审批、执行上下文解析（hostregistry）、outbox 投递、静态托管前端；内含 domain/application/runnergateway/hostregistry 组件")
-        ContainerDb(db, "数据库", "PostgreSQL（生产）/ SQLite（本地验证）", "工作区、智能体、执行 Host/Location、任务、Run 与不可变 ExecutionContextSnapshot、事件溯源 run_events、task_comments、outbox、审计日志；乐观锁 version 列")
+        ContainerDb(db, "数据库", "SQLite（WAL）", "工作区、智能体、执行 Host/Location、任务、Run 与不可变 ExecutionContextSnapshot、事件溯源 run_events、task_comments、outbox、审计日志；乐观锁 version 列")
         Container(rd, "Runner Daemon", "Go 1.26 / gorilla-websocket（cmd/runnerd）", "出站 WSS 接入网关；boot_id 区分网络重连与进程重启；按 Run 的 ExecutionContextSnapshot 解析 cwd 后本地执行 Runtime Adapter；canonical 事件按 (run, lease, producer_seq) 上报等待 ACK")
-        Container(mg, "Migrate CLI", "Go 1.26（cmd/migrate）", "应用 schema 迁移（Postgres 与 SQLite 两套 DDL）")
+        Container(mg, "Migrate CLI", "Go 1.26（cmd/migrate）", "应用 migrations/ 中唯一的 SQLite schema 迁移")
         Container(mcp, "MCP Server", "Go 1.26 / stdio MCP（cmd/atw-mcp）", "stdio MCP 协议；通过数据库直连暴露任务看板查询面与 claim/return 小写面，供 agent harness 经 MCP 配置拉起；不参与 Run 编排与 SSE 推送")
     }
 
@@ -23,12 +23,12 @@ C4Container
     Rel(dev, web, "使用", "HTTPS")
     Rel(web, cp, "写命令 / 查询（Idempotency-Key、expected_version 乐观锁）；Host/Location/Development-Context 管理、comments、review-queue、delivery-brief", "JSON over HTTP · contracts/web/openapi.yaml")
     Rel(cp, web, "领域事件推送（游标续传、backlog 补发、心跳）", "SSE · contracts/events/asyncapi.yaml")
-    Rel(cp, db, "同事务写入：状态 + run_events + outbox + 幂等记录（含 runner_event_dedup v2 键）", "database/sql · 方言抽象（pg / sqlite）")
+    Rel(cp, db, "同事务写入：状态 + run_events + outbox + 幂等记录（含 runner_event_dedup v2 键）", "database/sql · SQLite WAL")
     Rel(mg, db, "应用迁移", "SQL DDL")
     Rel(rd, cp, "enrollment 凭据接入；hello 带 boot_id/connection_epoch，心跳只续当前进程租约；接收 run.offer 与可恢复的审批决定；上报事件等 ACK", "WebSocket /runner/v2/connect（Bearer atw_host_<host_id>_<secret>）· contracts/runner/v2/schema.json")
     Rel(rd, dsh, "启动子进程执行会话，转发输入/中断/取消", "进程组管理")
     Rel(dsh, rd, "流式输出、审批请求、状态变更", "子进程输出")
-    Rel(mcp, db, "直连查询与写入（共享数据库）", "database/sql · 方言抽象（pg / sqlite）")
+    Rel(mcp, db, "直连查询与写入（共享数据库）", "database/sql · SQLite WAL")
 ```
 
 ## 容器职责一览
@@ -38,8 +38,8 @@ C4Container
 | Web 工作台 | 静态产物（由 Control Plane 托管，也可独立部署） | 任务看板、智能体设置、执行 Host/Location 设置、运行面板与审批交互、TaskComment 评论线；Review Queue / Delivery Brief 服务端权威验收面；消费 SSE 维持实时视图 | React 18、TypeScript（strict）、Zustand、Vite |
 | Control Plane | 单进程服务（`:8080`） | REST API 与 problem+json 错误语义；SSE 事件流；命令幂等；Run 编排（创建/中断/审批/重试）与每 Run 不可变 ExecutionContextSnapshot 解析（hostregistry 精确路由，错误 Host/mount fail closed）；runner 网关与租约清扫；outbox 投递 | Go 1.26、net/http、gorilla/websocket |
 | Runner Daemon | 绑定 Execution Host 的本机/远程独立进程，可水平扩展 | 以 enrollment 凭据接入 `/runner/v2/connect`；同 boot 网络重连恢复 lease/pending，进程重启释放旧 lease；接受 run.offer 后按 Snapshot 解析的 cwd 在本地执行 Runtime Adapter；事件带 lease/producer_seq 上报，未 ACK 的断线重发 | Go 1.26、gorilla/websocket |
-| 数据库 | PostgreSQL（生产）/ SQLite（本地） | 权威状态 + 事件溯源（run_events/stream_seq）+ outbox + 幂等键表（含 runner_event_dedup v2）+ 审计 + execution_hosts/workspace_locations/execution_context_snapshots/task_comments；所有写走 InTx 同事务提交 | database/sql、advisory lock 序号分配 |
-| Migrate CLI | 按需执行的一次性工具 | 建库/升级 schema（migrations/ 为 Postgres 版，migrations/sqlite/ 为本地版） | Go 1.26 |
+| 数据库 | SQLite（单一后端，WAL） | 权威状态 + 事件溯源（run_events/stream_seq）+ outbox + 幂等键表（含 runner_event_dedup v2）+ 审计 + execution_hosts/workspace_locations/execution_context_snapshots/task_comments；所有写走 InTx 同事务提交 | database/sql、SQLite FTS5 |
+| Migrate CLI | 按需执行的一次性工具 | 从 `migrations/` 建库或幂等升级 SQLite schema | Go 1.26 |
 | MCP Server | 由 agent harness 的 MCP 配置拉起，与 Control Plane 共享数据库 | 通过 stdio MCP 协议暴露任务看板查询面与 claim/return 小写面；不参与 Run 编排与 SSE 推送 | Go 1.26、mark3labs/mcp-go |
 
 ## 跨容器契约

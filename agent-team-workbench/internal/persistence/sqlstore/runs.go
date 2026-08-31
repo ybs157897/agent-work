@@ -70,7 +70,6 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 }
 
 func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
-	d := r.store.dialect
 	var failureCode, failureMsg *string
 	var failureRetry *bool
 	if run.Failure != nil {
@@ -87,7 +86,7 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
 		nullString(run.ClientKey), run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
-		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt),
+		timeParam(run.CreatedAt), timeParam(run.UpdatedAt), nullTimeParam(run.FinishedAt),
 		nullString(run.DispatchID), nullString(run.ContextSnapshotID))
 	return r.store.mapErr(err)
 }
@@ -132,7 +131,6 @@ func (r *RunRepo) SetContextSnapshot(ctx context.Context, runID, snapshotID stri
 
 // Update 乐观锁：终态 Run 不允许被覆盖（状态机在领域层先拦截）。
 func (r *RunRepo) Update(ctx context.Context, run *domain.ExecutionRun, expectedVersion int) error {
-	d := r.store.dialect
 	var failureCode, failureMsg *string
 	var failureRetry *bool
 	if run.Failure != nil {
@@ -151,7 +149,7 @@ func (r *RunRepo) Update(ctx context.Context, run *domain.ExecutionRun, expected
 		nullString(run.SessionBefore), nullString(run.SessionAfter),
 		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
 		failureCode, failureMsg, failureRetry,
-		d.TimeParam(timeNow()), d.NullTimeParam(run.FinishedAt), run.ID, expectedVersion)
+		timeParam(timeNow()), nullTimeParam(run.FinishedAt), run.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -219,14 +217,13 @@ func (r *RunRepo) ActiveCount(ctx context.Context, workspaceID string) (int, err
 // CreateApproval 落库审批。plan_dispatch 闸门审批无关联 run（RunID 空串存 NULL，
 // 0010 起 run_id 可空）；requested_by 记录请求方（runtime 或 plan 执行器）。
 func (r *RunRepo) CreateApproval(ctx context.Context, a *domain.ApprovalRequest) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO approvals(id, run_id, work_item_id, kind, risk, status, summary,
 			requested_by, sensitive_input_ref, policy_snapshot_id, expires_at, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		a.ID, nullString(a.RunID), a.WorkItemID, a.Kind, a.Risk, a.Status, a.Summary,
 		jsonText(a.RequestedBy), nullString(a.SensitiveInputRef), nullString(a.PolicySnapshotID),
-		d.NullTimeParam(a.ExpiresAt), d.TimeParam(a.CreatedAt))
+		nullTimeParam(a.ExpiresAt), timeParam(a.CreatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -292,20 +289,18 @@ func (r *RunRepo) ListApprovals(ctx context.Context, runID string) ([]*domain.Ap
 }
 
 func (r *RunRepo) UpdateApproval(ctx context.Context, a *domain.ApprovalRequest) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE approvals SET status=?, resolved_at=?, resolved_by=?, resolve_reason=? WHERE id=?`,
-		a.Status, d.NullTimeParam(a.ResolvedAt), nullString(a.ResolvedBy), a.ResolveReason, a.ID)
+		a.Status, nullTimeParam(a.ResolvedAt), nullString(a.ResolvedBy), a.ResolveReason, a.ID)
 	return r.store.mapErr(err)
 }
 
 func (r *RunRepo) CreateArtifact(ctx context.Context, art *domain.Artifact) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO artifacts(id, run_id, logical_path, mime, size, sha256, classification, status, storage_ref, created_at)
 		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		art.ID, art.RunID, art.LogicalPath, art.Mime, art.Size, art.Sha256,
-		art.Classification, art.Status, nullString(art.StorageRef), d.TimeParam(art.CreatedAt))
+		art.Classification, art.Status, nullString(art.StorageRef), timeParam(art.CreatedAt))
 	return r.store.mapErr(err)
 }
 

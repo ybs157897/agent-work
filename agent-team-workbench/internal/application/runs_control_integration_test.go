@@ -20,7 +20,7 @@ func TestControlRunStartingInterrupt(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -55,7 +55,7 @@ func TestControlRunReconnectingSucceedingDirect(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -103,7 +103,7 @@ func TestUsageAnchorIdempotentAccumulation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -192,7 +192,7 @@ func TestAgentPresenceEventsOnRunTransitions(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -255,7 +255,7 @@ func TestActivityOutsideTxWritesStreamAndOutbox(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()
@@ -335,7 +335,7 @@ func TestSelfHealRunFillsRetryOf(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -400,7 +400,7 @@ func TestCreateRunResumeRequiresCapability(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()
@@ -470,7 +470,7 @@ func TestResolveApprovalForwardsOnlyOnChange(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 	forwards := 0
 	svc.ApprovalForwarder = func(ctx context.Context, runID, approvalID string, approved bool) {
@@ -520,7 +520,7 @@ func TestAcceptWorkItemZeroExpectedVersion(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -557,7 +557,7 @@ func TestRecordRunEventArtifactProjection(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)

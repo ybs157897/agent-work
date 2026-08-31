@@ -84,7 +84,7 @@ func TestConversationReplayFidelity(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()
@@ -201,7 +201,7 @@ func TestCreateRunDigestTierInlinesCompressedHistory(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	now := time.Now().UTC()

@@ -19,7 +19,7 @@ func seedEntityIdemEnv(t *testing.T) (*application.Service, *captureDispatcher, 
 	ctx := context.Background()
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 

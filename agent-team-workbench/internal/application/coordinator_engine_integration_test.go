@@ -21,7 +21,7 @@ func seedCoordinatorEnv(t *testing.T) (context.Context, *application.Service, *s
 	ctx := context.Background()
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 	now := time.Now().UTC()
@@ -761,7 +761,7 @@ func seedCoordinatorEnvWithDatabase(t *testing.T) (context.Context, *sql.DB, *ap
 	ctx := context.Background()
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 	now := time.Now().UTC()

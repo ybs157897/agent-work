@@ -36,7 +36,7 @@ func TestConsultKnowledgeInjectsDispatch(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -128,7 +128,7 @@ func TestConsultKnowledgeWithoutRetrieverFails(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, workerID := seedM2Env(t, ctx, store)
@@ -170,7 +170,7 @@ func TestConsultKnowledgeValidation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, workerID := seedM2Env(t, ctx, store)

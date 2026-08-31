@@ -50,13 +50,12 @@ func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) err
 
 // Create 写入 plan 及其全部 steps；步骤 seq 从 0 起连续（由应用层构造保证）。
 func (r *PlanRepo) Create(ctx context.Context, p *domain.Plan) error {
-	d := r.store.dialect
 	if _, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO plans(`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.WorkspaceID, p.WorkItemID, p.AgentProfileID, nullString(p.SourceRunID),
 		nullString(p.ContextSnapshotID), p.ContextGeneration,
 		p.Status, nullString(p.SupersededBy), jsonText(p.Guardrails), nullString(p.Error), p.Version,
-		d.TimeParam(p.CreatedAt), d.TimeParam(p.UpdatedAt)); err != nil {
+		timeParam(p.CreatedAt), timeParam(p.UpdatedAt)); err != nil {
 		return r.store.mapErr(err)
 	}
 	for i := range p.Steps {
@@ -68,16 +67,15 @@ func (r *PlanRepo) Create(ctx context.Context, p *domain.Plan) error {
 }
 
 func (r *PlanRepo) insertStep(ctx context.Context, st *domain.PlanStep) error {
-	d := r.store.dialect
 	var executedAt any
 	if st.ExecutedAt != nil {
-		executedAt = d.NullTimeParam(st.ExecutedAt)
+		executedAt = nullTimeParam(st.ExecutedAt)
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO plan_steps(`+planStepCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		st.PlanID, st.Seq, st.Verb, jsonText(st.Payload), st.Status,
 		nullString(st.ResultWorkItemID), nullString(st.ResultRunID), nullString(st.Error),
-		d.TimeParam(st.CreatedAt), executedAt)
+		timeParam(st.CreatedAt), executedAt)
 	return r.store.mapErr(err)
 }
 
@@ -131,11 +129,10 @@ func (r *PlanRepo) loadSteps(ctx context.Context, p *domain.Plan) error {
 // Update 迁移 plan 状态（乐观锁 expectedVersion，成功后 DB version+1）。
 // superseded_by 与 error 随对象字段一并落库；guardrails 提交后不可变（Create 固化）。
 func (r *PlanRepo) Update(ctx context.Context, p *domain.Plan, expectedVersion int) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE plans SET status=?, superseded_by=?, error=?, version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
-		p.Status, nullString(p.SupersededBy), nullString(p.Error), d.TimeParam(p.UpdatedAt), p.ID, expectedVersion)
+		p.Status, nullString(p.SupersededBy), nullString(p.Error), timeParam(p.UpdatedAt), p.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -149,10 +146,9 @@ func (r *PlanRepo) Update(ctx context.Context, p *domain.Plan, expectedVersion i
 // consult_knowledge 执行后 payload 增补 results 键，其余动词 payload 原样重写）。
 // (plan_id, seq) 为主键，重入写同 seq 覆盖同一行（幂等）。
 func (r *PlanRepo) UpdateStep(ctx context.Context, st *domain.PlanStep) error {
-	d := r.store.dialect
 	var executedAt any
 	if st.ExecutedAt != nil {
-		executedAt = d.NullTimeParam(st.ExecutedAt)
+		executedAt = nullTimeParam(st.ExecutedAt)
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE plan_steps SET status=?, result_work_item_id=?, result_run_id=?, error=?, executed_at=?, payload=?

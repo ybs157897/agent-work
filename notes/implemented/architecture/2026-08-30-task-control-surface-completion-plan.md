@@ -111,7 +111,8 @@ go test -count=1 ./internal/runtime/conformance -run '^TestConformanceKimiApp$' 
 - `TestConformanceKimiApp/NoSideEffectsAfterTerminal`
 - `TestConformanceKimiApp/CancelSemantics`
 
-当前根 CI 只有后端、契约与 PostgreSQL migration；缺少 frontend 与 SQLite migration job。CI 收口独立成刀，不与领域功能混 commit。
+当时根 CI 缺少 frontend 与 SQLite migration job；任务控制面已补齐。后续
+[SQLite 单一存储后端](../simplification/2026-08-31-sqlite-only-storage.md) 删除 PostgreSQL job 与双方言维护面。
 
 ## 4. 实施序列
 
@@ -158,12 +159,11 @@ I0 验收：
 
 ### I1. Execution Context
 
-#### I1.1 双迁移
+#### I1.1 SQLite 迁移
 
 建议迁移：
 
-- `0021_execution_context.sql`
-- `migrations/sqlite/0021_execution_context.sql`
+- `migrations/0021_execution_context.sql`
 
 新增：
 
@@ -409,7 +409,7 @@ I2 验收：
 - cursor；
 - 幂等重放无重复事件/唤醒；
 - prompt injection；
-- SQLite/Postgres 等价；
+- SQLite fresh/upgrade 与并发 revision；
 - SSE replay。
 
 ### I3. Review Surface
@@ -542,7 +542,7 @@ cd agent-team-workbench
 go run ./cmd/migrate -dsn "sqlite://workbench.db"
 ```
 
-触面检查阶段如实记录跳过项。PR 窗口再跑全量 race、PostgreSQL migration 和真实浏览器验收。
+触面检查阶段如实记录跳过项。PR 窗口再跑全量 race、SQLite fresh/upgrade migration 和真实浏览器验收。
 
 ## 7. 建议提交切片
 
@@ -563,7 +563,7 @@ go run ./cmd/migrate -dsn "sqlite://workbench.db"
 ## 8. 实现完成清单
 
 - [x] I0 契约和红测。
-- [x] 0021/0022/0023 双目录迁移。
+- [x] 0021/0022/0023 SQLite 迁移。
 - [x] Host/Location/Context/Snapshot。
 - [x] Runner v2/fencing/Host routing。
 - [x] 全 Adapter Resolved context。
@@ -574,7 +574,7 @@ go run ./cmd/migrate -dsn "sqlite://workbench.db"
 - [x] Review Queue/Delivery Brief。
 - [x] 定向与全量后端 race tests。
 - [x] 前端 typecheck/test/lint/build。
-- [x] SQLite fresh/upgrade migration；PostgreSQL 语义 parity 与 CI gate。
+- [x] SQLite fresh/upgrade migration。
 - [x] 真实本机浏览器 + worktree 验收；远程 Host 走真实 SQLite Gateway/lease/offer 闭环。
 - [x] 现有基线红灯没有被掩盖。
 - [x] 独立代码复审通过并获用户授权合入 main。
@@ -587,10 +587,10 @@ TaskSession 并发 owner、评论 cursor、Runner 注册/重连/进程重启、d
 
 - `go build ./...`、`go vet ./...`、`gofmt -l .`、`git diff --check` 全绿；
 - `go test -race -count=1 ./...` 全绿；
-- 0001→0023 全新 SQLite 迁移与升级/目录 parity 测试全绿；
+- 0001→0023 全新 SQLite 迁移与升级测试全绿；
 - 前端 `tsc -b`、91 文件 761 测试、lint、production build 全绿；
 - 真实浏览器验证 Review Queue、评论 SSE→Brief、Return 可访问性、Workspace A→B
   隔离与 legacy child 行为，控制台无 warning/error。
 
-本机没有 PostgreSQL 服务；live PostgreSQL 迁移继续由仓库 CI 的 PostgreSQL job
-执行，当前评审已通过双目录语义 parity 与 SQL/仓储测试。
+该实现最初同时维护 PostgreSQL/SQLite；2026-08-31 起由
+[SQLite 单一存储后端](../simplification/2026-08-31-sqlite-only-storage.md) 收口为单目录、单后端。

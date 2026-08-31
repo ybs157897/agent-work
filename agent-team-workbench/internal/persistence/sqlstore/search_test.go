@@ -27,7 +27,7 @@ func TestSearchIndexAndQuery(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	insertWorkItem(t, db, "wi_s1")
 	insertWorkItem(t, db, "wi_s2")
@@ -50,21 +50,21 @@ func TestSearchIndexAndQuery(t *testing.T) {
 	}
 
 	seedSearchEntry(t, store, "wi_s1", "decision", "dec_1",
-		"用 PostgreSQL", "团队决定用 PostgreSQL 作为唯一存储，不引入第二套数据库。")
+		"用 SQLite", "团队决定用 SQLite 作为唯一存储，不引入第二套数据库。")
 	seedSearchEntry(t, store, "wi_s1", "segment_summary", "wi_s1",
-		"台账任务", "已完成 2 轮。结论：storage 选型 PostgreSQL。")
+		"台账任务", "已完成 2 轮。结论：storage 选型 SQLite。")
 	seedSearchEntry(t, store, "wi_s1", "segment_summary", "wi_cjk",
 		"会话元模型验收任务", "详情包含任务卡详情和完整正文，供局部中文检索验证。")
 	seedSearchEntry(t, store, "wi_chat", "segment_summary", "wi_chat",
-		"Chat PostgreSQL", "单 Agent 对话里的 PostgreSQL 不能出现在任务搜索。")
+		"Chat SQLite", "单 Agent 对话里的 SQLite 不能出现在任务搜索。")
 
 	// 命中：decision 关键词。
-	hits, err := store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "", 20)
+	hits, err := store.Search().Search(ctx, "ws_wk", "SQLite", "", "", 20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 2 {
-		t.Fatalf("PostgreSQL 应命中 2 条，实际 %d: %#v", len(hits), hits)
+		t.Fatalf("SQLite 应命中 2 条，实际 %d: %#v", len(hits), hits)
 	}
 	for _, h := range hits {
 		if h.WorkItemID != "wi_s1" || h.SourceID == "" || h.Snippet == "" {
@@ -74,32 +74,32 @@ func TestSearchIndexAndQuery(t *testing.T) {
 
 	// 定点重写：同 (kind, source_id) 覆盖写 → 新内容命中、旧快照不残留。
 	seedSearchEntry(t, store, "wi_s1", "segment_summary", "wi_s1",
-		"台账任务", "已完成 3 轮。结论改判：storage 换成 SQLite。")
-	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "", "", 20); err != nil || len(hits) != 1 {
+		"台账任务", "已完成 3 轮。结论改判：storage 启用 WAL 模式。")
+	if hits, err = store.Search().Search(ctx, "ws_wk", "WAL", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("重写后应命中新内容 1 条: %v %#v", err, hits)
 	}
-	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "", 20); err != nil || len(hits) != 1 {
+	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("重写后旧内容只应剩 decision 1 条: %v %#v", err, hits)
 	}
 
 	// workspace 隔离：别 workspace 的条目搜不到。
 	seedSearchEntry(t, store, "wi_other", "decision", "dec_other",
-		"other decision", "other workspace PostgreSQL note")
-	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "", 20); err != nil || len(hits) != 1 {
+		"other decision", "other workspace SQLite note")
+	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("workspace 隔离失效: %v %#v", err, hits)
 	}
-	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "wi_chat", "", 20); err != nil || len(hits) != 0 {
+	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "wi_chat", "", 20); err != nil || len(hits) != 0 {
 		t.Fatalf("Chat 索引不得出现在任务搜索: %v %#v", err, hits)
 	}
-	if hits, err = store.Search().Search(ctx, "ws_other", "PostgreSQL", "", "", 20); err != nil || len(hits) != 1 {
+	if hits, err = store.Search().Search(ctx, "ws_other", "SQLite", "", "", 20); err != nil || len(hits) != 1 {
 		t.Fatalf("ws_other 应搜到自己的条目: %v %#v", err, hits)
 	}
 
 	// kind / work_item_id 过滤。
-	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "wi_s1", "decision", 20); err != nil || len(hits) != 1 || hits[0].Kind != "decision" {
+	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "wi_s1", "decision", 20); err != nil || len(hits) != 1 || hits[0].Kind != "decision" {
 		t.Fatalf("kind+work_item 过滤异常: %v %#v", err, hits)
 	}
-	if hits, err = store.Search().Search(ctx, "ws_wk", "PostgreSQL", "", "artifact", 20); err != nil || len(hits) != 0 {
+	if hits, err = store.Search().Search(ctx, "ws_wk", "SQLite", "", "artifact", 20); err != nil || len(hits) != 0 {
 		t.Fatalf("artifact kind 应无命中: %v %#v", err, hits)
 	}
 

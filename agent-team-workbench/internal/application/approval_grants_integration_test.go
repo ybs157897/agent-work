@@ -71,7 +71,7 @@ func TestGrantAutoApprovesMatchingRequest(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -137,7 +137,7 @@ func TestGrantPatternMismatchStaysManual(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -173,7 +173,7 @@ func TestResolveOnceAndRejectCreateNoGrant(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
@@ -224,7 +224,7 @@ func TestResolveScopeRejectsNonGrantableKind(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)

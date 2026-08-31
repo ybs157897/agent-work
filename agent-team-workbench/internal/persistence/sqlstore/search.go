@@ -9,8 +9,8 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
-// SearchRepo 检索索引仓储（会话元模型 S4）：SQLite 走 FTS5 MATCH + snippet()，
-// PG 走 plainto_tsquery + ts_headline + ts_rank；workspace 过滤靠 JOIN work_items。
+// SearchRepo 检索索引仓储（会话元模型 S4）：FTS5 MATCH + snippet()；workspace
+// 过滤靠 JOIN work_items。
 type SearchRepo struct{ store *Store }
 
 // IndexEntry 定点重写：先删 (kind, source_id) 再插入——三类条目各自
@@ -41,15 +41,7 @@ func (r *SearchRepo) Search(ctx context.Context, workspaceID, query, workItemID,
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	var (
-		hits []*application.SearchResult
-		err  error
-	)
-	if r.store.dialect.Name == "postgres" {
-		hits, err = r.searchPostgres(ctx, workspaceID, tokens, workItemID, kind, limit)
-	} else {
-		hits, err = r.searchSQLite(ctx, workspaceID, tokens, workItemID, kind, limit)
-	}
+	hits, err := r.searchSQLite(ctx, workspaceID, tokens, workItemID, kind, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -57,9 +49,8 @@ func (r *SearchRepo) Search(ctx context.Context, workspaceID, query, workItemID,
 		return hits, nil
 	}
 
-	// unicode61 和 PostgreSQL simple parser 都可能把连续 CJK 串当作一个
-	// token；显式子串检索保持两种数据库对用户可见语义一致。FTS 命中的
-	// 条目仍排在前面，fallback 只补齐剩余结果并去重。
+	// unicode61 可能把连续 CJK 串当作一个 token；显式子串检索补足局部词。
+	// FTS 命中的条目仍排在前面，fallback 只补齐剩余结果并去重。
 	fallback, err := r.searchSubstring(ctx, workspaceID, tokens, workItemID, kind, limit)
 	if err != nil {
 		return nil, err
@@ -81,25 +72,7 @@ func (r *SearchRepo) searchSQLite(ctx context.Context, workspaceID string, token
 	return scanSearchRows(rows, err)
 }
 
-// searchPostgres plainto_tsquery + ts_headline + ts_rank。
-func (r *SearchRepo) searchPostgres(ctx context.Context, workspaceID string, tokens []string, workItemID, kind string, limit int) ([]*application.SearchResult, error) {
-	tsquery := strings.Join(tokens, " & ")
-	q := `SELECT search_index.work_item_id, search_index.kind, search_index.source_id, search_index.title,
-		ts_headline('simple', search_index.body, plainto_tsquery('simple', ?),
-			'StartSel=[,StopSel=],MaxWords=16,MinWords=6,ShortWord=3,Ellipsis=…')
-		FROM search_index JOIN work_items ON work_items.id = search_index.work_item_id
-		WHERE search_index.tsv @@ plainto_tsquery('simple', ?) AND work_items.workspace_id = ? AND work_items.record_kind = ?`
-	args := []any{tsquery, tsquery, workspaceID, domain.RecordKindTask}
-	q, args = r.withFilters(q, args, workItemID, kind)
-	q += ` ORDER BY ts_rank(search_index.tsv, plainto_tsquery('simple', ?)) DESC LIMIT ?`
-	args = append(args, tsquery, limit)
-	rows, err := r.store.query(ctx, r.store.exec(ctx), q, args...)
-	return scanSearchRows(rows, err)
-}
-
-// searchSubstring 是 CJK 局部词的跨方言 fallback。查询表达式只使用两种
-// 数据库共有的 LOWER/COALESCE/||/LIKE/ESCAPE，避免 PG 与 SQLite 的用户语义
-// 因 tokenizer 不同而分叉。
+// searchSubstring 是 CJK 局部词的 SQLite FTS fallback。
 func (r *SearchRepo) searchSubstring(ctx context.Context, workspaceID string, tokens []string, workItemID, kind string, limit int) ([]*application.SearchResult, error) {
 	q := `SELECT search_index.work_item_id, search_index.kind, search_index.source_id,
 		search_index.title, search_index.body

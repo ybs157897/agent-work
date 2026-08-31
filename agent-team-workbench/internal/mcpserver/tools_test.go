@@ -8,10 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"os"
 	"path/filepath"
-	"runtime"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,12 +19,13 @@ import (
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/migtest"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-// openTestDB 临时文件 sqlite + 全量迁移（动态发现 migrations/sqlite/*.sql，新增迁移免同步清单；
-// 等价性由 cmd/migrate 的守卫测试兜底）。
+// openTestDB 临时文件 sqlite + 全量迁移（动态发现 migrations/*.sql，新增迁移免同步清单；
+// 历史版本与幂等性由 cmd/migrate 的守卫测试兜底）。
 func openTestDB(t *testing.T) *sqlstore.Store {
 	t.Helper()
 	db, err := sql.Open("sqlite",
@@ -37,26 +35,10 @@ func openTestDB(t *testing.T) *sqlstore.Store {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-	_, current, _, _ := runtime.Caller(0)
-	migrationDir := filepath.Join(filepath.Dir(current), "..", "..", "migrations", "sqlite")
-	names, err := filepath.Glob(filepath.Join(migrationDir, "*.sql"))
-	if err != nil {
+	if err := migtest.ApplyAll(db); err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		t.Fatalf("未在 %s 发现迁移文件", migrationDir)
-	}
-	for _, path := range names {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(string(body)); err != nil {
-			t.Fatalf("migration %s: %v", filepath.Base(path), err)
-		}
-	}
-	return sqlstore.New(db, sqlstore.SQLiteDialect())
+	return sqlstore.New(db)
 }
 
 // newTestDeps 构造与生产同形的 toolDeps（stderr no-op dispatcher/notifier）。

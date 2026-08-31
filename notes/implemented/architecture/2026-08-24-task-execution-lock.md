@@ -4,7 +4,7 @@ Status: implemented
 
 设计依据：[`docs/architecture/clawteam-borrowings-design.md`](../../../docs/architecture/clawteam-borrowings-design.md) F1 节。
 锁归属 **run**（非 agent）：属主活性复用 run 状态/lease 面（终态=死），不引入第二套
-活性判定。迁移 0014（双目录语义等价）：`work_items.locked_by_run_id/locked_at`。
+活性判定。SQLite 迁移 0014：`work_items.locked_by_run_id/locked_at`。
 
 ## 决策与理由
 
@@ -20,8 +20,8 @@ Status: implemented
 - **释放点 = 同函数 to.IsTerminal() 分支**：锁仍归本 run 才清空；已被抢占/回收的锁
   不误伤（属主判定 HoldsLock(runID)）。
 - **锁字段不参与 version 乐观锁比较**（设计文档既有取舍），但读写与状态变更同事务；
-  Update 语句 SET 清单带锁列，读-改-写同事务内 expected=读取版本，SQLite 写串行 +
-  PG 行锁保证不会「版本过了但锁丢了」。
+  Update 语句 SET 清单带锁列，读-改-写同事务内 expected=读取版本，SQLite 写事务
+  串行保证不会「版本过了但锁丢了」。
 - **ClaimWorkItem 不改语义**：带锁任务必为 in_progress（建 run 即推进状态），天然不
   满足「todo 且无 assignee」前置；死属主锁的抢占发生在下一个 run 的起跑获取点，claim
   不做 in_progress → todo 自动重置——状态回流留给人工/编排路径。

@@ -112,7 +112,7 @@ func TestSubmitPlanJoinNarrowsQuietWake(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)
@@ -161,7 +161,7 @@ func TestSubmitPlanJoinAllEquivalentToDefer(t *testing.T) {
 			ctx := context.Background()
 			db := openTestDB(t)
 			defer db.Close()
-			store := sqlstore.New(db, sqlstore.SQLiteDialect())
+			store := sqlstore.New(db)
 			svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 			wsID, leadID, workerID := seedPlanEnv(t, ctx, store)
@@ -199,7 +199,7 @@ func TestSubmitPlanJoinTargetMustBeChild(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, _ := seedPlanEnv(t, ctx, store)
@@ -232,7 +232,7 @@ func TestPlanApprovalGuardrailManualDispatch(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
@@ -339,7 +339,7 @@ func TestSubmitPlanMaxDispatchRejectsWholePlan(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)
@@ -374,7 +374,7 @@ func TestPlanBudgetTokensExceededAtQuietWake(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wsID, leadID, workerID := seedPlanEnv(t, ctx, store)

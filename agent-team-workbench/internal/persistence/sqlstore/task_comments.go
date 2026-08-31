@@ -64,8 +64,7 @@ func (r *TaskCommentRepo) Append(ctx context.Context, c *domain.TaskComment) (*d
 		c.CreatedAt = timeNow()
 	}
 	// 先以无值变化的 UPDATE 锁住 cursor 行，再检查 client_key。这样同一 root
-	// 的并发 Append 必须在这把锁后重查，避免 PG unique-violation 中止事务后再
-	// SELECT 的错误路径，也不会让幂等重放推进 revision 水位。
+	// 的并发 Append 必须在这把锁后重查，也不会让幂等重放推进 revision 水位。
 	var currentRevision int64
 	if err := r.store.queryRow(ctx, r.store.exec(ctx),
 		`UPDATE task_comment_cursors SET latest_revision = latest_revision
@@ -101,12 +100,12 @@ func (r *TaskCommentRepo) Append(ctx context.Context, c *domain.TaskComment) (*d
 		c.ID, c.WorkspaceID, c.RootWorkItemID, c.WorkItemID, c.Revision,
 		c.Kind, c.Body, c.ActorKind, c.ActorID,
 		nullString(c.SourceRunID), nullString(c.SourceRef), nullString(c.ClientKey),
-		r.store.dialect.TimeParam(c.CreatedAt))
+		timeParam(c.CreatedAt))
 	if err != nil {
-		if r.store.dialect.UniqueViolation(err) {
+		if sqliteUniqueViolation(err) {
 			// A raw/legacy writer that bypasses the cursor lock can still collide.
 			// Return an error so the enclosing transaction rolls back its allocated
-			// revision; never issue another statement in an aborted PostgreSQL tx.
+			// revision before another writer can observe it.
 			return nil, domain.ErrIdempotencyConflict
 		}
 		return nil, r.store.mapErr(err)

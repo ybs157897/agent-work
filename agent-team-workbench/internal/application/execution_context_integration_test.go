@@ -28,7 +28,7 @@ func newContextTestSvc(t *testing.T, wsID string) (*application.Service, *sqlsto
 	ctx := context.Background()
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 	now := time.Now().UTC()
@@ -372,7 +372,7 @@ func TestChatRunWithoutLocationRejected(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	t.Cleanup(func() { db.Close() })
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 	// 注意：不 seedCtx —— 该 Workspace 无任何 Location。

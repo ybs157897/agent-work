@@ -79,7 +79,7 @@ func TestDecisionEndpointsAndDigestDetail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.svc.RecordRunEvent(ctx, run.ID, domain.EventMessageCompleted,
-		map[string]any{"role": "assistant", "text": "第一答：用 PostgreSQL"}); err != nil {
+		map[string]any{"role": "assistant", "text": "第一答：用 SQLite"}); err != nil {
 		t.Fatal(err)
 	}
 	finishSvcRun(t, s.svc, run.ID)
@@ -99,17 +99,17 @@ func TestDecisionEndpointsAndDigestDetail(t *testing.T) {
 		t.Fatalf("work item 详情应 200，实际 %d", code)
 	}
 	digest, _ := detail["rolling_digest"].(string)
-	if !strings.Contains(digest, "第一问：数据库选什么") || !strings.Contains(digest, "第一答：用 PostgreSQL") {
+	if !strings.Contains(digest, "第一问：数据库选什么") || !strings.Contains(digest, "第一答：用 SQLite") {
 		t.Fatalf("详情 rolling_digest 应含台账内容: %q", digest)
 	}
 
 	// 决策写入：201 + 行内容回显。
 	code, created := postDecision(t, mux, wi.ID,
-		`{"quote":"  就用 PostgreSQL  ","source_run_id":"`+run.ID+`","source_ref":"msg:1"}`)
+		`{"quote":"  就用 SQLite  ","source_run_id":"`+run.ID+`","source_ref":"msg:1"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("决策写入应 201，实际 %d: %v", code, created)
 	}
-	if created["quote"] != "就用 PostgreSQL" || created["source_run_id"] != run.ID {
+	if created["quote"] != "就用 SQLite" || created["source_run_id"] != run.ID {
 		t.Fatalf("决策行回显异常: %v", created)
 	}
 
@@ -154,7 +154,7 @@ func TestDecisionEndpointsAndDigestDetail(t *testing.T) {
 			t.Fatalf("决策行缺字段 %s: %v", key, first)
 		}
 	}
-	if first["quote"] != "就用 PostgreSQL" {
+	if first["quote"] != "就用 SQLite" {
 		t.Fatalf("列表应升序（首条为最早写入）: %v", first)
 	}
 }

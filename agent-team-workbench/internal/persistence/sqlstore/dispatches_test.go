@@ -17,7 +17,7 @@ func TestDispatchRoundTripAndList(t *testing.T) {
 	db := openWakeupTestDB(t)
 	defer db.Close()
 	seedWorkspace(t, db)
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	insertWorkItem(t, db, "wi_disp")
 
 	first := &domain.Dispatch{
@@ -90,7 +90,7 @@ func TestRunDispatchMembership(t *testing.T) {
 	db := openWakeupTestDB(t)
 	defer db.Close()
 	seedWorkspace(t, db)
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	insertWorkItem(t, db, "wi_group")
 
 	d := &domain.Dispatch{
@@ -142,7 +142,7 @@ func TestTaskSessionSegmentSeq(t *testing.T) {
 	db := openWakeupTestDB(t)
 	defer db.Close()
 	seedWorkspace(t, db)
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	insertWorkItem(t, db, "wi_seg")
 
 	now := time.Now().UTC()

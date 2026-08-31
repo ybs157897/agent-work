@@ -10,10 +10,9 @@ import (
 type WorkspaceRepo struct{ store *Store }
 
 func (r *WorkspaceRepo) Create(ctx context.Context, ws *domain.Workspace) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`INSERT INTO workspaces(id, name, timezone, version, created_at, updated_at) VALUES (?,?,?,?,?,?)`,
-		ws.ID, ws.Name, ws.Timezone, ws.Version, d.TimeParam(ws.CreatedAt), d.TimeParam(ws.UpdatedAt))
+		ws.ID, ws.Name, ws.Timezone, ws.Version, timeParam(ws.CreatedAt), timeParam(ws.UpdatedAt))
 	return r.store.mapErr(err)
 }
 
@@ -32,11 +31,10 @@ func (r *WorkspaceRepo) Get(ctx context.Context, id string) (*domain.Workspace, 
 
 // Update 乐观锁：version 不匹配时更新 0 行 → ErrVersionConflict。
 func (r *WorkspaceRepo) Update(ctx context.Context, ws *domain.Workspace, expectedVersion int) error {
-	d := r.store.dialect
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE workspaces SET name=?, timezone=?, version=version+1, updated_at=?
 		 WHERE id=? AND version=?`,
-		ws.Name, ws.Timezone, d.TimeParam(timeNow()), ws.ID, expectedVersion)
+		ws.Name, ws.Timezone, timeParam(timeNow()), ws.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -107,7 +105,6 @@ func (r *AgentRepo) scan(row interface{ Scan(...any) error }, a *domain.AgentPro
 }
 
 func (r *AgentRepo) Create(ctx context.Context, a *domain.AgentProfile) error {
-	d := r.store.dialect
 	kind := a.Kind
 	if kind == "" {
 		kind = domain.AgentProfileKindUser
@@ -129,8 +126,8 @@ func (r *AgentRepo) Create(ctx context.Context, a *domain.AgentProfile) error {
 		a.ID, a.WorkspaceID, a.Kind, a.Slug, a.Name, a.Role, jsonText(a.Skills), a.Instructions, nullString(a.Avatar),
 		a.Availability, a.Presence, jsonText(a.RuntimePreference), jsonText(a.ModelOverride), jsonText(a.Policy),
 		a.HeartbeatEnabled, a.HeartbeatIntervalSec, a.WakeOnAssignment, a.WakeOnDemand,
-		a.WakeOnAutomation, a.PromptTemplate, d.NullTimeParam(a.LastHeartbeatAt),
-		a.Version, d.TimeParam(a.CreatedAt), d.TimeParam(a.UpdatedAt), a.PromptVersion, a.InstructionsEditable)
+		a.WakeOnAutomation, a.PromptTemplate, nullTimeParam(a.LastHeartbeatAt),
+		a.Version, timeParam(a.CreatedAt), timeParam(a.UpdatedAt), a.PromptVersion, a.InstructionsEditable)
 	return r.store.mapErr(err)
 }
 
@@ -166,7 +163,6 @@ func (r *AgentRepo) List(ctx context.Context, workspaceID string) ([]*domain.Age
 // Update 乐观锁：version 不匹配时更新 0 行 → ErrVersionConflict。
 // wakeup 策略列随 Update 持久化；last_heartbeat_at 由 ClaimHeartbeat 独占维护，此处不触碰。
 func (r *AgentRepo) Update(ctx context.Context, a *domain.AgentProfile, expectedVersion int) error {
-	d := r.store.dialect
 	// A system profile is managed exclusively by TaskCoordinatorRepo. Check the
 	// persisted identity rather than trusting a caller-provided object.
 	var kind string
@@ -186,7 +182,7 @@ func (r *AgentRepo) Update(ctx context.Context, a *domain.AgentProfile, expected
 		a.Availability, a.Presence, jsonText(a.RuntimePreference), jsonText(a.ModelOverride), jsonText(a.Policy),
 		a.HeartbeatEnabled, a.HeartbeatIntervalSec, a.WakeOnAssignment, a.WakeOnDemand,
 		a.WakeOnAutomation, a.PromptTemplate,
-		d.TimeParam(a.UpdatedAt), a.ID, expectedVersion)
+		timeParam(a.UpdatedAt), a.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -197,10 +193,9 @@ func (r *AgentRepo) Update(ctx context.Context, a *domain.AgentProfile, expected
 }
 
 func (r *AgentRepo) SetPresence(ctx context.Context, id string, presence domain.AgentPresence) error {
-	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE agent_profiles SET presence=?, updated_at=? WHERE id=?`,
-		presence, d.TimeParam(timeNow()), id)
+		presence, timeParam(timeNow()), id)
 	return r.store.mapErr(err)
 }
 

@@ -14,7 +14,7 @@ func TestTaskCoordinatorConfigIsSingletonAndProtected(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 
 	config, err := store.TaskCoordinators().EnsureConfig(ctx, "ws_wk")
@@ -86,7 +86,7 @@ func TestTaskCoordinatorDefaultPrefersReadyCodexThenKimi(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	now := time.Now().UTC()
 	for _, binding := range []*domain.RuntimeBinding{
@@ -110,7 +110,7 @@ func TestTaskCoordinatorStateResolvesRootAndDueRecovery(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	config, err := store.TaskCoordinators().EnsureConfig(ctx, "ws_wk")
 	if err != nil {
@@ -208,7 +208,7 @@ func TestTaskCoordinatorDueScanSkipsIdleRunningAndKeepsPendingStatesVisible(t *t
 	ctx := context.Background()
 	db := openWakeupTestDB(t)
 	defer db.Close()
-	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	store := sqlstore.New(db)
 	seedWorkspace(t, db)
 	config, err := store.TaskCoordinators().EnsureConfig(ctx, "ws_wk")
 	if err != nil {
