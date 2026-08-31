@@ -7,6 +7,7 @@ import { ErrorState } from '../components/async-state';
 import { BlockTaskModal } from './tasks/block-modal';
 import { TaskDetail } from './tasks/task-detail';
 import { useTasksStore } from '../stores/tasks.store';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity } from '../stores/scope';
 import { toast } from '../stores/toast.store';
 
 /**
@@ -24,9 +25,15 @@ export default function TaskWorkspacePage() {
   useEffect(() => {
     if (!taskId) return;
     let active = true;
+    const scope = captureScope();
     getWorkItem(taskId)
       .then((item) => {
-        if (!active) return;
+        if (!active || !isCurrent(scope)) return;
+        if (!isCurrentWorkspaceEntity(scope, item)) {
+          setLoadError('该任务不属于当前工作区，已返回任务看板。');
+          navigate('/tasks', { replace: true });
+          return;
+        }
         if (item.record_kind !== 'task') {
           setLoadError('该记录属于 Chat，不能在 Task 页面打开。');
           return;
@@ -35,16 +42,22 @@ export default function TaskWorkspacePage() {
         upsert(item);
       })
       .catch((error: unknown) => {
-        if (!active) return;
+        if (!active || !isCurrent(scope)) return;
         setLoadError(error instanceof ApiError ? error.message : '任务加载失败');
       });
     return () => {
       active = false;
     };
-  }, [taskId, upsert]);
+  }, [navigate, taskId, upsert]);
 
   const transitionTask = async (item: WorkItem, to: WorkItemStatus) => {
     if (item.record_kind !== 'task') return;
+    const scope = captureScope();
+    if (!isCurrentWorkspaceEntity(scope, item)) {
+      toast.error('该任务不属于当前工作区，无法操作。');
+      navigate('/tasks', { replace: true });
+      return;
+    }
     try {
       if (to === 'blocked') {
         if (item.status !== 'in_progress') {
@@ -55,21 +68,26 @@ export default function TaskWorkspacePage() {
         return;
       }
       if (item.status === 'blocked' && to === 'in_progress') {
-        upsert(await unblockWorkItem(item.id, item.version));
+        const updated = await unblockWorkItem(item.id, item.version);
+        if (!isCurrentWorkspaceEntity(scope, updated)) return;
+        upsert(updated);
         toast.success(`已解除阻塞「${item.title}」`);
         return;
       }
       if (to === 'completed' && (item.phase === 'review' || item.phase === 'acceptance')) {
-        upsert(await acceptWorkItem(item.id, item.version));
+        const updated = await acceptWorkItem(item.id, item.version);
+        if (!isCurrentWorkspaceEntity(scope, updated)) return;
+        upsert(updated);
         toast.success(`任务「${item.title}」验收通过`);
         return;
       }
       toast.error('该状态由 Coordinator 管理，当前操作不可用');
     } catch (error: unknown) {
+      if (!isCurrent(scope)) return;
       if (error instanceof ApiError && error.isVersionConflict) {
         toast.error('任务状态已更新，请刷新后重试');
         const latest = await getWorkItem(item.id).catch(() => undefined);
-        if (latest?.record_kind === 'task') upsert(latest);
+        if (latest?.record_kind === 'task' && isCurrentWorkspaceEntity(scope, latest)) upsert(latest);
       } else {
         toast.error(error instanceof ApiError ? error.message : '操作失败，请重试');
       }

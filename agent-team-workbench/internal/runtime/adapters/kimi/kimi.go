@@ -36,8 +36,7 @@ type Config struct {
 	BinPath       string   // kimi 可执行文件
 	Args          []string // 覆盖默认参数（测试用回放桩）
 	Home          string   // KIMI_CODE_HOME 项目空间（默认 .agent-work/kimi）
-	WorkspaceRoot string
-	Model         string // 可选 -m
+	Model         string   // 可选 -m
 	MaxFrameBytes int
 	GracePeriod   time.Duration
 }
@@ -152,7 +151,12 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
 			Failure: configFailure("spawn_failed", err.Error())}
 	}
-	cmd.Dir = a.cfg.WorkspaceRoot
+	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
+	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
+	cmd.Dir = ex.Resolved.CWD
+	if cmd.Dir == "" {
+		cmd.Dir = "."
+	}
 	cmd.Env = a.processEnv()
 	setProcGroup(cmd)
 

@@ -1,12 +1,15 @@
 import type { CanonicalEvent } from '../api/types';
 import { useAgentsStore } from './agents.store';
+import { useBriefStore } from './brief.store';
 import { useChatStore } from './chat.store';
+import { useCommentsStore } from './comments.store';
 import { useDashboardStore } from './dashboard.store';
 import { useCoordinatorStore } from './coordinator.store';
 import { useDecisionsStore } from './decisions.store';
 import { useDispatchesStore } from './dispatches.store';
 import { useLogsStore } from './logs.store';
 import { usePlansStore } from './plans.store';
+import { useReviewQueueStore } from './review-queue.store';
 import { useRunsStore } from './runs.store';
 import { useTasksStore } from './tasks.store';
 
@@ -33,6 +36,9 @@ const refreshTasks = createDebounced(() => void useTasksStore.getState().refresh
 const refreshDashboard = createDebounced(() => void useDashboardStore.getState().refresh());
 const refreshAgents = createDebounced(() => void useAgentsStore.getState().refresh());
 const refreshChatConversations = createDebounced(() => void useChatStore.getState().refreshConversations());
+// Review Queue（RFC §12.4）：work_item.*/coordinator.*/run terminal/artifact.* /
+// task_comment.created 触发，debounce 合并突发；refresh 内部再带 generation fencing。
+const refreshReviewQueue = createDebounced(() => void useReviewQueueStore.getState().refresh());
 
 function eventRecordKind(ev: CanonicalEvent): 'chat' | 'task' | undefined {
   const value = ev.data?.record_kind;
@@ -49,11 +55,22 @@ export function routeEvent(ev: CanonicalEvent): void {
   const logs = useLogsStore.getState();
   const runs = useRunsStore.getState();
 
+  // Brief 是缓存的服务端聚合读模型：相关 SSE 已由 bootstrap 层推进 eventCursor，
+  // 这里必须把事件交给 Brief store 置 stale 并合并补拉。不能只更新 Queue，
+  // 否则详情会错误显示「与实时事件保持同步」。
+  useBriefStore.getState().applyEvent(ev);
+
+  if (ev.type === 'work_item.development_context_updated') {
+    // 上下文事件随流合法消费；DevelopmentContext 投影 UI 未立项
+    // （RFC §17 不顺手加入），不触发看板刷新，也不落入 run 域兜底。
+    return;
+  }
   if (ev.type.startsWith('work_item.')) {
     const kind = eventRecordKind(ev);
     if (kind === 'task') {
       refreshTasks();
       refreshDashboard();
+      refreshReviewQueue();
     } else if (kind === 'chat') {
       refreshChatConversations();
     }
@@ -87,12 +104,31 @@ export function routeEvent(ev: CanonicalEvent): void {
     // 防止未知/旧事件把 Chat 页面污染成任务执行线。
     if (eventRecordKind(ev) !== 'task') return;
     useCoordinatorStore.getState().applyEvent(ev);
+    refreshReviewQueue();
     return;
   }
   if (ev.type.startsWith('decision.')) {
     if (eventRecordKind(ev) !== 'task') return;
     // 决策台账事件（会话元模型 S2）：按 work item 失效重取决策列表。
     useDecisionsStore.getState().applyEvent(ev);
+    return;
+  }
+  if (ev.type === 'task_comment.created') {
+    // 评论信封不带 body：按根 Task 失效重取评论流（RFC §10）。
+    useCommentsStore.getState().applyEvent(ev);
+    refreshReviewQueue();
+    return;
+  }
+  if (ev.type.startsWith('artifact.')) {
+    // artifact 事件（aggregate 不带 run_id）：刷新 watched runs 的产物，
+    // 同时是 Review Queue 的刷新条件（RFC §12.4）。
+    refreshReviewQueue();
+    runs.applyEvent(ev);
+    return;
+  }
+  if (ev.type.startsWith('workspace_location.') || ev.type === 'execution_host.updated') {
+    // Location/Host 事件已进白名单并随流合法消费；Location/Host 投影 UI 未立项
+    // （RFC §17 不顺手加入），此处显式丢弃防止落入 run 域兜底。
     return;
   }
   if (ev.type === 'activity.appended') {
@@ -115,6 +151,7 @@ export function routeEvent(ev: CanonicalEvent): void {
     if (kind === 'task') {
       refreshTasks();
       refreshDashboard();
+      refreshReviewQueue();
     } else if (kind === 'chat') {
       refreshChatConversations();
     }

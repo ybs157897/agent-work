@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,16 +29,15 @@ import (
 // GatewayConfig 网关形态配置。BaseURL 非空时直连外部网关（supervisor
 // 只探活不管理进程）；否则按 RepoDir/nodeBin 拉起本地长驻实例。
 type GatewayConfig struct {
-	BaseURL       string        // 直连已运行网关，如 http://127.0.0.1:3080
-	Host          string        // 拉起时绑定 host（默认 127.0.0.1）
-	Port          int           // 拉起时端口（默认 3090）
-	NodeBin       string        // node 可执行文件（默认 node）
-	BinArgs       []string      // 覆盖启动参数（测试回放桩）
-	RepoDir       string        // deepseek-harness 仓库根（apps/cli/src/bin.ts）
-	Home          string        // DSH_HOME 项目空间（默认 .agent-work/dsh）
-	WorkspaceRoot string        // session.create.cwd（执行根目录）
-	Model         string        // 缺省模型（session.selectModel）
-	IdleTimeout   time.Duration // 事件流空闲保护（默认 10m）
+	BaseURL     string        // 直连已运行网关，如 http://127.0.0.1:3080
+	Host        string        // 拉起时绑定 host（默认 127.0.0.1）
+	Port        int           // 拉起时端口（默认 3090）
+	NodeBin     string        // node 可执行文件（默认 node）
+	BinArgs     []string      // 覆盖启动参数（测试回放桩）
+	RepoDir     string        // deepseek-harness 仓库根（apps/cli/src/bin.ts）
+	Home        string        // DSH_HOME 项目空间（默认 .agent-work/dsh）
+	Model       string        // 缺省模型（session.selectModel）
+	IdleTimeout time.Duration // 事件流空闲保护（默认 10m）
 }
 
 func (c GatewayConfig) port() int {
@@ -262,7 +260,12 @@ func (g *Gateway) resolveSession(ex *runtime.ExecContext, client *wireClient, st
 		return resumeID, nil
 	}
 	// fresh：创建会话（persona 仅创建时给定；resume 一律不传，避免 persona 冲突判定）。
-	payload := map[string]any{"cwd": g.cwd()}
+	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
+	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
+	payload := map[string]any{"cwd": ex.Resolved.CWD}
+	if payload["cwd"] == "" {
+		payload["cwd"] = "."
+	}
 	if persona != "" {
 		payload["persona"] = truncate(persona, 8000)
 	}
@@ -300,17 +303,6 @@ func (g *Gateway) selectModel(ex *runtime.ExecContext, client *wireClient, sessi
 	if err := client.call(ex.Ctx, "session.selectModel", payload, nil); err != nil {
 		ex.Callbacks.OnLog("dsh", "selectModel 容忍失败: "+err.Error())
 	}
-}
-
-func (g *Gateway) cwd() string {
-	root := g.cfg.WorkspaceRoot
-	if root == "" || root == "." {
-		return "."
-	}
-	if abs, err := filepath.Abs(root); err == nil {
-		return abs
-	}
-	return root
 }
 
 func (g *Gateway) promptTurn(ctx context.Context, client *wireClient, sessionID, instruction string) *rpcWireError {

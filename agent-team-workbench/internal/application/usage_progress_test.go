@@ -26,6 +26,7 @@ func TestRecordRunUsageEmitsUsageUpdated(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_usage")
 	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "usage progress"})
 	if err != nil {
 		t.Fatal(err)

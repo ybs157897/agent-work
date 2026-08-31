@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
@@ -49,6 +50,15 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			Code: "version_conflict", Retryable: true,
 			Detail: "资源版本已变化，请刷新快照后重试",
 		})
+	case errors.Is(err, application.ErrReviewStateConflict):
+		// Accept/Return/feedback 竞态（RFC §9.7）；须先于 ErrStateConflict 判定
+		//（该哨兵包装了 ErrStateConflict 保持兼容）。
+		writeProblem(w, r, Problem{
+			Type:  "https://workbench.example/problems/review-state-conflict",
+			Title: "Review state conflict", Status: http.StatusConflict,
+			Code:   "review_state_conflict",
+			Detail: err.Error(),
+		})
 	case errors.Is(err, domain.ErrStateConflict):
 		writeProblem(w, r, Problem{
 			Type:  "https://workbench.example/problems/state-conflict",
@@ -89,6 +99,16 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			Detail: "游标已过保留窗口，请重新 bootstrap",
 		})
 	default:
+		// 执行上下文族（任务控制面 RFC §9.7）：sentinel → 稳定 code/HTTP/retryable。
+		if p, ok := contextProblem(err); ok {
+			writeProblem(w, r, p)
+			return
+		}
+		// 评论族（任务控制面 RFC §9.7 comment 族）。
+		if p, ok := commentProblem(err); ok {
+			writeProblem(w, r, p)
+			return
+		}
 		log.Printf("httpapi: unhandled error: %v", err)
 		writeProblem(w, r, Problem{
 			Type:  "https://workbench.example/problems/internal",
@@ -112,4 +132,80 @@ func decodeBody(r *http.Request, v any) error {
 		return err
 	}
 	return nil
+}
+
+// contextProblemTable 执行上下文族错误码映射（RFC §9.7）；code/HTTP/Retryable
+// 与契约逐行对应。
+var contextProblemTable = []struct {
+	sentinel  error
+	code      string
+	status    int
+	retryable bool
+	title     string
+}{
+	{domain.ErrWorkspaceLocationRequired, "workspace_location_required", http.StatusUnprocessableEntity, false, "Workspace location required"},
+	{domain.ErrWorkspaceLocationAmbiguous, "workspace_location_ambiguous", http.StatusConflict, false, "Workspace location ambiguous"},
+	{domain.ErrWorkspaceMountNotAdvertised, "workspace_mount_not_advertised", http.StatusUnprocessableEntity, false, "Workspace mount not advertised"},
+	{domain.ErrWorkspaceContextMismatch, "workspace_context_mismatch", http.StatusConflict, false, "Workspace context mismatch"},
+	{domain.ErrWorkspaceMountGenerationChanged, "workspace_mount_generation_changed", http.StatusConflict, true, "Workspace mount generation changed"},
+	{domain.ErrWorkspaceBranchNotUnique, "workspace_branch_not_unique", http.StatusConflict, false, "Workspace branch not unique"},
+	{domain.ErrWorkspaceCheckoutBusy, "workspace_checkout_busy", http.StatusConflict, true, "Workspace checkout busy"},
+	{domain.ErrExecutionHostUnavailable, "execution_host_unavailable", http.StatusConflict, true, "Execution host unavailable"},
+	{domain.ErrDevelopmentContextBusy, "development_context_busy", http.StatusConflict, true, "Development context busy"},
+	{domain.ErrDevelopmentContextInvalid, "development_context_invalid", http.StatusUnprocessableEntity, false, "Development context invalid"},
+	{domain.ErrWorkspacePathForbidden, "workspace_path_forbidden", http.StatusForbidden, false, "Workspace path forbidden"},
+}
+
+// contextProblem 把 ContextError sentinel 映射为 problem；Detail 保留原文。
+func contextProblem(err error) (Problem, bool) {
+	for _, e := range contextProblemTable {
+		if errors.Is(err, e.sentinel) {
+			return Problem{
+				Type:      "https://workbench.example/problems/" + e.code,
+				Title:     e.title,
+				Status:    e.status,
+				Code:      e.code,
+				Retryable: e.retryable,
+				Detail:    err.Error(),
+			}, true
+		}
+	}
+	return Problem{}, false
+}
+
+// commentProblemTable 评论族错误码映射（RFC §9.7 comment 族）；code/HTTP/Retryable
+// 与契约逐行对应。
+var commentProblemTable = []struct {
+	sentinel  error
+	code      string
+	status    int
+	retryable bool
+	title     string
+}{
+	{application.ErrCommentKindInvalid, "comment_kind_invalid", http.StatusUnprocessableEntity, false, "Comment kind invalid"},
+	{application.ErrCommentBodyEmpty, "comment_body_empty", http.StatusUnprocessableEntity, false, "Comment body empty"},
+	{application.ErrCommentBodyTooLarge, "comment_body_too_large", http.StatusRequestEntityTooLarge, false, "Comment body too large"},
+	{application.ErrCommentTerminalWorkItem, "comment_terminal_work_item", http.StatusConflict, false, "Work item is terminal"},
+	{application.ErrCommentSourceRunMismatch, "comment_source_run_mismatch", http.StatusUnprocessableEntity, false, "Source run outside task tree"},
+	{application.ErrCommentCursorInvalid, "comment_cursor_invalid", http.StatusBadRequest, false, "Invalid comment cursor"},
+	{application.ErrCommentCoordinatorRequired, "comment_coordinator_required", http.StatusConflict, false, "Coordinator required for comments"},
+	{application.ErrReviewFeedbackRequired, "review_feedback_required", http.StatusUnprocessableEntity, false, "Review feedback required"},
+	{application.ErrChildReviewNotSupported, "child_review_not_supported", http.StatusConflict, false, "Child review not supported"},
+}
+
+// commentProblem 把评论族 sentinel 映射为 problem；Detail 保留原文。
+func commentProblem(err error) (Problem, bool) {
+	for _, e := range commentProblemTable {
+		if errors.Is(err, e.sentinel) {
+			return Problem{
+				Type:      "https://workbench.example/problems/" + e.code,
+				Title:     e.title,
+				Status:    e.status,
+				Code:      e.code,
+				Retryable: e.retryable,
+				Detail:    err.Error(),
+			}, true
+		}
+	}
+	return Problem{}, false
 }

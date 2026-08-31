@@ -4,10 +4,12 @@ import { getWorkItem, listTaskSessions } from '../../api/endpoints';
 import type { DecisionEntry, TaskSession } from '../../api/types';
 import { Button, EmptyState } from '../../components/ui';
 import { useDecisionsStore } from '../../stores/decisions.store';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity } from '../../stores/scope';
 import { formatDateTime } from '../../utils/format';
 
 export interface TaskLedgerProps {
   taskId: string;
+  workspaceId: string;
   /** 有指派时拉会话锚点展示「第 N 段」（轮换代际）；缺省不展示。 */
   agentProfileId?: string;
 }
@@ -18,7 +20,7 @@ export interface TaskLedgerProps {
  *   投影（列表 omitempty，SSE 刷新会把它剥掉）；
  * - 决策列表走 decisions store（冷启动 refreshFor + decision.created 失效重取）。
  */
-export function TaskLedger({ taskId, agentProfileId }: TaskLedgerProps) {
+export function TaskLedger({ taskId, workspaceId, agentProfileId }: TaskLedgerProps) {
   const decisions = useDecisionsStore((s) => s.byWorkItem[taskId]);
   const decisionsError = useDecisionsStore((s) => s.errorByWorkItem[taskId]);
   const refreshFor = useDecisionsStore((s) => s.refreshFor);
@@ -32,17 +34,19 @@ export function TaskLedger({ taskId, agentProfileId }: TaskLedgerProps) {
 
   const loadDigest = useCallback(async () => {
     const requestId = ++digestRequest.current;
+    const scope = captureScope();
+    if (scope.workspaceId !== workspaceId) return;
     setDigest(null);
     setDigestError(undefined);
     try {
       const wi = await getWorkItem(taskId);
-      if (requestId !== digestRequest.current) return;
+      if (requestId !== digestRequest.current || !isCurrentWorkspaceEntity(scope, wi)) return;
       setDigest(wi.rolling_digest ?? '');
     } catch {
-      if (requestId !== digestRequest.current) return;
+      if (requestId !== digestRequest.current || !isCurrent(scope)) return;
       setDigestError('台账摘要加载失败，请重试');
     }
-  }, [taskId]);
+  }, [taskId, workspaceId]);
 
   useEffect(() => {
     void loadDigest();
@@ -50,6 +54,8 @@ export function TaskLedger({ taskId, agentProfileId }: TaskLedgerProps) {
 
   const loadSessions = useCallback(async () => {
     const requestId = ++sessionRequest.current;
+    const scope = captureScope();
+    if (scope.workspaceId !== workspaceId) return;
     if (!agentProfileId) {
       setSegmentSeq(null);
       setSessionError(undefined);
@@ -58,25 +64,25 @@ export function TaskLedger({ taskId, agentProfileId }: TaskLedgerProps) {
     setSessionError(undefined);
     try {
       const { items } = await listTaskSessions(agentProfileId);
-      if (requestId !== sessionRequest.current) return;
+      if (requestId !== sessionRequest.current || !isCurrent(scope)) return;
       setSegmentSeq(latestSegmentSeq(items, taskId));
     } catch {
-      if (requestId !== sessionRequest.current) return;
+      if (requestId !== sessionRequest.current || !isCurrent(scope)) return;
       setSessionError('会话参与线加载失败，请重试');
     }
-  }, [agentProfileId, taskId]);
+  }, [agentProfileId, taskId, workspaceId]);
 
   useEffect(() => {
     void loadSessions();
   }, [loadSessions]);
 
   useEffect(() => {
-    void refreshFor(taskId);
-  }, [refreshFor, taskId]);
+    if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
+  }, [refreshFor, taskId, workspaceId]);
 
   const retryDecisions = useCallback(() => {
-    void refreshFor(taskId);
-  }, [refreshFor, taskId]);
+    if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
+  }, [refreshFor, taskId, workspaceId]);
 
   return (
     <TaskLedgerView

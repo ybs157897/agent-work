@@ -283,6 +283,53 @@ type resolveApprovalRequest struct {
 	Scope string `json:"scope"`
 }
 
+// ── TaskComment（任务控制面 RFC §9.4）────────────────────────────────
+
+// taskCommentDTO 评论行：与 openapi TaskComment schema 对齐；body 只出现在
+// REST 响应，task_comment.created SSE 事件永不携带。
+type taskCommentDTO struct {
+	ID             string    `json:"id"`
+	WorkspaceID    string    `json:"workspace_id"`
+	RootWorkItemID string    `json:"root_work_item_id"`
+	WorkItemID     string    `json:"work_item_id"`
+	Revision       int64     `json:"revision"`
+	Kind           string    `json:"kind"`
+	Body           string    `json:"body"`
+	ActorKind      string    `json:"actor_kind"`
+	ActorID        string    `json:"actor_id"`
+	SourceRunID    string    `json:"source_run_id,omitempty"`
+	SourceRef      string    `json:"source_ref,omitempty"`
+	ClientKey      string    `json:"client_key,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func toTaskCommentDTO(c *domain.TaskComment) taskCommentDTO {
+	return taskCommentDTO{
+		ID: c.ID, WorkspaceID: c.WorkspaceID, RootWorkItemID: c.RootWorkItemID,
+		WorkItemID: c.WorkItemID, Revision: c.Revision, Kind: string(c.Kind),
+		Body: c.Body, ActorKind: string(c.ActorKind), ActorID: c.ActorID,
+		SourceRunID: c.SourceRunID, SourceRef: c.SourceRef, ClientKey: c.ClientKey,
+		CreatedAt: c.CreatedAt,
+	}
+}
+
+type taskCommentListDTO struct {
+	Items          []taskCommentDTO `json:"items"`
+	NextRevision   *int64           `json:"next_revision"`
+	LatestRevision int64            `json:"latest_revision"`
+}
+
+// createTaskCommentRequest POST body（additionalProperties: false 由
+// decodeBody 的 DisallowUnknownFields 保证）；kind 只接受 note|requirement。
+type createTaskCommentRequest struct {
+	Kind                    string `json:"kind"`
+	Body                    string `json:"body"`
+	SourceRunID             string `json:"source_run_id"`
+	SourceRef               string `json:"source_ref"`
+	ClientKey               string `json:"client_key"`
+	ExpectedWorkItemVersion int    `json:"expected_work_item_version"`
+}
+
 // ── TaskSession ──────────────────────────────────────────────────────
 
 type taskSessionDTO struct {

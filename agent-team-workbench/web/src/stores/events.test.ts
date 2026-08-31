@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
 import { useDispatchesStore } from './dispatches.store';
 import { useDecisionsStore } from './decisions.store';
+import { useCommentsStore } from './comments.store';
 import { createDebounced, routeEvent, SSE_REFRESH_DEBOUNCE_MS } from './events';
 import { usePlansStore } from './plans.store';
 import { useWorkspaceStore } from './workspace.store';
 import { useCoordinatorStore } from './coordinator.store';
+import { useRunsStore } from './runs.store';
 
 const envelope = (type: string): CanonicalEvent => ({
   contract_version: 'events/v1',
@@ -228,7 +230,7 @@ describe('routeEvent Coordinator 控制线', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    useCoordinatorStore.setState({ byWorkItem: {}, errorByWorkItem: {} });
+    useCoordinatorStore.setState({ byWorkItem: {}, resolutionByWorkItem: {}, errorByWorkItem: {} });
   });
 
   it('缺少 record_kind 的 Coordinator 事件 fail-closed', async () => {
@@ -255,8 +257,10 @@ describe('routeEvent Coordinator 控制线', () => {
     ev.data = { work_item_id: 'child', root_work_item_id: 'root', record_kind: 'task' };
     routeEvent(ev);
     await vi.advanceTimersByTimeAsync(250);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(fetchMock.mock.calls.every((call) => String(call[0]).includes('/root/coordinator'))).toBe(true);
+    // coordinator.* 同时触发 Review Queue 失效重取（RFC §12.4），队列调用不计入快照断言。
+    const coordinatorCalls = fetchMock.mock.calls.filter((call) => !String(call[0]).includes('/review-queue'));
+    await vi.waitFor(() => expect(coordinatorCalls).toHaveLength(2));
+    expect(coordinatorCalls.every((call) => String(call[0]).includes('/root/coordinator'))).toBe(true);
   });
 });
 
@@ -320,6 +324,91 @@ describe('routeEvent decision 域路由（会话元模型 S2）', () => {
     await useDecisionsStore.getState().refreshFor('wi_1');
     expect(useDecisionsStore.getState().errorByWorkItem.wi_1).toBeUndefined();
     expect(useDecisionsStore.getState().byWorkItem.wi_1).toEqual([]);
+  });
+});
+
+describe('routeEvent 任务控制面新事件（RFC §10）', () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  const envelopeOf = (type: string, data?: Record<string, unknown>): CanonicalEvent => ({
+    contract_version: 'events/v1',
+    event_id: `evt_${type}_${Math.random()}`,
+    workspace_id: 'ws_1',
+    stream_seq: 1,
+    aggregate: { type: 'workspace', id: 'ws_1', version: 1 },
+    type,
+    occurred_at: '2026-08-30T00:00:00Z',
+    ...(data ? { data } : {}),
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    useCommentsStore.setState({ byRoot: {}, latestRevisions: {}, errorByRoot: {}, loadingByRoot: {} });
+  });
+
+  it('六个新事件都在 EVENT_NAMES 白名单内（SSE listener 按白名单注册）', async () => {
+    const { EVENT_NAMES } = await import('../api/types');
+    for (const name of [
+      'execution_host.updated',
+      'workspace_location.created',
+      'workspace_location.updated',
+      'workspace_location.unavailable',
+      'work_item.development_context_updated',
+      'task_comment.created',
+    ]) {
+      expect(EVENT_NAMES).toContain(name);
+    }
+  });
+
+  it('file_changes.reverted 由 routeEvent 进入 run 时间线并推进 changes revision（其他窗口/replay 可重拉回滚态）', () => {
+    useRunsStore.getState().reset();
+    const reverted = envelopeOf('file_changes.reverted', { record_kind: 'task' });
+    reverted.aggregate = { type: 'execution_run', id: 'run_1', version: 2 };
+    reverted.run_seq = 5;
+    routeEvent(reverted);
+    expect(useRunsStore.getState().timelines.run_1?.[0]?.type).toBe('file_changes.reverted');
+    expect(useRunsStore.getState().changesRevision.run_1).toBe(1);
+
+    // 同一 SSE replay 不应再触发一次刷新；卡片不会陷入重复拉取。
+    routeEvent(reverted);
+    expect(useRunsStore.getState().changesRevision.run_1).toBe(1);
+  });
+
+  it('task_comment.created 路由进 comments store 按 root 失效重取', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(json({ items: [], next_revision: null, latest_revision: 0 }));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 },
+    });
+
+    routeEvent(envelopeOf('task_comment.created', {
+      record_kind: 'task', comment_id: 'cmt_1', root_work_item_id: 'wi_root',
+      work_item_id: 'wi_child', revision: 18, kind: 'requirement', actionable: true,
+    }));
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 10);
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe('/api/v1/work-items/wi_root/comments?limit=200');
+  });
+
+  it('Location/Host/context 事件合法消费：不刷新列表、不落入 run 域', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(json({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 },
+    });
+
+    routeEvent(envelopeOf('workspace_location.created', { location_id: 'wsloc_1' }));
+    routeEvent(envelopeOf('workspace_location.updated', { location_id: 'wsloc_1' }));
+    routeEvent(envelopeOf('workspace_location.unavailable', { location_id: 'wsloc_1' }));
+    routeEvent(envelopeOf('execution_host.updated', { host_id: 'host_1' }));
+    routeEvent(envelopeOf('work_item.development_context_updated', { work_item_id: 'wi_1' }));
+    await vi.advanceTimersByTimeAsync(SSE_REFRESH_DEBOUNCE_MS + 50);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

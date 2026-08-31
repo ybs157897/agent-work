@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -431,7 +432,24 @@ type CreateWorkItemParams struct {
 	AutoCoordinate bool
 	// AcceptanceCriteria is copied into the root coordinator state so the
 	// planner receives the user's acceptance contract after a restart.
+	// RFC §4.10：同一份 criteria 同时持久化到 work_items 行（验收读模型权威）；
+	// 首轮 Run 后不允许原地修改，新增要求走 requirement comment。
 	AcceptanceCriteria []string
+}
+
+// normalizeAcceptanceCriteria 验收条目归一：逐条 trim、丢弃空串；保留原话不改写
+// （领域字段注释：元素为验收条目原话）。
+func normalizeAcceptanceCriteria(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		if t := strings.TrimSpace(c); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p CreateWorkItemParams) (*domain.WorkItem, error) {
@@ -491,9 +509,13 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		ClientKey: p.ClientKey, Version: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}
+	// RFC §4.10：根/子 Task 创建即持久化 canonical 验收标准（不再只放
+	// Coordinator state/Run input）；Chat 记录没有验收读模型，criteria 只属于 Task。
+	if recordKind == domain.RecordKindTask {
+		wi.AcceptanceCriteria = normalizeAcceptanceCriteria(p.AcceptanceCriteria)
+	}
 	autoCoordinate := p.AutoCoordinate && recordKind == domain.RecordKindTask && p.ParentID == ""
 	var coordinatorRootID string
-	var coordinatorChildInstruction string
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		var config *domain.TaskCoordinatorConfig
 		if autoCoordinate {
@@ -529,6 +551,10 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			if err := s.store.TaskCoordinators().CreateState(ctx, state); err != nil {
 				return err
 			}
+			// RFC §6.2：comment cursor 行与 Coordinator state 同事务创建，永不物理删除。
+			if err := s.store.TaskComments().EnsureCursor(ctx, wi.ID); err != nil {
+				return err
+			}
 			if err := s.appendCoordinatorEvent(ctx, state, wi.ID, domain.EventCoordinatorQueued,
 				"任务已进入 Coordinator 队列", "", config.AgentProfileID, 0, "", nil, nil); err != nil {
 				return err
@@ -537,14 +563,42 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		} else if recordKind == domain.RecordKindTask && p.ParentID != "" {
 			// A user-added child belongs to the existing root control line. Plan
 			// children bypass this Service and therefore do not cause a second wake.
+			// RFC §7.7 删除清单：同一事务追加 actor=user 的 requirement comment
+			//（取代 pending_instruction 单槽），根 Coordinator durable queued。
 			if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, p.ParentID); stateErr == nil {
-				if err := s.appendCoordinatorEvent(ctx, state, wi.ID, domain.EventCoordinatorMessageReceived,
-					"新增子任务，等待根 Coordinator 重新规划", "", state.CoordinatorAgentID,
-					state.Attempt, wi.Title, nil, map[string]any{"stage": "plan", "next_action": "重新规划子任务"}); err != nil {
+				root, err := s.store.WorkItems().Get(ctx, state.RootWorkItemID)
+				if err != nil {
+					return err
+				}
+				body := "用户新增子任务：" + wi.Title + "。请把它纳入根任务计划并继续推进。"
+				comment := &domain.TaskComment{
+					ID:             domain.NewID(domain.PrefixTaskComment),
+					WorkspaceID:    workspaceID,
+					RootWorkItemID: state.RootWorkItemID,
+					WorkItemID:     wi.ID,
+					Kind:           domain.CommentRequirement,
+					Body:           body,
+					ActorKind:      domain.CommentActorUser,
+					ActorID:        commentActorUserID,
+					SourceRef:      "work_item.child_added",
+					CreatedAt:      now,
+				}
+				if _, err := s.store.TaskComments().Append(ctx, comment); err != nil {
+					return err
+				}
+				if _, err := s.applyRequirementWakeLocked(ctx, root, "用户新增子任务", body); err != nil {
+					return err
+				}
+				freshState, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
+				if err != nil {
+					return err
+				}
+				if err := s.emitTaskCommentCreated(ctx, comment, freshState); err != nil {
 					return err
 				}
 				coordinatorRootID = state.RootWorkItemID
-				coordinatorChildInstruction = "用户新增子任务：" + wi.Title + "。请把它纳入根任务计划并继续推进。"
+			} else if !errors.Is(stateErr, domain.ErrNotFound) {
+				return stateErr
 			}
 		}
 		return s.activityFor(ctx, workspaceID, wi.ID, "work_item.created", "创建"+workItemNoun(wi)+"「"+wi.Title+"」")
@@ -557,13 +611,9 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		// The row/state/event transaction is the durable hand-off. Starting after
 		// commit prevents a runtime side effect from observing a rolled-back task;
 		// a failure is persisted as blocked/retryable state by the engine.
-		var startErr error
-		if coordinatorChildInstruction != "" {
-			_, startErr = s.SendCoordinatorInstruction(context.WithoutCancel(ctx), coordinatorRootID, coordinatorChildInstruction)
-		} else {
-			startErr = s.StartCoordinator(context.WithoutCancel(ctx), coordinatorRootID)
-		}
-		if startErr != nil {
+		// §7.10：StartCoordinator 是 best-effort，失败只记日志，durable queued
+		// 由恢复循环兜底。
+		if startErr := s.StartCoordinator(context.WithoutCancel(ctx), coordinatorRootID); startErr != nil {
 			log.Printf("coordinator: task %s 自动接取失败: %v", coordinatorRootID, startErr)
 		}
 		if refreshed, refreshErr := s.store.WorkItems().Get(ctx, wi.ID); refreshErr == nil {
@@ -801,10 +851,13 @@ func (s *Service) blockLocked(ctx context.Context, w *domain.WorkItem, p BlockPa
 	return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.blocked", "任务「"+w.Title+"」被阻塞")
 }
 
-// UnblockWorkItem 解除阻塞回到 in_progress；存在系统 Coordinator 时提交后
-// 自动排队恢复，用户不再手工选择 Agent 或创建 Run。
+// UnblockWorkItem 解除阻塞回到 in_progress；存在系统 Coordinator 时在同一事务
+// 内追加 actor=system、source_ref=work_item.unblocked 的 requirement comment
+// （RFC §7.7 删除清单）并把 Coordinator durable queued，commit 后 StartCoordinator
+// best-effort，用户不再手工选择 Agent 或创建 Run。
 func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expectedVersion int) (*domain.WorkItem, error) {
 	var wi *domain.WorkItem
+	queued := false
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		w, err := s.store.WorkItems().Get(ctx, workItemID)
 		if err != nil {
@@ -815,6 +868,12 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
+		}
+		var coordinatorState *domain.TaskCoordinatorState
+		if st, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, w.ID); stateErr == nil {
+			coordinatorState = st
+		} else if !errors.Is(stateErr, domain.ErrNotFound) {
+			return stateErr
 		}
 		if err := w.Transition(domain.WorkItemInProgress, time.Now().UTC()); err != nil {
 			return err
@@ -830,6 +889,53 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 			map[string]any{"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
+		if coordinatorState != nil && coordinatorState.Status != domain.CoordinatorCompleted &&
+			coordinatorState.Status != domain.CoordinatorCancelled {
+			// RFC §7.7 删除清单：Unblock 同事务追加 system requirement comment 并
+			// durable queued；blocked → queued 是用户显式动作，不受 §5.2.6 约束。
+			body := "用户解除阻塞，任务「" + w.Title + "」继续推进。"
+			comment := &domain.TaskComment{
+				ID:             domain.NewID(domain.PrefixTaskComment),
+				WorkspaceID:    w.WorkspaceID,
+				RootWorkItemID: coordinatorState.RootWorkItemID,
+				WorkItemID:     w.ID,
+				Kind:           domain.CommentRequirement,
+				Body:           body,
+				ActorKind:      domain.CommentActorSystem,
+				ActorID:        "control_plane",
+				SourceRef:      "work_item.unblocked",
+				CreatedAt:      time.Now().UTC(),
+			}
+			if _, err := s.store.TaskComments().Append(ctx, comment); err != nil {
+				return err
+			}
+			fresh, err := s.store.TaskCoordinators().GetState(ctx, coordinatorState.RootWorkItemID)
+			if err != nil {
+				return err
+			}
+			if fresh.Status == domain.CoordinatorBlocked {
+				expected := fresh.Version
+				fresh.Status = domain.CoordinatorQueued
+				fresh.Phase = "recovering"
+				fresh.CurrentAction = "用户解除阻塞后继续"
+				fresh.CurrentRunID = ""
+				fresh.BlockerCode, fresh.BlockerMessage = "", ""
+				fresh.NextActionAt = nil
+				if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+					return err
+				}
+				fresh.Version = expected + 1
+				if err := s.appendCoordinatorEvent(ctx, fresh, w.ID, domain.EventCoordinatorRecoveryStarted,
+					"用户解除阻塞后恢复 Coordinator", "", fresh.CoordinatorAgentID, fresh.Attempt,
+					body, nil, map[string]any{"stage": "retry", "next_action": "重新规划并继续执行"}); err != nil {
+					return err
+				}
+				queued = true
+			}
+			if err := s.emitTaskCommentCreated(ctx, comment, fresh); err != nil {
+				return err
+			}
+		}
 		wi = w
 		return nil
 	})
@@ -837,7 +943,12 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
-	s.resumeCoordinatorAfterUserAction(context.WithoutCancel(ctx), wi.ID, "用户解除阻塞")
+	if queued {
+		// best-effort（§7.10）；durable queued 由恢复循环兜底。
+		if err := s.StartCoordinator(context.WithoutCancel(ctx), wi.ID); err != nil {
+			log.Printf("unblock: task %s StartCoordinator 失败（durable queued 由恢复循环兜底）: %v", wi.ID, err)
+		}
+	}
 	return wi, nil
 }
 
@@ -861,7 +972,9 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 				return fmt.Errorf("%w: coordinated child Task 不能单独验收，请验收根 Task", domain.ErrValidation)
 			}
 			if state.Status != domain.CoordinatorWaitingUser {
-				return fmt.Errorf("%w: Coordinator 尚未进入待用户验收状态", domain.ErrStateConflict)
+				// Accept/Return/feedback 竞态门（§7.10）：actionable comment 先提交
+				// 会把 waiting_user 原子改成 queued，Accept 在此失败且不覆盖。
+				return fmt.Errorf("%w: Coordinator 尚未进入待用户验收状态", ErrReviewStateConflict)
 			}
 			coordinatorState = state
 		} else if !errors.Is(stateErr, domain.ErrNotFound) {
@@ -924,12 +1037,16 @@ func (s *Service) WorkItem(ctx context.Context, id string) (*domain.WorkItem, er
 }
 
 // WorkItemFieldPatch 普通字段修改；status 不允许任意 PATCH（走 commands）。
+// AcceptanceCriteria 非 nil 表示请求原地改写验收标准：首轮 Run 之前允许（任务
+// 尚未开工），之后一律拒绝（RFC §4.10——新增要求走 requirement comment，保持
+// 历史可审计；HTTP PATCH 目前不暴露该字段，本守卫是命令层兜底）。
 type WorkItemFieldPatch struct {
-	Title           *string
-	Description     *string
-	Priority        *domain.Priority
-	DueDate         *time.Time
-	ExpectedVersion int
+	Title              *string
+	Description        *string
+	Priority           *domain.Priority
+	DueDate            *time.Time
+	AcceptanceCriteria *[]string
+	ExpectedVersion    int
 }
 
 func (s *Service) UpdateWorkItemFields(ctx context.Context, workItemID string, patch WorkItemFieldPatch) (*domain.WorkItem, error) {
@@ -941,6 +1058,12 @@ func (s *Service) UpdateWorkItemFields(ctx context.Context, workItemID string, p
 		}
 		if err := checkVersion(patch.ExpectedVersion, w.Version); err != nil {
 			return err
+		}
+		if patch.AcceptanceCriteria != nil {
+			if err := s.checkAcceptanceCriteriaEditable(ctx, w); err != nil {
+				return err
+			}
+			w.AcceptanceCriteria = normalizeAcceptanceCriteria(*patch.AcceptanceCriteria)
 		}
 		expected := w.Version
 		if patch.Title != nil {
@@ -978,6 +1101,23 @@ func workItemEventData(w *domain.WorkItem) map[string]any {
 		"title": w.Title, "status": string(w.Status), "priority": string(w.Priority),
 		"record_kind": string(workItemRecordKind(w)),
 	}
+}
+
+// checkAcceptanceCriteriaEditable 验收标准原地改写门（RFC §4.10）：只有 Task 且
+// 首轮 Run 之前可改；已有任意 Run（含首轮）的 Task 拒绝——新增要求必须走
+// requirement comment 进入 Coordinator durable 控制线。
+func (s *Service) checkAcceptanceCriteriaEditable(ctx context.Context, w *domain.WorkItem) error {
+	if !isTaskWorkItem(w) {
+		return fmt.Errorf("%w: Chat 记录没有验收标准", domain.ErrValidation)
+	}
+	_, runs, err := s.store.WorkItems().LatestRunID(ctx, w.ID)
+	if err != nil {
+		return err
+	}
+	if runs > 0 {
+		return fmt.Errorf("%w: 首轮 Run 后不允许原地修改验收标准，请通过 requirement 评论追加", domain.ErrValidation)
+	}
+	return nil
 }
 
 // withWorkItemRecordKind annotates run/aggregate event payloads with the

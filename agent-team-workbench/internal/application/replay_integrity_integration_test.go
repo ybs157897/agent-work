@@ -92,6 +92,7 @@ func TestConversationReplayFidelity(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_replay")
 	agentID, _ := seedReplayEnv(t, ctx, store, ws.ID)
 	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "发布脚本"})
 	if err != nil {
@@ -208,6 +209,7 @@ func TestCreateRunDigestTierInlinesCompressedHistory(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_digest")
 	agentID, _ := seedReplayEnv(t, ctx, store, ws.ID)
 	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "长会话"})
 	if err != nil {

@@ -25,8 +25,7 @@ import (
 type Config struct {
 	BinPath       string   // claude 可执行文件
 	Args          []string // 覆盖默认参数（测试用回放桩）
-	WorkspaceRoot string
-	Model         string // 可选 --model
+	Model         string   // 可选 --model
 	MaxFrameBytes int
 	GracePeriod   time.Duration
 }
@@ -122,7 +121,12 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	if err != nil {
 		return spawnFailure(err)
 	}
-	cmd.Dir = m.cfg.WorkspaceRoot
+	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
+	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
+	cmd.Dir = ex.Resolved.CWD
+	if cmd.Dir == "" {
+		cmd.Dir = "."
+	}
 	cmd.Env = os.Environ()
 	setProcGroup(cmd)
 

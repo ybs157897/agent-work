@@ -13,6 +13,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -90,6 +91,96 @@ func (s *Service) ReconcileOrphanRuns(ctx context.Context) (int, error) {
 		s.notifier.Notify(ws)
 	}
 	return marked, firstErr
+}
+
+// ReconcileLegacyContextRuns 收敛 0021 前遗留的非终态无快照 Run（RFC §6.1 启动
+// 对账）：落 failed(execution_context_missing, retryable=true) 并复用终态钩子
+// 触发 Coordinator 创建带新鲜快照的新 Run 恢复。历史数据禁止 resume 旧轨——
+// 无 Snapshot 的 Run 永不进入 Dispatcher（不变式 §5.1.3/§5.1.4）。返回收敛数量。
+func (s *Service) ReconcileLegacyContextRuns(ctx context.Context) (int, error) {
+	orphans, err := s.store.Runs().LeaselessActive(ctx)
+	if err != nil {
+		return 0, err
+	}
+	marked := 0
+	var firstErr error
+	notified := map[string]bool{}
+	for _, run := range orphans {
+		if _, snapErr := s.store.ContextSnapshots().GetByRun(ctx, run.ID); snapErr == nil {
+			continue // 已有快照：正常 Run，交由 ReconcileOrphanRuns 处理
+		} else if !errors.Is(snapErr, domain.ErrNotFound) {
+			if firstErr == nil {
+				firstErr = snapErr
+			}
+			continue
+		}
+		if err := s.markLegacyContextMissingTerminal(ctx, run.ID); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("reconcile legacy run %s: %w", run.ID, err)
+			}
+			continue
+		}
+		marked++
+		notified[run.WorkspaceID] = true
+		if reconciled, getErr := s.store.Runs().Get(context.WithoutCancel(ctx), run.ID); getErr == nil {
+			s.replayCoordinatorTerminalHooks(context.WithoutCancel(ctx), reconciled)
+		}
+	}
+	for ws := range notified {
+		s.notifier.Notify(ws)
+	}
+	return marked, firstErr
+}
+
+// markLegacyContextMissingTerminal 把无快照的遗留 Run 直接收敛到 failed
+// （所有非终态对 failed 均为合法迁移），同事务发事件与 activity。
+func (s *Service) markLegacyContextMissingTerminal(ctx context.Context, runID string) error {
+	return s.store.InTx(ctx, func(ctx context.Context) error {
+		r, err := s.store.Runs().Get(ctx, runID)
+		if err != nil {
+			return err
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
+		if r.Status.IsTerminal() {
+			return nil
+		}
+		expected := r.Version
+		from := r.Status
+		now := time.Now().UTC()
+		if err := r.MarkFailed(domain.RunFailure{
+			Code:      "execution_context_missing",
+			Retryable: true,
+			Message:   "启动对账：0021 前遗留 Run 无执行上下文快照，不可分派（Coordinator 以新 Run 恢复）",
+		}, now); err != nil {
+			return err
+		}
+		if err := s.store.Runs().Update(ctx, r, expected); err != nil {
+			return err
+		}
+		r.Version = expected + 1
+		data := map[string]any{
+			"code": "execution_context_missing", "retryable": true,
+			"record_kind": string(workItemRecordKind(wi)),
+		}
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunFailed,
+			domain.AggregateExecutionRun, r.ID, r.Version,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventRunFailed, Payload: data},
+			map[string]any{"from": string(from), "status": string(domain.RunFailed),
+				"record_kind": string(workItemRecordKind(wi))}); err != nil {
+			return err
+		}
+		if r.AgentProfileID != "" {
+			_ = s.store.Agents().SetPresence(ctx, r.AgentProfileID, domain.PresenceIdle)
+		}
+		return s.activityFor(ctx, r.WorkspaceID, r.WorkItemID, "run.reconciled",
+			fmt.Sprintf("启动对账：遗留 run %s（%s，无上下文快照）收敛为 failed(execution_context_missing)", r.ID, from))
+	})
 }
 
 // markOrphanTerminal 在单事务内把一个孤儿 run 迁移到 lost（或 failed）并发出

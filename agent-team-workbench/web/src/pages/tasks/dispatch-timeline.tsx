@@ -6,6 +6,7 @@ import { runStatusColor, runStatusText } from '../../components/status';
 import { Button, Card, EmptyState, StatusPill } from '../../components/ui';
 import { useDispatchesStore } from '../../stores/dispatches.store';
 import { useRunsStore } from '../../stores/runs.store';
+import { captureScope } from '../../stores/scope';
 import { formatDateTime } from '../../utils/format';
 import { TaskRunOutput } from './task-run-output';
 
@@ -34,6 +35,7 @@ const DISPATCH_STATUS_DOT: Record<string, string> = {
 
 export interface DispatchTimelineProps {
   taskId: string;
+  workspaceId: string;
 }
 
 /**
@@ -41,19 +43,21 @@ export interface DispatchTimelineProps {
  * 卡片 = 触发消息摘录 + 状态 + 成员会话组（可展开）；数据来自
  * useDispatchesStore（抽屉打开时拉快照，dispatch.* 事件失效重取）。
  */
-export function DispatchTimeline({ taskId }: DispatchTimelineProps) {
+export function DispatchTimeline({ taskId, workspaceId }: DispatchTimelineProps) {
   const dispatches = useDispatchesStore((s) => s.byWorkItem[taskId]);
   const error = useDispatchesStore((s) => s.errorByWorkItem[taskId]);
   const refreshFor = useDispatchesStore((s) => s.refreshFor);
 
   useEffect(() => {
-    void refreshFor(taskId);
-  }, [taskId, refreshFor]);
+    if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
+  }, [taskId, workspaceId, refreshFor]);
 
   return (
     <section className="space-y-snug">
       <h3 className="text-caption font-medium text-text-tertiary">派发时间线</h3>
-      {error && <InlineRequestError message={error} onRetry={() => void refreshFor(taskId)} />}
+      {error && <InlineRequestError message={error} onRetry={() => {
+        if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
+      }} />}
       {dispatches === undefined && !error ? (
         <p className="text-body text-text-tertiary">派发加载中…</p>
       ) : dispatches && dispatches.length === 0 && !error ? (

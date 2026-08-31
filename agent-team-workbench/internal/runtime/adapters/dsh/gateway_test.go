@@ -4,6 +4,8 @@
 package dsh
 
 import (
+	"os"
+
 	"context"
 	"encoding/json"
 	"io"
@@ -285,6 +287,7 @@ func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls
 	return &runtime.ExecContext{
 		Ctx:         ctx,
 		Run:         &domain.ExecutionRun{ID: "run_test", AdapterID: "dsh"},
+		Resolved:    domain.ResolvedExecutionContext{CWD: os.TempDir(), AuthorizedRoot: os.TempDir()},
 		Instruction: "本轮指令：记住 ALPHA",
 		Session:     runtime.SessionState{Ref: ref},
 		Callbacks:   cb,
@@ -310,7 +313,7 @@ func runExecuteScript(t *testing.T, g *Gateway, ex *runtime.ExecContext, f *fake
 
 func newTestGateway(f *fakeGateway) *Gateway {
 	return NewGateway(GatewayConfig{
-		BaseURL: f.srv.URL, WorkspaceRoot: "/tmp/atw-dsh-test", Model: "test-model",
+		BaseURL: f.srv.URL, Model: "test-model",
 	})
 }
 
@@ -328,8 +331,9 @@ func TestGatewayFreshTurn(t *testing.T) {
 	if res.Outcome != runtime.OutcomeSucceeded {
 		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
 	}
-	if p := f.waitCall("session.create"); p["cwd"] != "/tmp/atw-dsh-test" {
-		t.Fatalf("session.create cwd 不符: %v", p)
+	// session.create.cwd 必须来自 ExecContext.Resolved（fixture 用 os.TempDir）。
+	if p := f.waitCall("session.create"); p["cwd"] != os.TempDir() {
+		t.Fatalf("session.create cwd 不符（应取 Resolved.CWD）: %v", p)
 	}
 	if p := f.waitCall("session.prompt"); p["sessionId"] != "s_fresh" || p["mode"] != "queue" {
 		t.Fatalf("session.prompt 载荷不符: %v", p)

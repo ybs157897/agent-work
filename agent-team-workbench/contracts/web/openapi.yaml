@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Agent Team Workbench Web API
-  version: 0.1.0
+  version: 0.2.0
   description: |
     浏览器 ↔ Go Control Plane 协议（协议文档 §5）。
     约定：/api/v1 前缀；资源 ID 带类型前缀（ws_/agent_/wi_/run_/approval_/artifact_）；
@@ -22,6 +22,8 @@ tags:
   - name: approvals
   - name: artifacts
   - name: runtime-bindings
+  - name: execution-hosts
+  - name: workspace-locations
   - name: events
   - name: models
   - name: coordinator
@@ -286,9 +288,12 @@ paths:
       tags: [work-items]
       operationId: returnWorkItem
       description: |
-        M4 手动打回（验收回流人工半环）：in_progress 且 phase=acceptance/review
-        时合法 → phase=execution，activity 记录 reason；其余 phase → 409。
-        再交付路径：与对应 agent 继续会话创建新 run。
+        手动打回（验收回流人工半环）：in_progress 且 phase=acceptance/review
+        时合法 → phase=execution；其余 phase → 409。reason 必填（trim 后为空返回
+        422 review_feedback_required），并生成不可变 review_feedback TaskComment：
+        coordinated root 在同一事务完成 WorkItem BeginExecution + Coordinator
+        waiting_user→queued；coordinated child 拒绝（409 child_review_not_supported），
+        历史非 Coordinator Task 保留旧回流行为但不创建 TaskComment。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -296,9 +301,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [expected_version]
+              required: [reason, expected_version]
               properties:
-                reason: { type: string, description: 打回原因（落 activity） }
+                reason: { type: string, minLength: 1, description: 打回原因（必填；生成不可变 review_feedback comment 并落 activity） }
                 expected_version: { type: integer }
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
@@ -385,26 +390,6 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/CoordinatorTimelineList" } } } }
         "422": { description: Chat 不属于任务控制线, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
-
-  /work-items/{work_item_id}/coordinator/messages:
-    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
-    post:
-      tags: [coordinator]
-      operationId: sendTaskCoordinatorInstruction
-      summary: 向任务 Coordinator 追加用户指令
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [instruction]
-              properties:
-                instruction: { type: string, minLength: 1 }
-      responses:
-        "202": { description: 指令已接收 }
-        "422": { description: Chat 或 Coordinator 不可用, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
 
   /workspaces/{workspace_id}/plans:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -940,6 +925,255 @@ paths:
                     type: array
                     items: { type: object, additionalProperties: true }
 
+  # ── 任务控制面补全（task-control-surface RFC §9）──────────────────────
+  # 执行上下文（ExecutionHost / WorkspaceLocation / DevelopmentContext /
+  # ExecutionContextSnapshot）、任务反馈（TaskComment）与验收读模型
+  #（Review Queue / Delivery Brief）。实现接线前 guard 测试保持红灯。
+
+  /execution-hosts:
+    get:
+      tags: [execution-hosts]
+      operationId: listExecutionHosts
+      summary: 执行宿主列表（稳定 Host identity；含本机 host_local）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionHostList" } } } }
+    post:
+      tags: [execution-hosts]
+      operationId: createExecutionHost
+      description: |
+        Workspace admin 创建稳定远程 Host identity，一次性返回 enrollment credential；
+        服务端只保存 credential ref/hash，绝不回显明文。`host_local` 由 Control Plane
+        启动时确保存在，不可通过 API 创建。Runner bearer credential 的 subject 固定
+        绑定该 host_id。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, kind]
+              additionalProperties: false
+              properties:
+                name: { type: string }
+                kind: { type: string, enum: [remote], description: 只允许 remote；local 由系统内置 }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionHostEnrollment" } } } }
+
+  /execution-hosts/{host_id}/commands/rotate-credential:
+    parameters: [{ $ref: "#/components/parameters/ExecutionHostId" }]
+    post:
+      tags: [execution-hosts]
+      operationId: rotateExecutionHostCredential
+      description: 轮换 Runner enrollment credential；旧凭据与旧 connection epoch 立即失效。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionHostEnrollment" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /execution-hosts/{host_id}/mounts:
+    parameters: [{ $ref: "#/components/parameters/ExecutionHostId" }]
+    get:
+      tags: [execution-hosts]
+      operationId: listExecutionHostMounts
+      summary: Host 本地受信 registry 的广告投影
+      description: 只含 alias/repository_identity/generation/checkouts；Host 本地绝对路径不是业务字段，永不返回。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/HostMountList" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /workspaces/{workspace_id}/locations:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace-locations]
+      operationId: listWorkspaceLocations
+      summary: Workspace 的受信代码位置（含默认位置）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceLocationList" } } } }
+    post:
+      tags: [workspace-locations]
+      operationId: createWorkspaceLocation
+      description: |
+        把 Workspace 绑定到 Host 已广告且 repository identity 匹配的 mount。
+        只接受 execution_host_id / mount_alias / repository_identity / is_default；
+        不接受 path / cwd / root_path（schema additionalProperties: false，携带越权
+        字段返回 403 workspace_path_forbidden）。mount 未广告 → 422
+        workspace_mount_not_advertised；广告 generation 与预期不符 → 409
+        workspace_mount_generation_changed；多默认冲突 → 409
+        workspace_location_ambiguous。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceLocationCreate" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceLocation" } } } }
+        "403": { description: 请求含越权 path/cwd 字段, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspace-locations/{location_id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceLocationId" }]
+    patch:
+      tags: [workspace-locations]
+      operationId: updateWorkspaceLocation
+      description: |
+        显式命令修改 identity/default；status 随 Host/Mount 健康投影自动变化，
+        不经此命令。必须携带 expected_version 与预期 mount_generation；广告
+        generation 已变化返回 409 workspace_mount_generation_changed。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkspaceLocationPatch" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceLocation" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspace-locations/{location_id}/commands/probe:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceLocationId" }]
+    post:
+      tags: [workspace-locations]
+      operationId: probeWorkspaceLocation
+      description: 触发 Host/Mount 可用性探测并刷新 status 投影；不创建 Run。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "202": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceLocationProbeResult" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/development-context:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: getDevelopmentContext
+      summary: WorkItem 的有效开发选择（逻辑 context，不是已解析 cwd）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentContext" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/commands/set-development-context:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [work-items]
+      operationId: setDevelopmentContext
+      description: |
+        修改开发上下文并开启新 context generation；已有 Run/snapshot 不回写。
+        根 Task 必须显式拥有 context；子 Task 第一版不能改变
+        workspace_location_id，只能在根 Location 内覆盖 branch/worktree。
+        存在非终态 Run → 409 development_context_busy；waiting_user 修改会触发
+        Task BeginExecution + Coordinator queued；completed/cancelled 不可修改。
+        不接受 path/cwd/absolute_path（403 workspace_path_forbidden）。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetDevelopmentContextCommand" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DevelopmentContext" } } } }
+        "403": { description: 请求含越权 path/cwd 字段, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /runs/{run_id}/execution-context:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRunExecutionContext
+      summary: Run 创建时冻结的不可变 ExecutionContextSnapshot（只读）
+      description: 返回逻辑 Snapshot 与 Host/Mount 状态；绝对 cwd 仅在本机 admin 视图按策略展示，不进入普通 DTO。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ExecutionContextSnapshot" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/comments:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listWorkItemComments
+      summary: 根 Task 维度的 append-only 评论流（revision 正序分页）
+      parameters:
+        - name: after_revision
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: 返回 revision 大于该值的评论；非法值返回 400 comment_cursor_invalid
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, maximum: 200 }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/TaskCommentList" } } } }
+        "400": { description: after_revision 非法, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+    post:
+      tags: [work-items]
+      operationId: createTaskComment
+      description: |
+        追加任务反馈评论；kind 只接受 note|requirement（review_feedback 只能由
+        return 命令生成）。note 不触发 Coordinator；requirement 是 actionable，
+        waiting_user 到达时原子回 execution/queued。HTTP Idempotency-Key 防同一
+        请求重复执行并重放原 comment/revision；client_key 防业务意图重复，同 key
+        不同 body 返回 409 idempotency_conflict。历史非 Coordinator Task 返回
+        409 comment_coordinator_required。本 API 取代并删除旧
+        POST /work-items/{id}/coordinator/messages。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaskCommentCreate" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/TaskComment" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { description: body 超过 16 KiB（comment_body_too_large）, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/review-queue:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [workspace]
+      operationId: listReviewQueue
+      summary: 服务端权威 Review Queue 投影
+      description: |
+        唯一派生条件：record_kind=task、status=in_progress、phase IN (review,
+        acceptance)；排序固定 pending_since ASC, priority DESC, id ASC。
+        total_count 是 badge 权威值，不得以当前页长度计算。
+      parameters:
+        - { $ref: "#/components/parameters/Cursor" }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: priority
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/Priority" }
+        - name: phase
+          in: query
+          required: false
+          schema: { type: string, enum: [review, acceptance] }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ReviewQueue" } } } }
+
+  /work-items/{work_item_id}/delivery-brief:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: getDeliveryBrief
+      summary: 确定性验收交付简报（服务端聚合，无 LLM 摘要）
+      description: |
+        整个 Brief 在同一数据库 read transaction 内聚合；freshness.as_of_event_seq
+        取同一 snapshot 内 Workspace MAX(stream_seq)。来源读取失败返回可用部分并列出
+        missing_sources（state=partial）；Task/Chat 边界或权限失败整体 fail closed。
+        attempts/runs/evidence/files/artifacts/comments/risks 有服务端上限，
+        超限返回 truncation=true 与完整总数，不静默截断。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryBrief" } } } }
+        "404": { $ref: "#/components/responses/Conflict" }
+
 components:
   securitySchemes:
     cookieAuth:
@@ -956,6 +1190,8 @@ components:
     ApprovalId: { name: approval_id, in: path, required: true, schema: { type: string } }
     RuntimeBindingId: { name: runtime_binding_id, in: path, required: true, schema: { type: string } }
     ModelId: { name: model_id, in: path, required: true, schema: { type: string } }
+    ExecutionHostId: { name: host_id, in: path, required: true, schema: { type: string } }
+    WorkspaceLocationId: { name: location_id, in: path, required: true, schema: { type: string } }
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1744,3 +1980,470 @@ components:
               items:
                 type: object
                 additionalProperties: true
+
+    # ── 任务控制面补全（task-control-surface RFC §4/§9）──────────────────
+
+    ExecutionHost:
+      type: object
+      description: 稳定宿主身份；不等于一次 Runner 连接或进程。status 是连接/健康投影，不是 Run 状态。
+      required: [id, name, kind, status, version]
+      properties:
+        id: { type: string, description: "host_ 前缀；host_local 为受保护本机 Host" }
+        name: { type: string }
+        kind: { type: string, enum: [local, remote] }
+        status: { type: string, enum: [ready, degraded, offline] }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ExecutionHostList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ExecutionHost" } }
+
+    ExecutionHostEnrollment:
+      type: object
+      description: Host 创建/凭据轮换响应；credential 明文只在本次响应出现，服务端只保存 ref/hash。
+      required: [host, enrollment_credential]
+      properties:
+        host: { $ref: "#/components/schemas/ExecutionHost" }
+        enrollment_credential: { type: string, description: Runner bearer credential；subject 固定绑定 host_id }
+
+    HostMount:
+      type: object
+      description: Host 本地受信 registry 的广告投影；绝对路径只存在 Host 本地配置。
+      required: [execution_host_id, alias, repository_identity, registry_generation, status]
+      properties:
+        execution_host_id: { type: string }
+        alias: { type: string }
+        repository_identity: { type: string, description: 跨 Host 稳定逻辑 ID }
+        display_label: { type: string }
+        default_branch: { type: string }
+        supported_ref_kinds: { type: array, items: { type: string, enum: [root, branch, worktree] } }
+        checkouts:
+          type: array
+          description: opaque checkout refs（Host 本地受信发现生成）
+          items:
+            type: object
+            required: [ref, kind, branch, head]
+            properties:
+              ref: { type: string }
+              kind: { type: string, enum: [root, branch, worktree] }
+              branch: { type: string, nullable: true }
+              head: { type: string }
+        registry_generation: { type: string }
+        status: { type: string, enum: [ready, unavailable] }
+        last_seen_at: { type: string, format: date-time }
+
+    HostMountList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/HostMount" } }
+
+    WorkspaceLocation:
+      type: object
+      description: 把业务 Workspace 绑定到一个 HostMount；Workspace 不等于路径。
+      required: [id, workspace_id, execution_host_id, mount_alias, mount_generation, repository_identity, status, version]
+      properties:
+        id: { type: string, description: "wsloc_ 前缀" }
+        workspace_id: { type: string }
+        execution_host_id: { type: string }
+        mount_alias: { type: string }
+        mount_generation: { type: string }
+        repository_identity: { type: string }
+        is_default: { type: boolean, description: 每 Workspace 至多一个默认 Location }
+        status: { type: string, enum: [ready, degraded, unavailable], description: 随 Host/Mount 健康变化；identity/version 只由显式命令修改 }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WorkspaceLocationList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/WorkspaceLocation" } }
+
+    WorkspaceLocationCreate:
+      type: object
+      required: [execution_host_id, mount_alias, repository_identity]
+      additionalProperties: false
+      description: |
+        不接受 path / cwd / root_path / absolute_path（additionalProperties: false，
+        携带返回 403 workspace_path_forbidden）。创建必须携带预期 mount_generation。
+      properties:
+        execution_host_id: { type: string }
+        mount_alias: { type: string }
+        repository_identity: { type: string }
+        mount_generation: { type: string, description: 预期广告 generation；不符返回 409 workspace_mount_generation_changed }
+        is_default: { type: boolean, default: false }
+
+    WorkspaceLocationPatch:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      properties:
+        repository_identity: { type: string }
+        mount_generation: { type: string, description: 预期广告 generation }
+        is_default: { type: boolean }
+        expected_version: { type: integer }
+
+    WorkspaceLocationProbeResult:
+      type: object
+      required: [location_id, status, checked_at]
+      properties:
+        location_id: { type: string }
+        status: { type: string, enum: [ready, degraded, unavailable] }
+        detail: { type: string, nullable: true }
+        checked_at: { type: string, format: date-time }
+
+    DevelopmentContext:
+      type: object
+      description: WorkItem 的逻辑开发选择，不是已解析 cwd；无 path/cwd/absolute_path 字段。
+      required: [work_item_id, ref_kind, version]
+      properties:
+        work_item_id: { type: string }
+        context_owner_id: { type: string, description: 默认根 Task }
+        workspace_location_id: { type: string }
+        ref_kind: { type: string, enum: [root, branch, worktree] }
+        branch_name: { type: string, nullable: true }
+        checkout_ref: { type: string, nullable: true }
+        worktree_ref: { type: string, nullable: true, description: Host-local opaque ref }
+        base_revision: { type: string, nullable: true }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SetDevelopmentContextCommand:
+      type: object
+      required: [ref_kind, expected_version]
+      additionalProperties: false
+      description: |
+        root：branch/worktree 为空；branch：branch_name 与 checkout_ref 非空且
+        checkout 必须唯一命中（0/多命中返回 409 workspace_branch_not_unique）；
+        worktree：worktree_ref 非空且必须来自目标 Host registry 对该 repository
+        的发现结果。非法组合返回 422 development_context_invalid。
+      properties:
+        workspace_location_id: { type: string, description: 子 Task 第一版不允许改变（禁止跨 Host/Location） }
+        ref_kind: { type: string, enum: [root, branch, worktree] }
+        branch_name: { type: string }
+        checkout_ref: { type: string }
+        worktree_ref: { type: string }
+        base_revision: { type: string }
+        expected_version: { type: integer }
+
+    ExecutionContextSnapshot:
+      type: object
+      description: Run 创建时冻结的不可变快照；INSERT 后禁止 UPDATE/DELETE，Run 与 Snapshot 一对一。
+      required: [id, run_id, schema_version, workspace_id, workspace_location_id, location_version, mount_generation, execution_host_id, mount_alias, repository_identity, ref_kind, context_generation, source, snapshot_digest, created_at]
+      properties:
+        id: { type: string, description: "ctxsnap_ 前缀" }
+        run_id: { type: string }
+        schema_version: { type: string, const: execution-context/v1 }
+        workspace_id: { type: string }
+        workspace_location_id: { type: string }
+        location_version: { type: integer }
+        mount_generation: { type: string }
+        execution_host_id: { type: string }
+        mount_alias: { type: string }
+        repository_identity: { type: string }
+        ref_kind: { type: string, enum: [root, branch, worktree] }
+        branch_name: { type: string, nullable: true }
+        checkout_ref: { type: string, nullable: true }
+        worktree_ref: { type: string, nullable: true }
+        base_revision: { type: string, nullable: true }
+        context_generation: { type: integer }
+        source: { type: string, enum: [current, inherited, retry, evaluation, recovery] }
+        source_snapshot_id: { type: string, nullable: true }
+        snapshot_digest:
+          type: string
+          description: |
+            固定算法 sha256("execution-context/v1\n" + RFC8785CanonicalJSON(identity_fields))；
+            identity_fields 只含执行身份字段。覆盖 mount_generation，alias 被重指向时
+            旧 Location/Snapshot 不能静默继续。
+        host_mount_status:
+          type: object
+          description: Host/Mount 当前健康投影（只读；不含绝对 cwd）
+          properties:
+            execution_host_status: { type: string, enum: [ready, degraded, offline] }
+            mount_status: { type: string, enum: [ready, unavailable] }
+        created_at: { type: string, format: date-time }
+
+    TaskComment:
+      type: object
+      description: append-only 任务反馈评论；无 update/delete，revision 在根 Task 维度分配。
+      required: [id, workspace_id, root_work_item_id, work_item_id, revision, kind, body, actor_kind, actor_id, created_at]
+      properties:
+        id: { type: string, description: "cmt_ 前缀" }
+        workspace_id: { type: string }
+        root_work_item_id: { type: string }
+        work_item_id: { type: string, description: 评论落点的子 Task；根 Task 评论时等于 root }
+        revision: { type: integer, format: int64, description: 根 Task 维度单调，UNIQUE(root_work_item_id, revision) }
+        kind: { type: string, enum: [note, requirement, review_feedback] }
+        body: { type: string, description: 1..16384 字节（trim 后）；进入模型前是不可信数据 }
+        actor_kind: { type: string, enum: [user, system, runtime] }
+        actor_id: { type: string }
+        source_run_id: { type: string, nullable: true }
+        source_ref: { type: string, nullable: true }
+        client_key: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    TaskCommentCreate:
+      type: object
+      required: [kind, body]
+      additionalProperties: false
+      description: 只接受 note|requirement；review_feedback 只能由 return 命令生成（422 comment_kind_invalid）。
+      properties:
+        kind: { type: string, enum: [note, requirement] }
+        body: { type: string, minLength: 1, maxLength: 16384 }
+        source_run_id: { type: string, description: 可选；必须属于该 Task 树（422 comment_source_run_mismatch） }
+        source_ref: { type: string }
+        client_key: { type: string, description: 唯一域 (root_work_item_id, client_key)；同 key 不同 body 返回 409 idempotency_conflict }
+        expected_work_item_version: { type: integer, description: note 可省略；requirement 推荐必填，防止基于终态/旧 phase 追加 }
+
+    TaskCommentList:
+      type: object
+      required: [items, latest_revision]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/TaskComment" } }
+        next_revision: { type: integer, format: int64, nullable: true, description: 下一页 after_revision 游标，等于本页最大 revision；comment cursor 与 Workspace SSE stream_seq 严格分离 }
+        latest_revision: { type: integer, format: int64 }
+
+    ReviewQueue:
+      type: object
+      description: 服务端权威投影；total_count 是 badge 权威值。
+      required: [items, total_count, generated_at]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [work_item, pending_since, source_watermark]
+            properties:
+              work_item: { $ref: "#/components/schemas/WorkItem" }
+              pending_since: { type: string, format: date-time, description: = phase_entered_at；review→execution→review 必须得到新时间 }
+              coordinator:
+                type: object
+                nullable: true
+                properties:
+                  status: { type: string }
+                  stage: { type: string }
+                  updated_at: { type: string, format: date-time }
+                  version: { type: integer }
+              latest_run_id: { type: string, nullable: true }
+              source_watermark: { $ref: "#/components/schemas/SourceWatermark" }
+        total_count: { type: integer, description: 当前查询条件下的全量匹配数（badge 权威值；不得以当前页长度或前端已加载数量计算） }
+        next_cursor: { type: string, nullable: true }
+        generated_at: { type: string, format: date-time }
+
+    SourceWatermark:
+      type: object
+      description: 各来源读模型版本水位（同一 read snapshot 内读取）。
+      required: [as_of_event_seq]
+      properties:
+        as_of_event_seq: { type: integer, format: int64, description: 同一 snapshot 内 Workspace MAX(stream_seq) }
+        work_item_version: { type: integer }
+        coordinator_version: { type: integer }
+        latest_run_version: { type: integer }
+        comment_revision: { type: integer, format: int64 }
+
+    DeliveryBriefConclusion:
+      type: object
+      required: [coordinator_status, version]
+      properties:
+        coordinator_status: { type: string }
+        stage: { type: string }
+        summary: { type: string }
+        next_action: { type: string }
+        version: { type: integer }
+
+    AttemptSummary:
+      type: object
+      required: [attempt, role, run_id, status]
+      properties:
+        attempt: { type: integer }
+        role: { type: string, enum: [coordinator, worker, evaluation] }
+        run_id: { type: string }
+        agent_id: { type: string }
+        agent_name: { type: string }
+        status: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        retry_of: { type: string, nullable: true }
+        failure:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+
+    EvidenceItem:
+      type: object
+      required: [id, source_kind, source_id, status, trust, occurred_at]
+      properties:
+        id: { type: string }
+        source_kind: { type: string, enum: [coordinator_event, run_status, evaluation_verdict, tool_result, artifact, change_set] }
+        source_id: { type: string }
+        label: { type: string }
+        status: { type: string, enum: [passed, failed, warning, unknown] }
+        trust: { type: string, enum: [control_plane, runtime_reported, model_reported], description: 普通 Markdown 只算 model_reported；白名单结构化 run event 才是 tool_result }
+        occurred_at: { type: string, format: date-time }
+
+    RunEvidence:
+      type: object
+      required: [run, evidence, truncated]
+      properties:
+        run: { $ref: "#/components/schemas/ExecutionRun" }
+        summary: { type: string }
+        evidence:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/EvidenceItem" }
+        truncated: { type: boolean }
+
+    BriefChangeSet:
+      type: object
+      description: 按 Run 分组的既有 run file-change read model；不把多个 Run 混成一个 diff。
+      required: [run_id, files, total_files, total_added, total_deleted, truncated]
+      properties:
+        run_id: { type: string }
+        files:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            required: [path, added, deleted, status]
+            properties:
+              path: { type: string }
+              added: { type: integer }
+              deleted: { type: integer }
+              status: { type: string, enum: [added, modified, deleted, renamed] }
+        total_files: { type: integer }
+        total_added: { type: integer }
+        total_deleted: { type: integer }
+        truncated: { type: boolean }
+
+    RiskItem:
+      type: object
+      required: [source_kind, source_id, code, message, severity]
+      properties:
+        source_kind: { type: string, description: blocker / run_failure / coordinator_error / review_finding }
+        source_id: { type: string }
+        code: { type: string }
+        message: { type: string }
+        severity: { type: string, enum: [low, medium, high] }
+
+    DeliveryBriefFreshness:
+      type: object
+      required: [generated_at, as_of_event_seq, state]
+      properties:
+        generated_at: { type: string, format: date-time }
+        as_of_event_seq: { type: integer, format: int64 }
+        source_versions: { type: object, additionalProperties: { type: integer }, description: 各来源 read model 版本水位 }
+        state: { type: string, enum: [current, partial], description: 任一非权限来源读取失败为 partial 并列出 missing_sources }
+        missing_sources: { type: array, items: { type: string } }
+
+    DeliveryBriefTruncation:
+      type: object
+      description: 各段落是否超上限截断（attempts 50 / runs 100 / files 200 / artifacts 100 / comments 200）；超限同时返回完整总数。
+      required: [attempts, runs, files, artifacts, comments]
+      properties:
+        attempts: { type: boolean }
+        runs: { type: boolean }
+        files: { type: boolean }
+        artifacts: { type: boolean }
+        comments: { type: boolean }
+
+    DeliveryBrief:
+      type: object
+      description: 确定性服务端聚合；不能复用 rolling_digest 代替完整证据。
+      required: [work_item, acceptance_criteria, conclusion, attempts, runs, artifacts, risks, comments, freshness, truncation]
+      properties:
+        work_item: { $ref: "#/components/schemas/WorkItem" }
+        acceptance_criteria: { type: array, items: { type: string } }
+        conclusion: { $ref: "#/components/schemas/DeliveryBriefConclusion" }
+        attempts:
+          type: array
+          maxItems: 50
+          items: { $ref: "#/components/schemas/AttemptSummary" }
+        runs:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/RunEvidence" }
+        changes: { $ref: "#/components/schemas/BriefChangeSet", nullable: true }
+        artifacts:
+          type: array
+          maxItems: 100
+          description: ArtifactRepo 按 classification 权限过滤后的产物
+          items: { $ref: "#/components/schemas/Artifact" }
+        blocker:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            source: { type: string }
+            run_id: { type: string, nullable: true }
+            created_at: { type: string, format: date-time }
+        risks:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/RiskItem" }
+        comments:
+          type: array
+          maxItems: 200
+          description: requirement/review_feedback 评论，按 root revision 排序
+          items: { $ref: "#/components/schemas/TaskComment" }
+        freshness: { $ref: "#/components/schemas/DeliveryBriefFreshness" }
+        truncation: { $ref: "#/components/schemas/DeliveryBriefTruncation" }
+
+    Blocker:
+      type: object
+      description: 任务阻塞事实（CoordinatorSnapshot.blocker 引用；WorkItem.blocker 为同形内联）。
+      properties:
+        code: { type: string }
+        message: { type: string }
+        source: { type: string }
+        created_at: { type: string, format: date-time }
+
+    TaskControlSurfaceErrorCode:
+      type: string
+      description: |
+        任务控制面补全（RFC §9.7）新增错误码。HTTP 状态 / retryable 对照：
+        422 非重试——workspace_location_required / workspace_mount_not_advertised /
+        development_context_invalid / comment_kind_invalid / comment_body_empty /
+        comment_source_run_mismatch / review_feedback_required；
+        409 非重试——workspace_location_ambiguous / workspace_context_mismatch /
+        workspace_branch_not_unique / comment_terminal_work_item /
+        comment_coordinator_required / child_review_not_supported /
+        review_state_conflict；
+        409 可重试——workspace_mount_generation_changed / workspace_checkout_busy /
+        execution_host_unavailable / development_context_busy；
+        403 非重试——workspace_path_forbidden；
+        413 非重试——comment_body_too_large；
+        400 非重试——comment_cursor_invalid。
+        既有 version_conflict / idempotency_conflict / idempotency_in_progress 继续复用。
+      enum:
+        - workspace_location_required
+        - workspace_location_ambiguous
+        - workspace_mount_not_advertised
+        - workspace_context_mismatch
+        - workspace_mount_generation_changed
+        - workspace_branch_not_unique
+        - workspace_checkout_busy
+        - execution_host_unavailable
+        - development_context_busy
+        - development_context_invalid
+        - workspace_path_forbidden
+        - comment_kind_invalid
+        - comment_body_empty
+        - comment_body_too_large
+        - comment_terminal_work_item
+        - comment_source_run_mismatch
+        - comment_cursor_invalid
+        - comment_coordinator_required
+        - review_feedback_required
+        - child_review_not_supported
+        - review_state_conflict

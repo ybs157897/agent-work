@@ -89,6 +89,15 @@ describe('CoordinatorPanel', () => {
     expect(html).toContain('aria-valuetext="等待首个计划"');
     expect(html).not.toContain('aria-valuenow="0"');
   });
+
+  it('legacy 任务明确显示未启用控制线，不伪装为 Coordinator 接取中', () => {
+    const html = renderToStaticMarkup(
+      <CoordinatorPanel task={{ ...task, id: 'wi_legacy_child', parent_id: 'wi_legacy_root' }} resolution="legacy" onRetry={() => undefined} />,
+    );
+    expect(html).toContain('历史任务，未启用 Coordinator 控制线');
+    expect(html).not.toContain('系统 Coordinator 自动规划、派发、恢复和收口');
+    expect(html).not.toContain('接取中');
+  });
 });
 
 describe('Coordinator display helpers', () => {

@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import { disableAgent, enableAgent, listAgents } from '../api/endpoints';
 import type { AgentProfile } from '../api/types';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 import { createRequestGuard } from './request-guard';
-import { useWorkspaceStore } from './workspace.store';
 
 interface AgentsStore {
   agents: AgentProfile[];
@@ -13,6 +13,8 @@ interface AgentsStore {
   upsert: (agent: AgentProfile) => void;
   /** enable/disable 命令；失败抛出由调用方 toast。 */
   setAvailability: (agent: AgentProfile, enabled: boolean) => Promise<void>;
+  /** 切换 Workspace 时清空 Agent 列表。 */
+  reset: () => void;
 }
 
 const refreshGuard = createRequestGuard();
@@ -23,12 +25,15 @@ export const useAgentsStore = create<AgentsStore>()((set, get) => ({
 
   hydrate: (items) => set({ agents: items }),
 
+  reset: () => set({ agents: [], selectedAgentId: null }),
+
   refresh: async () => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    if (!wsId) return;
+    const scope = captureScope();
+    if (!scope.workspaceId) return;
     const isStale = refreshGuard.begin();
-    const { items } = await listAgents(wsId);
-    if (isStale()) return; // 期间已发出更新的 refresh：丢弃旧响应
+    const { items } = await listAgents(scope.workspaceId);
+    // 期间已发出更新的 refresh 或已切换 Workspace：丢弃旧响应
+    if (isStale() || !isCurrent(scope)) return;
     set({ agents: items });
   },
 
@@ -42,7 +47,11 @@ export const useAgentsStore = create<AgentsStore>()((set, get) => ({
     })),
 
   setAvailability: async (agent, enabled) => {
+    const scope = captureScope();
     const updated = enabled ? await enableAgent(agent.id) : await disableAgent(agent.id);
+    if (!isCurrent(scope)) return; // 切换后旧 Agent 的回写不得进入新列表
     get().upsert(updated);
   },
 }));
+
+registerWorkspaceScopedReset(() => useAgentsStore.getState().reset());

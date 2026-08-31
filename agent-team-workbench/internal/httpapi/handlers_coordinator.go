@@ -520,28 +520,3 @@ func (s *Server) handleListCoordinatorEvents(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": timeline})
 }
-
-type coordinatorMessageRequest struct {
-	Instruction string `json:"instruction"`
-}
-
-func (s *Server) handleSendCoordinatorInstruction(w http.ResponseWriter, r *http.Request) {
-	wiID := r.PathValue("work_item_id")
-	s.idempotent(w, r, wiID, func() (int, []byte) {
-		var req coordinatorMessageRequest
-		if err := decodeBody(r, &req); err != nil {
-			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
-		}
-		if strings.TrimSpace(req.Instruction) == "" {
-			return renderProblem(http.StatusBadRequest, "bad_request", "Instruction required", "instruction 不能为空")
-		}
-		if _, _, err := s.coordinatorReadModel(r.Context(), wiID); err != nil {
-			return problemBytes(err)
-		}
-		runID, err := s.svc.SendCoordinatorInstruction(r.Context(), wiID, req.Instruction)
-		if err != nil {
-			return problemBytes(err)
-		}
-		return renderJSON(w, r, http.StatusAccepted, map[string]any{"accepted": true, "coordinator_run_id": runID})
-	})
-}

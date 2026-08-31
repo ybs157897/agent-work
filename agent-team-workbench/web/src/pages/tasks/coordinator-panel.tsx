@@ -19,6 +19,7 @@ import type {
   WorkItem,
 } from '../../api/types';
 import { Button, Card, EmptyState, StatusPill } from '../../components/ui';
+import type { CoordinatorResolution } from '../../utils/task-phase';
 import { formatDateTime } from '../../utils/format';
 
 const STATUS_TEXT: Record<string, string> = {
@@ -113,12 +114,30 @@ export function CoordinatorPanel({
   snapshot,
   error,
   onRetry,
+  resolution = 'loading',
 }: {
   task: WorkItem;
   snapshot?: CoordinatorSnapshot;
   error?: string;
   onRetry: () => void;
+  resolution?: CoordinatorResolution;
 }) {
+  if (resolution === 'legacy') {
+    return (
+      <section aria-labelledby="coordinator-heading" className="space-y-snug">
+        <div>
+          <p className="text-caption uppercase tracking-widest text-text-tertiary">历史任务</p>
+          <h3 id="coordinator-heading" className="mt-1 text-h3 text-text-primary">任务统筹</h3>
+          <p className="mt-1 text-body text-text-secondary">该任务未启用 Coordinator 控制线，保留历史任务执行与回流方式。</p>
+        </div>
+        <Card padded>
+          <p className="text-body text-text-secondary" role="status">
+            历史任务，未启用 Coordinator 控制线。
+          </p>
+        </Card>
+      </section>
+    );
+  }
   const progress = progressFor(snapshot, task);
   const status = snapshot?.status ?? (task.status === 'completed' ? 'completed' : 'queued');
   const currentAgent = snapshot?.current_agent;

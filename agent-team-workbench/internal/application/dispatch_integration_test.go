@@ -20,6 +20,7 @@ func seedDispatchSvcEnv(t *testing.T, ctx context.Context, svc *application.Serv
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_dsp")
 	alice := &domain.AgentProfile{
 		ID: "agent_alice", WorkspaceID: ws.ID, Name: "Alice", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

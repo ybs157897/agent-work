@@ -26,20 +26,22 @@ const (
 
 var runTransitions = map[RunStatus][]RunStatus{
 	// queued 未起跑：interrupt/cancel 落地直接终态（无 Adapter 需确认）。
-	RunQueued: {RunStarting, RunCancelled, RunFailed, RunInterrupted},
+	RunQueued: {RunStarting, RunReconnecting, RunCancelled, RunFailed, RunInterrupted},
 	// starting 尚未产生外部副作用（与 queued 同理）：interrupt/cancel 可直达终态
 	// 或经中间态；零事件空 turn（无任何回调）可从 starting 直入 succeeding。
-	RunStarting:        {RunRunning, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunSucceeding, RunFailed},
+	RunStarting:        {RunRunning, RunReconnecting, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunSucceeding, RunFailed},
 	RunRunning:         {RunWaitingApproval, RunInterrupting, RunCancelling, RunReconnecting, RunSucceeding, RunFailed},
-	RunWaitingApproval: {RunRunning, RunInterrupting, RunCancelling, RunFailed},
-	RunInterrupting:    {RunInterrupted, RunFailed},
-	RunCancelling:      {RunCancelled, RunFailed},
+	RunWaitingApproval: {RunRunning, RunReconnecting, RunInterrupting, RunCancelling, RunFailed},
+	RunInterrupting:    {RunReconnecting, RunInterrupted, RunFailed},
+	RunCancelling:      {RunReconnecting, RunCancelled, RunFailed},
 	// reconnecting：连接已失，无人能确认中间态——控制命令直达终态；
 	// 重连失败本身也可能表现为 failed（不只有 lost）。
-	RunReconnecting: {RunRunning, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunLost, RunFailed},
+	// Runner 重连后 pending 已按 producer_seq 有序重放；进程可能在断线前已进入
+	// succeeding，故允许 reconnecting 直接收敛到 succeeding，再落 succeeded。
+	RunReconnecting: {RunStarting, RunRunning, RunWaitingApproval, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunSucceeding, RunSucceeded, RunLost, RunFailed},
 	// succeeding：终局已定但尚未落终态，控制命令可经中间态或直达终态
 	//（与 ModuleRunner.recordTerminal 的补迁移配合，绝不卡死）。
-	RunSucceeding: {RunSucceeded, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunFailed},
+	RunSucceeding: {RunReconnecting, RunSucceeded, RunInterrupting, RunCancelling, RunInterrupted, RunCancelled, RunFailed},
 }
 
 type RunFailure struct {
@@ -61,7 +63,10 @@ type ExecutionRun struct {
 	AdapterID            string
 	Provider             string
 	CapabilitySnapshotID string
-	SessionRef           string // Adapter 私有句柄，受限存储
+	// ContextSnapshotID 本 Run 冻结的不可变执行上下文（RFC §4.6：Run 与 Snapshot
+	// 一对一；retry/evaluation/recovery 复用原 Snapshot）。
+	ContextSnapshotID string
+	SessionRef        string // Adapter 私有句柄，受限存储
 	// SessionBefore/After 审计：run 进入/离开时的会话句柄（task_sessions 决策依据）。
 	SessionBefore string
 	SessionAfter  string

@@ -250,6 +250,7 @@ func TestCreateWorkItemRejectsMixedRecordKindParent(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, workspace); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_record_kind_parent")
 	task, err := svc.CreateWorkItem(ctx, workspace.ID, application.CreateWorkItemParams{
 		Title: "Task root", RecordKind: domain.RecordKindTask,
 	})

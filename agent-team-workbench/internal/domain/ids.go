@@ -32,6 +32,10 @@ const (
 	PrefixCoordinatorConfig = "coordcfg_"
 	PrefixCoordinatorState  = "coordstate_"
 	PrefixCoordinatorEvent  = "coordevt_"
+	PrefixExecutionHost     = "host_"
+	PrefixWorkspaceLocation = "wsloc_"
+	PrefixCtxSnapshot       = "ctxsnap_"
+	PrefixTaskComment       = "cmt_"
 )
 
 // NewID 生成带类型前缀的 ULID。

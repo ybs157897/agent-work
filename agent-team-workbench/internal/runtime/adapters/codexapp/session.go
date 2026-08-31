@@ -41,7 +41,8 @@ func (m *Module) openAppServer(ctx context.Context) (*appServerSession, error) {
 		cancel()
 		return nil, err
 	}
-	cmd.Dir = m.cfg.WorkspaceRoot
+	// probe 路径无 Run 上下文：app-server 进程 cwd 不承载执行语义，回退进程 cwd。
+	cmd.Dir = ""
 	cmd.Env = m.processEnv()
 	setProcGroup(cmd)
 	stdin, err := cmd.StdinPipe()

@@ -23,7 +23,7 @@ const coordinatorConfigCols = `id, workspace_id, agent_profile_id, prompt_versio
 const coordinatorStateCols = `id, workspace_id, root_work_item_id, coordinator_agent_id,
 	status, phase, summary, current_action, current_step, current_agent_id,
 	current_run_id, attempt, next_action_at, blocker_code, blocker_message,
-	last_error, data, version, created_at, updated_at`
+	last_error, data, consumed_comment_revision, version, created_at, updated_at`
 
 const coordinatorEventCols = `id, workspace_id, root_work_item_id, work_item_id,
 	kind, summary, run_id, agent_id, attempt, reason, next_action_at, data, occurred_at`
@@ -31,7 +31,7 @@ const coordinatorEventCols = `id, workspace_id, root_work_item_id, work_item_id,
 const coordinatorStateColsQualified = `s.id, s.workspace_id, s.root_work_item_id, s.coordinator_agent_id,
 	s.status, s.phase, s.summary, s.current_action, s.current_step, s.current_agent_id,
 	s.current_run_id, s.attempt, s.next_action_at, s.blocker_code, s.blocker_message,
-	s.last_error, s.data, s.version, s.created_at, s.updated_at`
+	s.last_error, s.data, s.consumed_comment_revision, s.version, s.created_at, s.updated_at`
 
 const coordinatorEventColsQualified = `e.id, e.workspace_id, e.root_work_item_id, e.work_item_id,
 	e.kind, e.summary, e.run_id, e.agent_id, e.attempt, e.reason, e.next_action_at, e.data, e.occurred_at`
@@ -92,16 +92,18 @@ func (r *TaskCoordinatorRepo) scanConfig(row interface{ Scan(...any) error }, c 
 	return nil
 }
 
-func (r *TaskCoordinatorRepo) scanState(row interface{ Scan(...any) error }, state *domain.TaskCoordinatorState) error {
+func (r *TaskCoordinatorRepo) scanState(row interface{ Scan(...any) error }, state *domain.TaskCoordinatorState, extra ...any) error {
 	var currentAgent, currentRun, blockerCode, blockerMessage, lastError *string
 	var nextAction scanTime
 	var data string
 	var created, updated scanTime
-	if err := row.Scan(&state.ID, &state.WorkspaceID, &state.RootWorkItemID,
+	dest := []any{&state.ID, &state.WorkspaceID, &state.RootWorkItemID,
 		&state.CoordinatorAgentID, &state.Status, &state.Phase, &state.Summary,
 		&state.CurrentAction, &state.CurrentStep, &currentAgent, &currentRun,
 		&state.Attempt, &nextAction, &blockerCode, &blockerMessage, &lastError,
-		&data, &state.Version, &created, &updated); err != nil {
+		&data, &state.ConsumedCommentRevision, &state.Version, &created, &updated}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return err
 	}
 	if currentAgent != nil {
@@ -325,12 +327,13 @@ func (r *TaskCoordinatorRepo) CreateState(ctx context.Context, state *domain.Tas
 		state.UpdatedAt = state.CreatedAt
 	}
 	_, err = r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO task_coordinator_states(`+coordinatorStateCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO task_coordinator_states(`+coordinatorStateCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		state.ID, state.WorkspaceID, state.RootWorkItemID, state.CoordinatorAgentID,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
 		nullString(state.CurrentAgentID), nullString(state.CurrentRunID), state.Attempt,
 		r.store.dialect.NullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
+		state.ConsumedCommentRevision,
 		state.Version, r.store.dialect.TimeParam(state.CreatedAt), r.store.dialect.TimeParam(state.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -391,12 +394,14 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE task_coordinator_states SET status=?, phase=?, summary=?, current_action=?,
 			current_step=?, current_agent_id=?, current_run_id=?, attempt=?, next_action_at=?,
-			blocker_code=?, blocker_message=?, last_error=?, data=?, version=version+1, updated_at=?
+			blocker_code=?, blocker_message=?, last_error=?, data=?, consumed_comment_revision=?,
+			version=version+1, updated_at=?
 		 WHERE root_work_item_id=? AND version=?`,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
 		nullString(state.CurrentAgentID), nullString(state.CurrentRunID), state.Attempt,
 		r.store.dialect.NullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
+		state.ConsumedCommentRevision,
 		r.store.dialect.TimeParam(timeNow()), state.RootWorkItemID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
@@ -410,9 +415,11 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 // coordinatorStateNeedsResume keeps the periodic recovery scan from treating
 // an execution checkpoint as a new Coordinator turn. A running state without
 // a current run is only recoverable when the state explicitly records a
-// control action or a due time; otherwise it is an observation-only
+// control action, a due time, or an unconsumed actionable comment (RFC §7.7:
+// ListDueStates 把「无 current Run 且有未消费 actionable comment」的 state 作
+// 为 durable due 候选，避免评论永久悬置)；otherwise it is an observation-only
 // checkpoint (for example, while a worker result is being settled).
-func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState) bool {
+func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState, hasUnconsumedActionable bool) bool {
 	if state == nil {
 		return false
 	}
@@ -429,6 +436,9 @@ func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState) bool {
 		}
 	case domain.CoordinatorRunning:
 		if state.CurrentRunID != "" || state.NextActionAt != nil {
+			return true
+		}
+		if hasUnconsumedActionable {
 			return true
 		}
 		if state.Data != nil {
@@ -450,19 +460,26 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 	if r.store.dialect.Name == "postgres" {
 		actionText = `NULLIF(BTRIM(COALESCE(data->>'control_action', '')), '') IS NOT NULL`
 	}
+	// RFC §7.7：running 且无 current Run 的 observation checkpoint 若有未消费
+	// actionable 评论，也是 durable due 候选（恢复循环兜底，避免永久悬置）。
+	unconsumedActionable := `EXISTS (SELECT 1 FROM task_comments tc
+		WHERE tc.root_work_item_id = task_coordinator_states.root_work_item_id
+		  AND tc.revision > task_coordinator_states.consumed_comment_revision
+		  AND tc.kind IN ('requirement','review_feedback'))`
 	where := `((status=? OR (status=? AND
 		(next_action_at IS NOT NULL OR ` + actionText + `)) OR (status=? AND
-		(current_run_id IS NOT NULL OR next_action_at IS NOT NULL OR ` + actionText + `)))
+		(current_run_id IS NOT NULL OR next_action_at IS NOT NULL OR ` + actionText + `)) OR
+		(status=? AND COALESCE(current_run_id,'')='' AND ` + unconsumedActionable + `))
 		AND (next_action_at IS NULL OR next_action_at <= ?))`
 	args := []any{domain.CoordinatorQueued, domain.CoordinatorWaitingRetry,
-		domain.CoordinatorRunning, r.store.dialect.TimeParam(now)}
+		domain.CoordinatorRunning, domain.CoordinatorRunning, r.store.dialect.TimeParam(now)}
 	if workspaceID != "" {
 		where += ` AND workspace_id=?`
 		args = append(args, workspaceID)
 	}
 	args = append(args, limit)
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT `+coordinatorStateCols+` FROM task_coordinator_states WHERE `+where+
+		`SELECT `+coordinatorStateCols+`, (`+unconsumedActionable+`) AS has_unconsumed FROM task_coordinator_states WHERE `+where+
 			` ORDER BY COALESCE(next_action_at, updated_at), updated_at, id LIMIT ?`, args...)
 	if err != nil {
 		return nil, r.store.mapErr(err)
@@ -471,10 +488,11 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 	var out []*domain.TaskCoordinatorState
 	for rows.Next() {
 		state := &domain.TaskCoordinatorState{}
-		if err := r.scanState(rows, state); err != nil {
+		var hasUnconsumed bool
+		if err := r.scanState(rows, state, &hasUnconsumed); err != nil {
 			return nil, err
 		}
-		if !coordinatorStateNeedsResume(state) {
+		if !coordinatorStateNeedsResume(state, hasUnconsumed) {
 			continue
 		}
 		out = append(out, state)

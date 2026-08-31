@@ -1,55 +1,60 @@
-import { Ban, CirclePause, Send, ShieldAlert } from 'lucide-react';
+import { Ban, CirclePause, ShieldAlert } from 'lucide-react';
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
-import {
-  cancelRun,
-  interruptRun,
-  resolveApproval,
-  sendCoordinatorInstruction,
-} from '../../api/endpoints';
+import { cancelRun, interruptRun, resolveApproval } from '../../api/endpoints';
 import type { WorkItem } from '../../api/types';
 import { runStatusColor, runStatusText } from '../../components/status';
 import { useRunsStore, type TimelineEntry } from '../../stores/runs.store';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity, type Scope } from '../../stores/scope';
 import { toast } from '../../stores/toast.store';
 import { formatTime } from '../../utils/format';
 import { promptRejectionReason } from '../../utils/prompt';
+import type { CoordinatorResolution } from '../../utils/task-phase';
 
 const ACTIVE: ReadonlySet<string> = new Set(['running', 'waiting_approval', 'starting', 'succeeding', 'reconnecting']);
 
-/** Run 面板：Coordinator 托管执行；用户只追加指令、暂停/取消与处理审批。 */
-export function RunPanel({ task }: { task: WorkItem }) {
+export function runPanelOwnershipText(resolution: CoordinatorResolution): string {
+  return resolution === 'legacy' ? '历史任务 · 未启用 Coordinator 控制线' : '由 Coordinator 托管';
+}
+
+/** Run 面板：Coordinator 任务显示托管归属；历史任务保留自己的执行记录语义。 */
+export function RunPanel({
+  task,
+  coordinatorResolution,
+}: {
+  task: WorkItem;
+  coordinatorResolution: CoordinatorResolution;
+}) {
   const run = useRunsStore((s) => (task.latest_run_id ? s.runs[task.latest_run_id] : undefined));
   const timeline = useRunsStore((s) => (task.latest_run_id ? s.timelines[task.latest_run_id] : undefined));
   const approvals = useRunsStore((s) => (task.latest_run_id ? s.approvals[task.latest_run_id] : undefined));
   const artifacts = useRunsStore((s) => (task.latest_run_id ? s.artifacts[task.latest_run_id] : undefined));
   const fetchApprovals = useRunsStore((s) => s.fetchApprovals);
 
-  const [instruction, setInstruction] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
 
   const runActive = run ? ACTIVE.has(run.status) : false;
 
-  const guard = async (action: string, fn: () => Promise<unknown>) => {
+  const guard = async (action: string, fn: (scope: Scope) => Promise<unknown>) => {
+    const scope = captureScope();
+    if (!isCurrentWorkspaceEntity(scope, task)) {
+      toast.error('该任务不属于当前工作区，无法操作。');
+      return;
+    }
     setBusy(action);
     try {
-      await fn();
+      await fn(scope);
+      if (!isCurrent(scope)) return;
     } catch (err) {
+      if (!isCurrent(scope)) return;
       toast.error(err instanceof ApiError ? err.message : '操作失败');
     } finally {
-      setBusy(null);
+      if (isCurrent(scope)) setBusy(null);
     }
   };
 
-  const appendInstruction = () =>
-    guard('append', async () => {
-      if (!instruction.trim()) return;
-      await sendCoordinatorInstruction(task.id, instruction.trim());
-      setInstruction('');
-      toast.success('已提交给 Coordinator，任务会按当前计划继续推进');
-    });
-
   const onResolve = (approvalId: string, runId: string, decision: 'approved' | 'rejected') =>
-    guard(`resolve-${approvalId}`, async () => {
+    guard(`resolve-${approvalId}`, async (scope) => {
       let reason = '';
       if (decision === 'rejected') {
         const input = promptRejectionReason();
@@ -57,7 +62,9 @@ export function RunPanel({ task }: { task: WorkItem }) {
         reason = input;
       }
       await resolveApproval(approvalId, runId, decision, reason);
+      if (!isCurrent(scope)) return;
       await fetchApprovals(runId);
+      if (!isCurrent(scope)) return;
       toast.success(decision === 'approved' ? '已批准' : '已拒绝');
     });
 
@@ -65,7 +72,7 @@ export function RunPanel({ task }: { task: WorkItem }) {
     <section className="space-y-base border-t border-border-subtle pt-comfortable">
       <div className="flex items-center justify-between gap-snug">
         <h3 className="text-body font-semibold text-text-primary">执行记录</h3>
-        <span className="text-caption text-text-tertiary">由 Coordinator 托管</span>
+        <span className="text-caption text-text-tertiary">{runPanelOwnershipText(coordinatorResolution)}</span>
       </div>
 
       {/* 最新 Run 状态 */}
@@ -177,37 +184,6 @@ export function RunPanel({ task }: { task: WorkItem }) {
               </span>
             </div>
           ))}
-        </div>
-      )}
-
-      {/* 追加指令：始终发给根 Coordinator，不直接创建 Worker Run。 */}
-      {task.status !== 'completed' && task.status !== 'cancelled' && (
-        <div className="space-y-2 rounded-card border border-brand-primary/20 bg-brand-primary/5 p-snug">
-          <div>
-            <h4 className="text-body font-medium text-text-primary">追加给 Coordinator</h4>
-            <p className="mt-0.5 text-caption text-text-secondary">补充上下文或调整验收要求；Coordinator 会决定是否重新规划。</p>
-          </div>
-          <textarea
-            value={instruction}
-            onChange={(e) => setInstruction(e.target.value)}
-            rows={2}
-            aria-label="追加给 Coordinator 的指令"
-            placeholder="例如：优先处理登录流程，并补充失败重试说明"
-            className="w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30 resize-none"
-          />
-          <div className="flex justify-end">
-            <button
-              type="button"
-              onClick={() => void appendInstruction()}
-              disabled={!instruction.trim() || busy !== null}
-              className="bg-brand-primary text-text-inverse rounded-button px-base py-tight text-body font-medium transition-all hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="inline-flex items-center gap-tight">
-                <Send className="h-4 w-4" aria-hidden />
-                {busy === 'append' ? '提交中…' : '发送给 Coordinator'}
-              </span>
-            </button>
-          </div>
         </div>
       )}
     </section>

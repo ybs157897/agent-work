@@ -6,12 +6,14 @@ import {
   getCoordinatorSnapshot,
   createDecision,
   createPlan,
+  createTaskComment,
   createWorkItem,
   getPlan,
   getRunChangeDiff,
   getWorkItemPlan,
   getWorkItemTree,
   listRunChanges,
+  listWorkItemComments,
   listWorkItemDecisions,
   listWorkItems,
   listCoordinatorEvents,
@@ -19,7 +21,6 @@ import {
   returnWorkItem,
   revertRunChanges,
   searchWorkspace,
-  sendCoordinatorInstruction,
 } from './endpoints';
 
 const json = (body: unknown, status = 200) =>
@@ -196,25 +197,22 @@ describe('Task Coordinator endpoints', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).not.toHaveProperty('agent_profile_id');
   });
 
-  it('追加指令与配置更新不携带普通 Agent 或 prompt 字段', async () => {
+  it('配置更新不携带普通 Agent 或 prompt 字段', async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve(json(url.includes('/coordinator') ? config : {})));
     vi.stubGlobal('fetch', fetchMock);
 
-    await sendCoordinatorInstruction('wi_1', '补充验收标准');
     await getCoordinatorConfig('ws_1');
     await patchCoordinatorConfig('ws_1', {
       runtime_label: 'kimi_local', model_ref: 'kimi-model', reasoning_effort: 'medium',
       fallback_runtime_label: 'codex_local', expected_version: 3,
     });
 
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/work-items/wi_1/coordinator/messages');
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ instruction: '补充验收标准' });
-    expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/workspaces/ws_1/coordinator');
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workspaces/ws_1/coordinator');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
       runtime_label: 'kimi_local', model_ref: 'kimi-model', reasoning_effort: 'medium',
       fallback_runtime_label: 'codex_local', expected_version: 3,
     });
-    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).not.toHaveProperty('instructions');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).not.toHaveProperty('instructions');
   });
 });
 
@@ -247,13 +245,58 @@ describe('work item accept / return commands', () => {
     expect(JSON.parse(init.body as string)).toEqual({ reason: '验收标准第 2 条未达成', expected_version: 8 });
   });
 
-  it('returnWorkItem: 理由缺省时 body 不携带 reason 字段', async () => {
+  it('returnWorkItem: 理由必填，随 body 提交（契约：空理由 422 review_feedback_required）', async () => {
     const fetchMock = vi.fn().mockResolvedValue(json(workItem));
     vi.stubGlobal('fetch', fetchMock);
 
-    await returnWorkItem('wi_1', undefined, 8);
+    await returnWorkItem('wi_1', '验收标准第 2 条未达成', 8);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ expected_version: 8 });
+    expect(JSON.parse(init.body as string)).toEqual({ reason: '验收标准第 2 条未达成', expected_version: 8 });
+  });
+});
+
+describe('task comment endpoints（任务控制面 RFC §9.4）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('listWorkItemComments: after_revision/limit 走 query，response 携带 cursor', async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(json({ items: [], next_revision: null, latest_revision: 21 })),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const got = await listWorkItemComments('wi_1', { afterRevision: 5, limit: 100 });
+    expect(got.latest_revision).toBe(21);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/work-items/wi_1/comments?after_revision=5&limit=100');
+
+    await listWorkItemComments('wi_1');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/work-items/wi_1/comments');
+  });
+
+  it('createTaskComment: POST comments 携带 kind/body/client_key/expected_work_item_version 与自动 Idempotency-Key', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({ id: 'cmt_1', work_item_id: 'wi_1', root_work_item_id: 'wi_1', revision: 18, kind: 'requirement', body: '补充错误处理', actor_kind: 'user', actor_id: 'u1', created_at: '' }, 201),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createTaskComment('wi_1', {
+      kind: 'requirement',
+      body: '补充错误处理',
+      client_key: 'comment:wi_1:abc',
+      expected_work_item_version: 8,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_1/comments');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      kind: 'requirement',
+      body: '补充错误处理',
+      client_key: 'comment:wi_1:abc',
+      expected_work_item_version: 8,
+    });
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBeTruthy();
   });
 });
 

@@ -26,6 +26,7 @@ func seedM2Env(t *testing.T, ctx context.Context, store *sqlstore.Store) (wsID, 
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_m2")
 	lead := &domain.AgentProfile{
 		ID: "agent_m2_lead", WorkspaceID: ws.ID, Name: "Lead", Role: application.AgentRoleLead,
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

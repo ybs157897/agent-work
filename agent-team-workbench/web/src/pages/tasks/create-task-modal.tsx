@@ -7,6 +7,7 @@ import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 import { sortTasksTree } from '../../utils/task-tree';
 import { useWorkspaceStore } from '../../stores/workspace.store';
+import { captureScope, isCurrent } from '../../stores/scope';
 
 /** 父任务候选：非终态任务（终态任务不再接收子任务），树序展示。 */
 const parentCandidates = (items: WorkItem[]) =>
@@ -35,6 +36,8 @@ export function CreateTaskModal({
 
   const submit = async () => {
     if (!workspace || !title.trim()) return;
+    const scope = captureScope();
+    if (scope.workspaceId !== workspace.id) return;
     setSubmitting(true);
     try {
       clientKey.current ??= `task:${crypto.randomUUID()}`;
@@ -54,7 +57,9 @@ export function CreateTaskModal({
           .filter(Boolean),
         client_key: clientKey.current,
       });
+      if (!isCurrent(scope)) return;
       await refresh();
+      if (!isCurrent(scope)) return;
       toast.success(
         parentId
           ? `已创建子任务「${title.trim()}」，将通知根 Coordinator 重新规划`
@@ -69,9 +74,10 @@ export function CreateTaskModal({
       clientKey.current = undefined;
       onClose();
     } catch (err) {
+      if (!isCurrent(scope)) return;
       toast.error(err instanceof ApiError ? err.message : '创建失败');
     } finally {
-      setSubmitting(false);
+      if (isCurrent(scope)) setSubmitting(false);
     }
   };
 

@@ -105,12 +105,21 @@ func TestClaimReturnEndpoints(t *testing.T) {
 		t.Fatalf("打回后 phase 应为 execution，实际 %v", got)
 	}
 
-	// todo 任务打回 → 409。
+	// todo 任务打回：缺 reason → 422 review_feedback_required（RFC §7.9 reason 必填）；
+	// 带 reason → 409。
 	todo, err := s.svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "todo 任务"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	code, body = postCommand(t, mux, "/api/v1/work-items/"+todo.ID+"/commands/return", `{}`, "return-2")
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("缺 reason 打回应 422，实际 %d: %v", code, body)
+	}
+	if got, _ := body["code"].(string); got != "review_feedback_required" {
+		t.Fatalf("错误码应为 review_feedback_required，实际 %v", got)
+	}
+	code, body = postCommand(t, mux, "/api/v1/work-items/"+todo.ID+"/commands/return",
+		`{"reason":"尚未开始"}`, "return-3")
 	if code != http.StatusConflict {
 		t.Fatalf("todo 打回应 409，实际 %d: %v", code, body)
 	}

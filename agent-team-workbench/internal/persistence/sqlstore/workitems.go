@@ -15,14 +15,15 @@ type WorkItemRepo struct{ store *Store }
 
 const workItemCols = `id, workspace_id, record_kind, parent_id, title, description, status, phase, priority,
 	due_date, agent_profile_id, client_key, locked_by_run_id, locked_at, rolling_digest,
-	version, created_at, updated_at`
+	acceptance_criteria, phase_entered_at, version, created_at, updated_at`
 
 func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkItem) error {
-	var recordKind, parent, phase, dueDate, assignee, clientKey, lockedBy *string
-	var created, updated, lockedAt scanTime
+	var recordKind, parent, phase, dueDate, assignee, clientKey, lockedBy, acceptance *string
+	var created, updated, lockedAt, phaseEntered scanTime
 	if err := row.Scan(&w.ID, &w.WorkspaceID, &recordKind, &parent, &w.Title, &w.Description, &w.Status, &phase,
 		&w.Priority, &dueDate, &assignee, &clientKey, &lockedBy, &lockedAt,
-		&w.RollingDigest, &w.Version, &created, &updated); err != nil {
+		&w.RollingDigest, &acceptance, &phaseEntered,
+		&w.Version, &created, &updated); err != nil {
 		return err
 	}
 	if recordKind != nil {
@@ -49,6 +50,12 @@ func (r *WorkItemRepo) scan(row interface{ Scan(...any) error }, w *domain.WorkI
 		w.LockedByRunID = *lockedBy
 	}
 	w.LockedAt = optTime(lockedAt)
+	if acceptance != nil {
+		if err := jsonInto(*acceptance, &w.AcceptanceCriteria); err != nil {
+			return err
+		}
+	}
+	w.PhaseEnteredAt = optTime(phaseEntered)
 	w.CreatedAt, w.UpdatedAt = mustTime(created), mustTime(updated)
 	return nil
 }
@@ -70,11 +77,17 @@ func (r *WorkItemRepo) Create(ctx context.Context, wi *domain.WorkItem) error {
 	if wi.DueDate != nil {
 		due = wi.DueDate.Format("2006-01-02")
 	}
+	// acceptance_criteria 存 JSON 数组文本；未设置为 NULL（不落 "null" 字面量）。
+	var acceptance any
+	if len(wi.AcceptanceCriteria) > 0 {
+		acceptance = jsonText(wi.AcceptanceCriteria)
+	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO work_items(`+workItemCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		wi.ID, wi.WorkspaceID, recordKind, nullString(wi.ParentID), wi.Title, wi.Description, wi.Status,
 		nullString(string(wi.Phase)), wi.Priority, due, nullString(wi.AgentProfileID), nullString(wi.ClientKey),
-		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.RollingDigest, wi.Version,
+		nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt), wi.RollingDigest,
+		acceptance, d.NullTimeParam(wi.PhaseEnteredAt), wi.Version,
 		d.TimeParam(wi.CreatedAt), d.TimeParam(wi.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -180,14 +193,19 @@ func (r *WorkItemRepo) Update(ctx context.Context, wi *domain.WorkItem, expected
 	if wi.DueDate != nil {
 		due = wi.DueDate.Format("2006-01-02")
 	}
+	var acceptance any
+	if len(wi.AcceptanceCriteria) > 0 {
+		acceptance = jsonText(wi.AcceptanceCriteria)
+	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE work_items SET title=?, description=?, status=?, phase=?, priority=?,
-			due_date=?, agent_profile_id=?, locked_by_run_id=?, locked_at=?, rolling_digest=?,
-			version=version+1, updated_at=?
-		 WHERE id=? AND version=?`,
+		due_date=?, agent_profile_id=?, locked_by_run_id=?, locked_at=?, rolling_digest=?,
+		acceptance_criteria=?, phase_entered_at=?,
+		version=version+1, updated_at=?
+		WHERE id=? AND version=?`,
 		wi.Title, wi.Description, wi.Status, nullString(string(wi.Phase)), wi.Priority,
 		due, nullString(wi.AgentProfileID), nullString(wi.LockedByRunID), d.NullTimeParam(wi.LockedAt),
-		wi.RollingDigest,
+		wi.RollingDigest, acceptance, d.NullTimeParam(wi.PhaseEnteredAt),
 		d.TimeParam(timeNow()), wi.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)

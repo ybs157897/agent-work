@@ -41,8 +41,7 @@ func newTestModule(t *testing.T) *Module {
 		t.Fatalf("fake server 缺失: %v", err)
 	}
 	return New(Config{
-		BinPath: python, Args: []string{script},
-		WorkspaceRoot: t.TempDir(), GracePeriod: time.Second,
+		BinPath: python, Args: []string{script}, GracePeriod: time.Second,
 	})
 }
 
@@ -764,7 +763,7 @@ func TestExecuteResumeNotFoundIsSessionUnknown(t *testing.T) {
 
 // CLI 不存在 → FamilyConfig / spawn_failed。
 func TestExecuteSpawnFailure(t *testing.T) {
-	m := New(Config{BinPath: filepath.Join(t.TempDir(), "missing-codex"), WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: filepath.Join(t.TempDir(), "missing-codex")})
 	r := startExecute(t, m, nil, "", "")
 	res := r.wait(t, 15*time.Second)
 	if res.Outcome != atwruntime.OutcomeFailed || res.Failure == nil {
@@ -1586,7 +1585,7 @@ func TestCodexLiveAppServer(t *testing.T) {
 	if _, err := exec.LookPath("codex"); err != nil {
 		t.Skip("codex CLI not installed")
 	}
-	m := New(Config{BinPath: "codex", WorkspaceRoot: t.TempDir(), GracePeriod: 5 * time.Second})
+	m := New(Config{BinPath: "codex", GracePeriod: 5 * time.Second})
 	probe, err := m.Probe(context.Background(), atwruntime.ProbeRequest{WorkspaceID: "ws_live"})
 	if err != nil || !probe.OK {
 		t.Fatalf("live probe failed: result=%+v err=%v", probe, err)

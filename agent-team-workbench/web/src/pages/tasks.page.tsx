@@ -9,6 +9,7 @@ import { childCountByParent, sortTasksTree } from '../utils/task-tree';
 import { isAwaitingAcceptance } from '../utils/task-phase';
 import { formatDueDate } from '../utils/format';
 import { CreateTaskModal } from './tasks/create-task-modal';
+import { ReviewQueueSummary } from './tasks/review-queue';
 import { TaskSearch } from './tasks/search-panel';
 
 // 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
@@ -34,7 +35,7 @@ export default function TasksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
 
-  // viewMode 是本地 UI 状态：放 URL，不进后端（协议 §4.1）。
+  // viewMode 是本地 UI 状态：放 URL，不进后端（协议 §4.1）；queue=review 与 view 独立。
   useEffect(() => {
     const v = searchParams.get('view');
     if (v === 'kanban' || v === 'list') setViewMode(v);
@@ -42,7 +43,11 @@ export default function TasksPage() {
 
   const switchView = (m: ViewMode) => {
     setViewMode(m);
-    setSearchParams(m === 'kanban' ? {} : { view: m }, { replace: true });
+    // view 语义不变；切换视图时保留既有的 queue=review 参数。
+    const next = new URLSearchParams(searchParams);
+    if (m === 'kanban') next.delete('view');
+    else next.set('view', m);
+    setSearchParams(next, { replace: true });
   };
 
   const columns = COLUMNS.map((c) => ({
@@ -120,6 +125,11 @@ export default function TasksPage() {
           </span>
         </div>
       </header>
+
+      {/* 复审队列摘要（RFC §12.4：服务端 total_count badge；展开走 ?queue=review） */}
+      <div className="mb-snug shrink-0">
+        <ReviewQueueSummary />
+      </div>
 
       {/* 看板 / 列表 */}
       <section aria-label="任务看板" className="flex-1 min-h-0 overflow-x-auto pb-6">

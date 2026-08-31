@@ -25,6 +25,7 @@ func seedClaimEnv(t *testing.T, ctx context.Context, store *sqlstore.Store) (wsI
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_claim")
 	a := &domain.AgentProfile{
 		ID: "agent_claim_a", WorkspaceID: ws.ID, Name: "ClaimerA", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -207,6 +208,7 @@ func TestReturnWorkItem(t *testing.T) {
 	}
 
 	// acceptance 态打回同样合法（经 EnterAcceptance 域迁移构造）。
+	// RFC §7.9：reason 从本版本起必填（trim 后为空 → review_feedback_required）。
 	accepting, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "待验收"})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +236,10 @@ func TestReturnWorkItem(t *testing.T) {
 	if err := store.WorkItems().Update(ctx, wi2, wi2.Version-1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReturnWorkItem(ctx, wi2.ID, "", 0); err != nil {
+	if _, err := svc.ReturnWorkItem(ctx, wi2.ID, "  \t ", 0); !errors.Is(err, application.ErrReviewFeedbackRequired) {
+		t.Fatalf("空 reason 打回应 review_feedback_required，实际 %v", err)
+	}
+	if _, err := svc.ReturnWorkItem(ctx, wi2.ID, "验收口径未达成", 0); err != nil {
 		t.Fatalf("acceptance 态打回应成功: %v", err)
 	}
 	after, err := store.WorkItems().Get(ctx, wi2.ID)
@@ -250,7 +255,7 @@ func TestReturnWorkItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReturnWorkItem(ctx, todo.ID, "", 0); !errors.Is(err, domain.ErrStateConflict) {
+	if _, err := svc.ReturnWorkItem(ctx, todo.ID, "尚未开始无法打回", 0); !errors.Is(err, domain.ErrStateConflict) {
 		t.Fatalf("todo 打回应 ErrStateConflict，实际 %v", err)
 	}
 	done, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "已完工"})
@@ -277,7 +282,7 @@ func TestReturnWorkItem(t *testing.T) {
 	if _, err := svc.AcceptWorkItem(ctx, done.ID, 0); err != nil {
 		t.Fatalf("构造 completed 前置失败: %v", err)
 	}
-	if _, err := svc.ReturnWorkItem(ctx, done.ID, "", 0); !errors.Is(err, domain.ErrStateConflict) {
+	if _, err := svc.ReturnWorkItem(ctx, done.ID, "已完工不可打回", 0); !errors.Is(err, domain.ErrStateConflict) {
 		t.Fatalf("completed 打回应 ErrStateConflict，实际 %v", err)
 	}
 }

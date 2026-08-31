@@ -124,6 +124,11 @@ type ExecContext struct {
 	// Ctx 在 interrupt/cancel/服务关停时被取消；adapter 必须借此终止底层进程。
 	Ctx context.Context
 	Run *domain.ExecutionRun
+	// Execution 是本 Run 的不可变执行上下文快照（持久身份，无宿主路径）。
+	Execution domain.ExecutionContextSnapshot
+	// Resolved 是 Host resolver 的进程内可信产物；adapter 只许用 Resolved.CWD
+	// 定位工作目录，禁止读取全局/构造期 WorkspaceRoot（架构 RFC §5.1.9）。
+	Resolved domain.ResolvedExecutionContext
 	// Instruction 已由编排层应用会话策略（resume 只发当轮；fresh 可能内联历史）。
 	Instruction string
 	// Session resume 决策；Ref 为空表示新会话。

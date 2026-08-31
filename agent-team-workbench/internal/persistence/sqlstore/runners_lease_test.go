@@ -3,12 +3,82 @@ package sqlstore_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 )
+
+func TestCreateLeaseAllowsOneActiveFenceAndMonotonicReissue(t *testing.T) {
+	ctx := context.Background()
+	db := openWakeupTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	seedWorkspace(t, db)
+	agent := &domain.AgentProfile{
+		ID: "agent_fence", WorkspaceID: "ws_wk", Name: "Fence", Role: "developer",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	seedAgent(t, store, agent)
+	insertWorkItem(t, db, "wi_fence")
+	now := time.Now().UTC()
+	insertRun(t, db, "run_fence", agent.ID, "wi_fence", "running", now)
+	if err := store.Runners().Upsert(ctx, &application.Runner{
+		ID: "runner_fence", Label: "fence",
+		Slots: 8, Status: "connected", LastSeenAt: &now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	leases := make([]*application.RunLease, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		leases[i] = &application.RunLease{
+			LeaseID: fmt.Sprintf("lease_fence_%d", i), RunID: "run_fence", RunnerID: "runner_fence",
+			RenewedUntil: now.Add(time.Minute),
+		}
+		wg.Add(1)
+		go func(lease *application.RunLease) {
+			defer wg.Done()
+			errs <- store.Runners().CreateLease(context.Background(), lease)
+		}(leases[i])
+	}
+	wg.Wait()
+	close(errs)
+	succeeded := 0
+	for err := range errs {
+		if err == nil {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("并发抢同一 Run 只能产生一个 active lease，实际 %d", succeeded)
+	}
+	active, err := store.Runners().ListActiveLeasesByRunner(ctx, "runner_fence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].FencingToken != 1 {
+		t.Fatalf("恢复只应返回唯一 active fence: %+v", active)
+	}
+	if err := store.Runners().ReleaseLease(ctx, active[0].LeaseID, now); err != nil {
+		t.Fatal(err)
+	}
+	next := &application.RunLease{LeaseID: "lease_fence_next", RunID: "run_fence", RunnerID: "runner_fence", RenewedUntil: now.Add(time.Minute)}
+	if err := store.Runners().CreateLease(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	if next.FencingToken != 2 {
+		t.Fatalf("active lease 释放后 fencing 必须单调递增，实际 %d", next.FencingToken)
+	}
+}
 
 // insertLeaseForRunner 与 insertLease 相同，但允许指定 runner（验证续租按 runner 维度隔离）。
 func insertLeaseForRunner(t *testing.T, db *sql.DB, leaseID, runID, runnerID string, renewedUntil time.Time, released bool) {

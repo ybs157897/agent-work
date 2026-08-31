@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { listActivities } from '../api/endpoints';
 import type { Activity, CanonicalEvent } from '../api/types';
-import { useWorkspaceStore } from './workspace.store';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 
 const LOGS_CAP = 200;
 
@@ -11,16 +11,21 @@ interface LogsStore {
   refresh: () => Promise<void>;
   /** activity.appended：实时前插（协议 §5.2 日志页事件）。 */
   prependFromEvent: (ev: CanonicalEvent) => void;
+  /** 切换 Workspace 时清空活动日志。 */
+  reset: () => void;
 }
 
 export const useLogsStore = create<LogsStore>()((set) => ({
   items: [],
   loaded: false,
 
+  reset: () => set({ items: [], loaded: false }),
+
   refresh: async () => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    if (!wsId) return;
-    const { items } = await listActivities(wsId);
+    const scope = captureScope();
+    if (!scope.workspaceId) return;
+    const { items } = await listActivities(scope.workspaceId);
+    if (!isCurrent(scope)) return; // 切换后旧 Workspace 的日志不回写
     set({ items, loaded: true });
   },
 
@@ -35,3 +40,5 @@ export const useLogsStore = create<LogsStore>()((set) => ({
     }));
   },
 }));
+
+registerWorkspaceScopedReset(() => useLogsStore.getState().reset());

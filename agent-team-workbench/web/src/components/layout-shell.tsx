@@ -5,6 +5,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { Sidebar, SidebarBody, useSidebar } from './aceternity/sidebar';
 import { InkBackdrop } from './ink/ink-backdrop';
 import { SseStatusPill } from './sse-status';
+import { WorkspaceSelector } from './workspace-selector';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { isChatPath, mainContentClassName } from '../utils/route-layout';
 
@@ -93,6 +94,11 @@ function SidebarContents() {
           <div className="truncate font-display text-body-lg text-text-on-sidebar-active">Agent Team</div>
           <div className="truncate text-caption tracking-[0.12em] text-text-on-sidebar/70">案牍工作台</div>
         </motion.div>
+      </div>
+
+      {/* Workspace 切换器：持久侧栏（Chat 页无普通 header，只放 header 会在对话页消失）。 */}
+      <div className="shrink-0 border-b border-sidebar-border px-tight py-tight">
+        <WorkspaceSelector showText={showText} />
       </div>
 
       <nav className="flex-1 space-y-micro overflow-y-auto px-tight py-base" aria-label="主导航">

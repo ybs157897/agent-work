@@ -284,7 +284,7 @@ type env struct {
 	run    *domain.ExecutionRun
 }
 
-func newEnv(adapterID, instruction string, module runtime.AdapterModule) *env {
+func newEnv(t *testing.T, adapterID, instruction string, module runtime.AdapterModule) *env {
 	run := &domain.ExecutionRun{
 		ID: domain.NewID(domain.PrefixRun), WorkspaceID: "ws_conformance", Status: domain.RunQueued,
 		AdapterID: adapterID, Version: 1,
@@ -296,6 +296,14 @@ func newEnv(adapterID, instruction string, module runtime.AdapterModule) *env {
 	}
 	fe := newFakeSink(run)
 	runner := runtime.NewModuleRunner(fe)
+	// 执行上下文 fixture：conformance 的执行工作目录由 resolver 以 TempDir 提供
+	//（adapter 只读 Resolved.CWD；RFC §5.1.9）。
+	root := t.TempDir()
+	runner.SetSnapshotResolver(func(ctx context.Context, runID string) (domain.ExecutionContextSnapshot, domain.ResolvedExecutionContext, error) {
+		return domain.ExecutionContextSnapshot{ID: "ctxsnap_conf", SchemaVersion: domain.SnapshotSchemaV1},
+			domain.ResolvedExecutionContext{SnapshotID: "ctxsnap_conf", AuthorizedRoot: root, CWD: root, RefKind: domain.RefRoot},
+			nil
+	})
 	runner.Register(adapterID, module)
 	return &env{fe: fe, runner: runner, run: run}
 }
@@ -392,7 +400,7 @@ func runSuite(t *testing.T, adapterID string, fast, held runtime.AdapterModule, 
 	})
 
 	t.Run("StateMachineAuthority", func(t *testing.T) {
-		e := newEnv(adapterID, "conformance 状态机场景", fast)
+		e := newEnv(t, adapterID, "conformance 状态机场景", fast)
 		e.dispatch(t, ctx)
 		e.waitTerminal(t)
 
@@ -428,7 +436,7 @@ func runSuite(t *testing.T, adapterID string, fast, held runtime.AdapterModule, 
 	})
 
 	t.Run("NoSideEffectsAfterTerminal", func(t *testing.T) {
-		e := newEnv(adapterID, "conformance 终态后无副作用", fast)
+		e := newEnv(t, adapterID, "conformance 终态后无副作用", fast)
 		e.dispatch(t, ctx)
 		e.waitTerminal(t)
 
@@ -455,7 +463,7 @@ func runSuite(t *testing.T, adapterID string, fast, held runtime.AdapterModule, 
 		if opts.beforeHeld != nil {
 			opts.beforeHeld(t)
 		}
-		e := newEnv(adapterID, "conformance 取消场景", held)
+		e := newEnv(t, adapterID, "conformance 取消场景", held)
 		e.dispatch(t, ctx)
 		// 模拟 application：running 后进入 cancelling（starting 不可取消）。
 		if err := e.fe.RecordRunStatus(ctx, e.run.ID, domain.RunCancelling, nil); err != nil {
@@ -546,7 +554,7 @@ func TestSteeringCapabilityGate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.adapterID+" 未声明 steering", func(t *testing.T) {
-			e := newEnv(tc.adapterID, "conformance steering 门控", tc.held)
+			e := newEnv(t, tc.adapterID, "conformance steering 门控", tc.held)
 			e.dispatch(t, ctx)
 			err := e.runner.ForwardInput(ctx, e.run.ID, "中途转向")
 			if !errors.Is(err, domain.ErrCapabilityMissing) {
@@ -562,7 +570,7 @@ func TestSteeringCapabilityGate(t *testing.T) {
 
 	t.Run("声明 steering 的模块成功投递", func(t *testing.T) {
 		stub := &steeringStub{inputs: make(chan string, 1)}
-		e := newEnv("stub-steering", "conformance steering 投递", stub)
+		e := newEnv(t, "stub-steering", "conformance steering 投递", stub)
 		e.dispatch(t, ctx)
 		if err := e.runner.ForwardInput(ctx, e.run.ID, "中途转向"); err != nil {
 			t.Fatalf("steering 投递应成功: %v", err)
@@ -591,7 +599,7 @@ func TestApprovalFlow(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("批准后恢复并成功", func(t *testing.T) {
-		e := newEnv("mock", "conformance 审批场景（批准）", mock.NewWithStep(2*time.Millisecond))
+		e := newEnv(t, "mock", "conformance 审批场景（批准）", mock.NewWithStep(2*time.Millisecond))
 		e.dispatch(t, ctx)
 		waitUntil(t, 10*time.Second, func() bool { return e.fe.status() == domain.RunWaitingApproval },
 			"Run 未进入 waiting_approval", e.fe.dump)
@@ -619,7 +627,7 @@ func TestApprovalFlow(t *testing.T) {
 	})
 
 	t.Run("拒绝后确认取消终态", func(t *testing.T) {
-		e := newEnv("mock", "conformance 审批场景（拒绝）", mock.NewWithStep(2*time.Millisecond))
+		e := newEnv(t, "mock", "conformance 审批场景（拒绝）", mock.NewWithStep(2*time.Millisecond))
 		e.dispatch(t, ctx)
 		waitUntil(t, 10*time.Second, func() bool { return e.fe.status() == domain.RunWaitingApproval },
 			"Run 未进入 waiting_approval", e.fe.dump)
@@ -680,7 +688,7 @@ func (l *lateEventStub) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 // 投影层必须拒绝且终态不可变。
 func TestLateCallbackRejectedAfterTerminal(t *testing.T) {
 	stub := &lateEventStub{}
-	e := newEnv("stub-late", "conformance 越界回调", stub)
+	e := newEnv(t, "stub-late", "conformance 越界回调", stub)
 	e.dispatch(t, context.Background())
 	e.waitTerminal(t)
 

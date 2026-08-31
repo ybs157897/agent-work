@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from '../api/types';
 import { useTasksStore } from './tasks.store';
+import { useWorkspaceStore } from './workspace.store';
 
 const item: WorkItem = {
   id: 'wi_1',
@@ -25,6 +26,11 @@ const problem = (status: number, code: string) =>
 
 describe('tasks.store moveOptimistic', () => {
   beforeEach(() => {
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: '甲', timezone: 'UTC', version: 1 },
+      selectedWorkspaceId: 'ws_1',
+      generation: 0,
+    });
     useTasksStore.setState({ items: [item], filter: {}, viewMode: 'kanban', selectedTaskId: null });
   });
 
@@ -102,6 +108,19 @@ describe('tasks.store record isolation', () => {
     expect(useTasksStore.getState().items).toEqual([]);
   });
 
+  it('upsert 拒绝其他 Workspace 的 Task，裸资源响应不能污染当前看板', () => {
+    useWorkspaceStore.setState({
+      workspace: { id: 'ws_1', name: '甲', timezone: 'UTC', version: 1 },
+      selectedWorkspaceId: 'ws_1',
+      generation: 3,
+    });
+    useTasksStore.setState({ items: [], loaded: false });
+
+    useTasksStore.getState().upsert({ ...item, workspace_id: 'ws_2', id: 'wi_from_ws_2' });
+
+    expect(useTasksStore.getState().items).toEqual([]);
+  });
+
   it('refresh 请求显式带 record_kind=task 且响应再次 fail-closed', async () => {
     const chat = { ...item, id: 'chat_1', record_kind: 'chat' as const, title: '独立对话' };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [item, chat], next_cursor: null }), {
@@ -109,7 +128,6 @@ describe('tasks.store record isolation', () => {
       headers: { 'Content-Type': 'application/json' },
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const { useWorkspaceStore } = await import('./workspace.store');
     useWorkspaceStore.setState({ workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 } });
 
     await useTasksStore.getState().refresh();

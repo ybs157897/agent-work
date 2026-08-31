@@ -104,7 +104,7 @@ func (f *fakeCLI) argvLines(t *testing.T) []string {
 
 func newAdapter(t *testing.T, bin string) *Adapter {
 	t.Helper()
-	return New(Config{BinPath: bin, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second})
+	return New(Config{BinPath: bin, GracePeriod: time.Second})
 }
 
 func newRun(input map[string]any) *domain.ExecutionRun {
@@ -179,7 +179,8 @@ func runExecute(t *testing.T, a *Adapter, run *domain.ExecutionRun, session atwr
 	defer cancel()
 	ex := &atwruntime.ExecContext{
 		Ctx: ctx, Run: run, Instruction: "kimi fake run",
-		Session: session, Callbacks: cb, Controls: make(chan atwruntime.Control, 8),
+		Resolved: domain.ResolvedExecutionContext{CWD: t.TempDir(), AuthorizedRoot: t.TempDir()},
+		Session:  session, Callbacks: cb, Controls: make(chan atwruntime.Control, 8),
 	}
 	return a.Execute(ex), cb
 }
@@ -547,7 +548,7 @@ func TestTurnFailureClassification(t *testing.T) {
 func TestExecuteFrameOversizeIsInternal(t *testing.T) {
 	f := newFakeCLI(t)
 	f.mode(t, "big")
-	a := New(Config{BinPath: f.bin, WorkspaceRoot: t.TempDir(),
+	a := New(Config{BinPath: f.bin,
 		MaxFrameBytes: 1024, GracePeriod: time.Second})
 	res, _ := runExecute(t, a, newRun(nil), atwruntime.SessionState{})
 	if res.Outcome != atwruntime.OutcomeFailed {

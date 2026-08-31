@@ -13,12 +13,12 @@ const runCols = `id, workspace_id, work_item_id, agent_profile_id, status, runti
 	adapter_id, provider, capability_snapshot_id, session_ref, session_before, session_after,
 	usage_in, usage_out, usage_cached, usage_basis, error_family, client_key, progress, retry_of,
 	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at,
-	dispatch_id`
+	dispatch_id, context_snapshot_id`
 
 func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.ExecutionRun) error {
 	var agentID, runtimeLabel, adapterID, provider, capsID, sessionRef, retryOf, fCode, fMsg *string
 	var sessionBefore, sessionAfter, usageBasis, errorFamily, clientKey *string
-	var dispatchID *string
+	var dispatchID, ctxSnapID *string
 	var usageIn, usageOut, usageCached sql.NullInt64
 	var fRetry *bool
 	var input string
@@ -28,7 +28,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 		&sessionBefore, &sessionAfter,
 		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily, &clientKey,
 		&run.Progress, &retryOf, &fCode, &fMsg, &fRetry, &input,
-		&run.Version, &created, &updated, &finished, &dispatchID); err != nil {
+		&run.Version, &created, &updated, &finished, &dispatchID, &ctxSnapID); err != nil {
 		return err
 	}
 	setStr := func(dst *string, src *string) {
@@ -48,6 +48,7 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	setStr(&run.ErrorFamily, errorFamily)
 	setStr(&run.ClientKey, clientKey)
 	setStr(&run.DispatchID, dispatchID)
+	setStr(&run.ContextSnapshotID, ctxSnapID)
 	run.UsageIn, run.UsageOut, run.UsageCached = usageIn.Int64, usageOut.Int64, usageCached.Int64
 	if retryOf != nil {
 		run.RetryOf = *retryOf
@@ -78,7 +79,7 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		failureRetry = &run.Failure.Retryable
 	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkspaceID, run.WorkItemID, nullString(run.AgentProfileID), run.Status,
 		nullString(run.RuntimeLabel), nullString(run.AdapterID), nullString(run.Provider),
 		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef),
@@ -87,7 +88,7 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		nullString(run.ClientKey), run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
 		d.TimeParam(run.CreatedAt), d.TimeParam(run.UpdatedAt), d.NullTimeParam(run.FinishedAt),
-		nullString(run.DispatchID))
+		nullString(run.DispatchID), nullString(run.ContextSnapshotID))
 	return r.store.mapErr(err)
 }
 
@@ -110,6 +111,23 @@ func (r *RunRepo) Get(ctx context.Context, id string) (*domain.ExecutionRun, err
 		return nil, r.store.mapErr(err)
 	}
 	return run, nil
+}
+
+// SetContextSnapshot 在 Run 创建事务内回填 context_snapshot_id（写序：
+// run.Create(snapshot 空) → snapshot.Create → SetContextSnapshot）。
+// 只允许回填一次：已置快照的 Run 再写返回 ErrStateConflict（一对一不可换绑）。
+func (r *RunRepo) SetContextSnapshot(ctx context.Context, runID, snapshotID string) error {
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE execution_runs SET context_snapshot_id=? WHERE id=? AND context_snapshot_id IS NULL`,
+		snapshotID, runID)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return domain.ErrStateConflict
+	}
+	return nil
 }
 
 // Update 乐观锁：终态 Run 不允许被覆盖（状态机在领域层先拦截）。

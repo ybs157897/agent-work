@@ -5,21 +5,70 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
 type RunnerRepo struct{ store *Store }
 
 func (r *RunnerRepo) Upsert(ctx context.Context, rn *application.Runner) error {
 	d := r.store.dialect
-	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO runners(id, workspace_id, label, runner_version, os, arch, slots, status, last_seen_at, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?)
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`INSERT INTO runners(id, workspace_id, execution_host_id, connection_epoch, boot_id, label, runner_version, os, arch, slots, status, last_seen_at, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT (id) DO UPDATE SET
+			workspace_id=NULL,
+			execution_host_id=excluded.execution_host_id, connection_epoch=excluded.connection_epoch, boot_id=excluded.boot_id,
 			runner_version=excluded.runner_version, os=excluded.os, arch=excluded.arch,
-			slots=excluded.slots, status=excluded.status, last_seen_at=excluded.last_seen_at`,
-		rn.ID, rn.WorkspaceID, rn.Label, rn.RunnerVersion, rn.OS, rn.Arch, rn.Slots,
+			slots=excluded.slots, status=excluded.status, last_seen_at=excluded.last_seen_at
+		 WHERE runners.execution_host_id IS NULL OR runners.execution_host_id=excluded.execution_host_id`,
+		rn.ID, nil, nullString(rn.ExecutionHostID), nullString(rn.ConnectionEpoch), nullString(rn.BootID),
+		rn.Label, rn.RunnerVersion, rn.OS, rn.Arch, rn.Slots,
 		rn.Status, d.NullTimeParam(rn.LastSeenAt), d.TimeParam(timeNow()))
-	return r.store.mapErr(err)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.ErrStateConflict
+	}
+	return nil
+}
+
+// Get 按 ID 读 Runner（v2 hello 的 host/epoch 校验用）。
+func (r *RunnerRepo) Get(ctx context.Context, runnerID string) (*application.Runner, error) {
+	rn := &application.Runner{}
+	var workspaceID, version, os_, arch, hostID, epoch, bootID *string
+	var lastSeen scanTime
+	err := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT id, workspace_id, execution_host_id, connection_epoch, boot_id, label, runner_version, os, arch, slots, status, last_seen_at
+		 FROM runners WHERE id=?`, runnerID).
+		Scan(&rn.ID, &workspaceID, &hostID, &epoch, &bootID, &rn.Label, &version, &os_, &arch,
+			&rn.Slots, &rn.Status, &lastSeen)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	if workspaceID != nil {
+		rn.WorkspaceID = *workspaceID
+	}
+	if hostID != nil {
+		rn.ExecutionHostID = *hostID
+	}
+	if epoch != nil {
+		rn.ConnectionEpoch = *epoch
+	}
+	if bootID != nil {
+		rn.BootID = *bootID
+	}
+	if version != nil {
+		rn.RunnerVersion = *version
+	}
+	if os_ != nil {
+		rn.OS = *os_
+	}
+	if arch != nil {
+		rn.Arch = *arch
+	}
+	rn.LastSeenAt = optTime(lastSeen)
+	return rn, nil
 }
 
 func (r *RunnerRepo) SetStatus(ctx context.Context, runnerID, status string, at time.Time) error {
@@ -30,10 +79,17 @@ func (r *RunnerRepo) SetStatus(ctx context.Context, runnerID, status string, at 
 	return r.store.mapErr(err)
 }
 
+// List 返回通过 WorkspaceLocation 映射到该 Workspace 的 Runner。Runner v2 是
+// Host 基础设施，不能再以 runners.workspace_id 过滤；同一 Host 有多个 Location
+// 时 DISTINCT 防止同一个 Runner 重复出现在健康投影。
 func (r *RunnerRepo) List(ctx context.Context, workspaceID string) ([]*application.Runner, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT id, workspace_id, label, runner_version, os, arch, slots, status, last_seen_at
-		 FROM runners WHERE workspace_id=? ORDER BY created_at`, workspaceID)
+		`SELECT DISTINCT r.id, r.workspace_id, r.execution_host_id, r.connection_epoch, r.boot_id,
+			r.label, r.runner_version, r.os, r.arch, r.slots, r.status, r.last_seen_at
+		 FROM runners r
+		 JOIN workspace_locations l ON l.execution_host_id=r.execution_host_id
+		 WHERE l.workspace_id=?
+		 ORDER BY r.id`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +97,9 @@ func (r *RunnerRepo) List(ctx context.Context, workspaceID string) ([]*applicati
 	var out []*application.Runner
 	for rows.Next() {
 		rn := &application.Runner{}
-		var version, os_, arch *string
+		var workspaceID, version, os_, arch, hostID, epoch, bootID *string
 		var lastSeen scanTime
-		if err := rows.Scan(&rn.ID, &rn.WorkspaceID, &rn.Label, &version, &os_, &arch,
+		if err := rows.Scan(&rn.ID, &workspaceID, &hostID, &epoch, &bootID, &rn.Label, &version, &os_, &arch,
 			&rn.Slots, &rn.Status, &lastSeen); err != nil {
 			return nil, err
 		}
@@ -56,6 +112,18 @@ func (r *RunnerRepo) List(ctx context.Context, workspaceID string) ([]*applicati
 		if arch != nil {
 			rn.Arch = *arch
 		}
+		if hostID != nil {
+			rn.ExecutionHostID = *hostID
+		}
+		if workspaceID != nil {
+			rn.WorkspaceID = *workspaceID
+		}
+		if epoch != nil {
+			rn.ConnectionEpoch = *epoch
+		}
+		if bootID != nil {
+			rn.BootID = *bootID
+		}
 		rn.LastSeenAt = optTime(lastSeen)
 		out = append(out, rn)
 	}
@@ -64,8 +132,21 @@ func (r *RunnerRepo) List(ctx context.Context, workspaceID string) ([]*applicati
 
 // CreateLease 分配递增 fencing_token：同一 run 的新 lease 总是大于旧值。
 func (r *RunnerRepo) CreateLease(ctx context.Context, l *application.RunLease) error {
+	// PG advisory_xact_lock 只有与 INSERT 保持同一 transaction 才能串行化
+	// MAX(fencing_token)+1；直接仓储调用也必须补这一层 transaction，避免调用者
+	// 漏包事务后锁在 INSERT 前释放。SQLite 的 Store.InTx 同样保证写序。
+	if ctx.Value(txKey{}) == nil {
+		return r.store.InTx(ctx, func(txCtx context.Context) error {
+			return r.CreateLease(txCtx, l)
+		})
+	}
 	d := r.store.dialect
-	err := r.store.queryRow(ctx, r.store.exec(ctx),
+	db := r.store.exec(ctx)
+	if err := d.AdvisoryLock(ctx, db,
+		r.store.ph(`SELECT pg_advisory_xact_lock(hashtext(?))`), "run-lease:"+l.RunID); err != nil {
+		return r.store.mapErr(err)
+	}
+	err := r.store.queryRow(ctx, db,
 		`INSERT INTO run_leases(lease_id, run_id, runner_id, fencing_token, acquired_at, renewed_until)
 		 VALUES (?, ?, ?, (SELECT COALESCE(MAX(fencing_token),0)+1 FROM run_leases WHERE run_id=?), ?, ?)
 		 RETURNING fencing_token`,
@@ -91,11 +172,70 @@ func (r *RunnerRepo) ActiveLease(ctx context.Context, runID string) (*applicatio
 	return l, nil
 }
 
+// ListActiveLeasesByRunner 恢复某 Runner 仍持有的非终态租约。Gateway 进程
+// 重启或 Runner 连接换 epoch 后以数据库为租约真相重建内存 fencing 表，不能把
+// pending event 当 stale ACK 掉。
+func (r *RunnerRepo) ListActiveLeasesByRunner(ctx context.Context, runnerID string) ([]*application.RunLease, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx),
+		`SELECT l.lease_id, l.run_id, l.runner_id, l.fencing_token, l.renewed_until
+		 FROM run_leases l
+		 JOIN execution_runs run ON run.id=l.run_id
+		 WHERE l.runner_id=? AND l.released_at IS NULL
+		   AND l.fencing_token=(
+			   SELECT MAX(current.fencing_token) FROM run_leases current
+			   WHERE current.run_id=l.run_id AND current.released_at IS NULL
+		   )
+		   AND run.status NOT IN ('succeeded','interrupted','cancelled','lost','failed')
+		 ORDER BY l.run_id`, runnerID)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	defer rows.Close()
+	var out []*application.RunLease
+	for rows.Next() {
+		l := &application.RunLease{}
+		var renewed scanTime
+		if err := rows.Scan(&l.LeaseID, &l.RunID, &l.RunnerID, &l.FencingToken, &renewed); err != nil {
+			return nil, r.store.mapErr(err)
+		}
+		l.RenewedUntil = mustTime(renewed)
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
 func (r *RunnerRepo) ReleaseLease(ctx context.Context, leaseID string, at time.Time) error {
 	d := r.store.dialect
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE run_leases SET released_at=? WHERE lease_id=?`, d.TimeParam(at), leaseID)
 	return r.store.mapErr(err)
+}
+
+func (r *RunnerRepo) ReleaseActiveLeasesByRunner(ctx context.Context, runnerID string, at time.Time) ([]string, error) {
+	d := r.store.dialect
+	db := r.store.exec(ctx)
+	rows, err := r.store.query(ctx, db,
+		`SELECT DISTINCT run_id FROM run_leases WHERE runner_id=? AND released_at IS NULL ORDER BY run_id`, runnerID)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	var runIDs []string
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			rows.Close()
+			return nil, r.store.mapErr(err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	if _, err := r.store.execStmt(ctx, db,
+		`UPDATE run_leases SET released_at=? WHERE runner_id=? AND released_at IS NULL`, d.TimeParam(at), runnerID); err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	return runIDs, nil
 }
 
 func (r *RunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]string, error) {
@@ -163,6 +303,21 @@ func (r *RunnerRepo) RenewLeasesByRunner(ctx context.Context, runnerID string, r
 	return int(n), nil
 }
 
+// RenewLeasesByRunnerIfEpoch v2：仅当 runners.connection_epoch 与传入一致才续租
+// （旧连接的 heartbeat 不得续租——hello 换代后旧 epoch 的帧只配 ACK，不生效）。
+// epoch 失配返回 0 行 nil 错误。
+func (r *RunnerRepo) RenewLeasesByRunnerIfEpoch(ctx context.Context, runnerID, epoch, bootID string, renewUntil time.Time) (int, error) {
+	var currentEpoch, currentBoot *string
+	if err := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT connection_epoch, boot_id FROM runners WHERE id=?`, runnerID).Scan(&currentEpoch, &currentBoot); err != nil {
+		return 0, r.store.mapErr(err)
+	}
+	if currentEpoch == nil || currentBoot == nil || *currentEpoch != epoch || *currentBoot != bootID {
+		return 0, nil
+	}
+	return r.RenewLeasesByRunner(ctx, runnerID, renewUntil)
+}
+
 // Append 写不可变审计记录（协议文档 §10.1）。
 func (r *AuditRepo) Append(ctx context.Context, workspaceID string, actor map[string]any, action, target string, detail map[string]any) error {
 	d := r.store.dialect
@@ -199,10 +354,13 @@ func (r *CapsRepo) Get(ctx context.Context, id string) (*application.CapabilityS
 	return s, nil
 }
 
-// RunnerEventDedup 按 (run_id, runner_id, runner_seq) 去重；重复返回 ErrIdempotencyConflict。
-func (r *RunnerRepo) RunnerEventDedup(ctx context.Context, runID, runnerID string, runnerSeq int64) error {
+// RunnerEventDedupV2 按 (run_id, lease_id, runner_id, producer_seq) 去重（0023 表，
+// RFC §8.3）；event_id 随行记录供 ACK 对账。重复返回 ErrIdempotencyConflict。
+// 必须在 ApplyRunnerEvent 同事务内调用（dedup 与应用效果同生共死）。
+func (r *RunnerRepo) RunnerEventDedupV2(ctx context.Context, runID, leaseID, runnerID string, producerSeq int64, eventID string) error {
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO runner_event_dedup(run_id, runner_id, runner_seq, run_seq) VALUES (?,?,?,0)`,
-		runID, runnerID, runnerSeq)
+		`INSERT INTO runner_event_dedup(run_id, lease_id, runner_id, producer_seq, event_id, run_seq)
+		 VALUES (?,?,?,?,?,0)`,
+		runID, leaseID, runnerID, producerSeq, eventID)
 	return r.store.mapErr(err)
 }

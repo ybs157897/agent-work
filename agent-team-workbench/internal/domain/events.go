@@ -92,11 +92,20 @@ const (
 	EventUsageUpdated    = "usage.updated"
 
 	EventRuntimeHealthChanged = "runtime.health_changed"
-	EventRunnerConnected      = "runner.connected"
-	EventRunnerDisconnected   = "runner.disconnected"
 	EventRunRecoveryStarted   = "run.recovery_started"
 	EventRunRecoveryCompleted = "run.recovery_completed"
 	EventRunRecoveryFailed    = "run.recovery_failed"
+
+	// 任务控制面补全（task-control-surface RFC §10）：执行上下文与任务反馈事件。
+	// 发布点随 I1（Execution Context）/I2（TaskComment）接线；接线时同步加入
+	// eventNameWhitelist。task_comment.created 的 SSE data 不含 body，前端按
+	// work item/root 失效重取。
+	EventExecutionHostUpdated              = "execution_host.updated"
+	EventWorkspaceLocationCreated          = "workspace_location.created"
+	EventWorkspaceLocationUpdated          = "workspace_location.updated"
+	EventWorkspaceLocationUnavailable      = "workspace_location.unavailable"
+	EventWorkItemDevelopmentContextUpdated = "work_item.development_context_updated"
+	EventTaskCommentCreated                = "task_comment.created"
 )
 
 // eventNameWhitelist 用于发布前校验；未知事件名禁止进入 SSE。
@@ -125,8 +134,16 @@ var eventNameWhitelist = map[string]struct{}{
 	EventFileChangesReverted: {},
 	EventApprovalRequested:   {}, EventApprovalResolved: {}, EventApprovalExpired: {},
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
-	EventRuntimeHealthChanged: {}, EventRunnerConnected: {}, EventRunnerDisconnected: {},
-	EventRunRecoveryStarted: {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},
+	EventRuntimeHealthChanged: {},
+	EventRunRecoveryStarted:   {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},
+	// 任务控制面补全（task-control-surface RFC §10）：执行上下文发布点（I1）。
+	EventExecutionHostUpdated:              {},
+	EventWorkspaceLocationCreated:          {},
+	EventWorkspaceLocationUpdated:          {},
+	EventWorkspaceLocationUnavailable:      {},
+	EventWorkItemDevelopmentContextUpdated: {},
+	// task_comment.created 发布点（I2，W3-CMT）：SSE data 不含 body。
+	EventTaskCommentCreated: {},
 }
 
 // IsKnownEventName 校验事件名是否在白名单内。
@@ -149,6 +166,12 @@ const (
 	AggregateDispatch        = "dispatch"
 	AggregateDecision        = "decision"
 	AggregateTaskCoordinator = "task_coordinator"
+
+	// 任务控制面补全（task-control-surface RFC §10）新增聚合，与
+	// asyncapi.yaml CanonicalEventEnvelope.aggregate.type.enum 严格一致。
+	AggregateExecutionHost     = "execution_host"
+	AggregateWorkspaceLocation = "workspace_location"
+	AggregateTaskComment       = "task_comment"
 )
 
 // CanonicalEvent 是工作台投影事实源（asyncapi CanonicalEventEnvelope）。

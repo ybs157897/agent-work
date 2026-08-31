@@ -12,6 +12,23 @@ import type { Plan, PlanStep, WorkItem } from '../api/types';
 export const isAwaitingAcceptance = (task: Pick<WorkItem, 'status' | 'phase'>): boolean =>
   task.status === 'in_progress' && (task.phase === 'review' || task.phase === 'acceptance');
 
+export type CoordinatorResolution = 'loading' | 'coordinated' | 'legacy';
+
+/**
+ * Return 会创建根 Coordinator 消费的 review_feedback。派生子任务没有独立
+ * Return 命令（服务端返回 child_review_not_supported），应改走 requirement。
+ */
+export const canReturnTask = (
+  task: Pick<WorkItem, 'status' | 'phase' | 'parent_id'>,
+  coordinatorResolution: CoordinatorResolution,
+): boolean => {
+  if (!isAwaitingAcceptance(task)) return false;
+  // Root Tasks support Return both before and after Coordinator adoption. A child
+  // is only forbidden once the authoritative Coordinator lookup confirms it.
+  if (!task.parent_id) return true;
+  return coordinatorResolution === 'legacy';
+};
+
 /**
  * finish 步触发评估：payload 为提交时 JSON 原文，evaluation 严格判 true
  * （后端同款 t.payload["evaluation"].(bool)，缺省/非布尔均视为未触发）。

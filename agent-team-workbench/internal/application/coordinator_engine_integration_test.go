@@ -32,6 +32,8 @@ func seedCoordinatorEnv(t *testing.T) (context.Context, *application.Service, *s
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	seedCtx(t, store, ctx, wsID)
 	if err := store.Agents().Create(ctx, &domain.AgentProfile{
 		ID: workerID, WorkspaceID: wsID, Name: "Forge", Role: "developer",
 		Skills: []string{"Go", "测试"}, Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -149,6 +151,59 @@ func TestRootTaskAutoCoordinatesAndIdempotentReplayDoesNotDoubleStart(t *testing
 	}
 	if len(dispatcher.runs) != 1 {
 		t.Fatalf("活动 Coordinator 存在时新增子任务不得双跑，实际 %d", len(dispatcher.runs))
+	}
+}
+
+func TestCoordinatorUsesCanonicalWorkItemAcceptanceCriteria(t *testing.T) {
+	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "验收标准权威源", RecordKind: domain.RecordKindTask,
+		AcceptanceCriteria: []string{"旧标准"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := store.TaskCoordinators().EnsureConfig(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	state := &domain.TaskCoordinatorState{
+		ID: domain.NewID(domain.PrefixCoordinatorState), WorkspaceID: wsID,
+		RootWorkItemID: root.ID, CoordinatorAgentID: config.AgentProfileID,
+		Status: domain.CoordinatorQueued, CurrentAction: "queued",
+		// Simulate the pre-0022/creation-time state snapshot. The WorkItem may be
+		// edited before its first Run, so this historical value must not drive the
+		// Coordinator prompt or Run input.
+		Data:    map[string]any{"acceptance_criteria": []string{"旧标准"}},
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.TaskCoordinators().CreateState(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TaskComments().EnsureCursor(ctx, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	newCriteria := []string{"新标准"}
+	if _, err := svc.UpdateWorkItemFields(ctx, root.ID, application.WorkItemFieldPatch{
+		AcceptanceCriteria: &newCriteria, ExpectedVersion: root.Version,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.StartCoordinator(ctx, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatcher.runs) != 1 {
+		t.Fatalf("应创建一个 Coordinator Run，实际 %d", len(dispatcher.runs))
+	}
+	run := dispatcher.runs[0]
+	criteria, ok := run.Input["acceptance_criteria"].([]string)
+	if !ok || len(criteria) != 1 || criteria[0] != "新标准" {
+		t.Fatalf("Coordinator Run 必须使用 WorkItem canonical criteria: %#v", run.Input["acceptance_criteria"])
+	}
+	instruction, _ := run.Input["instruction"].(string)
+	if !strings.Contains(instruction, "新标准") || strings.Contains(instruction, "旧标准") {
+		t.Fatalf("Coordinator prompt 使用了过期 criteria: %q", instruction)
 	}
 }
 
@@ -717,6 +772,8 @@ func seedCoordinatorEnvWithDatabase(t *testing.T) (context.Context, *sql.DB, *ap
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	seedCtx(t, store, ctx, wsID)
 	if err := store.Agents().Create(ctx, &domain.AgentProfile{
 		ID: workerID, WorkspaceID: wsID, Name: "Settlement Worker", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -951,7 +1008,7 @@ func TestCoordinatorAutomationWakeWrapsUntrustedContext(t *testing.T) {
 	}
 }
 
-func TestCoordinatorInstructionLifecycle(t *testing.T) {
+func TestCommentRequirementLifecycle(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "等待补充", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
@@ -970,18 +1027,22 @@ func TestCoordinatorInstructionLifecycle(t *testing.T) {
 	if err := store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SendCoordinatorInstruction(ctx, root.ID, "补充验收要求"); err != nil {
-		t.Fatalf("waiting_user 应允许补充指令: %v", err)
+	// waiting_user + requirement 评论 → 原子回 queued 并自动重开控制轮
+	//（RFC §7.7；pending_instruction 单槽双轨已删除）。
+	if _, err := svc.AppendTaskComment(ctx, application.AppendTaskCommentParams{
+		WorkItemID: root.ID, Kind: domain.CommentRequirement, Body: "补充验收要求",
+	}); err != nil {
+		t.Fatalf("waiting_user 应允许追加 requirement 评论: %v", err)
 	}
 	if len(dispatcher.runs) != 2 {
-		t.Fatalf("waiting_user 补充后应自动重开 Coordinator Run: %d", len(dispatcher.runs))
+		t.Fatalf("waiting_user 评论后应自动重开 Coordinator Run: %d", len(dispatcher.runs))
 	}
 	root, err = store.WorkItems().Get(ctx, root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if root.Phase != domain.PhaseExecution {
-		t.Fatalf("补充指令后根任务应回 execution: %+v", root)
+		t.Fatalf("requirement 评论后根任务应回 execution: %+v", root)
 	}
 
 	for _, status := range []domain.TaskCoordinatorStateStatus{domain.CoordinatorCompleted, domain.CoordinatorCancelled} {
@@ -997,8 +1058,10 @@ func TestCoordinatorInstructionLifecycle(t *testing.T) {
 		if err := store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.SendCoordinatorInstruction(ctx, root.ID, "不应执行"); !errors.Is(err, domain.ErrStateConflict) {
-			t.Fatalf("%s 应拒绝追加指令，实际 %v", status, err)
+		if _, err := svc.AppendTaskComment(ctx, application.AppendTaskCommentParams{
+			WorkItemID: root.ID, Kind: domain.CommentRequirement, Body: "不应执行",
+		}); !errors.Is(err, application.ErrCommentTerminalWorkItem) {
+			t.Fatalf("%s 应拒绝新增评论（comment_terminal_work_item），实际 %v", status, err)
 		}
 	}
 }
@@ -1114,7 +1177,7 @@ func TestReconcileOrphanWorkerReentersCoordinatorRecovery(t *testing.T) {
 	}
 }
 
-func TestCoordinatorMessageWithoutNewPlanBlocksStaleWaitingPlan(t *testing.T) {
+func TestRequirementCommentWaitsForSettlementThenTurnBlocksWithoutPlan(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "旧计划不能误验收", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
@@ -1144,32 +1207,67 @@ func TestCoordinatorMessageWithoutNewPlanBlocksStaleWaitingPlan(t *testing.T) {
 	if err != nil || plan.Status != domain.PlanWaiting {
 		t.Fatalf("前置应留下 waiting Plan: plan=%+v err=%v", plan, err)
 	}
-	if _, err := svc.SendCoordinatorInstruction(ctx, root.ID, "继续推进"); err != nil {
+	// RFC §7.7：活动 Worker 批次进行中追加 requirement 评论不做必达 steering，
+	// 保留 observation checkpoint，由 settlement 后的下一 durable turn 消费。
+	if _, err := svc.AppendTaskComment(ctx, application.AppendTaskCommentParams{
+		WorkItemID: root.ID, Kind: domain.CommentRequirement, Body: "继续推进",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(dispatcher.runs) < 3 {
-		t.Fatalf("消息应创建新的 Coordinator Run: runs=%+v", dispatcher.runs)
+	if len(dispatcher.runs) != 2 {
+		t.Fatalf("评论不得在活动批次中途创建新 Run: runs=%+v", dispatcher.runs)
 	}
-	messageRun := dispatcher.runs[len(dispatcher.runs)-1]
-	for _, status := range []domain.RunStatus{domain.RunStarting, domain.RunRunning} {
-		if err := svc.RecordRunStatus(ctx, messageRun.ID, status, nil); err != nil {
-			t.Fatal(err)
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorRunning {
+		t.Fatalf("活动批次中评论应保留 running checkpoint: %+v", state)
+	}
+	// Worker 静默 → settlement → 唤醒 Coordinator。
+	if err := svc.RecordRunStatus(ctx, dispatcher.runs[1].ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, dispatcher.runs[1].ID, "worker done"); err != nil {
+		t.Fatal(err)
+	}
+	wakeups, err := store.Wakeups().DueTimers(ctx, time.Now().UTC().Add(time.Second), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settlement *domain.WakeupRequest
+	for i := range wakeups {
+		if _, ok := wakeups[i].Context[domain.WakeupContextSettlementDispatchID].(string); ok {
+			settlement = &wakeups[i]
+			break
 		}
 	}
-	if err := svc.RecordRunEvent(ctx, messageRun.ID, domain.EventMessageCompleted,
+	if settlement == nil {
+		t.Fatalf("Worker 静默后应生成 settlement wakeup: %+v", wakeups)
+	}
+	scheduler := &scheduling.Scheduler{Store: store.Wakeups(), RunStarter: svc}
+	if outcome, err := scheduler.ConsumeOne(ctx, *settlement, time.Now().UTC()); err != nil || outcome != scheduling.OutcomeConsumed {
+		t.Fatalf("settlement wake 应正常消费: outcome=%s err=%v", outcome, err)
+	}
+	if len(dispatcher.runs) < 3 {
+		t.Fatalf("settlement 后应创建汇总 Run: runs=%+v", dispatcher.runs)
+	}
+	summaryRun := dispatcher.runs[len(dispatcher.runs)-1]
+	if err := svc.RecordRunStatus(ctx, summaryRun.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunEvent(ctx, summaryRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": "我还在处理，但暂时没有新的计划"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, status := range []domain.RunStatus{domain.RunSucceeding, domain.RunSucceeded} {
-		if err := svc.RecordRunStatus(ctx, messageRun.ID, status, nil); err != nil {
-			t.Fatal(err)
-		}
+	if err := finishRun(ctx, svc, summaryRun.ID, ""); err != nil {
+		t.Fatal(err)
 	}
 	freshRoot, err := store.WorkItems().Get(ctx, root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	state, err = store.TaskCoordinators().GetState(ctx, root.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1214,6 +1312,7 @@ func TestCoordinatorSessionUnknownHealThenRetriesSecondFailure(t *testing.T) {
 	if err := store.Runs().Create(ctx, source); err != nil {
 		t.Fatal(err)
 	}
+	seedRunSnapshot(t, store, ctx, source)
 	for _, status := range []domain.RunStatus{domain.RunStarting, domain.RunRunning} {
 		if err := svc.RecordRunStatus(ctx, source.ID, status, nil); err != nil {
 			t.Fatal(err)

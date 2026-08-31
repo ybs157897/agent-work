@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -612,11 +613,22 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 
 // problemBytes 在幂等闭包内把领域错误序列化为 problem+json。
 func problemBytes(err error) (int, []byte) {
+	if p, ok := contextProblem(err); ok {
+		b, _ := json.Marshal(p)
+		return p.Status, b
+	}
+	if p, ok := commentProblem(err); ok {
+		b, _ := json.Marshal(p)
+		return p.Status, b
+	}
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		return renderProblem(http.StatusNotFound, "not_found", "Resource not found", "资源在当前 Workspace 视角不可见")
 	case errors.Is(err, domain.ErrVersionConflict):
 		return renderProblem(http.StatusConflict, "version_conflict", "Resource version conflict", "资源版本已变化")
+	case errors.Is(err, application.ErrReviewStateConflict):
+		// Accept/Return/feedback 竞态（RFC §9.7）；先于 ErrStateConflict 判定。
+		return renderProblem(http.StatusConflict, "review_state_conflict", "Review state conflict", err.Error())
 	case errors.Is(err, domain.ErrStateConflict):
 		return renderProblem(http.StatusConflict, "state_conflict", "Command conflicts with current state", err.Error())
 	case errors.Is(err, domain.ErrIdempotencyConflict):

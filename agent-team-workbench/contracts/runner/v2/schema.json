@@ -1,0 +1,447 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workbench.example/contracts/runner/v2/schema.json",
+  "title": "Runner WSS Protocol v2",
+  "description": "Control Plane ↔ Go Runner 双向 WSS 信封（task-control-surface RFC §8）。连接端点 /runner/v2/connect，Bearer enrollment credential：subject 固定绑定 host_id，Gateway 在 WSS 升级与 runner.hello 两处校验 hello.host_id 与凭据 subject 一致。runner.hello 的 boot_id 标识一个 runnerd 进程生命周期：同 boot_id 的网络重连恢复 active lease/pending，boot_id 改变则旧进程内状态已丢失，Gateway 释放旧 lease 并收敛旧 Run，禁止续租孤儿。所有 envelope v=2；run.accept / run.reject / run.command / run.event 全部携带 run_id + lease_id + runner_id + connection_epoch + fencing_token，Gateway 只接受与当前 active lease 完全匹配的帧。Runner 事件身份 = (run_id, lease_id, runner_id, producer_seq)，重连原样重发、事件身份不变；connection_epoch 只识别当前 transport connection，不参与事件身份或 dedup key。旧 connection epoch / 旧 fencing token 的帧回 ACK 但不进入 Application、event store 或 Session anchor。",
+  "$defs": {
+    "RunnerHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "request" },
+        "method": { "const": "runner.hello" },
+        "runner_id": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunnerHelloPayload" }
+      }
+    },
+    "RunnerHelloPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_id", "runner_id", "boot_id", "connection_epoch", "protocol_versions", "runner_version", "slots", "adapters", "mounts"],
+      "properties": {
+        "host_id": {
+          "type": "string",
+          "pattern": "^host_",
+          "description": "必须与 Runner enrollment 凭据 subject 一致；未 enrollment 的 Host 拒绝连接，hello 不能创建 ExecutionHost、HostMount 或 WorkspaceLocation"
+        },
+        "runner_id": { "type": "string", "pattern": "^runner_" },
+        "boot_id": {
+          "type": "string",
+          "description": "runnerd 进程启动时生成、同进程网络重连保持不变；与 connection_epoch 分离。Gateway 仅为同 boot_id 恢复/续租旧 lease，boot 改变代表旧内存状态不可恢复"
+        },
+        "connection_epoch": {
+          "type": "string",
+          "description": "每次新连接换代（ULID）；同 Runner ID 的新 epoch 顶替旧连接，旧连接后续帧 ACK 后丢弃"
+        },
+        "protocol_versions": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "contains": { "const": 2 },
+          "description": "必须包含 2；不得出现 protocol_versions=[2] 但 envelope v=1"
+        },
+        "runner_version": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "slots": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "该 Runner 实例并发容量；第一版每 Host 只允许一个活跃 Runner"
+        },
+        "adapters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AdapterManifestRef" },
+          "description": "本机可用 Adapter manifests 与 capability digests"
+        },
+        "mounts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/MountAdvertisement" },
+          "description": "Host 本地受信 registry 的广告投影；hello 只广告 alias、repository identity、capabilities 与 generation，宿主绝对路径不进协议"
+        }
+      }
+    },
+    "ServerWelcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "reply_to", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "response" },
+        "method": { "const": "server.welcome" },
+        "runner_id": { "type": "string" },
+        "reply_to": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/ServerWelcomePayload" }
+      }
+    },
+    "ServerWelcomePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected_version", "heartbeat_interval_seconds"],
+      "properties": {
+        "selected_version": { "const": 2 },
+        "heartbeat_interval_seconds": { "type": "integer", "minimum": 1 },
+        "lease_policy": {
+          "type": "object",
+          "properties": {
+            "ttl_seconds": { "type": "integer" },
+            "renew_interval_seconds": { "type": "integer" }
+          }
+        },
+        "max_frame_bytes": { "type": "integer", "minimum": 1024 }
+      }
+    },
+    "RunOffer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "request" },
+        "method": { "const": "run.offer" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunOfferPayload" }
+      }
+    },
+    "RunOfferPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lease_id", "fencing_token", "run_spec"],
+      "properties": {
+        "lease_id": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "run_spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "adapter_id", "context_snapshot", "input", "policy"],
+          "properties": {
+            "run_id": { "type": "string" },
+            "adapter_id": { "type": "string" },
+            "context_snapshot": {
+              "$ref": "#/$defs/ContextSnapshot",
+              "description": "Run 创建时冻结的不可变 ExecutionContextSnapshot 的 wire 子集；Runner 只执行本地 registry 已授权的 mount/ref，不接受控制面提供的任意绝对路径"
+            },
+            "input": { "type": "object", "additionalProperties": true },
+            "policy": { "$ref": "#/$defs/RunPolicy" }
+          }
+        }
+      }
+    },
+    "RunAccept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "reply_to", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "response" },
+        "method": { "const": "run.accept" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "reply_to": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunAcceptPayload" }
+      }
+    },
+    "RunAcceptPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "lease_id", "runner_id", "connection_epoch", "fencing_token", "snapshot_digest"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "lease_id": { "type": "string" },
+        "runner_id": { "type": "string" },
+        "connection_epoch": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "snapshot_digest": {
+          "type": "string",
+          "description": "Runner 用当前本地 registry/mount/ref 事实重建 identity 后重算的 digest（算法见 ContextSnapshot.snapshot_digest）；与 offer 值不一致时按 run.reject(reason=workspace) 处理"
+        }
+      }
+    },
+    "RunReject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "reply_to", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "response" },
+        "method": { "const": "run.reject" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "reply_to": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunRejectPayload" }
+      }
+    },
+    "RunRejectPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "lease_id", "runner_id", "connection_epoch", "fencing_token", "reason"],
+      "description": "固定行为：CAS release 当前 lease、清理该 Runner activeRuns、Run 落 failed(retryable=true, family=reason)、写 canonical event/outbox；重复 reject 幂等，Gateway 不自行改投另一个 Runner，同 Host 后续 retry 由 Coordinator durable retry 创建新 Run。",
+      "properties": {
+        "run_id": { "type": "string" },
+        "lease_id": { "type": "string" },
+        "runner_id": { "type": "string" },
+        "connection_epoch": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "reason": {
+          "enum": ["workspace", "capacity"],
+          "description": "workspace = alias/repository/ref/generation/digest 校验失败或 checkout lease 不可获；capacity = Runner 容量不足"
+        },
+        "detail": { "type": "string" }
+      }
+    },
+    "RunCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "request" },
+        "method": { "const": "run.command" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunCommandPayload" }
+      }
+    },
+    "RunCommandPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "lease_id", "runner_id", "connection_epoch", "fencing_token", "command_id", "command"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "lease_id": { "type": "string" },
+        "runner_id": { "type": "string" },
+        "connection_epoch": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "command_id": { "type": "string" },
+        "command": { "enum": ["input", "interrupt", "cancel", "approval.resolve"] },
+        "body": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "RunEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "event" },
+        "method": { "const": "run.event" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunEventPayload" }
+      }
+    },
+    "RunEventPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "lease_id", "runner_id", "connection_epoch", "fencing_token", "event_id", "producer_seq", "event"],
+      "description": "dedup key = (run_id, lease_id, runner_id, producer_seq)；producer_seq 在单个 (run_id, lease_id, runner_id) 内从 1 单调递增，不同 Run/lease 不共享 contiguous ACK 水位。event_id/producer_seq 在 Runner 分配、序列化后放入 pending，重连原样重发、事件身份不变。Gateway 侧统一进入 ApplyRunnerEvent 原子事务：dedup insert、Run/Session/Artifact/lease 状态、canonical events/outbox 同事务提交后才 ACK；duplicate 或 stale 帧标记 ackable 但不应用。",
+      "properties": {
+        "run_id": { "type": "string" },
+        "lease_id": { "type": "string" },
+        "runner_id": { "type": "string" },
+        "connection_epoch": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "event_id": {
+          "type": "string",
+          "pattern": "^revt_",
+          "description": "Runner 分配的稳定事件身份；重连重发时保持不变"
+        },
+        "producer_seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "(run_id, lease_id, runner_id) 内从 1 单调递增"
+        },
+        "provider_cursor": { "type": ["string", "null"] },
+        "event": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "canonical candidate event（message.*/tool.*/run.* 白名单，见 internal/runtime/spi.go）；run.session 事件必须携带 runtime.SessionUpdate：ref（非 clear 时必填）、display_id、clear 墓碑、clear_reason 与 params 私有参数；不得使用 session_ref 别名"
+        },
+        "raw_ref": { "type": ["string", "null"], "description": "Provider 原始载荷引用 raw://..." }
+      }
+    },
+    "RunAck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "sent_at", "payload"],
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "ack" },
+        "method": { "const": "ack" },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/RunAckPayload" }
+      }
+    },
+    "RunAckPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "lease_id", "runner_id", "fencing_token", "acked_producer_seq", "event_id"],
+      "description": "ACK 按 Run 维度确认，不沿用 v1 的 Runner 全局 contiguous_seq；Runner pending 按 (run_id, lease_id, producer_seq) 删除，一个 Run 的 ACK 不能清理另一个 Run 的 pending。对旧 connection epoch / 旧 fencing token 的帧也回 ACK（避免 Runner 永久重放）但不应用。",
+      "properties": {
+        "run_id": { "type": "string" },
+        "lease_id": { "type": "string" },
+        "runner_id": { "type": "string" },
+        "fencing_token": { "type": "integer", "minimum": 1 },
+        "acked_producer_seq": { "type": "integer", "minimum": 1 },
+        "event_id": { "type": "string", "pattern": "^revt_" },
+        "lease_renewed_until": { "type": ["string", "null"], "format": "date-time" },
+        "backpressure": { "enum": ["none", "slow", "pause"] }
+      }
+    },
+    "Heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "message_id", "kind", "method", "runner_id", "connection_epoch", "sent_at", "payload"],
+      "description": "连接级心跳帧（双向）：Runner 按 server.welcome 的 heartbeat_interval_seconds 周期上报，Gateway 据 runner_id 为该 Runner 名下全部活跃 lease 续租；Gateway 也可下行发送作连接保活。旧 connection_epoch 的 heartbeat 不得续租。不带 run/lease 维度字段。",
+      "properties": {
+        "v": { "const": 2 },
+        "message_id": { "type": "string", "pattern": "^msg_" },
+        "kind": { "const": "event" },
+        "method": { "const": "heartbeat" },
+        "runner_id": { "type": "string" },
+        "connection_epoch": {
+          "type": "string",
+          "description": "transport fencing：Gateway 只为当前活跃 connection epoch 的心跳续租"
+        },
+        "sent_at": { "type": "string", "format": "date-time" },
+        "payload": { "$ref": "#/$defs/HeartbeatPayload" }
+      }
+    },
+    "HeartbeatPayload": {
+      "type": "object",
+      "description": "心跳负载，允许为空对象；不携带 run/lease 维度字段（run 级确认走 run.ack）。未来扩展字段（如 lease 状态回执）须经契约版本升级声明。",
+      "properties": {}
+    },
+    "ContextSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "schema_version", "execution_host_id", "workspace_location_id", "workspace_alias", "mount_generation", "repository_identity", "ref_kind", "context_generation", "snapshot_digest"],
+      "description": "Run 创建时冻结的不可变 ExecutionContextSnapshot 的 wire 子集（RFC §8.2 + W2-GW digest 闭集修订）；properties 覆盖 digest 身份字段 13 项闭集（对应 domain ExecutionContextSnapshot.identityFields，digest 键 mount_alias 在 wire 上为 workspace_alias），Runner 必须用本地 registry 事实 + offer 控制面字段重算 snapshot_digest。不含宿主绝对路径；root ref_kind 时 checkout_ref/worktree_ref 为 null。",
+      "properties": {
+        "id": { "type": "string", "pattern": "^ctxsnap_" },
+        "schema_version": { "const": "execution-context/v1" },
+        "execution_host_id": { "type": "string", "pattern": "^host_" },
+        "workspace_location_id": { "type": "string", "pattern": "^wsloc_" },
+        "workspace_alias": { "type": "string" },
+        "mount_generation": {
+          "type": "string",
+          "description": "Host registry generation；Snapshot 创建后 alias 被重指向 / generation 变化时 Runner 必须 run.reject(reason=workspace)，不能静默继续"
+        },
+        "repository_identity": {
+          "type": "string",
+          "description": "跨 Host 稳定逻辑 ID；禁止用本地绝对路径哈希替代"
+        },
+        "ref_kind": { "enum": ["root", "branch", "worktree"] },
+        "branch_name": {
+          "type": "string",
+          "description": "digest 身份字段（optional/omitempty）：branch/worktree ref 的匹配键——checkout_ref 必须唯一指向当前 branch 精确匹配的已发现 checkout（RFC §4.5）；root 时空缺。省略时以 \"\" 参与 digest 计算（空值/缺省无二义）。"
+        },
+        "checkout_ref": { "type": ["string", "null"], "description": "opaque checkout identity；root 为 null" },
+        "worktree_ref": { "type": ["string", "null"], "description": "Host-local opaque worktree ref；root/branch 为 null" },
+        "base_revision": {
+          "type": "string",
+          "description": "digest 身份字段（optional/omitempty）：Run 基线 revision；未钉基线时空缺。省略时以 \"\" 参与 digest 计算。"
+        },
+        "location_version": {
+          "type": "integer",
+          "description": "digest 身份字段（optional/omitempty）：Snapshot 冻结时的 WorkspaceLocation version；Runner 重算 digest 时作为控制面字段沿用 offer 值，不替换本地事实。"
+        },
+        "context_generation": { "type": "integer", "minimum": 1 },
+        "snapshot_digest": {
+          "type": "string",
+          "description": "固定算法：sha256(\"execution-context/v1\\n\" + RFC8785CanonicalJSON(identity_fields))。identity_fields 只含 Host/Location/mount generation/repository/ref/context generation 等执行身份字段，不含 instruction、comment body 或敏感 policy。Control Plane 与 Runner 使用同一 golden fixture 验证 digest。",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "MountAdvertisement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alias", "repository_identity", "registry_generation", "supported_ref_kinds", "checkouts"],
+      "properties": {
+        "alias": {
+          "type": "string",
+          "description": "Host 内唯一（UNIQUE(execution_host_id, alias)）；hello 歧义即 mount unavailable"
+        },
+        "repository_identity": {
+          "type": "string",
+          "description": "跨 Host 稳定逻辑 ID；没有 remote 的仓库由管理员配置持久 repository ID，不在每次启动随机生成"
+        },
+        "registry_generation": { "type": "string" },
+        "display_label": { "type": "string" },
+        "default_branch": { "type": "string" },
+        "supported_ref_kinds": {
+          "type": "array",
+          "items": { "enum": ["root", "branch", "worktree"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "checkouts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CheckoutRef" },
+          "description": "由 git worktree list 等受信本地发现生成 opaque checkout refs；Control Plane 不生成 checkout 路径"
+        }
+      }
+    },
+    "CheckoutRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "kind", "branch", "head"],
+      "properties": {
+        "ref": { "type": "string", "description": "opaque checkout identity" },
+        "kind": { "enum": ["root", "branch", "worktree"] },
+        "branch": { "type": ["string", "null"], "description": "显示/校验信息" },
+        "head": { "type": "string" }
+      }
+    },
+    "AdapterManifestRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter_id", "adapter_version", "schema_digest"],
+      "properties": {
+        "adapter_id": { "type": "string" },
+        "adapter_version": { "type": "string" },
+        "schema_digest": { "type": "string" }
+      }
+    },
+    "RunPolicy": {
+      "type": "object",
+      "description": "Run 启动时固化的 sandbox / 工具白名单 / 网络策略 / approval_policy",
+      "properties": {
+        "sandbox": { "type": "string" },
+        "tool_allowlist": { "type": "array", "items": { "type": "string" } },
+        "network_policy": { "type": "string" },
+        "approval_policy": { "type": "string" }
+      }
+    }
+  },
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/RunnerHello" },
+    { "$ref": "#/$defs/ServerWelcome" },
+    { "$ref": "#/$defs/RunOffer" },
+    { "$ref": "#/$defs/RunAccept" },
+    { "$ref": "#/$defs/RunReject" },
+    { "$ref": "#/$defs/RunCommand" },
+    { "$ref": "#/$defs/RunEvent" },
+    { "$ref": "#/$defs/RunAck" },
+    { "$ref": "#/$defs/Heartbeat" }
+  ],
+  "$comment": "method 白名单：runner→server: runner.hello / run.accept / run.reject / run.event / heartbeat / ack；server→runner: server.welcome / run.offer / run.command / heartbeat / ack。不兼容协议版本在 hello 阶段拒绝连接，运行中不隐式升级。v1 契约（contracts/runner/v1）已删除，不保留运行时兼容分支。"
+}

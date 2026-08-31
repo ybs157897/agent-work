@@ -439,6 +439,7 @@ func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls
 	return &runtime.ExecContext{
 		Ctx:         ctx,
 		Run:         &domain.ExecutionRun{ID: "run_test", AdapterID: "kimi-appserver"},
+		Resolved:    domain.ResolvedExecutionContext{CWD: os.TempDir(), AuthorizedRoot: os.TempDir()},
 		Instruction: "本轮指令：记住 ALPHA",
 		Session:     runtime.SessionState{Ref: ref},
 		Callbacks:   cb,
@@ -449,7 +450,7 @@ func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls
 func newTestModule(f *fakeKap) *Module {
 	return New(Config{
 		BaseURL: f.srv.URL, Token: testToken,
-		WorkspaceRoot: "/tmp/atw-kimiapp-test", Model: "test-model",
+		Model: "test-model",
 	})
 }
 
@@ -509,8 +510,9 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 	createBody := f.waitCall("/api/v1/sessions")
 	meta, _ := createBody["metadata"].(map[string]any)
-	if meta == nil || meta["cwd"] != "/tmp/atw-kimiapp-test" {
-		t.Fatalf("create metadata.cwd 不符: %v", createBody)
+	// metadata.cwd 必须来自 ExecContext.Resolved（fixture 用 os.TempDir）。
+	if meta == nil || meta["cwd"] != os.TempDir() {
+		t.Fatalf("create metadata.cwd 不符（应取 Resolved.CWD）: %v", createBody)
 	}
 	if _, ok := createBody["agent_config"]; ok {
 		t.Fatalf("create.agent_config 在 KAP 中是 no-op，不应发送: %v", createBody)

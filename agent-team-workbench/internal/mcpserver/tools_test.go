@@ -75,6 +75,10 @@ func seedBoard(t *testing.T, ctx context.Context, d *toolDeps) (wsID, agentID st
 	if err := d.store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	// Run 创建必须冻结 context snapshot（RFC §4.6）：补默认 Location。
+	if _, err := application.SeedWorkspaceLocation(ctx, d.store, ws.ID); err != nil {
+		t.Fatal(err)
+	}
 	agent := &domain.AgentProfile{
 		ID: "agent_mcp", WorkspaceID: ws.ID, Name: "MCP", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

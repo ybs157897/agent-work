@@ -76,6 +76,8 @@ func TestCoordinatorPlanEvidenceReadFailureBlocksInsteadOfAccepting(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	seedCtx(t, base, ctx, wsID)
 	if err := base.Agents().Create(ctx, &domain.AgentProfile{
 		ID: "agent_plan_read_worker", WorkspaceID: wsID, Name: "Forge", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

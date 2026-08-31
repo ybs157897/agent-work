@@ -13,6 +13,7 @@ import type { ExecutionRun, WorkItem } from '../api/types';
 import { chatErrorMessage, logChatError, type ChatErrorCode } from '../utils/chat-errors';
 import { useRunsStore, type TimelineEntry } from './runs.store';
 import { extractDeltaChunk } from './delta-chunk';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 import { createRequestGuard } from './request-guard';
 import { toast } from './toast.store';
 import { useWorkspaceStore } from './workspace.store';
@@ -1139,6 +1140,8 @@ interface ChatStore {
   retryRun: (runId: string) => Promise<void>;
   /** 从指定消息分叉新会话：上下文包写入新 work item 的 description，首发时注入。 */
   forkConversation: (atMessageKey: string) => Promise<void>;
+  /** 切换 Workspace 时清空会话选择/列表/队列与在途请求凭据。 */
+  reset: () => void;
 }
 
 export const useChatStore = create<ChatStore>()((set, get) => {
@@ -1234,7 +1237,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     },
 
     refreshConversations: async () => {
-      const wsId = useWorkspaceStore.getState().workspace?.id;
+      const scope = captureScope();
+      const wsId = scope.workspaceId;
       const agentId = get().agentId;
       if (!wsId || !agentId) {
         set({ conversations: [] });
@@ -1242,7 +1246,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       }
       const isStale = conversationsGuard.begin();
       const { items } = await listWorkItems(wsId, { assignee: agentId, record_kind: 'chat' });
-      if (isStale()) return; // 期间已切换 agent：丢弃旧响应
+      // 期间已切换 agent 或已切换 Workspace：丢弃旧响应
+      if (isStale() || !isCurrent(scope)) return;
       // Fail closed even if an older server ignores the query filter.
       const chats = items
         .filter((item) => item.record_kind === 'chat')
@@ -1267,10 +1272,12 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         return;
       }
       const isStale = runsGuard.begin();
+      const scope = captureScope();
       const { items } = await listWorkItemRuns(conversationId);
-      // 期间已切换会话（openConversation 会 bump 票号）或已切走 agent
-      // （selectAgent 把 conversationId 置空但不 bump 票号）：两种都丢弃旧响应。
-      if (isStale() || get().conversationId !== conversationId) return;
+      // 期间已切换会话（openConversation 会 bump 票号）、已切走 agent
+      // （selectAgent 把 conversationId 置空但不 bump 票号）或已切换
+      // Workspace：三种都丢弃旧响应。
+      if (isStale() || get().conversationId !== conversationId || !isCurrent(scope)) return;
       items.sort((a, b) => a.created_at.localeCompare(b.created_at));
       set({ runs: items });
     },
@@ -1416,5 +1423,23 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         toast.error(err instanceof Error ? err.message : '分叉失败');
       }
     },
+
+    reset: () => {
+      // bump 请求序号：在途 openConversation/getWorkItem 闭包按票号失效，不得回写。
+      openConversationRequest += 1;
+      set({
+        agentId: null,
+        conversationId: null,
+        conversations: [],
+        runs: [],
+        sending: false,
+        queue: [],
+        stoppingRunId: null,
+        runAlerts: {},
+        pendingUsers: {},
+      });
+    },
   };
 });
+
+registerWorkspaceScopedReset(() => useChatStore.getState().reset());

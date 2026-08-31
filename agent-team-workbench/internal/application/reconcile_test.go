@@ -20,6 +20,7 @@ func seedReconcileFixture(t *testing.T, ctx context.Context, svc *application.Se
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_rec")
 	agent := &domain.AgentProfile{
 		ID: "agent_rec", WorkspaceID: ws.ID, Name: "REC", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -159,10 +160,38 @@ func TestReconcileOrphanRunsMarksLeaselessLost(t *testing.T) {
 	}
 }
 
-// TestReconcileOrphanRunsUnreachableStatesFallToFailed：lost 不可达的过渡态
-// （interrupting/cancelling/succeeding）走 failed（orphaned_after_restart，可重试），
-// 同样发 run.failed 事件并解除活跃判定。
-func TestReconcileOrphanRunsUnreachableStatesFallToFailed(t *testing.T) {
+func TestReconcileLegacyContextRunsPrecedesGenericOrphans(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db, sqlstore.SQLiteDialect())
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	agentID, wiA, _ := seedReconcileFixture(t, ctx, svc, store, db)
+	insertOrphanRun(t, store, "run_legacy_context", agentID, wiA, domain.RunRunning)
+
+	marked, err := svc.ReconcileLegacyContextRuns(ctx)
+	if err != nil || marked != 1 {
+		t.Fatalf("legacy context 对账应先收敛 1 条: marked=%d err=%v", marked, err)
+	}
+	run, err := store.Runs().Get(ctx, "run_legacy_context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != domain.RunFailed || run.Failure == nil || run.Failure.Code != "execution_context_missing" {
+		t.Fatalf("legacy Run 应落 failed(execution_context_missing): %+v", run)
+	}
+	if hasRunEvent(t, store, run.ID, domain.EventRunLost) || !hasRunEvent(t, store, run.ID, domain.EventRunFailed) {
+		t.Fatalf("legacy Run 不得先被 orphan 路径标记 lost")
+	}
+	if marked, err := svc.ReconcileOrphanRuns(ctx); err != nil || marked != 0 {
+		t.Fatalf("legacy 收敛后 generic orphan 不应重复处理: marked=%d err=%v", marked, err)
+	}
+}
+
+// TestReconcileOrphanRunsTransitionalStatesConvergeToLost：Runner 断连闭环让
+// interrupting/cancelling/succeeding 可经 reconnecting 收敛 lost。启动时无 lease
+// 说明没有可恢复执行面，因此统一落 lost/run.lost，并解除活跃判定。
+func TestReconcileOrphanRunsTransitionalStatesConvergeToLost(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
@@ -178,18 +207,18 @@ func TestReconcileOrphanRunsUnreachableStatesFallToFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"run_int", "run_can", "run_suc"} {
-		if got := runStatus(t, store, id); got != domain.RunFailed {
-			t.Fatalf("%s = %s, 期望 failed", id, got)
+		if got := runStatus(t, store, id); got != domain.RunLost {
+			t.Fatalf("%s = %s, 期望 lost", id, got)
 		}
 		run, err := store.Runs().Get(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if run.Failure == nil || run.Failure.Code != "orphaned_after_restart" || !run.Failure.Retryable {
-			t.Fatalf("%s failure = %#v", id, run.Failure)
+		if run.Failure != nil {
+			t.Fatalf("%s 收敛 lost 不应伪造 failure: %#v", id, run.Failure)
 		}
-		if !hasRunEvent(t, store, id, domain.EventRunFailed) {
-			t.Fatalf("%s 应有 run.failed 事件", id)
+		if !hasRunEvent(t, store, id, domain.EventRunLost) {
+			t.Fatalf("%s 应有 run.lost 事件", id)
 		}
 	}
 	runID, alive, err := store.Wakeups().ActiveRunKeyForAgentTask(ctx, agentID, wiA)

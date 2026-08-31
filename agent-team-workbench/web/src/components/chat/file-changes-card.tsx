@@ -1,5 +1,5 @@
 import { FileCode2, RotateCcw } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getRunChangeDiff, listRunChanges, revertRunChanges } from '../../api/endpoints';
 import type { RunChange, RunChanges } from '../../api/types';
 import { ApiError } from '../../api/client';
@@ -7,20 +7,47 @@ import { Drawer } from '../drawer';
 import { Modal } from '../modal';
 import { DiffCard } from './diff-card';
 import css from './file-changes-card.module.css';
+import { useRunsStore } from '../../stores/runs.store';
+import { captureScope, isCurrent, type Scope } from '../../stores/scope';
+
+/** 同一 run 的旧 changes 响应不能覆盖更晚的 SSE 回滚补拉。 */
+export interface RunChangesRequestFence {
+  begin: () => number;
+  accepts: (requestId: number, scope: Scope) => boolean;
+}
+
+export function createRunChangesRequestFence(): RunChangesRequestFence {
+  let currentRequest = 0;
+  return {
+    begin: () => {
+      currentRequest += 1;
+      return currentRequest;
+    },
+    accepts: (requestId, scope) => requestId === currentRequest && isCurrent(scope),
+  };
+}
 
 export function FileChangesCard({ runId }: { runId: string }) {
+  const changesRevision = useRunsStore((state) => state.changesRevision[runId] ?? 0);
   const [data, setData] = useState<RunChanges | null>(null);
   const [error, setError] = useState('');
   const [review, setReview] = useState(false);
   const [revertOpen, setRevertOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const requestFenceRef = useRef<RunChangesRequestFence | null>(null);
+  requestFenceRef.current ??= createRunChangesRequestFence();
 
   const refresh = useCallback(async () => {
+    const scope = captureScope();
+    if (!scope.workspaceId) return;
+    const requestId = requestFenceRef.current!.begin();
     try {
       const value = await listRunChanges(runId);
+      if (!requestFenceRef.current!.accepts(requestId, scope)) return;
       setData(value);
       setError('');
     } catch (value) {
+      if (!requestFenceRef.current!.accepts(requestId, scope)) return;
       if (value instanceof ApiError && value.status === 404) {
         setData(null);
         setError('');
@@ -30,7 +57,12 @@ export function FileChangesCard({ runId }: { runId: string }) {
     }
   }, [runId]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  // 回滚命令可能来自另一个窗口；SSE/replay 经 runs store 推进 revision 后，
+  // 重新读取权威 changes 读模型，不能继续展示本地旧的可撤销状态。
+  useEffect(() => {
+    if (changesRevision > 0) setRevertOpen(false);
+    void refresh();
+  }, [changesRevision, refresh]);
 
   if (!data) {
     return error ? <div className={css.error} role="alert">{error}</div> : null;
@@ -59,16 +91,23 @@ export function FileChangesCard({ runId }: { runId: string }) {
             className={`${css.button} ${css.danger}`}
             disabled={busy}
             onClick={async () => {
+              const scope = captureScope();
+              if (!scope.workspaceId) return;
+              const requestId = requestFenceRef.current!.begin();
               setBusy(true);
               try {
                 const value = await revertRunChanges(runId, crypto.randomUUID());
+                if (!requestFenceRef.current!.accepts(requestId, scope)) return;
                 setData(value);
                 setError('');
                 setRevertOpen(false);
               } catch (value) {
+                if (!requestFenceRef.current!.accepts(requestId, scope)) return;
                 setError(value instanceof Error ? value.message : '撤销失败');
               } finally {
-                setBusy(false);
+                // SSE 可能先于 HTTP 响应送达并触发较新的重拉；busy 属于这次
+                // 命令本身，不能因读请求换代而永久卡住确认按钮。
+                if (isCurrent(scope)) setBusy(false);
               }
             }}
           >
