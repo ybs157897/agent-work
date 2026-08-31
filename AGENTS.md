@@ -26,7 +26,7 @@
 - 前端：`cd agent-team-workbench/web && pnpm tsc -b && pnpm test && pnpm lint`。
   注意：根 `tsconfig.json` 是 `files:[]` 项目引用，`pnpm tsc --noEmit` 在根配置上**等于空跑**（不检查 src），
   必须用 `tsc -b` 才会真正走 `tsconfig.app.json` 的 strict 检查——未定义变量/类型收窄类错误只在这里暴露。
-- 迁移：`go run ./cmd/migrate -dsn "sqlite://workbench.db"`；`migrations/` 与 `migrations/sqlite/` 双目录保持语义等价。
+- 迁移：`go run ./cmd/migrate -dsn "sqlite://workbench.db"`；`migrations/` 是唯一 SQLite 迁移真相源，不得新增数据库方言分支或第二套 DDL。
 - 提交前确认 repo-local git 身份已配置（本机无全局身份）。
 
 ## 前端设计纪律

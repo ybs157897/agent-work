@@ -2,6 +2,8 @@
 
 Status: implemented
 
+Storage migration note: superseded by [SQLite 单一存储后端](../simplification/2026-08-31-sqlite-only-storage.md)。
+
 设计依据：`notes/product/2026-08-25-project-review-detailed.md` NOW 清单 + 2026-08-26
 蜂群六路架构分析 P0 结论。任务分支 `agent/p0-hardening-and-doc-consistency`
 （37da917..23b979b 六刀）。
@@ -48,8 +50,8 @@ Status: implemented
 
 ### 迁移清单派生化
 
-- 双目录等价守卫：编号+slug 逐条对账 + SQLite 全量 apply 幂等断言（cmd/migrate
-  重构出包级函数复用生产路径，CLI 输出逐字不变）。当前 14↔14 无漂移。
+- 迁移清单守卫：SQLite 全量 apply + basename 冻结 + 幂等断言（cmd/migrate
+  复用生产路径）。原双目录 parity 已随 SQLite-only 收口删除。
 - `internal/migtest.ApplyAll`：非 `_test` 普通包、不 import testing、纯 stdlib、
   runtime.Caller 定位仓库根——五处硬编码清单（mcpserver + 四个测试夹具）全部收编，
   新增迁移免同步。**披露**：wakeups_test 夹具从只 apply 0001–0005 变宽为全量，

@@ -16,6 +16,7 @@
 - [`architecture/c4-container-diagram.md`](architecture/c4-container-diagram.md)：当前容器边界、数据流和跨容器契约。
 - [`architecture/task-control-surface-context-design.md`](architecture/task-control-surface-context-design.md)：Execution Host、Workspace Location、Execution Context Snapshot、Task Comment、Review Queue 与 Delivery Brief。
 - [`architecture/clawteam-borrowings-design.md`](architecture/clawteam-borrowings-design.md)：ClawTeam/OpenClaw 借鉴设计及已采纳、挂起和否决项。
+- [`../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md`](../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md)：SQLite 单一存储、唯一迁移目录与 PostgreSQL 复活条件。
 - [`../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md`](../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md)：任务控制面实施边界、失败停手条件和验收矩阵。
 
 ### 协议

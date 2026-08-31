@@ -10,7 +10,7 @@ agent 借此**自查看板**（任务、run、事件、待审批），不再依�
 写面只开 claim / return 两个小命令，直接复用 application 层既有用例（乐观锁 + 状态机校验）。
 
 - 传输：stdio（stdout 只走 MCP 协议，日志一律 stderr）。
-- 存储：与控制面同一个数据库（`-dsn` 或 `DATABASE_URL`；`sqlite://` 前缀走 SQLite，否则 postgres）。
+- 存储：与控制面同一个 SQLite 数据库（`-dsn` 或 `DATABASE_URL`，只接受 `sqlite://` DSN）。
 - 鉴权：本地场景先不做多租户——进程能读到库即有读权限；写面受领域状态机约束（见红线）。
 
 ## 工具清单（9 个）
@@ -83,7 +83,6 @@ args = ["-dsn", "sqlite:///abs/path/agent-team-workbench/workbench.db"]
 # env = { DATABASE_URL = "sqlite:///abs/path/agent-team-workbench/workbench.db" }
 ```
 
-postgres 部署把 `-dsn` 换成 postgres 连接串即可（无 `sqlite://` 前缀即走 pgx）。
 二进制构建：`cd agent-team-workbench && go build -o atw-mcp ./cmd/atw-mcp`。
 
 ## 红线（刻意不暴露）
