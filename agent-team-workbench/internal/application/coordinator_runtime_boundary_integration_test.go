@@ -185,6 +185,8 @@ func TestCoordinatorLazilyProbesBuiltinRuntimeBeforeFirstRun(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	seedCtx(t, store, ctx, wsID)
 	if err := store.Agents().Create(ctx, &domain.AgentProfile{
 		ID: "agent_lazy_worker", WorkspaceID: wsID, Name: "Forge", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

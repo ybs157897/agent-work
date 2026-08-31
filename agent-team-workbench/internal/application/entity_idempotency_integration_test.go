@@ -27,6 +27,7 @@ func seedEntityIdemEnv(t *testing.T) (*application.Service, *captureDispatcher, 
 	if err := store.Workspaces().Create(ctx, &domain.Workspace{ID: "ws_ei", Name: "ei", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_ei")
 	if err := store.Agents().Create(ctx, &domain.AgentProfile{
 		ID: "agent_ei", WorkspaceID: "ws_ei", Name: "EI", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

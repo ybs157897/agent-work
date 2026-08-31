@@ -156,6 +156,7 @@ func execModule(t *testing.T, m *Module, run *domain.ExecutionRun, sessionRef st
 	ex := &runtime.ExecContext{
 		Ctx:         context.Background(),
 		Run:         run,
+		Resolved:    domain.ResolvedExecutionContext{CWD: t.TempDir(), AuthorizedRoot: t.TempDir()},
 		Instruction: runtime.EffectiveInstruction(run),
 		Session:     runtime.SessionState{Ref: sessionRef},
 		Callbacks:   cb,
@@ -314,7 +315,7 @@ func TestExecuteHappyPath(t *testing.T) {
 		"echo '"+frameAssistant+"'",
 		"echo '"+frameResultOK+"'",
 	)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, cb := execModule(t, m, newRun(map[string]any{"instruction": "claude fake run"}), "", nil)
 
 	if res.Outcome != runtime.OutcomeSucceeded {
@@ -355,7 +356,7 @@ func TestExecuteStderrLogged(t *testing.T) {
 		"echo 'some stderr noise' >&2",
 		"echo '"+frameResultOK+"'",
 	)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, cb := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeSucceeded {
 		t.Fatalf("期望 succeeded，得到 %s", res.Outcome)
@@ -370,7 +371,7 @@ func TestExecuteStderrLogged(t *testing.T) {
 // 未声明能力（steering/approval）的 Control 必须被忽略且不阻塞。
 func TestExecuteIgnoresUndeclaredControls(t *testing.T) {
 	script := writeFakeCLI(t, "echo '"+frameResultOK+"'")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	controls := []runtime.Control{
 		{Kind: runtime.ControlInput, Instruction: "steer"},
 		{Kind: runtime.ControlApproval, ApprovalID: "ap_1", Approved: true},
@@ -385,7 +386,7 @@ func TestExecuteIgnoresUndeclaredControls(t *testing.T) {
 
 func TestExecuteArgsResume(t *testing.T) {
 	script, capture := writeArgvCLI(t, frameResultOK)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	run := newRun(map[string]any{
 		"instruction":   "continue",
 		"system_prompt": "be terse",
@@ -411,7 +412,7 @@ func TestExecuteArgsResume(t *testing.T) {
 
 func TestExecuteArgsPolicyReadOnly(t *testing.T) {
 	script, capture := writeArgvCLI(t, frameResultOK)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	run := newRun(map[string]any{
 		"instruction": "read only",
 		"policy":      map[string]any{"sandbox": "read-only"},
@@ -431,7 +432,7 @@ func TestExecuteArgsPolicyReadOnly(t *testing.T) {
 
 func TestExecuteArgsSystemPromptAndModel(t *testing.T) {
 	script, capture := writeArgvCLI(t, frameResultOK)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	run := newRun(map[string]any{
 		"instruction":   "fresh",
 		"system_prompt": "be terse",
@@ -452,7 +453,7 @@ func TestExecuteArgsSystemPromptAndModel(t *testing.T) {
 
 func TestExecuteArgsConfigModelFallback(t *testing.T) {
 	script, capture := writeArgvCLI(t, frameResultOK)
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir(), Model: "cfg-model"})
+	m := New(Config{BinPath: script, Model: "cfg-model"})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeSucceeded {
 		t.Fatalf("期望 succeeded，得到 %s", res.Outcome)
@@ -468,7 +469,7 @@ func TestExecuteArgsConfigModelFallback(t *testing.T) {
 func TestExecuteResultError(t *testing.T) {
 	frame := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"fake execution error"}`
 	script := writeFakeCLI(t, "echo '"+frame+"'", "exit 1")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "fail"}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed {
 		t.Fatalf("期望 failed，得到 %s", res.Outcome)
@@ -487,7 +488,7 @@ func TestExecuteResultError(t *testing.T) {
 func TestExecuteQuotaClassification(t *testing.T) {
 	frame := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Usage limit reached for your plan"}`
 	script := writeFakeCLI(t, "echo '"+frame+"'", "exit 1")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed || res.Failure == nil {
 		t.Fatalf("期望 failed: %+v", res)
@@ -500,7 +501,7 @@ func TestExecuteQuotaClassification(t *testing.T) {
 func TestExecuteTransientClassification(t *testing.T) {
 	frame := `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Connection error: network request failed"}`
 	script := writeFakeCLI(t, "echo '"+frame+"'", "exit 1")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed || res.Failure == nil {
 		t.Fatalf("期望 failed: %+v", res)
@@ -512,7 +513,7 @@ func TestExecuteTransientClassification(t *testing.T) {
 
 // CLI 不存在 → FamilyConfig / spawn_failed。
 func TestExecuteSpawnFailure(t *testing.T) {
-	m := New(Config{BinPath: filepath.Join(t.TempDir(), "missing-claude"), WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: filepath.Join(t.TempDir(), "missing-claude")})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed || res.Failure == nil {
 		t.Fatalf("期望 failed: %+v", res)
@@ -525,7 +526,7 @@ func TestExecuteSpawnFailure(t *testing.T) {
 // 干净退出（退出码 0）且无 result 帧 → succeeded。
 func TestExecuteExitZeroNoResult(t *testing.T) {
 	script := writeFakeCLI(t, "exit 0")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeSucceeded {
 		t.Fatalf("退出码 0 应 succeeded，得到 %s (%+v)", res.Outcome, res.Failure)
@@ -535,7 +536,7 @@ func TestExecuteExitZeroNoResult(t *testing.T) {
 // 非零退出且无 result 帧 → failed stream_failed（fail loud）。
 func TestExecuteExitNonZeroNoResult(t *testing.T) {
 	script := writeFakeCLI(t, "exit 7")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, _ := execModule(t, m, newRun(map[string]any{"instruction": "x"}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed || res.Failure == nil {
 		t.Fatalf("期望 failed: %+v", res)
@@ -548,7 +549,7 @@ func TestExecuteExitNonZeroNoResult(t *testing.T) {
 // 空 instruction → config 失败，不启动进程。
 func TestExecuteEmptyInstruction(t *testing.T) {
 	script := writeFakeCLI(t, "exit 0")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	res, cb := execModule(t, m, newRun(map[string]any{"instruction": "  "}), "", nil)
 	if res.Outcome != runtime.OutcomeFailed || res.Failure == nil ||
 		res.Failure.Code != "instruction_required" || res.Failure.Family != runtime.FamilyConfig {
@@ -565,7 +566,7 @@ func TestRunnerInterrupt(t *testing.T) {
 	sink := newFakeSink()
 	runner := runtime.NewModuleRunner(sink)
 	script := writeFakeCLI(t, "echo '"+frameSystemHang+"'", "sleep 300")
-	runner.Register("claude-code", New(Config{BinPath: script, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}))
+	runner.Register("claude-code", New(Config{BinPath: script, GracePeriod: time.Second}))
 	run := newRun(map[string]any{"instruction": "hang"})
 	if err := runner.Dispatch(context.Background(), run); err != nil {
 		t.Fatal(err)
@@ -584,7 +585,7 @@ func TestRunnerCancel(t *testing.T) {
 	sink := newFakeSink()
 	runner := runtime.NewModuleRunner(sink)
 	script := writeFakeCLI(t, "echo '"+frameSystemHang+"'", "sleep 300")
-	runner.Register("claude-code", New(Config{BinPath: script, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}))
+	runner.Register("claude-code", New(Config{BinPath: script, GracePeriod: time.Second}))
 	run := newRun(map[string]any{"instruction": "hang"})
 	if err := runner.Dispatch(context.Background(), run); err != nil {
 		t.Fatal(err)
@@ -600,7 +601,7 @@ func TestRunnerCancel(t *testing.T) {
 // ctx 在 Execute 前已取消且无终态意图 → failed（per SPI 决策树）。
 func TestExecutePreCancelledWithoutIntent(t *testing.T) {
 	script := writeFakeCLI(t, "sleep 300")
-	m := New(Config{BinPath: script, WorkspaceRoot: t.TempDir()})
+	m := New(Config{BinPath: script})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cb := &recCallbacks{}

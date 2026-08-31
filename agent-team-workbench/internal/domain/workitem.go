@@ -92,9 +92,14 @@ type WorkItem struct {
 	LockedByRunID  string
 	LockedAt       *time.Time
 	RollingDigest  string
-	Version        int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// AcceptanceCriteria 验收读模型（0022）：元素为验收条目原话；非任务或未
+	// 设置为 nil。PhaseEnteredAt 进入当前 phase 的精确时间（review/acceptance
+	// 投影用；迁移前的历史行回填为 updated_at）。
+	AcceptanceCriteria []string
+	PhaseEnteredAt     *time.Time
+	Version            int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // HoldsLock 报告 runID 是否持有本任务的执行锁（空 runID 恒 false）。
@@ -127,7 +132,9 @@ func (s WorkItemStatus) IsTerminal() bool {
 	return s == WorkItemCompleted || s == WorkItemCancelled
 }
 
-// Transition 执行状态迁移；终态不可逆。
+// Transition 执行状态迁移；终态不可逆。离开 in_progress 时 phase 与
+// phase_entered_at 一并清理（RFC §4.10：pending_since 只属于 in_progress 投影）；
+// 进入 in_progress 落到 execution 并写精确进入时间。
 func (w *WorkItem) Transition(to WorkItemStatus, now time.Time) error {
 	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: string(to)}
@@ -141,14 +148,17 @@ func (w *WorkItem) Transition(to WorkItemStatus, now time.Time) error {
 	w.Status = to
 	if to != WorkItemInProgress {
 		w.Phase = ""
-	} else if w.Phase == "" {
+		w.PhaseEnteredAt = nil
+	} else {
 		w.Phase = PhaseExecution
+		w.PhaseEnteredAt = &now
 	}
 	w.bump(now)
 	return nil
 }
 
 // EnterReview：Run succeeded 后进入评审投影；WorkItem 仍处 in_progress。
+// phase_entered_at 每次进入都取精确时间（review→execution→review 得到新时间）。
 func (w *WorkItem) EnterReview(now time.Time) error {
 	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "review"}
@@ -157,6 +167,7 @@ func (w *WorkItem) EnterReview(now time.Time) error {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "review"}
 	}
 	w.Phase = PhaseReview
+	w.PhaseEnteredAt = &now
 	w.bump(now)
 	return nil
 }
@@ -172,12 +183,15 @@ func (w *WorkItem) EnterAcceptance(now time.Time) error {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: "acceptance"}
 	}
 	w.Phase = PhaseAcceptance
+	w.PhaseEnteredAt = &now
 	w.bump(now)
 	return nil
 }
 
 // BeginExecution 在同一 WorkItem/会话创建下一轮 Run 时，把评审投影切回执行态。
 // WorkItem 仍保持 in_progress；每一轮 Run 仍是不可覆盖的独立审计记录。
+// phase_entered_at 只在真实离开 review/acceptance 时刷新；已在 execution 时是
+// no-op（同一执行段不重置 pending_since）。
 func (w *WorkItem) BeginExecution(now time.Time) {
 	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
 		return
@@ -186,10 +200,12 @@ func (w *WorkItem) BeginExecution(now time.Time) {
 		return
 	}
 	w.Phase = PhaseExecution
+	w.PhaseEnteredAt = &now
 	w.bump(now)
 }
 
 // Accept：Reviewer / 人工验收通过，唯一进入 completed 的路径。
+// 离开 in_progress 投影：phase 与 phase_entered_at 一并清理。
 func (w *WorkItem) Accept(now time.Time) error {
 	if w.RecordKind != "" && w.RecordKind != RecordKindTask {
 		return &TransitionError{Entity: "work_item", From: string(w.Status), To: string(WorkItemCompleted)}
@@ -199,6 +215,7 @@ func (w *WorkItem) Accept(now time.Time) error {
 	}
 	w.Status = WorkItemCompleted
 	w.Phase = ""
+	w.PhaseEnteredAt = nil
 	w.bump(now)
 	return nil
 }

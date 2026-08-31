@@ -63,8 +63,8 @@ func TestConformanceClaudeCode(t *testing.T) {
 		"echo '"+claudeConfInit+"'",
 		"sleep 300")
 	runSuite(t, "claude-code",
-		claudecode.New(claudecode.Config{BinPath: fast, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}),
-		claudecode.New(claudecode.Config{BinPath: held, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}),
+		claudecode.New(claudecode.Config{BinPath: fast, GracePeriod: time.Second}),
+		claudecode.New(claudecode.Config{BinPath: held, GracePeriod: time.Second}),
 		// CLI 会话 scheme 是 claude://，与 adapterID claude-code 不同。
 		suiteOpts{scheme: "claude", requireUsage: true},
 	)
@@ -82,8 +82,8 @@ func TestConformanceKimi(t *testing.T) {
 		`printf '{"role":"meta","type":"system.version","version":"0.38.0"}\n'`,
 		"sleep 300")
 	runSuite(t, "kimi",
-		kimi.New(kimi.Config{BinPath: fast, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}),
-		kimi.New(kimi.Config{BinPath: held, WorkspaceRoot: t.TempDir(), GracePeriod: time.Second}),
+		kimi.New(kimi.Config{BinPath: fast, GracePeriod: time.Second}),
+		kimi.New(kimi.Config{BinPath: held, GracePeriod: time.Second}),
 		// print mode 未接 token 用量解析：不捏造 usage 记录。
 		suiteOpts{scheme: "kimi", requireUsage: false},
 	)
@@ -107,7 +107,7 @@ func codexConfModule(t *testing.T) *codexapp.Module {
 	}
 	return codexapp.New(codexapp.Config{
 		BinPath: python, Args: []string{script},
-		WorkspaceRoot: t.TempDir(), GracePeriod: time.Second,
+		GracePeriod: time.Second,
 	})
 }
 
@@ -282,8 +282,8 @@ func TestConformanceDsh(t *testing.T) {
 	fastGW := newConfGateway(t, false)
 	heldGW := newConfGateway(t, true)
 	runSuite(t, "dsh",
-		dsh.NewGateway(dsh.GatewayConfig{BaseURL: fastGW.srv.URL, WorkspaceRoot: "/tmp/atw-conf-dsh"}),
-		dsh.NewGateway(dsh.GatewayConfig{BaseURL: heldGW.srv.URL, WorkspaceRoot: "/tmp/atw-conf-dsh"}),
+		dsh.NewGateway(dsh.GatewayConfig{BaseURL: fastGW.srv.URL}),
+		dsh.NewGateway(dsh.GatewayConfig{BaseURL: heldGW.srv.URL}),
 		suiteOpts{scheme: "dsh", requireUsage: true},
 	)
 }
@@ -314,6 +314,11 @@ type confKap struct {
 	aborts    int    // 已见 REST abort 数
 	pushed    int    // 已回放 turn.started 的 turn 数
 	endedTurn bool   // held：是否已回放 turn.ended
+	// profile 落库（POST /profile 写、GET /status 读）：kimiapp 在会话创建/
+	// 续接后经 applySessionDefaults 校验 profile 确已生效（fail closed），
+	// 桩必须如实回显，否则 run 会被 session_profile_not_applied 判 failed。
+	permission string
+	swarm      bool
 }
 
 func newConfKap(t *testing.T, held bool) *confKap {
@@ -408,6 +413,24 @@ func newConfKap(t *testing.T, held bool) *confKap {
 			f.aborts++
 			f.mu.Unlock()
 			write(w, http.StatusOK, 0, map[string]any{"aborted": true})
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/profile"):
+			var body struct {
+				AgentConfig struct {
+					PermissionMode string `json:"permission_mode"`
+					SwarmMode      bool   `json:"swarm_mode"`
+				} `json:"agent_config"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.permission = body.AgentConfig.PermissionMode
+			f.swarm = body.AgentConfig.SwarmMode
+			f.mu.Unlock()
+			write(w, http.StatusOK, 0, map[string]any{"updated": true})
+		case r.Method == http.MethodGet && strings.HasSuffix(path, "/status"):
+			f.mu.Lock()
+			permission, swarm := f.permission, f.swarm
+			f.mu.Unlock()
+			write(w, http.StatusOK, 0, map[string]any{"busy": false, "permission": permission, "swarm_mode": swarm})
 		default:
 			write(w, http.StatusOK, 0, map[string]any{})
 		}
@@ -506,8 +529,8 @@ func TestConformanceKimiApp(t *testing.T) {
 	fastKap := newConfKap(t, false)
 	heldKap := newConfKap(t, true)
 	runSuite(t, "kimi-appserver",
-		kimiapp.New(kimiapp.Config{BaseURL: fastKap.srv.URL, Token: kimiConfToken, WorkspaceRoot: t.TempDir()}),
-		kimiapp.New(kimiapp.Config{BaseURL: heldKap.srv.URL, Token: kimiConfToken, WorkspaceRoot: t.TempDir()}),
+		kimiapp.New(kimiapp.Config{BaseURL: fastKap.srv.URL, Token: kimiConfToken}),
+		kimiapp.New(kimiapp.Config{BaseURL: heldKap.srv.URL, Token: kimiConfToken}),
 		// ref 方案 kimiapp://<session_id>；usage 由 turn.step.completed 逐 turn 累计。
 		suiteOpts{scheme: "kimiapp", requireUsage: true},
 	)

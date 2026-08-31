@@ -117,25 +117,14 @@ func coordinatorRuntimePreference(config *domain.TaskCoordinatorConfig, useFallb
 	return &domain.RuntimePreference{Preferred: preferred, Fallbacks: fallbacks, Mode: "plan"}
 }
 
-func acceptanceCriteriaFromState(state *domain.TaskCoordinatorState) []string {
-	if state == nil || state.Data == nil {
+// acceptanceCriteriaFromWorkItem returns the canonical acceptance contract.
+// Coordinator state and Run input are historical snapshots only; allowing the
+// pre-first-Run edit window means neither may become the source of truth.
+func acceptanceCriteriaFromWorkItem(wi *domain.WorkItem) []string {
+	if wi == nil {
 		return nil
 	}
-	value := state.Data["acceptance_criteria"]
-	switch typed := value.(type) {
-	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-				out = append(out, text)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
+	return append([]string(nil), wi.AcceptanceCriteria...)
 }
 
 func (s *Service) appendCoordinatorEvent(ctx context.Context, state *domain.TaskCoordinatorState,
@@ -195,7 +184,18 @@ func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error
 			// Observation-only checkpoint while Workers/settlement are active.
 			// This guard is required in addition to due-scan filtering because an
 			// HTTP idempotency replay can call StartCoordinator directly.
-			return nil
+			// RFC §7.7：checkpoint 上存在未消费 actionable 评论且树内已无活动
+			// Worker/settlement 时，放行到 startCoordinatorTurn 在事务内改排
+			// queued/message 并消费评论（durable due 的兜底路径）。
+			unconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(
+				context.WithoutCancel(ctx), state.RootWorkItemID, state.ConsumedCommentRevision)
+			if hcErr != nil || !unconsumed {
+				return nil
+			}
+			active, activeErr := s.taskTreeHasActiveRuns(context.WithoutCancel(ctx), state.RootWorkItemID)
+			if activeErr != nil || active || coordinatorSettlementPending(state) {
+				return nil
+			}
 		}
 		if state.CurrentRunID != "" {
 			if active, runErr := s.store.Runs().Get(ctx, state.CurrentRunID); runErr == nil {
@@ -222,6 +222,15 @@ func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error
 		// never turn that benign race into a user-visible blocker.
 		if errors.Is(err, domain.ErrVersionConflict) || errors.Is(err, domain.ErrIdempotencyConflict) {
 			return nil
+		}
+		// 目标 Host 明确 offline：不创建 Run，转 durable waiting_retry
+		//（execution_host_unavailable），由恢复循环在 Host 回落后重驱（RFC §7.4）。
+		if errors.Is(err, domain.ErrExecutionHostUnavailable) {
+			if deferErr := s.deferCoordinatorForHostUnavailable(ctx, workItemID, err); deferErr != nil {
+				log.Printf("coordinator: task %s host 不可用 checkpoint 写入失败: %v", workItemID, deferErr)
+				return deferErr
+			}
+			return err
 		}
 		_ = s.blockCoordinatorForStartFailure(context.WithoutCancel(ctx), workItemID, err)
 		return err
@@ -433,24 +442,72 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 			action = "intake"
 		}
 		if state.Status == domain.CoordinatorRunning {
-			action = "recover"
+			// Observation-only checkpoint（running 且无 current Run、无控制动作）：
+			// 有活动 Worker/settlement 保持观察；存在未消费 actionable 评论且现场
+			// 已安静时，本事务内 CAS queued/message 并继续本轮消费（RFC §7.7）。
+			// 纯观察 checkpoint 不重启（避免活动批次被必达 steering 打断）。
+			if state.CurrentRunID == "" && coordinatorControlAction(state) == "" {
+				unconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(ctx, state.RootWorkItemID, state.ConsumedCommentRevision)
+				if hcErr != nil {
+					return hcErr
+				}
+				if !unconsumed {
+					return nil
+				}
+				active, activeErr := s.taskTreeHasActiveRuns(ctx, state.RootWorkItemID)
+				if activeErr != nil {
+					return activeErr
+				}
+				if active || coordinatorSettlementPending(state) {
+					return nil
+				}
+				expected := state.Version
+				state.Status = domain.CoordinatorQueued
+				state.Phase = "message"
+				state.CurrentAction = "message"
+				state.NextActionAt = nil
+				if err := s.store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
+					return err
+				}
+				state.Version = expected + 1
+				if err := s.appendCoordinatorEvent(ctx, state, state.RootWorkItemID,
+					domain.EventCoordinatorMessageReceived, "未消费任务反馈改排 Coordinator 队列",
+					"", state.CoordinatorAgentID, state.Attempt, "", nil,
+					map[string]any{"stage": "message", "next_action": "消费未处理的任务反馈"}); err != nil {
+					return err
+				}
+				action = "message"
+			} else {
+				action = "recover"
+			}
 		}
-		pending, _ := state.Data["pending_instruction"].(string)
+		// RFC §7.8：Run 创建事务内读取未消费评论、快照进 TASK_DATA_JSON_V1 与
+		// Run input，并同事务推进 consumed_comment_revision——失败整体回滚。
+		commentSnapshot, revFrom, revTo, err := s.coordinatorCommentSnapshot(ctx, state.RootWorkItemID, state.ConsumedCommentRevision)
+		if err != nil {
+			return err
+		}
 		useFallback, _ := state.Data["use_fallback"].(bool)
 		instruction := BuildCoordinatorInstruction(CoordinatorPromptInput{
 			RootWorkItemID: root.ID, Title: root.Title, Description: root.Description,
-			Acceptance: acceptanceCriteriaFromState(state), Workers: workers,
+			Acceptance: acceptanceCriteriaFromWorkItem(root), Workers: workers,
 			Phase: state.Phase, CurrentStep: state.CurrentStep, CurrentAction: action,
-			Attempt: state.Attempt + 1, Failure: state.LastError, NextAction: pending,
+			Attempt: state.Attempt + 1, Failure: state.LastError, Comments: commentSnapshot,
 		})
 		contextData := map[string]any{
 			"role": coordinatorRole, "root_work_item_id": root.ID,
 			"state_id": state.ID, "action": action, "attempt": state.Attempt + 1,
-			"use_fallback": useFallback,
+			"use_fallback":          useFallback,
+			"comment_revision_from": revFrom,
+			"comment_revision_to":   revTo,
+		}
+		if len(commentSnapshot) > 0 {
+			// Run input 保存评论快照（§4.9：重启后可审计重建）。
+			contextData["comments"] = commentSnapshot
 		}
 		run, err := s.createRunLocked(ctx, root.ID, CreateRunParams{
 			AgentProfileID: config.AgentProfileID, Instruction: instruction,
-			AcceptanceCriteria: acceptanceCriteriaFromState(state),
+			AcceptanceCriteria: acceptanceCriteriaFromWorkItem(root),
 			RuntimePreference:  coordinatorRuntimePreference(config, useFallback),
 			DispatchTrigger:    domain.DispatchTriggerUserMessage,
 			ClientKey:          fmt.Sprintf("coordinator:%s:%d:%s", state.ID, state.Attempt+1, action),
@@ -468,10 +525,11 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 		state.Attempt++
 		state.NextActionAt = nil
 		state.BlockerCode, state.BlockerMessage = "", ""
+		// 消费水位与 Run 创建同事务（RFC §7.8）：Run 创建失败则整体回滚。
+		state.ConsumedCommentRevision = revTo
 		if state.Data == nil {
 			state.Data = map[string]any{}
 		}
-		delete(state.Data, "pending_instruction")
 		delete(state.Data, "control_action")
 		state.Data["runtime"] = run.RuntimeLabel
 		if err := s.store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
@@ -565,90 +623,9 @@ func (s *Service) blockCoordinator(ctx context.Context, state *domain.TaskCoordi
 	})
 }
 
-// SendCoordinatorInstruction persists user steering. If a Coordinator turn is
-// active, steering is forwarded when supported; otherwise the instruction is
-// consumed by a new durable control turn.
-func (s *Service) SendCoordinatorInstruction(ctx context.Context, workItemID, instruction string) (string, error) {
-	instruction = strings.TrimSpace(instruction)
-	if instruction == "" {
-		return "", fmt.Errorf("%w: instruction required", domain.ErrValidation)
-	}
-	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, workItemID)
-	if err != nil {
-		return "", err
-	}
-	switch state.Status {
-	case domain.CoordinatorCompleted, domain.CoordinatorCancelled:
-		return "", fmt.Errorf("%w: 已结束的 Coordinator 任务不可追加指令", domain.ErrStateConflict)
-	case domain.CoordinatorBlocked:
-		return "", fmt.Errorf("%w: Coordinator 已阻塞，请先解除阻塞", domain.ErrStateConflict)
-	}
-	activeRunID := ""
-	err = s.store.InTx(ctx, func(ctx context.Context) error {
-		fresh, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
-		if err != nil {
-			return err
-		}
-		expected := fresh.Version
-		if fresh.Status == domain.CoordinatorWaitingUser {
-			root, err := s.store.WorkItems().Get(ctx, fresh.RootWorkItemID)
-			if err != nil {
-				return err
-			}
-			if root.Status == domain.WorkItemInProgress && root.Phase != domain.PhaseExecution {
-				rootExpected := root.Version
-				root.BeginExecution(time.Now().UTC())
-				if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
-					return err
-				}
-				if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
-					domain.AggregateWorkItem, root.ID, root.Version, nil,
-					map[string]any{"phase": string(root.Phase), "record_kind": string(workItemRecordKind(root))}); err != nil {
-					return err
-				}
-			}
-		}
-		if fresh.Data == nil {
-			fresh.Data = map[string]any{}
-		}
-		fresh.Data["pending_instruction"] = instruction
-		if fresh.CurrentRunID != "" {
-			if run, runErr := s.store.Runs().Get(ctx, fresh.CurrentRunID); runErr == nil && !run.Status.IsTerminal() {
-				activeRunID = run.ID
-			}
-		}
-		if activeRunID == "" {
-			fresh.Status = domain.CoordinatorQueued
-			fresh.Phase = "message"
-			fresh.CurrentAction = "message"
-			fresh.NextActionAt = nil
-		}
-		if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
-			return err
-		}
-		fresh.Version = expected + 1
-		return s.appendCoordinatorEvent(ctx, fresh, workItemID, domain.EventCoordinatorMessageReceived,
-			"用户向 Coordinator 追加指令", activeRunID, fresh.CoordinatorAgentID, fresh.Attempt,
-			instruction, nil, map[string]any{"stage": "plan", "next_action": "Coordinator 将合并指令重新规划"})
-	})
-	if err != nil {
-		return "", err
-	}
-	s.notifier.Notify(state.WorkspaceID)
-	if activeRunID != "" {
-		// Do not depend on adapter steering support. The instruction is durable
-		// and starts a follow-up Coordinator turn after the active turn settles.
-		return activeRunID, nil
-	}
-	if err := s.StartCoordinator(context.WithoutCancel(ctx), state.RootWorkItemID); err != nil {
-		return "", err
-	}
-	updated, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
-	if err != nil {
-		return "", err
-	}
-	return updated.CurrentRunID, nil
-}
+// SendCoordinatorInstruction 已随 RFC §7.7 删除清单移除：用户追加指令统一改走
+// AppendTaskComment（requirement 评论，见 task_comments.go），不再保留
+// pending_instruction 单槽双轨。
 
 func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.ExecutionRun) {
 	if run == nil || !run.Status.IsTerminal() {
@@ -851,10 +828,6 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			fresh.LastError = "评估未通过，Coordinator 重新规划"
 			fresh.Summary = "评估未通过，Coordinator 将重新规划"
 			fresh.Data["evaluation_rejected_run_id"] = run.ID
-		} else if pending, _ := fresh.Data["pending_instruction"].(string); strings.TrimSpace(pending) != "" {
-			fresh.Status = domain.CoordinatorQueued
-			fresh.Phase = "message"
-			fresh.CurrentAction = "message"
 		} else if planErr == nil && plan != nil && plan.SourceRunID == run.ID &&
 			(plan.Status == domain.PlanActive || plan.Status == domain.PlanWaiting) {
 			fresh.Status = domain.CoordinatorRunning
@@ -864,24 +837,39 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			fresh.Data["total_steps"] = len(plan.Steps)
 			fresh.Data["completed_steps"] = 0
 		} else {
-			fresh.Status = domain.CoordinatorWaitingUser
-			fresh.Phase = "acceptance"
-			fresh.CurrentAction = "等待用户验收"
-			fresh.Summary = "Coordinator 已完成本轮任务"
-			if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
-				fresh.Data["completed_steps"] = total
-				fresh.Data["progress"] = float64(1)
+			// §7.11 终态钩子：进入 waiting_user 前必须检查未消费 actionable 评论
+			//（revision > consumed_watermark 且 kind IN (requirement, review_feedback)）。
+			// 存在则不进入 waiting_user、改排 queued/message，由下一轮消费评论；
+			// 该检查与 Coordinator state CAS 配合，不依赖进程内 Notify 消除竞态。
+			hasUnconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(ctx, fresh.RootWorkItemID, fresh.ConsumedCommentRevision)
+			if hcErr != nil {
+				return hcErr
 			}
-			if root.Status == domain.WorkItemInProgress && root.Phase != domain.PhaseReview {
-				rootExpected := root.Version
-				if err := root.EnterReview(time.Now().UTC()); err == nil {
-					if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
-						return err
-					}
-					if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
-						domain.AggregateWorkItem, root.ID, root.Version, nil,
-						map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
-						return err
+			if hasUnconsumed {
+				fresh.Status = domain.CoordinatorQueued
+				fresh.Phase = "message"
+				fresh.CurrentAction = "message"
+				fresh.Summary = "存在未消费任务反馈，Coordinator 继续处理"
+			} else {
+				fresh.Status = domain.CoordinatorWaitingUser
+				fresh.Phase = "acceptance"
+				fresh.CurrentAction = "等待用户验收"
+				fresh.Summary = "Coordinator 已完成本轮任务"
+				if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
+					fresh.Data["completed_steps"] = total
+					fresh.Data["progress"] = float64(1)
+				}
+				if root.Status == domain.WorkItemInProgress && root.Phase != domain.PhaseReview {
+					rootExpected := root.Version
+					if err := root.EnterReview(time.Now().UTC()); err == nil {
+						if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
+							return err
+						}
+						if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
+							domain.AggregateWorkItem, root.ID, root.Version, nil,
+							map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -893,6 +881,9 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 		kind, summary, stage := domain.EventCoordinatorPlanUpdated, "Coordinator 已更新任务计划", "plan"
 		if fresh.Status == domain.CoordinatorQueued && fresh.Phase == "recovering" {
 			kind, summary, stage = domain.EventCoordinatorRecoveryStarted, "评估未通过，Coordinator 重新规划", "recovery"
+		}
+		if fresh.Status == domain.CoordinatorQueued && fresh.Phase == "message" {
+			kind, summary, stage = domain.EventCoordinatorMessageReceived, "存在未消费任务反馈，Coordinator 继续处理", "message"
 		}
 		if fresh.Status == domain.CoordinatorBlocked {
 			kind, summary, stage = domain.EventCoordinatorBlocked, "Coordinator 本轮未输出可执行的新计划", "failure"
@@ -1137,16 +1128,33 @@ func (s *Service) setCoordinatorWaitingUser(ctx context.Context, state *domain.T
 		if fresh.CurrentRunID != run.ID {
 			return nil
 		}
+		// §7.11 终态钩子：存在未消费 actionable 评论时不进入 waiting_user，
+		// 改排 queued/message，由下一 durable turn 消费评论。
+		hasUnconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(ctx, fresh.RootWorkItemID, fresh.ConsumedCommentRevision)
+		if hcErr != nil {
+			return hcErr
+		}
 		expected := fresh.Version
-		fresh.Status = domain.CoordinatorWaitingUser
-		fresh.Phase = "waiting_user"
+		kind := domain.EventCoordinatorStateChanged
+		if hasUnconsumed {
+			fresh.Status = domain.CoordinatorQueued
+			fresh.Phase = "message"
+			fresh.CurrentAction = "message"
+			fresh.Summary = "存在未消费任务反馈，Coordinator 继续处理"
+			kind = domain.EventCoordinatorMessageReceived
+			summary = "存在未消费任务反馈，已改排 Coordinator 队列"
+			nextAction = "消费未处理的任务反馈"
+		} else {
+			fresh.Status = domain.CoordinatorWaitingUser
+			fresh.Phase = "waiting_user"
+			fresh.CurrentAction = nextAction
+		}
 		fresh.CurrentRunID = ""
-		fresh.CurrentAction = nextAction
 		if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
 			return err
 		}
 		fresh.Version = expected + 1
-		return s.appendCoordinatorEvent(ctx, fresh, run.WorkItemID, domain.EventCoordinatorStateChanged,
+		return s.appendCoordinatorEvent(ctx, fresh, run.WorkItemID, kind,
 			summary, run.ID, run.AgentProfileID, coordinatorRunAttempt(ctx, s.store.Runs(), run),
 			"", nil, map[string]any{"stage": "failure", "next_action": nextAction})
 	})

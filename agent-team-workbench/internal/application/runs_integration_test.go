@@ -43,6 +43,7 @@ func TestCreateRunBuildsMultiTurnResumeSnapshot(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_test")
 	agent := &domain.AgentProfile{
 		ID: "agent_test", WorkspaceID: ws.ID, Name: "Agent", Role: "developer",
 		Instructions: "保持上下文", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -134,6 +135,7 @@ func TestTaskSessionAnchorLifecycle(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_ts")
 	agent := &domain.AgentProfile{
 		ID: "agent_ts", WorkspaceID: ws.ID, Name: "TS", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -240,6 +242,7 @@ func TestSessionRotationHandoff(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_rot")
 	agent := &domain.AgentProfile{
 		ID: "agent_rot", WorkspaceID: ws.ID, Name: "Rot", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -360,6 +363,7 @@ func TestHistoryBudgetTriggersRotation(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_budget")
 	agent := &domain.AgentProfile{
 		ID: "agent_budget", WorkspaceID: ws.ID, Name: "Budget", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -439,6 +443,7 @@ func TestSessionUnknownSelfHeal(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_heal")
 	agent := &domain.AgentProfile{
 		ID: "agent_heal", WorkspaceID: ws.ID, Name: "Heal", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -570,6 +575,7 @@ func TestWakeupSchedulingChain(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_wake")
 	// 经 svc 创建：验证 agent 创建缺省（wake_on_assignment/wake_on_demand 默认开）。
 	binding := &domain.RuntimeBinding{
 		ID: "rb_wake", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
@@ -670,6 +676,7 @@ func seedRunEnv(t *testing.T, ctx context.Context, svc *application.Service, sto
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, ws.ID)
 	binding := &domain.RuntimeBinding{
 		ID: "rb_" + t.Name(), WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
 		Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady,
@@ -922,6 +929,7 @@ func TestSystemPromptInjection(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_sp")
 	charter := "# 开发章程\n\n## 交付纪律\n- 分刀提交\n- 证据匹配表面\n"
 	agent := &domain.AgentProfile{
 		ID: "agent_sp", WorkspaceID: ws.ID, Name: "SP", Role: "developer",
@@ -1012,6 +1020,7 @@ func TestSystemPromptChangeTriggersSessionDrift(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_spd")
 	agent := &domain.AgentProfile{
 		ID: "agent_spd", WorkspaceID: ws.ID, Name: "SPD", Role: "developer",
 		Instructions: "# 章程 v1\n保守交付", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
@@ -1053,9 +1062,13 @@ func TestSystemPromptChangeTriggersSessionDrift(t *testing.T) {
 	}
 	conv1, _ := first.Input["conversation"].(map[string]any)
 	digest1, _ := conv1["config_digest"].(string)
+	snap1, err := store.ContextSnapshots().GetByRun(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts, err := store.TaskSessions().Get(ctx, ws.ID, agent.ID, "codex-appserver", wi.ID)
-	if err != nil || ts == nil || ts.SessionRef() != "codex://thread_A" || ts.Fingerprint() != digest1 {
-		t.Fatalf("锚点未按 run1 digest 落库: %v %#v", err, ts)
+	if err != nil || ts == nil || ts.SessionRef() != "codex://thread_A" || ts.Fingerprint() != application.SessionFingerprint(digest1, snap1) {
+		t.Fatalf("锚点未按 run1 组合指纹（config⊕context）落库: %v %#v", err, ts)
 	}
 
 	// 对照组：提示词未变 → 指纹匹配，正常续接 thread_A（排除「本就续不上」的空转通过）。

@@ -27,6 +27,7 @@ func seedTaskLockEnv(t *testing.T) (*application.Service, *sqlstore.Store, strin
 	if err := store.Workspaces().Create(ctx, &domain.Workspace{ID: "ws_lock", Name: "lock", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_lock")
 	if err := store.Agents().Create(ctx, &domain.AgentProfile{
 		ID: "agent_lock", WorkspaceID: "ws_lock", Name: "LK", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

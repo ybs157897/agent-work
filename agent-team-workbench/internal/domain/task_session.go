@@ -27,8 +27,18 @@ type TaskSession struct {
 	// SegmentSeq 参与线片段序号：同一 task_key 下第 N 段会话（轮换代际时 +1，
 	// 缺省 1），片段边界显式化。
 	SegmentSeq int
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// ContextSnapshotID / ContextGeneration 是该锚点当前挂靠的执行上下文身份
+	//（RFC §4.8：context_generation 是兼容代际，不等于单个 Snapshot ID；
+	// fingerprint 含 generation，变化必须 fresh/rotate）。
+	ContextSnapshotID string
+	ContextGeneration int
+	// LastRunID / AnchorRunSequence 是 Run 创建事务内预先 claim 的锚点归属：
+	// run.session 更新必须满足 generation 一致、incoming Run 是当前 anchor
+	// owner、run sequence 不小于当前 anchor sequence（旧 Run 的墓碑不清新代际）。
+	LastRunID         string
+	AnchorRunSequence int64
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // SessionRef 返回会话句柄（无则空串）。

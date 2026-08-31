@@ -58,6 +58,10 @@ type snapshotEvent struct {
 	AfterExists   bool    `json:"after_exists"`
 }
 
+// foldSnapshotEvents 按 path 折叠一轮 Run 的 file_change_snapshot 事件。载荷的
+// workspace_root 由 adapter 取自 Host resolver 的 Resolved.CWD（见 kimiapp
+// eventPump.cwd）：一个 Run 只绑定一个 ExecutionContextSnapshot，全部事件必须
+// 同根，Clean 后不一致即 fail closed 返回 unavailable（绝不跨根折叠）。
 func foldSnapshotEvents(events []snapshotEvent) ([]snapshotEvent, error) {
 	byPath := make(map[string]snapshotEvent)
 	root := ""

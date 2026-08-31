@@ -22,6 +22,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/hostregistry"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
 	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
@@ -58,21 +59,6 @@ func atoiEnv(key string, fallback int) int {
 		}
 	}
 	return fallback
-}
-
-// resolveExecutionRoot 解析 Agent 执行根目录为绝对路径（DSH session.create.cwd 要求）。
-func resolveExecutionRoot(workbenchRoot, configured string) string {
-	root := configured
-	if root == "" || root == "." {
-		root = workbenchRoot
-	} else if !filepath.IsAbs(root) {
-		root = filepath.Join(workbenchRoot, root)
-	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		return workbenchRoot
-	}
-	return abs
 }
 
 // resolveDshRepo 定位 deepseek-harness 仓库根（apps/cli/src/bin.ts 所在工程）：
@@ -132,14 +118,22 @@ func run() error {
 		return fmt.Errorf("初始化项目空间 %s 失败: %w", projectSpace.Root, err)
 	}
 	credStore := modelconfig.NewCredentialsStore(workbenchRoot)
-	executionRoot := resolveExecutionRoot(workbenchRoot, env("ATW_WORKSPACE_ROOT", env("ATW_DSH_WORKDIR", "")))
+	// 本机受信 registry（RFC §4.3）：root 只存在于本机 yaml；ATW_HOST_REGISTRY
+	// 缺省 ./host-registry.yaml。加载失败（含文件不存在）时本机 mount 为空、
+	// 只保证 host_local 存在——绝不从进程环境猜测执行根（RFC §6.1）。
+	localRegistry := hostregistry.New()
+	registryPath := env("ATW_HOST_REGISTRY", "host-registry.yaml")
+	if reg, err := hostregistry.Load(registryPath); err == nil {
+		localRegistry = reg
+	} else {
+		log.Printf("hostregistry: 加载 %s 失败（%v）；本机 mount 为空，仅保证 host_local 存在", registryPath, err)
+	}
 	dshGateway := dsh.NewGateway(dsh.GatewayConfig{
-		BaseURL:       env("ATW_DSH_GATEWAY_URL", ""),
-		Port:          atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
-		RepoDir:       resolveDshRepo(workbenchRoot),
-		Home:          projectSpace.DSHHome(),
-		WorkspaceRoot: executionRoot,
-		Model:         env("DSH_MODEL", "deepseek-v4-flash"),
+		BaseURL: env("ATW_DSH_GATEWAY_URL", ""),
+		Port:    atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
+		RepoDir: resolveDshRepo(workbenchRoot),
+		Home:    projectSpace.DSHHome(),
+		Model:   env("DSH_MODEL", "deepseek-v4-flash"),
 	})
 	// 退出时回收网关进程（对齐 runnerd；supervisor Close 幂等，未拉起也可安全调用）。
 	defer dshGateway.Close()
@@ -148,7 +142,7 @@ func run() error {
 	codexBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_CODEX_BIN", "codex", "codex")
 	if agentwork.ExecutableOK(codexBin) {
 		modules.RegisterTo(registry, "codex-appserver", codexapp.New(codexapp.Config{
-			BinPath: codexBin, Home: projectSpace.CodexHome(), WorkspaceRoot: executionRoot,
+			BinPath: codexBin, Home: projectSpace.CodexHome(),
 			Model: env("ATW_CODEX_MODEL", ""),
 		}))
 		log.Printf("codexapp: 已注册（bin=%s home=%s）", codexBin, projectSpace.CodexHome())
@@ -156,8 +150,8 @@ func run() error {
 	// M4 真实 Adapter：Claude Code CLI print mode（本机 CLI 存在时启用）。
 	if claudeBin := env("ATW_CLAUDE_BIN", "claude"); agentwork.ExecutableOK(claudeBin) {
 		modules.RegisterTo(registry, "claude-code", claudecode.New(claudecode.Config{
-			BinPath: claudeBin, WorkspaceRoot: executionRoot,
-			Model: env("ATW_CLAUDE_MODEL", ""),
+			BinPath: claudeBin,
+			Model:   env("ATW_CLAUDE_MODEL", ""),
 		}))
 		log.Printf("claudecode: 已注册（bin=%s）", claudeBin)
 	}
@@ -165,7 +159,7 @@ func run() error {
 	kimiBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMI_BIN", "kimi", "kimi")
 	if agentwork.ExecutableOK(kimiBin) {
 		modules.RegisterTo(registry, "kimi", kimi.New(kimi.Config{
-			BinPath: kimiBin, Home: projectSpace.KimiHome(), WorkspaceRoot: executionRoot,
+			BinPath: kimiBin, Home: projectSpace.KimiHome(),
 			Model: env("ATW_KIMI_MODEL", ""),
 		}))
 		log.Printf("kimi: 已注册（bin=%s home=%s）", kimiBin, projectSpace.KimiHome())
@@ -176,13 +170,12 @@ func run() error {
 	kimiAppBin := agentwork.ResolveBundledBin(workbenchRoot, "ATW_KIMIAPP_BIN", "kimi", kimiBin)
 	if agentwork.ExecutableOK(kimiAppBin) || env("ATW_KIMIAPP_URL", "") != "" {
 		kimiModule := kimiapp.New(kimiapp.Config{
-			BaseURL:       env("ATW_KIMIAPP_URL", ""),
-			Token:         env("ATW_KIMIAPP_TOKEN", ""),
-			Port:          atoiEnv("ATW_KIMIAPP_PORT", 0),
-			KimiBin:       kimiAppBin,
-			Home:          env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()),
-			WorkspaceRoot: executionRoot,
-			Model:         env("ATW_KIMIAPP_MODEL", ""),
+			BaseURL: env("ATW_KIMIAPP_URL", ""),
+			Token:   env("ATW_KIMIAPP_TOKEN", ""),
+			Port:    atoiEnv("ATW_KIMIAPP_PORT", 0),
+			KimiBin: kimiAppBin,
+			Home:    env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()),
+			Model:   env("ATW_KIMIAPP_MODEL", ""),
 		})
 		// 退出时回收 kap-server 进程组（supervisor Close 幂等，未拉起也可安全调用）。
 		defer kimiModule.Close()
@@ -192,10 +185,24 @@ func run() error {
 	// M5 spike：ZCode probe-only 模块（SPI v2，Execute 报 start_unsupported）。
 	modules.RegisterTo(registry, "zcode-probe", zcode.New())
 
-	// M2 Runner WSS Gateway：有在线 Runner 时分派到 Runner，否则按 binding 的
-	// adapter_id 路由到进程内 ModuleRunner（唯一执行面）。
+	// 执行上下文解析器（RFC §4.6/§7.5）：从持久 snapshot + 本机受信 registry
+	// 产出进程内可信 Resolved；本地执行只服务 host_local 路由（chainDispatcher）。
+	modules.SetSnapshotResolver(func(ctx context.Context, runID string) (domain.ExecutionContextSnapshot, domain.ResolvedExecutionContext, error) {
+		snapshot, err := store.ContextSnapshots().GetByRun(ctx, runID)
+		if err != nil {
+			return domain.ExecutionContextSnapshot{}, domain.ResolvedExecutionContext{}, err
+		}
+		resolved, err := localRegistry.Resolve(snapshot)
+		if err != nil {
+			return domain.ExecutionContextSnapshot{}, domain.ResolvedExecutionContext{}, err
+		}
+		return *snapshot, resolved, nil
+	})
+
+	// M2 Runner WSS Gateway（v2）：按 snapshot.execution_host_id 精确路由到
+	// Runner，host_local 走进程内 ModuleRunner（唯一本地执行面）。
 	gateway := runnergateway.New(store, svc, hub)
-	svc.SetDispatcher(&chainDispatcher{gw: gateway, modules: modules, store: store})
+	svc.SetDispatcher(&chainDispatcher{gw: gateway, modules: modules, store: store, svc: svc})
 	svc.ApprovalForwarder = func(ctx context.Context, runID, approvalID string, approved bool) {
 		// 在线 Runner（ingress 已做 runner 侧审批 ID 翻译）→ 进程内模块 Controls。
 		gateway.ForwardApproval(ctx, runID, approvalID, approved)
@@ -225,6 +232,15 @@ func run() error {
 	}
 	if err := ensureBuiltinRuntimeBindings(ctx, svc, store, registry); err != nil {
 		return fmt.Errorf("补齐内置 Runtime binding 失败: %w", err)
+	}
+
+	// 本机执行上下文 bootstrap（RFC §6.1）：EnsureLocalHost + 本机 mount 广告落库；
+	// 单 Workspace 且无 Location 才自动建默认 Location（多 Workspace 保持 unmapped）。
+	if err := svc.EnsureLocalHostBootstrap(ctx, localRegistry.Advertise()); err != nil {
+		return fmt.Errorf("本机 Host bootstrap 失败: %w", err)
+	}
+	if err := svc.EnsureSingleWorkspaceDefaultLocation(ctx); err != nil {
+		return fmt.Errorf("默认 Location bootstrap 失败: %w", err)
 	}
 
 	// agents/ 目录为 Agent 配置真相源：启动导入 DB 投影（协议 §4.1）。
@@ -282,7 +298,15 @@ func run() error {
 		log.Printf("knowledge: 检索器已启用（root %s）", knowledgeRoot)
 	}
 
-	// 启动对账：清理上一进程遗留的「无 lease 且非终态」孤儿 run（进程内模块执行），
+	// 0021 前遗留的非终态无快照 Run：落 failed(execution_context_missing) 并触发
+	// 既有 Coordinator 恢复（RFC §6.1；无快照的 Run 永不分派）。必须先于
+	// 通用 orphan 对账，否则后者会先把它们改成 lost，导致 legacy 路径漏处理。
+	if marked, err := svc.ReconcileLegacyContextRuns(ctx); err != nil {
+		log.Printf("遗留上下文对账未完全成功: %v", err)
+	} else if marked > 0 {
+		log.Printf("启动对账：%d 个无快照遗留 run 已收敛到 failed(execution_context_missing)", marked)
+	}
+	// 清理上一进程遗留的「无 lease 且非终态」普通孤儿 run（进程内模块执行），
 	// 防止该 (agent, task) 的后续 wakeup 被永久 coalesce 进死 run；runner 路径有
 	// lease，由 runnergateway sweeper 负责不受影响。失败不阻断启动。
 	if marked, err := svc.ReconcileOrphanRuns(ctx); err != nil {
@@ -313,7 +337,7 @@ func run() error {
 	log.Printf("Task Coordinator 恢复循环已启动（tick 2s）")
 
 	root := http.NewServeMux()
-	root.Handle("/runner/v1/connect", gateway)
+	root.Handle(runnergateway.ConnectPath, gateway)
 	root.Handle("/", server.Routes())
 	handler := http.Handler(root)
 	// 若存在前端构建产物（web/dist），以 SPA fallback 静态托管，单二进制即可演示。
@@ -347,12 +371,14 @@ func run() error {
 	return nil
 }
 
-// chainDispatcher：在线 Runner 可承接时走 WSS 分派；否则按 binding 的
-// adapter_id 路由到进程内 ModuleRunner（唯一执行面）。
+// chainDispatcher host-aware 精确路由（RFC §7.5）：只读不可变 Snapshot 决定
+// 执行面——host_local 走进程内 ModuleRunner，其余按 snapshot.execution_host_id
+// 精确投递 Runner；禁止 remote→local 或跨 Host fallback。
 type chainDispatcher struct {
 	gw      *runnergateway.Gateway
 	modules *runtime.ModuleRunner
 	store   application.Store
+	svc     *application.Service
 }
 
 func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun) error {
@@ -362,23 +388,29 @@ func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun
 			adapterID = b.AdapterID
 		}
 	}
-	// 远程分派前校验 runner 上报的 manifest digest 与控制面本地真相一致；
-	// 无本地模块时 digest 为空，校验退化为在线性判断。
-	wantDigest := ""
-	if m, ok := c.modules.Module(adapterID); ok {
-		if mf, err := m.Manifest(ctx); err == nil {
-			wantDigest = mf.SchemaDigest
+	// Dispatcher 只读 Snapshot，不重新解析当前 WorkspaceLocation（RFC §5.1.5）；
+	// 无快照的 Run 永不分派（RFC §5.1.3/§5.1.4）。
+	snapshot, err := c.store.ContextSnapshots().GetByRun(ctx, run.ID)
+	if err != nil {
+		return fmt.Errorf("run %s 无 context snapshot，拒绝分派: %w", run.ID, err)
+	}
+	if snapshot.ExecutionHostID == domain.LocalHostID {
+		if c.modules.Has(adapterID) {
+			log.Printf("dispatch: run %s → 进程内模块（%s，host_local）", run.ID, adapterID)
+			return c.modules.Dispatch(ctx, run)
 		}
+		return fmt.Errorf("%w: adapter %s 未注册本地执行面", domain.ErrCapabilityMissing, adapterID)
 	}
-	if c.gw.VerifyAdapterDigest(adapterID, wantDigest) {
-		log.Printf("dispatch: run %s → 在线 Runner（adapter=%s）", run.ID, adapterID)
-		return c.gw.Dispatch(ctx, run, adapterID)
+	log.Printf("dispatch: run %s → Runner（adapter=%s，host=%s）", run.ID, adapterID, snapshot.ExecutionHostID)
+	if err := c.gw.Dispatch(ctx, run, snapshot, adapterID); err != nil {
+		// 提交后目标 Host 无可用 Runner：Run 落 failed(retryable)，由 Coordinator
+		// 既有有界 retry/replan 恢复；禁止跨 Host/本机 fallback（RFC §7.4）。
+		_ = c.svc.RecordRunStatus(context.WithoutCancel(ctx), run.ID, domain.RunFailed,
+			map[string]any{"code": "execution_host_unavailable", "retryable": true,
+				"message": err.Error(), "family": "workspace"})
+		return err
 	}
-	if c.modules.Has(adapterID) {
-		log.Printf("dispatch: run %s → 进程内模块（%s）", run.ID, adapterID)
-		return c.modules.Dispatch(ctx, run)
-	}
-	return fmt.Errorf("%w: adapter %s 未注册执行面", domain.ErrCapabilityMissing, adapterID)
+	return nil
 }
 
 // openStore 按 DSN 前缀选择驱动：postgres:// → pgx stdlib；sqlite:// → 本地文件。

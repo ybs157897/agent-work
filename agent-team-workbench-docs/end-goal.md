@@ -5,12 +5,12 @@
 
 ## 一句话概括
 
-一个**控制平面在 harness 之上**的多 agent 团队系统：每个 agent 是"模型 × runtime × 提示词 × 模式"的自由配置单元；任务发布后由 lead agent 认领、规划、派工，worker agent 各自交付，lead 评估后送验收；会话由 agent 层自管理（何时续、何时换），所有发给模型的字节流满足前缀缓存契约。
+一个**控制平面在 harness 之上**的多 agent 团队系统：普通 agent 是"模型 × runtime × 提示词 × 模式"的自由配置单元；根 Task 发布后由受保护的系统 Task Coordinator 自动接取、规划、选 Worker、派工、恢复与收口，worker agent 各自交付，Coordinator 评估后送人工验收；会话由控制平面的 agent/session 层管理（何时续、何时换），所有发给模型的字节流满足前缀缓存契约。
 
 ## 分层架构（从下到上）
 
 ```
-┌ 4. 编排角色层（lead / worker，agent 出谋，控制平面执政）
+┌ 4. 编排角色层（system Task Coordinator / worker，agent 出谋，控制平面执政）
 ├ 3. 会话管理层（锚点 + 三层策略 + 缓存契约）
 ├ 2. Harness 层（codex / kimi / dsh 各自是一层 loop，哑执行面）
 └ 1. Provider 层（DeepSeek / Kimi 等模型 API，无状态，只认字节前缀）
@@ -89,22 +89,24 @@ finish(summary)                                 — 计划收口
 
 会话策略（续接 / fork / rotate）不是词汇表动词：use_session 是编排层的默认行为，由控制平面自管理，不经 planner 在 plan 里显式声明。
 
-### Lead 是一等 agent（不是系统内置魔法）
+### Task Coordinator 是受保护的系统级 agent
 
-Planner 不是裸的 provider 调用，而是**一个可配置的 agent**——它自己就是"模型 × runtime × 提示词"的组合，模型/提示词/模式都按 agent 配置走。**Agent 出谋，控制平面执政。**
+Planner 不是裸的 provider 调用，也不是可被用户删除、改提示词或作为普通 Chat 身份使用的 AgentProfile。系统为每个 Workspace 维护唯一受保护的 Task Coordinator 配置，并为每个根 Task 创建独立的持久控制线与会话。Workspace 只配置其主/备用 Runtime、模型和 reasoning effort；提示词、Plan schema、失败策略与预算由源码版本化并拒绝外部修改。
+
+普通 Worker 仍是"模型 × runtime × 提示词 × 模式"的自由配置单元。Coordinator 负责选 Worker、生成受约束 Plan 和评估交付，控制平面负责校验、执行、记账与恢复。**Agent 出谋，控制平面执政。**
 
 ### 任务全生命周期
 
 状态机已为此预建（execution → review → acceptance 三段相位）：
 
 ```
-发布任务(todo) → lead 认领(in_progress/execution)
-  → lead 规划 → 子任务树派工（work_items 加 parent_id，artifacts + handoff 回流）
-  → worker 各自完成交付 → lead 拿 acceptance criteria 评估
+发布根 Task(todo) → 系统 Coordinator 自动接取(in_progress/execution)
+  → Coordinator 规划 → 子任务树派工（work_items 加 parent_id，artifacts + handoff 回流）
+  → worker 各自完成交付 → Coordinator 拿 acceptance criteria 评估
   → 待验收(acceptance 相位) → 人工验收
   ├─ 通过 → Accept() → completed（唯一收口路径）
-  └─ 不理想 → 与单个 agent 对话调整（chat 页）
-       → 主干重新交付（BeginExecution 切回执行态，重走评审）
+  └─ 不理想 → Return/requirement feedback
+       → Coordinator 重新规划（BeginExecution 切回执行态，重走评审）
 ```
 
 ### 守门与回退
@@ -118,7 +120,7 @@ Planner 不是裸的 provider 调用，而是**一个可配置的 agent**——�
 
 MVP：workspace 级 `docs/` 目录 + 关键词检索；接口定成 `KnowledgeRetriever` 一层，实现可换，后续升 embedding。知识 agent（如配置示例中的 A）负责沉淀，所有 agent 经 `consult_knowledge` 消费。
 
-## 现状对账（2026-08-26 核订）
+## 现状对账（2026-08-31 核订）
 
 | 能力 | 状态 |
 |---|---|
@@ -129,24 +131,26 @@ MVP：workspace 级 `docs/` 目录 + 关键词检索；接口定成 `KnowledgeRe
 | 历史预算按模型窗口 + 超限轮换 + 前缀稳定契约 | ✅ 已合入 main（`12d5ea0`，merge `53982ed`） |
 | 子任务树（work_items parent_id） | ✅ 已有 |
 | OrchestrationPlan 词汇表 + 确定性执行器 + automation wakeup producer | ✅ 已有（`internal/orchestrator`，plans 自 migration 0009 起；HTTP wake 入口 `handlers_wake.go`） |
-| lead agent 作为 planner / 评估 run | ✅ 已有（编排层 M1–M4，2026-08-24 合入 main `03a0b24`） |
+| 系统 Task Coordinator / 评估 run | ✅ 已有（每根 Task 独立控制线；2026-08-30 合入本地 main `0366666`） |
 | join / 审批钩子 / 步数与预算护栏 | ✅ 已有（plan executor guardrails，`35b55c5`） |
-| 认领模式（含任务级执行锁 F1、MCP `task_claim`/`task_return` 写面） | ✅ 已有（执行锁迁移 0014，merge `9c3dd6c`） |
+| 任务级执行锁 | ✅ 已有（执行锁迁移 0014，merge `9c3dd6c`）；公开根 Task 不走手工 claim |
 | consult_knowledge / KnowledgeRetriever（关键词检索 MVP） | ✅ 已有（`internal/knowledge` + plan 动词，migration 0009） |
+| 任务控制面（Host/Location/Snapshot、TaskComment、Review Queue/Brief、Runner v2） | ✅ 已实现并通过代码、迁移、前端与浏览器验收 |
 | 缓存命中率面板（usage_cached → UI） | ⚠️ 部分：usage_cached 已随 usage.updated 进入前端 store，UI 面板未做 |
 | Agent 自识别会话策略（分类器 + 信号触发） | ❌ 待做 |
 
 ## 分期路线（每期独立可用）
 
-> **进度（2026-08-26）**：M1–M4 已全部完成并合入 main。剩余收口项——会话自识别分类器、缓存命中率 UI 面板、codexapp multi_vendor 能力声明。
+> **进度（2026-08-31）**：M1–M4、系统 Task Coordinator 与任务控制面补全均已完成。后续保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
 
 - **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树 —— ✅ 完成
-- **M2**：lead agent 作为 planner（会话策略 + fork）+ task_sessions 树形化（parent_anchor_id）+ 评估 run + 会话自识别分类器 —— 除分类器外完成
+- **M2**：planner/评估执行能力 + task_sessions 树形化（parent_anchor_id）+ 会话自识别分类器 —— 除分类器外完成；planner 身份已由后续系统 Task Coordinator 决策收口
 - **M3**：consult_knowledge + KnowledgeRetriever + 缓存命中率面板 —— 后两项前者完成、面板未做
 - **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量 —— ✅ 完成
 
 ## 参考与决策留痕
 
+- 任务控制面补全架构：`architecture/task-control-surface-context-design.md`
 - 会话预算/轮换决策：`notes/implemented/architecture/2026-08-23-model-context-history-budget.md`
 - resume 永不静默降级：`notes/implemented/architecture/2026-08-23-resume-never-silent-degrade.md`
 - 编排架构参考：Paperclip（orchestrator + taskKey 会话锚点）、SpineCodex（模型自决压缩、前缀稳定纪律——取其教训，弃其单 harness 内嵌路线）

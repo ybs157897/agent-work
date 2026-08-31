@@ -14,21 +14,26 @@ import (
 type PlanRepo struct{ store *Store }
 
 const planCols = `id, workspace_id, work_item_id, agent_profile_id, source_run_id,
-	status, superseded_by, guardrails, error, version, created_at, updated_at`
+	context_snapshot_id, context_generation, status, superseded_by, guardrails, error,
+	version, created_at, updated_at`
 
 const planStepCols = `plan_id, seq, verb, payload, status, result_work_item_id,
 	result_run_id, error, created_at, executed_at`
 
 func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) error {
-	var sourceRunID, supersededBy, planErr *string
+	var sourceRunID, supersededBy, planErr, ctxSnapID *string
 	var guardrails string
 	var created, updated scanTime
 	if err := row.Scan(&p.ID, &p.WorkspaceID, &p.WorkItemID, &p.AgentProfileID, &sourceRunID,
-		&p.Status, &supersededBy, &guardrails, &planErr, &p.Version, &created, &updated); err != nil {
+		&ctxSnapID, &p.ContextGeneration, &p.Status, &supersededBy, &guardrails, &planErr,
+		&p.Version, &created, &updated); err != nil {
 		return err
 	}
 	if sourceRunID != nil {
 		p.SourceRunID = *sourceRunID
+	}
+	if ctxSnapID != nil {
+		p.ContextSnapshotID = *ctxSnapID
 	}
 	if supersededBy != nil {
 		p.SupersededBy = *supersededBy
@@ -47,8 +52,9 @@ func (r *PlanRepo) scan(row interface{ Scan(...any) error }, p *domain.Plan) err
 func (r *PlanRepo) Create(ctx context.Context, p *domain.Plan) error {
 	d := r.store.dialect
 	if _, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO plans(`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO plans(`+planCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.WorkspaceID, p.WorkItemID, p.AgentProfileID, nullString(p.SourceRunID),
+		nullString(p.ContextSnapshotID), p.ContextGeneration,
 		p.Status, nullString(p.SupersededBy), jsonText(p.Guardrails), nullString(p.Error), p.Version,
 		d.TimeParam(p.CreatedAt), d.TimeParam(p.UpdatedAt)); err != nil {
 		return r.store.mapErr(err)

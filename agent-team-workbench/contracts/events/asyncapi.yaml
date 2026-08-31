@@ -45,7 +45,7 @@ components:
           type: object
           required: [type, id, version]
           properties:
-            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision, task_coordinator] }
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision, task_coordinator, execution_host, workspace_location, task_comment] }
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
@@ -130,11 +130,17 @@ components:
             - usage.updated
             # Runtime
             - runtime.health_changed
-            - runner.connected
-            - runner.disconnected
             - run.recovery_started
             - run.recovery_completed
             - run.recovery_failed
+            # Execution Host / Workspace Location（任务控制面补全 RFC §10）
+            - execution_host.updated
+            - workspace_location.created
+            - workspace_location.updated
+            - workspace_location.unavailable
+            # Development Context / Task Comment（任务控制面补全 RFC §10）
+            - work_item.development_context_updated
+            - task_comment.created
         occurred_at: { type: string, format: date-time }
         actor:
           type: object
@@ -143,3 +149,21 @@ components:
             id: { type: string }
         correlation_id: { type: string, description: 触发命令 id }
         data: { type: object, description: 事件负载，按 type 区分 }
+
+    TaskCommentCreatedData:
+      type: object
+      description: |
+        task_comment.created 事件的最小 data（RFC §10）。SSE 不推送 comment body；
+        前端按 work item/root 失效重取。actionable = kind IN (requirement,
+        review_feedback)；coordinator_status 为评论事务提交时根 Coordinator 的
+        durable 状态（waiting_user 的 actionable 评论原子回 queued）。
+      required: [record_kind, comment_id, root_work_item_id, work_item_id, revision, kind, actionable]
+      properties:
+        record_kind: { type: string, const: task }
+        comment_id: { type: string, description: "cmt_ 前缀" }
+        root_work_item_id: { type: string }
+        work_item_id: { type: string }
+        revision: { type: integer, format: int64 }
+        kind: { type: string, enum: [note, requirement, review_feedback] }
+        actionable: { type: boolean }
+        coordinator_status: { type: string, description: 评论事务提交时根 Coordinator durable 状态；缺省表示无 Coordinator state }

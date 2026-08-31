@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { listWorkItemDecisions } from '../api/endpoints';
 import type { CanonicalEvent, DecisionEntry } from '../api/types';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 
 /**
  * 决策台账投影（会话元模型 S2）：
@@ -14,9 +15,11 @@ interface DecisionsStore {
   /** work_item_id → 最近一次决策列表请求错误；存在时 UI 不得伪装为空态。 */
   errorByWorkItem: Record<string, string | undefined>;
   /** 详情抽屉打开时拉快照；GET 失败保留错误供就地重试。 */
-  refreshFor: (workItemId: string) => Promise<void>;
+  refreshFor: (workItemId: string, expectedWorkspaceId?: string) => Promise<void>;
   /** decision 域 SSE 事件（decision.*）；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
+  /** 切换 Workspace 时清空决策台账与防抖定时器。 */
+  reset: () => void;
 }
 
 /** 与 events.ts SSE_REFRESH_DEBOUNCE_MS 同值；本地定义避免 store→events 循环引用。 */
@@ -29,12 +32,14 @@ export const useDecisionsStore = create<DecisionsStore>()((set) => ({
   byWorkItem: {},
   errorByWorkItem: {},
 
-  refreshFor: async (workItemId) => {
+  refreshFor: async (workItemId, expectedWorkspaceId) => {
+    const scope = captureScope();
+    if (!scope.workspaceId || (expectedWorkspaceId !== undefined && expectedWorkspaceId !== scope.workspaceId)) return;
     const requestVersion = (requestVersions.get(workItemId) ?? 0) + 1;
     requestVersions.set(workItemId, requestVersion);
     try {
       const { items } = await listWorkItemDecisions(workItemId);
-      if (requestVersions.get(workItemId) !== requestVersion) return;
+      if (requestVersions.get(workItemId) !== requestVersion || !isCurrent(scope)) return;
       set((s) => {
         const errorByWorkItem = { ...s.errorByWorkItem };
         delete errorByWorkItem[workItemId];
@@ -44,7 +49,7 @@ export const useDecisionsStore = create<DecisionsStore>()((set) => ({
         };
       });
     } catch {
-      if (requestVersions.get(workItemId) !== requestVersion) return;
+      if (requestVersions.get(workItemId) !== requestVersion || !isCurrent(scope)) return;
       // 保留错误投影给当前详情；重试按钮会复用同一权威 GET。
       set((s) => ({
         errorByWorkItem: {
@@ -65,9 +70,18 @@ export const useDecisionsStore = create<DecisionsStore>()((set) => ({
       wi,
       setTimeout(() => {
         timers.delete(wi);
-        void useDecisionsStore.getState().refreshFor(wi);
+        void useDecisionsStore.getState().refreshFor(wi, ev.workspace_id);
       }, REFETCH_DEBOUNCE_MS),
     );
     return true;
   },
+
+  reset: () => {
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+    requestVersions.clear();
+    set({ byWorkItem: {}, errorByWorkItem: {} });
+  },
 }));
+
+registerWorkspaceScopedReset(() => useDecisionsStore.getState().reset());

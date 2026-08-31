@@ -27,6 +27,7 @@ func seedRunChangesEnv(t *testing.T) (*application.Service, application.Store, *
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_changes")
 	agent := &domain.AgentProfile{
 		ID: "agent_changes", WorkspaceID: ws.ID, Name: "Agent", Role: "developer",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

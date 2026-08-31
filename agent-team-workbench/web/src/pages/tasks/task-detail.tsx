@@ -11,11 +11,14 @@ import { usePlansStore } from '../../stores/plans.store';
 import { useRunsStore } from '../../stores/runs.store';
 import { useTasksStore } from '../../stores/tasks.store';
 import { useCoordinatorStore } from '../../stores/coordinator.store';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity } from '../../stores/scope';
 import { toast } from '../../stores/toast.store';
 import { formatDateTime, formatDueDate } from '../../utils/format';
-import { evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
+import { canReturnTask, evaluationPassed, isAwaitingAcceptance, stepTriggeredEvaluation } from '../../utils/task-phase';
 import { sortTasksTree } from '../../utils/task-tree';
 import { DispatchTimeline } from './dispatch-timeline';
+import { CommentThread } from './comment-thread';
+import { DeliveryBriefPanel } from './delivery-brief';
 import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 import { TaskLedger } from './task-ledger';
@@ -86,6 +89,8 @@ export function TaskDetail({
   const watchRun = useRunsStore((s) => s.watchRun);
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const coordinator = useCoordinatorStore((s) => (taskId ? s.byWorkItem[taskId] : undefined));
+  const coordinatorResolution = useCoordinatorStore((s) =>
+    taskId ? s.resolutionByWorkItem[taskId] ?? 'loading' : 'loading');
   const coordinatorError = useCoordinatorStore((s) => (taskId ? s.errorByWorkItem[taskId] : undefined));
   const refreshCoordinator = useCoordinatorStore((s) => s.refreshFor);
   const navigate = useNavigate();
@@ -97,33 +102,24 @@ export function TaskDetail({
   const [known, setKnown] = useState<Record<string, WorkItem>>({});
 
   const task = storeTask ?? (taskId ? known[taskId] : undefined);
+  const taskWorkspaceId = task?.workspace_id;
 
-  // 打开时拉取权威快照（含 blocker/runs_count/version），防止列表数据陈旧。
+  // 详情路由先在 TaskWorkspacePage 校验 WorkItem 的 workspace_id；未拿到当前
+  // Workspace 的权威实体前，不能用裸 id 请求树/plan/coordinator 等关联资源。
   useEffect(() => {
-    if (!taskId) return;
+    if (!taskId || !taskWorkspaceId) return;
     let cancelled = false;
-    getWorkItem(taskId)
-      .then((wi) => {
-        if (!cancelled) upsert(wi);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [taskId, upsert]);
-
-  // 子任务树：直接子任务以树返回项自身的 parent_id 判定（不依赖「树是否含根」的顺序假设）。
-  useEffect(() => {
-    if (!taskId) return;
-    let cancelled = false;
+    const scope = captureScope();
+    if (!isCurrentWorkspaceEntity(scope, { workspace_id: taskWorkspaceId })) return;
     setTreeChildren(null);
     getWorkItemTree(taskId)
       .then(({ items }) => {
-        if (cancelled) return;
-        setTreeChildren(items.filter((t) => t.parent_id === taskId));
+        if (cancelled || !isCurrent(scope)) return;
+        const currentItems = items.filter((item) => isCurrentWorkspaceEntity(scope, item));
+        setTreeChildren(currentItems.filter((t) => t.parent_id === taskId));
         setKnown((prev) => {
           const next = { ...prev };
-          for (const t of items) next[t.id] = t;
+          for (const t of currentItems) next[t.id] = t;
           return next;
         });
       })
@@ -132,17 +128,22 @@ export function TaskDetail({
     return () => {
       cancelled = true;
     };
-  }, [taskId]);
+  }, [taskId, taskWorkspaceId]);
 
   // 编排计划：按主任务刷新最新 plan（冷启动无索引时空操作，等 SSE plan.* 事件）。
   useEffect(() => {
-    if (taskId) void refreshPlan(taskId);
-  }, [taskId, refreshPlan]);
+    if (taskId && taskWorkspaceId && isCurrentWorkspaceEntity(captureScope(), { workspace_id: taskWorkspaceId })) {
+      void refreshPlan(taskId);
+    }
+  }, [taskId, taskWorkspaceId, refreshPlan]);
 
   // Coordinator 是 Task 专属控制线；Chat 记录不会进入该 store。
   useEffect(() => {
-    if (taskId && task?.record_kind === 'task') void refreshCoordinator(taskId);
-  }, [taskId, task?.record_kind, refreshCoordinator]);
+    if (taskId && task?.record_kind === 'task' && taskWorkspaceId
+      && isCurrentWorkspaceEntity(captureScope(), { workspace_id: taskWorkspaceId })) {
+      void refreshCoordinator(taskId);
+    }
+  }, [taskId, task?.record_kind, taskWorkspaceId, refreshCoordinator]);
 
   // 订阅最新 Run 的实时事件。
   const latestRunId = task?.latest_run_id;
@@ -216,7 +217,15 @@ export function TaskDetail({
               task={task}
               snapshot={coordinator}
               error={coordinatorError}
+              resolution={coordinatorResolution}
               onRetry={() => void refreshCoordinator(task.id)}
+            />
+
+            {/* 评论与反馈（RFC §4.9：note/requirement 写入唯一入口，取代旧「追加指令」） */}
+            <CommentThread
+              task={task}
+              coordinatorResolution={coordinatorResolution}
+              coordinatorRootWorkItemId={coordinator?.root_work_item_id}
             />
 
             {/* 字段 */}
@@ -296,10 +305,10 @@ export function TaskDetail({
             </section>
 
             {/* 派发时间线（会话元模型：一次发送 = 一个执行批次） */}
-            <DispatchTimeline taskId={task.id} />
+            <DispatchTimeline taskId={task.id} workspaceId={task.workspace_id} />
 
             {/* 任务台账（S2：滚动摘要 + 决策原话，任务级共享记忆） */}
-            <TaskLedger taskId={task.id} agentProfileId={task.agent_profile_id} />
+            <TaskLedger taskId={task.id} workspaceId={task.workspace_id} agentProfileId={task.agent_profile_id} />
 
             {/* 阻塞信息 */}
             {task.status === 'blocked' && task.blocker && (
@@ -333,12 +342,22 @@ export function TaskDetail({
                         >
                           验收通过
                         </button>
-                        <button
-                          onClick={() => setReturning(true)}
-                          className="bg-transparent border border-status-warning text-status-warning rounded-button px-base py-tight text-body font-medium transition-colors hover:bg-status-warning/5 active:scale-[0.98]"
-                        >
-                          打回重做
-                        </button>
+                        {task.parent_id && coordinatorResolution === 'loading' ? (
+                          <p className="max-w-md text-caption text-text-secondary" role="status">
+                            正在确认该子任务是否由根任务 Coordinator 管理…
+                          </p>
+                        ) : !canReturnTask(task, coordinatorResolution) ? (
+                          <p className="max-w-md text-caption text-text-secondary" role="status">
+                            子任务的验收反馈请在上方选择“需求补充”，由根任务 Coordinator 统一重新规划。
+                          </p>
+                        ) : (
+                          <button
+                            onClick={() => setReturning(true)}
+                            className="bg-transparent border border-status-warning text-status-warning rounded-button px-base py-tight text-body font-medium transition-colors hover:bg-status-warning/5 active:scale-[0.98]"
+                          >
+                            打回重做
+                          </button>
+                        )}
                       </>
                     )}
                   </>
@@ -354,8 +373,11 @@ export function TaskDetail({
               </section>
             )}
 
+            {/* 交付简报（RFC §4.11：服务端确定性聚合，只读验收读模型） */}
+            <DeliveryBriefPanel taskId={task.id} workspaceId={task.workspace_id} />
+
             {/* Run 面板 */}
-            <RunPanel task={task} />
+            <RunPanel task={task} coordinatorResolution={coordinatorResolution} />
           </div>
 
           {editOpen && (
@@ -520,6 +542,12 @@ function TaskEditModal({
     'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
 
   const save = async () => {
+    const scope = captureScope();
+    if (!isCurrentWorkspaceEntity(scope, task)) {
+      toast.error('该任务不属于当前工作区，无法保存。');
+      onClose();
+      return;
+    }
     setSaving(true);
     try {
       const updated = await patchWorkItem(task.id, {
@@ -530,17 +558,20 @@ function TaskEditModal({
         ...(dueDate ? { due_date: dueDate } : {}),
         expected_version: task.version,
       });
+      if (!isCurrentWorkspaceEntity(scope, updated)) return;
       toast.success('任务已更新');
       onSaved(updated);
     } catch (err) {
+      if (!isCurrent(scope)) return;
       if (err instanceof ApiError && err.isVersionConflict) {
         toast.error('任务已被他人修改，已为你刷新最新数据');
-        onSaved(await getWorkItem(task.id));
+        const latest = await getWorkItem(task.id);
+        if (isCurrentWorkspaceEntity(scope, latest)) onSaved(latest);
       } else {
         toast.error(err instanceof ApiError ? err.message : '保存失败');
       }
     } finally {
-      setSaving(false);
+      if (isCurrent(scope)) setSaving(false);
     }
   };
 

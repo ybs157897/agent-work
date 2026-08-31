@@ -38,16 +38,15 @@ const refScheme = "kimiapp"
 // Token 必填）；否则受管拉起 `kimi web`（Home=KIMI_CODE_HOME 必填，Port=0
 // 时内核分配空闲口）。
 type Config struct {
-	BaseURL       string        // 直连已运行 kap-server，如 http://127.0.0.1:58627
-	Token         string        // 直连模式 Bearer token
-	Host          string        // 受管模式绑定 host（默认 127.0.0.1）
-	Port          int           // 受管模式端口（0=动态空闲口；显式值用于复用探测）
-	KimiBin       string        // kimi 可执行文件（默认 kimi）
-	BinArgs       []string      // 覆盖启动参数（测试回放桩，对齐 dsh BinArgs）
-	Home          string        // KIMI_CODE_HOME（受管模式必填；token 于 <home>/server.token）
-	WorkspaceRoot string        // 会话 metadata.cwd（执行根目录）
-	Model         string        // 缺省模型（prompt 级前向）
-	IdleTimeout   time.Duration // 事件流空闲保护（默认 10m）
+	BaseURL     string        // 直连已运行 kap-server，如 http://127.0.0.1:58627
+	Token       string        // 直连模式 Bearer token
+	Host        string        // 受管模式绑定 host（默认 127.0.0.1）
+	Port        int           // 受管模式端口（0=动态空闲口；显式值用于复用探测）
+	KimiBin     string        // kimi 可执行文件（默认 kimi）
+	BinArgs     []string      // 覆盖启动参数（测试回放桩，对齐 dsh BinArgs）
+	Home        string        // KIMI_CODE_HOME（受管模式必填；token 于 <home>/server.token）
+	Model       string        // 缺省模型（prompt 级前向）
+	IdleTimeout time.Duration // 事件流空闲保护（默认 10m）
 }
 
 // Module 实现 runtime.AdapterModule。
@@ -276,7 +275,13 @@ func (m *Module) resolveSession(ex *runtime.ExecContext, client *restClient, sta
 	}
 	// fresh：create.agent_config 在 main 与 0.38 都是静默 no-op；这里只创建，
 	// 随后统一走 profile + status 的可验证默认值路径。
-	req := &createSessionRequest{Metadata: map[string]string{"cwd": m.cwd()}}
+	// 会话 metadata.cwd 只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
+	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
+	sessionCWD := ex.Resolved.CWD
+	if sessionCWD == "" {
+		sessionCWD = "."
+	}
+	req := &createSessionRequest{Metadata: map[string]string{"cwd": sessionCWD}}
 	created, kerr := client.createSession(ex.Ctx, req)
 	if kerr != nil {
 		return "", false, &runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: kapFailure(kerr)}
@@ -731,7 +736,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 			}
 		}
 		if ev.ToolCallID != "" {
-			if snap, ok := captureFileBefore(p.m.cfg.WorkspaceRoot, ev.Name, ev.Args); ok {
+			if snap, ok := captureFileBefore(p.cwd(), ev.Name, ev.Args); ok {
 				p.state.fileSnapshots[ev.ToolCallID] = snap
 			}
 		}
@@ -1140,9 +1145,12 @@ func intentResult(ex *runtime.ExecContext, state *turnState) runtime.ExecResult 
 
 // ── 配置投影 ──────────────────────────────────────────────────────────
 
-func (m *Module) cwd() string {
-	if m.cfg.WorkspaceRoot != "" {
-		return m.cfg.WorkspaceRoot
+// cwd 返回本 Run 的受信工作目录（Host resolver 产物；无 Resolved 回退进程 cwd）。
+// file_change_snapshot 载荷的 workspace_root 以此为源，应用侧归一化/secureJoin
+// 沿用该值——绝对路径只来自 resolver，绝不来自构造期配置。
+func (p *eventPump) cwd() string {
+	if p.ex != nil && p.ex.Resolved.CWD != "" {
+		return p.ex.Resolved.CWD
 	}
 	return "."
 }

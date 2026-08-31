@@ -24,6 +24,7 @@ func seedPlanEnv(t *testing.T, ctx context.Context, store *sqlstore.Store) (wsID
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_plan")
 	lead := &domain.AgentProfile{
 		ID: "agent_lead", WorkspaceID: ws.ID, Name: "Lead", Role: "architect",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

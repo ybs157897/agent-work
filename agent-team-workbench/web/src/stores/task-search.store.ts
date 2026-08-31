@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { searchWorkspace } from '../api/endpoints';
 import type { SearchItem } from '../api/types';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 import { createRequestGuard } from './request-guard';
 import { useTasksStore } from './tasks.store';
 import { toast } from './toast.store';
-import { useWorkspaceStore } from './workspace.store';
 
 /**
  * tasks 页 Header 的 FTS 检索（会话元模型 S4）：
@@ -27,6 +27,8 @@ interface TaskSearchStore {
   setQuery: (query: string) => void;
   /** 立即执行一次检索（跳过防抖窗口；测试与组件不直接消费，暴露便于重试）。 */
   searchNow: (q: string) => Promise<void>;
+  /** 切换 Workspace 时清空检索状态。 */
+  reset: () => void;
 }
 
 const guard = createRequestGuard();
@@ -58,15 +60,16 @@ export const useTaskSearchStore = create<TaskSearchStore>()((set, get) => ({
   },
 
   searchNow: async (q) => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    if (!wsId) return;
+    const scope = captureScope();
+    if (!scope.workspaceId) return;
     const isStale = guard.begin();
     try {
-      const { items } = await searchWorkspace(wsId, { q, record_kind: 'task' });
-      if (isStale()) return; // 期间已有更新请求：丢弃旧响应
+      const { items } = await searchWorkspace(scope.workspaceId, { q, record_kind: 'task' });
+      // 期间已有更新请求或已切换 Workspace：丢弃旧响应
+      if (isStale() || !isCurrent(scope)) return;
       set({ phase: 'done', items, source: 'remote' });
     } catch {
-      if (isStale()) return;
+      if (isStale() || !isCurrent(scope)) return;
       toast.error('检索服务暂不可用，已回退本地标题过滤');
       const needle = q.toLocaleLowerCase();
       const items = useTasksStore
@@ -82,4 +85,14 @@ export const useTaskSearchStore = create<TaskSearchStore>()((set, get) => ({
       set({ phase: 'done', items, source: 'local' });
     }
   },
+
+  reset: () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    set({ query: '', phase: 'idle', items: [], source: null });
+  },
 }));
+
+registerWorkspaceScopedReset(() => useTaskSearchStore.getState().reset());

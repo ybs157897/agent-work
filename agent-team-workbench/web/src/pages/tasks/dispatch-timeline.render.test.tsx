@@ -72,7 +72,7 @@ describe('DispatchTimeline', () => {
     storeState.byWorkItem = {
       wi_1: [card({ trigger_message: { run_id: 'run_0', excerpt: '帮我出一版方案' } })],
     };
-    const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" />);
+    const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
     expect(html).toContain('派发时间线');
     expect(html).toContain('用户消息');
     expect(html).toContain('帮我出一版方案');
@@ -84,11 +84,11 @@ describe('DispatchTimeline', () => {
   });
 
   it('未拉取与空列表分别呈现加载与空态', () => {
-    const loading = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" />);
+    const loading = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
     expect(loading).toContain('派发加载中…');
 
     storeState.byWorkItem = { wi_1: [] };
-    const empty = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" />);
+    const empty = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
     expect(empty).toContain('尚无派发记录');
     expect(empty).toContain('向该任务发送第一条消息后');
   });
@@ -179,7 +179,7 @@ describe('DispatchTimeline', () => {
 
   it('请求失败显示就地错误与重试入口，不伪装为空态或加载中', () => {
     storeState.errorByWorkItem = { wi_1: '派发记录加载失败，请重试' };
-    const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" />);
+    const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
     expect(html).toContain('role="alert"');
     expect(html).toContain('派发记录加载失败，请重试');
     expect(html).toContain('>重试</button>');

@@ -120,7 +120,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/plan", s.guard(security.PermRead, s.handleWorkItemPlan))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/coordinator", s.guard(security.PermRead, s.handleGetCoordinatorSnapshot))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/coordinator/events", s.guard(security.PermRead, s.handleListCoordinatorEvents))
-	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/coordinator/messages", s.guard(security.PermWorkItemWrite, s.handleSendCoordinatorInstruction))
+	// 任务评论流（任务控制面 RFC §9.4）：取代并删除旧 coordinator/messages 写轨。
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/comments", s.guard(security.PermRead, s.handleListWorkItemComments))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/comments", s.guard(security.PermWorkItemWrite, s.handleCreateTaskComment))
+
+	// 评审面 read model（任务控制面 RFC §9.5/§9.6）：服务端权威 Review Queue
+	// 投影与确定性 Delivery Brief 聚合；只读 PermRead。
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/review-queue", s.guard(security.PermRead, s.handleReviewQueue))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/delivery-brief", s.guard(security.PermRead, s.handleDeliveryBrief))
 
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/plans", s.guard(security.PermWorkItemWrite, s.handleCreatePlan))
 	mux.HandleFunc("GET /api/v1/plans/{plan_id}", s.guard(security.PermRead, s.handleGetPlan))
@@ -159,6 +166,21 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/v1/models/provider-credentials", s.guard(security.PermRuntimeManage, s.handlePutProviderCredential))
 
 	mux.HandleFunc("GET /api/v1/runtimes/dsh/catalog", s.handleDSHCatalog)
+
+	// ── 执行上下文（任务控制面 RFC §9.1–9.3）─────────────────────────
+	// Host/mount 读取 PermRead；Host enrollment 与 Location 写入是受保护命令
+	//（PermRuntimeManage：admin/owner；operator/viewer/approver 拒绝）。
+	mux.HandleFunc("GET /api/v1/execution-hosts", s.guard(security.PermRead, s.handleListExecutionHosts))
+	mux.HandleFunc("POST /api/v1/execution-hosts", s.guard(security.PermRuntimeManage, s.handleCreateExecutionHost))
+	mux.HandleFunc("POST /api/v1/execution-hosts/{host_id}/commands/rotate-credential", s.guard(security.PermRuntimeManage, s.handleRotateHostCredential))
+	mux.HandleFunc("GET /api/v1/execution-hosts/{host_id}/mounts", s.guard(security.PermRead, s.handleListHostMounts))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/locations", s.guard(security.PermRead, s.handleListWorkspaceLocations))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/locations", s.guard(security.PermRuntimeManage, s.handleCreateWorkspaceLocation))
+	mux.HandleFunc("PATCH /api/v1/workspace-locations/{location_id}", s.guard(security.PermRuntimeManage, s.handleUpdateWorkspaceLocation))
+	mux.HandleFunc("POST /api/v1/workspace-locations/{location_id}/commands/probe", s.guard(security.PermRuntimeManage, s.handleProbeWorkspaceLocation))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/development-context", s.guard(security.PermRead, s.handleGetDevelopmentContext))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/set-development-context", s.guard(security.PermWorkItemWrite, s.handleSetDevelopmentContext))
+	mux.HandleFunc("GET /api/v1/runs/{run_id}/execution-context", s.guard(security.PermRead, s.handleGetRunExecutionContext))
 
 	return s.withRequestID(mux)
 }

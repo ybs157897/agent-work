@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { listWorkItemDispatches } from '../api/endpoints';
 import type { CanonicalEvent, DispatchCard } from '../api/types';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 
 /**
  * 派发卡片投影（会话元模型 S1）：
@@ -15,9 +16,11 @@ interface DispatchesStore {
   /** work_item_id → 最近一次派发列表请求错误；存在时 UI 不得伪装为空态。 */
   errorByWorkItem: Record<string, string | undefined>;
   /** 详情抽屉打开时按主任务拉快照；GET 失败保留错误供就地重试。 */
-  refreshFor: (workItemId: string) => Promise<void>;
+  refreshFor: (workItemId: string, expectedWorkspaceId?: string) => Promise<void>;
   /** dispatch 域 SSE 事件（dispatch.*）；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
+  /** 切换 Workspace 时清空派发卡片与防抖定时器。 */
+  reset: () => void;
 }
 
 /** 与 events.ts SSE_REFRESH_DEBOUNCE_MS 同值；本地定义避免 store→events 循环引用。 */
@@ -30,12 +33,14 @@ export const useDispatchesStore = create<DispatchesStore>()((set) => ({
   byWorkItem: {},
   errorByWorkItem: {},
 
-  refreshFor: async (workItemId) => {
+  refreshFor: async (workItemId, expectedWorkspaceId) => {
+    const scope = captureScope();
+    if (!scope.workspaceId || (expectedWorkspaceId !== undefined && expectedWorkspaceId !== scope.workspaceId)) return;
     const requestVersion = (requestVersions.get(workItemId) ?? 0) + 1;
     requestVersions.set(workItemId, requestVersion);
     try {
       const { items } = await listWorkItemDispatches(workItemId);
-      if (requestVersions.get(workItemId) !== requestVersion) return;
+      if (requestVersions.get(workItemId) !== requestVersion || !isCurrent(scope)) return;
       set((s) => {
         const errorByWorkItem = { ...s.errorByWorkItem };
         delete errorByWorkItem[workItemId];
@@ -45,7 +50,7 @@ export const useDispatchesStore = create<DispatchesStore>()((set) => ({
         };
       });
     } catch {
-      if (requestVersions.get(workItemId) !== requestVersion) return;
+      if (requestVersions.get(workItemId) !== requestVersion || !isCurrent(scope)) return;
       // 保留错误投影给当前详情；重试按钮会复用同一权威 GET。
       set((s) => ({
         errorByWorkItem: {
@@ -66,9 +71,18 @@ export const useDispatchesStore = create<DispatchesStore>()((set) => ({
       wi,
       setTimeout(() => {
         timers.delete(wi);
-        void useDispatchesStore.getState().refreshFor(wi);
+        void useDispatchesStore.getState().refreshFor(wi, ev.workspace_id);
       }, REFETCH_DEBOUNCE_MS),
     );
     return true;
   },
+
+  reset: () => {
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+    requestVersions.clear();
+    set({ byWorkItem: {}, errorByWorkItem: {} });
+  },
 }));
+
+registerWorkspaceScopedReset(() => useDispatchesStore.getState().reset());

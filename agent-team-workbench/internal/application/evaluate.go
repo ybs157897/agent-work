@@ -57,30 +57,14 @@ func (s *Service) buildEvaluationInstruction(ctx context.Context, plan *domain.P
 	return b.String(), nil
 }
 
-// mainTaskAcceptance 主任务验收标准来源：最近一次携带非空 acceptance_criteria
-// 的 run 快照（权威写入，按 created_at 升序取最新）；无则空。
+// mainTaskAcceptance 只读取 WorkItem 的 canonical 验收标准。Run input 是一次
+// 执行尝试的历史快照，不能覆盖允许在首轮 Run 前修改的任务验收合同。
 func (s *Service) mainTaskAcceptance(ctx context.Context, workItemID string) []string {
-	runs, err := s.store.Runs().ListByWorkItem(ctx, workItemID)
+	wi, err := s.store.WorkItems().Get(ctx, workItemID)
 	if err != nil {
 		return nil
 	}
-	for i := len(runs) - 1; i >= 0; i-- {
-		var out []string
-		switch raw := runs[i].Input["acceptance_criteria"].(type) {
-		case []any:
-			for _, item := range raw {
-				if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
-					out = append(out, text)
-				}
-			}
-		case []string:
-			out = raw
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	return nil
+	return append([]string(nil), wi.AcceptanceCriteria...)
 }
 
 // childResultSummary 单个子任务的结果摘要：看板状态 + 最终 run 状态 + 最终

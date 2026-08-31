@@ -3,6 +3,7 @@ import { ApiError } from '../../api/client';
 import { blockWorkItem } from '../../api/endpoints';
 import type { WorkItem } from '../../api/types';
 import { Modal } from '../../components/modal';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity } from '../../stores/scope';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
 
@@ -22,21 +23,28 @@ export function BlockTaskModal({ task, onClose }: { task: WorkItem | null; onClo
 
   const submit = async () => {
     if (!task || !message.trim()) return;
+    const scope = captureScope();
+    if (!isCurrentWorkspaceEntity(scope, task)) {
+      toast.error('该任务不属于当前工作区，无法操作。');
+      onClose();
+      return;
+    }
     setSubmitting(true);
     try {
-      upsert(
-        await blockWorkItem(
-          task.id,
-          { code, message: message.trim(), source: 'user' },
-          task.version,
-        ),
+      const updated = await blockWorkItem(
+        task.id,
+        { code, message: message.trim(), source: 'user' },
+        task.version,
       );
+      if (!isCurrentWorkspaceEntity(scope, updated)) return;
+      upsert(updated);
       toast.success(`已标记阻塞「${task.title}」`);
       onClose();
     } catch (err) {
+      if (!isCurrent(scope)) return;
       toast.error(err instanceof ApiError ? err.message : '操作失败');
     } finally {
-      setSubmitting(false);
+      if (isCurrent(scope)) setSubmitting(false);
     }
   };
 

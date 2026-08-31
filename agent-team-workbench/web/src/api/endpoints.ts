@@ -10,6 +10,7 @@ import type {
   CoordinatorConfig,
   CoordinatorSnapshot,
   DecisionEntry,
+  DeliveryBrief,
   DispatchCard,
   DSHCatalog,
   ExecutionRun,
@@ -19,12 +20,16 @@ import type {
   PatchCoordinatorConfigInput,
   Priority,
   ProbeResult,
+  ReviewQueueResponse,
   RunEvent,
   RunChanges,
   RunChangeDiff,
   RuntimeBinding,
   SearchKind,
   SearchItem,
+  TaskComment,
+  TaskCommentCreateInput,
+  TaskCommentList,
   TaskSession,
   WakeResult,
   WorkItem,
@@ -65,13 +70,6 @@ export const getCoordinatorSnapshot = (workItemId: string) =>
 /** Coordinator 因果事件只读投影；正文继续通过 Run/AgentOutput 读取。 */
 export const listCoordinatorEvents = (workItemId: string) =>
   apiFetch<{ items: CoordinatorSnapshot['timeline'] }>(`/work-items/${workItemId}/coordinator/events`);
-
-/** 向 Task Coordinator 追加指令；不创建用户可选 Agent 的直接 Run。 */
-export const sendCoordinatorInstruction = (workItemId: string, instruction: string) =>
-  apiFetch<{ accepted: boolean; coordinator_run_id?: string }>(`/work-items/${workItemId}/coordinator/messages`, {
-    method: 'POST',
-    body: { instruction },
-  });
 
 /** Workspace 的系统 Coordinator 配置；只返回 runtime/model/reasoning 与锁定提示词元数据。 */
 export const getCoordinatorConfig = (workspaceId: string) =>
@@ -196,12 +194,68 @@ export const acceptWorkItem = (workItemId: string, expectedVersion: number) =>
     body: { expected_version: expectedVersion },
   });
 
-/** 打回重做：review/acceptance 退回 execution（M4 契约：reason 可选，落审计）。 */
-export const returnWorkItem = (workItemId: string, reason: string | undefined, expectedVersion: number) =>
+/**
+ * 打回重做：review/acceptance 退回 execution。reason 必填（RFC §9.4：trim 空
+ * 返回 422 review_feedback_required），生成不可变 review_feedback comment。
+ */
+export const returnWorkItem = (workItemId: string, reason: string, expectedVersion: number) =>
   apiFetch<WorkItem>(`/work-items/${workItemId}/commands/return`, {
     method: 'POST',
-    body: { ...(reason ? { reason } : {}), expected_version: expectedVersion },
+    body: { reason, expected_version: expectedVersion },
   });
+
+// ── Review Queue（任务控制面 RFC §9.5：服务端权威投影）──────────────
+
+/**
+ * 服务端权威 Review Queue：record_kind=task、status=in_progress、
+ * phase IN (review, acceptance)，排序固定 pending_since ASC, priority DESC, id ASC。
+ * total_count 是 badge 权威值——不得以当前页长度或前端已加载数量计算。
+ */
+export const listReviewQueue = (
+  workspaceId: string,
+  filter: { cursor?: string; limit?: number; priority?: Priority; phase?: 'review' | 'acceptance' } = {},
+) => {
+  const params = new URLSearchParams();
+  if (filter.cursor) params.set('cursor', filter.cursor);
+  if (filter.limit != null) params.set('limit', String(filter.limit));
+  if (filter.priority) params.set('priority', filter.priority);
+  if (filter.phase) params.set('phase', filter.phase);
+  const qs = params.toString();
+  return apiFetch<ReviewQueueResponse>(`/workspaces/${workspaceId}/review-queue${qs ? `?${qs}` : ''}`);
+};
+
+// ── Delivery Brief（任务控制面 RFC §9.6：确定性验收交付简报）────────
+
+/**
+ * 确定性服务端聚合（同一 read snapshot）。freshness.as_of_event_seq 取聚合时的
+ * Workspace MAX(stream_seq)：前端 eventCursor 更大时先标 stale 再后台补拉。
+ * 来源读取失败返回 partial + missing_sources；Task/Chat 边界或权限失败整体 fail closed。
+ */
+export const getDeliveryBrief = (workItemId: string) =>
+  apiFetch<DeliveryBrief>(`/work-items/${workItemId}/delivery-brief`);
+
+// ── 任务评论（任务控制面 RFC §9.4；取代已删除的 coordinator/messages 写轨）──
+
+/** 根 Task 维度的 append-only 评论流（revision 正序；cursor 与 SSE stream_seq 严格分离）。 */
+export const listWorkItemComments = (
+  workItemId: string,
+  opts: { afterRevision?: number; limit?: number } = {},
+) => {
+  const params = new URLSearchParams();
+  if (opts.afterRevision != null) params.set('after_revision', String(opts.afterRevision));
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return apiFetch<TaskCommentList>(`/work-items/${workItemId}/comments${qs ? `?${qs}` : ''}`);
+};
+
+/**
+ * 追加任务反馈评论（kind 只接受 note|requirement）。requirement 是 actionable：
+ * waiting_user 时原子回 execution/queued。apiFetch 自动携带 Idempotency-Key
+ * （防同一 HTTP 请求重复执行并重放原 comment/revision）；client_key 由调用方
+ * 按业务意图生成（同 key 不同 body 返回 409 idempotency_conflict）。
+ */
+export const createTaskComment = (workItemId: string, input: TaskCommentCreateInput) =>
+  apiFetch<TaskComment>(`/work-items/${workItemId}/comments`, { method: 'POST', body: input });
 
 // ── Plan（M1 编排：提交即同步执行；契约见 notes orchestration m1-plan-executor）──
 

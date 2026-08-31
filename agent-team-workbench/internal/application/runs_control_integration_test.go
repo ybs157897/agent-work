@@ -263,6 +263,7 @@ func TestActivityOutsideTxWritesStreamAndOutbox(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_act")
 	binding := &domain.RuntimeBinding{
 		ID: "rb_act", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",
 		Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady,
@@ -407,6 +408,7 @@ func TestCreateRunResumeRequiresCapability(t *testing.T) {
 	if err := store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	seedCtx(t, store, ctx, "ws_nores")
 	// binding 不声明 resume 能力。
 	binding := &domain.RuntimeBinding{
 		ID: "rb_nores", WorkspaceID: ws.ID, RuntimeLabel: "codex_local", AdapterID: "codex-appserver",

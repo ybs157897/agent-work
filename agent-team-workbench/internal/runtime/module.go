@@ -13,13 +13,25 @@ import (
 // ModuleRunner 把 AdapterModule 适配为进程内执行面：实现 application.Dispatcher
 // 与运行期控制接口（InputForwarder / ApprovalResolver / Control），
 // 负责 Run 状态机推进、事件转发与会话/用量落库——adapter 只表达执行本身。
+// Dispatch 前由 SnapshotResolver 解析持久快照与 Host 本地可信执行上下文，
+// 构造完整 ExecContext.Execution/Resolved（adapter 只读 Resolved.CWD，
+// RFC §5.1.9；未注入 resolver 的测试装配跳过解析）。
 type ModuleRunner struct {
 	engine EngineSink
+	// resolver 由装配层注入：从持久 snapshot + Host registry 产出进程内可信
+	// 执行上下文。本地执行只服务 host_local（路由决策在 Dispatcher）。
+	resolver SnapshotResolver
 
 	mu      sync.Mutex
 	modules map[string]AdapterModule
 	active  map[string]*activeModuleRun
 }
+
+// SnapshotResolver 按 runID 解析持久快照与 Host 本地可信执行上下文（RFC §4.6）。
+type SnapshotResolver func(ctx context.Context, runID string) (domain.ExecutionContextSnapshot, domain.ResolvedExecutionContext, error)
+
+// SetSnapshotResolver 注入执行上下文解析器（启动时一次性）。
+func (r *ModuleRunner) SetSnapshotResolver(fn SnapshotResolver) { r.resolver = fn }
 
 // activeModuleRun 一次进行中 Execute 的控制面。
 type activeModuleRun struct {
@@ -81,6 +93,17 @@ func (r *ModuleRunner) Dispatch(ctx context.Context, run *domain.ExecutionRun) e
 	if !ok {
 		return fmt.Errorf("module %q 未注册", run.AdapterID)
 	}
+	// 执行上下文解析失败 = 不可分派（fail closed，不进 goroutine）：
+	// Run 不得在没有通过校验的 Snapshot 的情况下被执行（RFC §5.1.4）。
+	var execution domain.ExecutionContextSnapshot
+	var resolved domain.ResolvedExecutionContext
+	if r.resolver != nil {
+		var err error
+		execution, resolved, err = r.resolver(ctx, run.ID)
+		if err != nil {
+			return fmt.Errorf("resolve execution context for run %s: %w", run.ID, err)
+		}
+	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ar := &activeModuleRun{adapterID: run.AdapterID, cancel: cancel, controls: make(chan Control, 8)}
 	r.mu.Lock()
@@ -95,6 +118,8 @@ func (r *ModuleRunner) Dispatch(ctx context.Context, run *domain.ExecutionRun) e
 	ex := &ExecContext{
 		Ctx:         runCtx,
 		Run:         run,
+		Execution:   execution,
+		Resolved:    resolved,
 		Instruction: EffectiveInstruction(run),
 		Session:     session,
 		Callbacks:   &runnerCallbacks{runner: r, runID: run.ID},

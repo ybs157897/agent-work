@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Plan, PlanStep, WorkItem } from '../api/types';
-import { evaluationPassed, isAwaitingAcceptance, planTriggeredEvaluation, stepTriggeredEvaluation } from './task-phase';
+import { canReturnTask, evaluationPassed, isAwaitingAcceptance, planTriggeredEvaluation, stepTriggeredEvaluation } from './task-phase';
 
 const task = (status: WorkItem['status'], phase?: WorkItem['phase']): Pick<WorkItem, 'status' | 'phase'> => ({
   status,
@@ -44,6 +44,16 @@ describe('isAwaitingAcceptance', () => {
     expect(isAwaitingAcceptance(task('completed', 'acceptance'))).toBe(false);
     expect(isAwaitingAcceptance(task('blocked', 'review'))).toBe(false);
     expect(isAwaitingAcceptance(task('cancelled', 'review'))).toBe(false);
+  });
+});
+
+describe('canReturnTask', () => {
+  it('只限制已确认接入 Coordinator 的 child；legacy child 保留旧 Return', () => {
+    expect(canReturnTask({ ...task('in_progress', 'review'), parent_id: undefined }, 'loading')).toBe(true);
+    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'coordinated')).toBe(false);
+    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'loading')).toBe(false);
+    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'legacy')).toBe(true);
+    expect(canReturnTask({ ...task('in_progress', 'execution'), parent_id: undefined }, 'legacy')).toBe(false);
   });
 });
 

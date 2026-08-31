@@ -108,9 +108,13 @@ type Plan struct {
 	WorkItemID     string
 	AgentProfileID string
 	SourceRunID    string
-	Status         PlanStatus
-	SupersededBy   string
-	Steps          []PlanStep
+	// ContextSnapshotID / ContextGeneration 提交时冻结的执行上下文（RFC §4.7：
+	// Plan Worker 不重解析当前 context，只重验 Host-local mount/ref 仍可用）。
+	ContextSnapshotID string
+	ContextGeneration int
+	Status            PlanStatus
+	SupersededBy      string
+	Steps             []PlanStep
 	// Guardrails 提交时固化的预算护栏（零值表示未设限）。
 	Guardrails PlanGuardrails
 	// Error plan 级失败原因码（budget_exceeded）；步骤级失败原因在 PlanStep.Error。

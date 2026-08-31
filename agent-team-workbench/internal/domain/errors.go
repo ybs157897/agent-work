@@ -21,6 +21,45 @@ var (
 	ErrCursorExpired = errors.New("event cursor expired")
 )
 
+// ── 执行上下文族 sentinel（任务控制面 RFC §9.7）─────────────────────────
+//
+// ContextError 携带稳定错误码与可重试性；httpapi 据此映射 problem+json。
+// 判定一律用 errors.Is(err, domain.ErrXxx)——Detail 不同的具体实例经 %w 包装
+// 仍可匹配 sentinel。
+
+// ContextError 执行上下文族错误的稳定载体。
+type ContextError struct {
+	Code      string
+	Retryable bool
+}
+
+func (e *ContextError) Error() string { return e.Code }
+
+var (
+	// ErrWorkspaceLocationRequired Workspace/Task 无可用 Location（422）。
+	ErrWorkspaceLocationRequired = &ContextError{Code: "workspace_location_required"}
+	// ErrWorkspaceLocationAmbiguous 多默认/多 mount 命中（409）。
+	ErrWorkspaceLocationAmbiguous = &ContextError{Code: "workspace_location_ambiguous"}
+	// ErrWorkspaceMountNotAdvertised Host 未广告 alias（422）。
+	ErrWorkspaceMountNotAdvertised = &ContextError{Code: "workspace_mount_not_advertised"}
+	// ErrWorkspaceContextMismatch repo/ref/digest 不一致（409）。
+	ErrWorkspaceContextMismatch = &ContextError{Code: "workspace_context_mismatch"}
+	// ErrWorkspaceMountGenerationChanged Host registry 已换代（409 retryable）。
+	ErrWorkspaceMountGenerationChanged = &ContextError{Code: "workspace_mount_generation_changed", Retryable: true}
+	// ErrWorkspaceBranchNotUnique branch 未唯一绑定 checkout（409）。
+	ErrWorkspaceBranchNotUnique = &ContextError{Code: "workspace_branch_not_unique"}
+	// ErrWorkspaceCheckoutBusy checkout 已被另一 Run 占用（409 retryable）。
+	ErrWorkspaceCheckoutBusy = &ContextError{Code: "workspace_checkout_busy", Retryable: true}
+	// ErrExecutionHostUnavailable 目标 Host 无可用 Runner（409 retryable）。
+	ErrExecutionHostUnavailable = &ContextError{Code: "execution_host_unavailable", Retryable: true}
+	// ErrDevelopmentContextBusy 存在非终态 Run（409 retryable）。
+	ErrDevelopmentContextBusy = &ContextError{Code: "development_context_busy", Retryable: true}
+	// ErrDevelopmentContextInvalid ref 组合非法（422）。
+	ErrDevelopmentContextInvalid = &ContextError{Code: "development_context_invalid"}
+	// ErrWorkspacePathForbidden 请求含越权 path/cwd（403）。
+	ErrWorkspacePathForbidden = &ContextError{Code: "workspace_path_forbidden"}
+)
+
 // TransitionError 携带非法迁移的上下文。
 type TransitionError struct {
 	Entity string

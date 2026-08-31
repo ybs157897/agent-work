@@ -2,8 +2,8 @@ import { create } from 'zustand';
 import { ApiError } from '../api/client';
 import { listWorkItems, moveWorkItem } from '../api/endpoints';
 import type { Priority, WorkItem, WorkItemStatus } from '../api/types';
+import { captureScope, isCurrent, isCurrentWorkspaceEntity, registerWorkspaceScopedReset } from './scope';
 import { createRequestGuard } from './request-guard';
-import { useWorkspaceStore } from './workspace.store';
 
 export type ViewMode = 'kanban' | 'list';
 
@@ -22,6 +22,8 @@ interface TasksStore {
 
   hydrate: (items: WorkItem[]) => void;
   refresh: () => Promise<void>;
+  /** 切换 Workspace 时清空看板数据（viewMode 是本地 UI 偏好，不随 Workspace 重置）。 */
+  reset: () => void;
   setFilter: (f: TaskFilter) => void;
   setViewMode: (m: ViewMode) => void;
   selectTask: (id: string | null) => void;
@@ -41,17 +43,29 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
   viewMode: 'kanban',
   selectedTaskId: null,
 
-  hydrate: (items) => set({ items: items.filter((item) => item.record_kind === 'task'), loaded: true }),
+  hydrate: (items) => {
+    const scope = captureScope();
+    set({
+      items: items.filter((item) => item.record_kind === 'task' && isCurrentWorkspaceEntity(scope, item)),
+      loaded: true,
+    });
+  },
+
+  reset: () => set({ items: [], loaded: false, filter: {}, selectedTaskId: null }),
 
   refresh: async () => {
-    const wsId = useWorkspaceStore.getState().workspace?.id;
-    if (!wsId) return;
+    const scope = captureScope();
+    if (!scope.workspaceId) return;
     const { filter } = get();
     const isStale = refreshGuard.begin();
-    const { items } = await listWorkItems(wsId, { ...filter, record_kind: 'task' });
-    if (isStale()) return; // 期间已发出更新的 refresh（如筛选已变）：丢弃旧响应
+    const { items } = await listWorkItems(scope.workspaceId, { ...filter, record_kind: 'task' });
+    // 期间已发出更新的 refresh（如筛选已变）或已切换 Workspace：丢弃旧响应
+    if (isStale() || !isCurrent(scope)) return;
     // Fail closed if a server or proxy returns records outside the requested kind.
-    set({ items: items.filter((item) => item.record_kind === 'task'), loaded: true });
+    set({
+      items: items.filter((item) => item.record_kind === 'task' && isCurrentWorkspaceEntity(scope, item)),
+      loaded: true,
+    });
   },
 
   setFilter: (filter) => {
@@ -63,7 +77,8 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
 
   upsert: (item) => {
-    if (item.record_kind !== 'task') return;
+    const scope = captureScope();
+    if (item.record_kind !== 'task' || !isCurrentWorkspaceEntity(scope, item)) return;
     set((s) => ({
       items: s.items.some((t) => t.id === item.id)
         ? s.items.map((t) => (t.id === item.id ? item : t))
@@ -74,16 +89,19 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
   getById: (id) => get().items.find((t) => t.id === id),
 
   moveOptimistic: async (id, to) => {
+    const scope = captureScope();
     const before = get().items;
     const item = before.find((t) => t.id === id);
-    if (!item) return;
+    if (!item || !isCurrentWorkspaceEntity(scope, item)) return;
     set({
       items: before.map((t) => (t.id === id ? { ...t, status: to } : t)),
     });
     try {
       const updated = await moveWorkItem(id, to, item.version);
+      if (!isCurrentWorkspaceEntity(scope, updated)) return; // 切换后旧任务的回写不得进入新看板
       get().upsert(updated);
     } catch (err) {
+      if (!isCurrent(scope)) throw err; // 回滚数据已随 reset 清空，不回写旧列表
       set({ items: before });
       if (err instanceof ApiError && err.isVersionConflict) {
         await get().refresh();
@@ -92,3 +110,5 @@ export const useTasksStore = create<TasksStore>()((set, get) => ({
     }
   },
 }));
+
+registerWorkspaceScopedReset(() => useTasksStore.getState().reset());

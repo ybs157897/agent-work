@@ -223,6 +223,17 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			Guardrails: p.Guardrails,
 			Status:     domain.PlanActive, Version: 1, CreatedAt: now, UpdatedAt: now,
 		}
+		// Coordinator 提交 Plan 时把其 Run 的 context_snapshot_id/generation 固化进
+		// Plan（RFC §4.5/§4.7）：Plan Worker 一律从该 source snapshot 克隆逻辑身份，
+		// 不重读当前根 context——根 context 变更不影响已提交 Plan 的执行身份。
+		if coordinatedTask {
+			srcSnap, snapErr := s.store.ContextSnapshots().GetByRun(ctx, p.SourceRunID)
+			if snapErr != nil {
+				return fmt.Errorf("plan source run %s 无可冻结快照: %w", p.SourceRunID, snapErr)
+			}
+			plan.ContextSnapshotID = srcSnap.ID
+			plan.ContextGeneration = srcSnap.ContextGeneration
+		}
 		for i, t := range tasks {
 			plan.Steps = append(plan.Steps, domain.PlanStep{
 				PlanID: plan.ID, Seq: i, Verb: t.verb, Payload: t.payload,
@@ -435,7 +446,10 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				RecordKind: domain.RecordKindTask,
 				ParentID:   wi.ID, Title: t.title, Status: domain.WorkItemTodo,
 				Priority: t.priority, AgentProfileID: t.agentID,
-				Version: 1, CreatedAt: now, UpdatedAt: now,
+				// RFC §4.10：Plan child 创建即持久化对应 step acceptance（与 run
+				// input 的快照副本并存；前者是验收读模型权威）。
+				AcceptanceCriteria: normalizeAcceptanceCriteria(t.acceptance),
+				Version:            1, CreatedAt: now, UpdatedAt: now,
 			}
 			if err := s.store.WorkItems().Create(ctx, child); err != nil {
 				return err
@@ -455,12 +469,21 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				}
 				planDispatchID = id
 			}
+			// Plan Worker 快照一律继承 Plan 冻结的 source snapshot（不重读当前根
+			// context）；非 Coordinator 的独立 plan 无冻结来源，回退 current 解析。
+			workerContextSource := domain.SnapshotSourceInherited
+			workerContextSnapshotID := plan.ContextSnapshotID
+			if workerContextSnapshotID == "" {
+				workerContextSource = ""
+			}
 			run, err := s.createRunLocked(ctx, child.ID, CreateRunParams{
-				AgentProfileID:     t.agentID,
-				Instruction:        t.instruction + knowledgeAppendix(plan.Step(t.knowledgeFrom)),
-				AcceptanceCriteria: t.acceptance,
-				DispatchID:         planDispatchID,
-				CoordinatorContext: s.planWorkerCoordinatorContext(ctx, wi.ID, plan, st, t.agentID),
+				AgentProfileID:          t.agentID,
+				Instruction:             t.instruction + knowledgeAppendix(plan.Step(t.knowledgeFrom)),
+				AcceptanceCriteria:      t.acceptance,
+				DispatchID:              planDispatchID,
+				CoordinatorContext:      s.planWorkerCoordinatorContext(ctx, wi.ID, plan, st, t.agentID),
+				ContextSource:           workerContextSource,
+				ContextSourceSnapshotID: workerContextSnapshotID,
 			})
 			if err != nil {
 				return fmt.Errorf("dispatch step %q 创建 run: %w", t.title, err)
@@ -541,9 +564,17 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if err != nil {
 				return fmt.Errorf("构建评估指令: %w", err)
 			}
+			evalContextSource := domain.SnapshotSourceEvaluation
+			evalContextSnapshotID := plan.ContextSnapshotID
+			if evalContextSnapshotID == "" {
+				evalContextSource = ""
+			}
 			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
 				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
 				CoordinatorContext: s.planEvaluationCoordinatorContext(ctx, plan),
+				// 评估快照克隆被评估 Plan 的 source snapshot（RFC §4.7：evaluation 不切换身份）。
+				ContextSource:           evalContextSource,
+				ContextSourceSnapshotID: evalContextSnapshotID,
 			})
 			if err != nil {
 				return fmt.Errorf("创建评估 run: %w", err)

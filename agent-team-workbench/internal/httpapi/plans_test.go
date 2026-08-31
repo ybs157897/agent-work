@@ -37,6 +37,10 @@ func seedPlanHTTPEnv(t *testing.T, s *Server) (wsID, leadID, workerID string) {
 	if err := s.store.Workspaces().Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
+	// Run 创建必须冻结 context snapshot：为测试 workspace 准备默认 Location。
+	if _, err := application.SeedWorkspaceLocation(ctx, s.store, ws.ID); err != nil {
+		t.Fatal(err)
+	}
 	lead := &domain.AgentProfile{
 		ID: "agent_lead", WorkspaceID: ws.ID, Name: "Lead", Role: "architect",
 		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,

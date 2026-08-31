@@ -163,48 +163,7 @@ WI3=$(curl -s -X PATCH $BASE/work-items/$WI -H "Idempotency-Key: smoke-wip" -d "
 echo "$WI3" | python3 -c "import json,sys; d=json.load(sys.stdin); assert d['description']=='补充说明', d" || fail "work-item PATCH"
 pass "PATCH：workspace / agent / work-item"
 
-# 15. Runner WSS 全链路：runnerd 连接 → run.offer → runner 执行 → 审批转发 → succeeded
-cd "$ROOT"
-pkill -f "runnerd" 2>/dev/null || true; sleep 1
-RUNNER_GATEWAY=ws://localhost:8080/runner/v1/connect RUNNER_ID=runner_smoke_01 \
-  nohup go run ./cmd/runnerd > /tmp/runnerd_smoke.log 2>&1 &
-RUNNER_PID=$!
-# 等待 runner 连接（go run 需编译，最多 60s）
-CONNECTED=""
-for i in $(seq 1 60); do
-  sleep 1
-  H=$(curl -s $BASE/health)
-  CONNECTED=$(echo "$H" | python3 -c "import json,sys; rs=json.load(sys.stdin)['runners']; print('yes' if any(r['runner_id']=='runner_smoke_01' and r['status']=='connected' for r in rs) else '')" 2>/dev/null || echo "")
-  [ "$CONNECTED" = "yes" ] && break
-done
-[ "$CONNECTED" = "yes" ] || fail "runner 未连接（见 /tmp/runnerd_smoke.log）"
-
-WI_RUNNER=$(curl -s -X POST $BASE/workspaces/$WS/work-items -H "Idempotency-Key: smoke-rw1" -d '{"title":"Runner WSS 联调"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-RESP=$(curl -s -X POST $BASE/work-items/$WI_RUNNER/runs -H "Idempotency-Key: smoke-rw2" \
-  -d '{"runtime_preference":{"preferred":"mock"},"input":{"instruction":"runner 执行 approval 场景"}}')
-RUNW=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin)['run_id'])")
-[ -n "$RUNW" ] || fail "Runner 路径创建 Run: $RESP"
-
-# runner 请求审批 → 浏览器批准 → 转发回 runner → 继续到 succeeded
-APPROVALW=""
-for i in $(seq 1 40); do
-  sleep 0.5
-  APPROVALW=$(curl -s $BASE/runs/$RUNW/approvals | python3 -c "import json,sys; items=json.load(sys.stdin)['items']; print(items[0]['id'] if items else '')" 2>/dev/null || echo "")
-  [ -n "$APPROVALW" ] && break
-done
-[ -n "$APPROVALW" ] || fail "Runner 未发起审批"
-curl -s -X POST $BASE/runs/$RUNW/approvals/$APPROVALW/commands/resolve -H "Idempotency-Key: smoke-rw3" -d '{"decision":"approved"}' > /dev/null
-for i in $(seq 1 30); do
-  sleep 0.5
-  STW=$(curl -s $BASE/runs/$RUNW | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
-  [ "$STW" = "succeeded" ] && break
-done
-[ "$STW" = "succeeded" ] || fail "Runner WSS Run 应 succeeded，实际 $STW"
-kill $RUNNER_PID 2>/dev/null || true
-pkill -f "runnerd" 2>/dev/null || true; sleep 1
-pass "Runner WSS：offer → 执行 → 审批转发 → succeeded"
-
-# 16. 跨 Runtime：scripted fixture 回放（无 Runner 承接 → 控制平面内置 Adapter）
+# 15. 跨 Runtime：scripted fixture 回放（控制平面内置 Adapter）
 WI_SC=$(curl -s -X POST $BASE/workspaces/$WS/work-items -H "Idempotency-Key: smoke-sc1" -d '{"title":"跨 Runtime 验证"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
 RUN_SC=$(curl -s -X POST $BASE/work-items/$WI_SC/runs -H "Idempotency-Key: smoke-sc2" \
   -d '{"runtime_preference":{"preferred":"scripted"},"input":{"instruction":"scripted 回放"}}' | python3 -c "import json,sys; print(json.load(sys.stdin)['run_id'])")
@@ -220,35 +179,7 @@ CODE=$(curl -s -X POST $BASE/runs/$RUN_SC/commands/resume -H "Idempotency-Key: s
 if [ "$CODE" != "validation_failed" ] && [ "$CODE" != "capability_missing" ]; then fail "resume 应拒绝，实际 $CODE"; fi
 pass "跨 Runtime：scripted 回放 succeeded + resume 能力门"
 
-# 17. DSH Adapter 全链路：runnerd(dsh) → JSON-RPC 子进程 → session.event 投影 → succeeded
-DSH_RUNNER_PID=""
-DSH_BIN=python3 DSH_CONFIG="$ROOT/testdata/providers/dsh/fake_server.py" \
-  RUNNER_GATEWAY=ws://localhost:8080/runner/v1/connect RUNNER_ID=runner_dsh_01 \
-  nohup go run ./cmd/runnerd > /tmp/runnerd_dsh.log 2>&1 &
-DSH_RUNNER_PID=$!
-DSH_CONN=""
-for i in $(seq 1 60); do
-  sleep 1
-  DSH_CONN=$(curl -s $BASE/health | python3 -c "import json,sys; rs=json.load(sys.stdin)['runners']; print('yes' if any(r['runner_id']=='runner_dsh_01' and r['status']=='connected' for r in rs) else '')" 2>/dev/null || echo "")
-  [ "$DSH_CONN" = "yes" ] && break
-done
-[ "$DSH_CONN" = "yes" ] || fail "dsh runner 未连接（见 /tmp/runnerd_dsh.log）"
-
-WI_DSH=$(curl -s -X POST $BASE/workspaces/$WS/work-items -H "Idempotency-Key: smoke-dsh1" -d '{"title":"DSH 联调"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
-RUN_DSH=$(curl -s -X POST $BASE/work-items/$WI_DSH/runs -H "Idempotency-Key: smoke-dsh2" \
-  -d '{"runtime_preference":{"preferred":"dsh_local"},"input":{"instruction":"dsh fake 联调"}}' | python3 -c "import json,sys; print(json.load(sys.stdin)['run_id'])")
-[ -n "$RUN_DSH" ] || fail "DSH Run 创建"
-for i in $(seq 1 40); do
-  sleep 0.5
-  STD=$(curl -s $BASE/runs/$RUN_DSH | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
-  [ "$STD" = "succeeded" ] && break
-done
-[ "$STD" = "succeeded" ] || fail "DSH Run 应 succeeded，实际 $STD（见 /tmp/runnerd_dsh.log 与 /tmp/cp.log）"
-kill $DSH_RUNNER_PID 2>/dev/null || true
-pkill -f "runnerd" 2>/dev/null || true
-pass "DSH Adapter：offer → JSON-RPC 子进程 → 事件投影 → succeeded"
-
-# 18. 真实 CLI Adapter：RuntimeBinding 创建 + probe（codex / claude，本机存在时断言 ok）
+# 16. 真实 CLI Adapter：RuntimeBinding 创建 + probe（codex / claude，本机存在时断言 ok）
 probe_binding() {
   local label="$1" adapter="$2" provider="$3" model="$4" cli="$5" key="$6"
   curl -s -X POST $BASE/workspaces/$WS/runtime-bindings -H "Idempotency-Key: $key" \
@@ -269,4 +200,4 @@ probe_binding "kimi_local" "kimi" "moonshot" "kimi-k2" "kimi" "smoke-km1"
 pass "真实 CLI Adapter：binding + probe 验证"
 
 echo ""
-echo "====== M1–M4 冒烟全部通过（含 DSH/Codex/Claude/Kimi 链路）======"
+echo "====== M1–M4 冒烟全部通过（含 Codex/Claude/Kimi 链路）======"

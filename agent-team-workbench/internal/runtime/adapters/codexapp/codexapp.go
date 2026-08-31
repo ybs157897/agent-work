@@ -40,7 +40,6 @@ type Config struct {
 	BinPath       string   // codex 可执行文件
 	Args          []string // 启动参数；缺省开启 multi_agent，原生 OpenAI provider 额外开启 v2（测试可替换为回放桩）
 	Home          string   // CODEX_HOME 项目空间（默认 .agent-work/codex）
-	WorkspaceRoot string   // thread/start.cwd
 	Model         string   // 可选：thread/start.model
 	MaxFrameBytes int
 	GracePeriod   time.Duration
@@ -128,7 +127,12 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	if err != nil {
 		return failedResult(configFailure("spawn_failed", err.Error()))
 	}
-	cmd.Dir = m.cfg.WorkspaceRoot
+	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
+	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
+	cmd.Dir = ex.Resolved.CWD
+	if cmd.Dir == "" {
+		cmd.Dir = "."
+	}
 	cmd.Env = m.processEnv()
 	setProcGroup(cmd)
 
@@ -163,6 +167,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		systemPrompt:    runtime.SystemPromptOf(ex.Run),
 		policy:          policy,
 		resumeThreadID:  runtime.SessionIDFromRef(ex.Session.Ref, "codex"),
+		cwd:             ex.Resolved.CWD,
 		pendingRequests: make(map[int64]string),
 		approvals:       make(map[string]chan bool),
 		childIDs:        make(map[string]struct{}), childEmitted: make(map[string]map[string]struct{}),
@@ -231,6 +236,7 @@ type execStream struct {
 	systemPrompt    string
 	policy          runtime.PolicySnapshot
 	resumeThreadID  string
+	cwd             string // Host resolver 产出的本 Run 工作目录（thread/start.cwd）
 
 	mu                  sync.Mutex
 	nextID              int64
@@ -1396,7 +1402,7 @@ func truncateMessage(msg string) string {
 
 func (s *execStream) requestThread() error {
 	method := "thread/start"
-	params := threadStartParams(s.module.cfg, s.model, s.systemPrompt, s.policy)
+	params := threadStartParams(s.module.cfg, s.model, s.systemPrompt, s.policy, s.cwd)
 	if s.resumeThreadID != "" {
 		method = "thread/resume"
 		params["threadId"] = s.resumeThreadID
@@ -1405,8 +1411,8 @@ func (s *execStream) requestThread() error {
 	return err
 }
 
-func threadStartParams(cfg Config, model, systemPrompt string, policy runtime.PolicySnapshot) map[string]any {
-	params := map[string]any{"cwd": cfg.WorkspaceRoot, "serviceName": "agent-team-workbench"}
+func threadStartParams(cfg Config, model, systemPrompt string, policy runtime.PolicySnapshot, cwd string) map[string]any {
+	params := map[string]any{"cwd": cwd, "serviceName": "agent-team-workbench"}
 	// per-run 模型快照优先（模型注册表），缺省回退 adapter 配置。
 	model = effectiveCodexModel(cfg, model)
 	if model != "" {

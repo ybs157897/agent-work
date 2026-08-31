@@ -331,6 +331,50 @@ export interface DispatchCard {
   closed_at?: string;
 }
 
+// ── 任务评论（任务控制面 RFC §4.9：append-only，revision 在根 Task 维度分配）──
+
+export type TaskCommentKind = 'note' | 'requirement' | 'review_feedback';
+export type TaskCommentActorKind = 'user' | 'system' | 'runtime';
+
+/** GET/POST /work-items/{id}/comments 的评论行（无 update/delete）。 */
+export interface TaskComment {
+  id: string;
+  workspace_id: string;
+  root_work_item_id: string;
+  /** 评论落点的子 Task；根 Task 评论时等于 root。 */
+  work_item_id: string;
+  revision: number;
+  kind: TaskCommentKind;
+  body: string;
+  actor_kind: TaskCommentActorKind;
+  actor_id: string;
+  source_run_id?: string | null;
+  source_ref?: string | null;
+  client_key?: string | null;
+  created_at: string;
+}
+
+/** 评论列表（revision 正序分页；cursor 与 Workspace SSE stream_seq 严格分离）。 */
+export interface TaskCommentList {
+  items: TaskComment[];
+  /** 下一页游标（revision > 已返回最大值）；没有更多时缺省/null。 */
+  next_revision?: number | null;
+  latest_revision: number;
+}
+
+/** POST comments 只接受 note|requirement；review_feedback 只能由 return 命令生成。 */
+export interface TaskCommentCreateInput {
+  kind: Exclude<TaskCommentKind, 'review_feedback'>;
+  body: string;
+  /** 可选；必须属于该 Task 树（422 comment_source_run_mismatch）。 */
+  source_run_id?: string;
+  source_ref?: string;
+  /** 实体级幂等键：唯一域 (root_work_item_id, client_key)；同 key 不同 body 409。 */
+  client_key?: string;
+  /** note 可省略；requirement 推荐必填，防止基于终态/旧 phase 追加。 */
+  expected_work_item_version?: number;
+}
+
 // ── 决策台账（会话元模型 S2：任务级共享记忆的用户原话引文）────────────
 
 /** GET/POST /work-items/{id}/decisions 的台账行。 */
@@ -344,6 +388,136 @@ export interface DecisionEntry {
   /** 链回片段内位置（消息序号等）。 */
   source_ref?: string;
   created_at: string;
+}
+
+// ── Review Queue（任务控制面 RFC §4.10：服务端权威 read model）─────────
+
+/** 各来源读模型版本水位（同一 read snapshot 内读取）。 */
+export interface SourceWatermark {
+  as_of_event_seq: number;
+  work_item_version?: number;
+  coordinator_version?: number;
+  latest_run_version?: number;
+  comment_revision?: number;
+}
+
+/** 队列行：work_item + pending 元数据 + Coordinator 状态摘要。 */
+export interface ReviewQueueItem {
+  work_item: WorkItem;
+  /** = phase_entered_at；review→execution→review 必须得到新时间。 */
+  pending_since: string;
+  coordinator?: {
+    status: string;
+    stage?: string;
+    updated_at: string;
+    version: number;
+  } | null;
+  latest_run_id?: string | null;
+  source_watermark: SourceWatermark;
+}
+
+/** GET /workspaces/{id}/review-queue 响应；total_count 是 badge 唯一权威值。 */
+export interface ReviewQueueResponse {
+  items: ReviewQueueItem[];
+  total_count: number;
+  next_cursor: string | null;
+  generated_at: string;
+}
+
+// ── Delivery Brief（任务控制面 RFC §4.11：确定性服务端聚合，无 LLM 摘要）──
+
+export interface DeliveryBriefConclusion {
+  coordinator_status: string;
+  stage?: string;
+  summary?: string;
+  next_action?: string;
+  version: number;
+}
+
+/** 一次尝试的服务端摘要（attempts 上限 50，按 attempt number 排序）。 */
+export interface AttemptSummary {
+  attempt: number;
+  role: 'coordinator' | 'worker' | 'evaluation';
+  run_id: string;
+  agent_id?: string;
+  agent_name?: string;
+  status: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  retry_of?: string | null;
+  failure?: { code?: string; message: string; retryable?: boolean } | null;
+}
+
+export type EvidenceStatus = 'passed' | 'failed' | 'warning' | 'unknown';
+export type EvidenceTrust = 'control_plane' | 'runtime_reported' | 'model_reported';
+
+/** 证据条目（evidence 上限 200；普通 Markdown 只算 model_reported）。 */
+export interface EvidenceItem {
+  id: string;
+  source_kind: 'coordinator_event' | 'run_status' | 'evaluation_verdict' | 'tool_result' | 'artifact' | 'change_set';
+  source_id: string;
+  label?: string;
+  status: EvidenceStatus;
+  trust: EvidenceTrust;
+  occurred_at: string;
+}
+
+export interface RunEvidence {
+  run: ExecutionRun;
+  summary?: string;
+  evidence: EvidenceItem[];
+  truncated: boolean;
+}
+
+/** 按 Run 分组的文件变更（不把多个 Run 混成一个 diff）。 */
+export interface BriefChangeSet {
+  run_id: string;
+  files: { path: string; added: number; deleted: number; status: 'added' | 'modified' | 'deleted' | 'renamed' }[];
+  total_files: number;
+  total_added: number;
+  total_deleted: number;
+  truncated: boolean;
+}
+
+export interface RiskItem {
+  source_kind: string;
+  source_id: string;
+  code: string;
+  message: string;
+  severity: 'low' | 'medium' | 'high';
+}
+
+export interface DeliveryBriefFreshness {
+  generated_at: string;
+  /** 聚合 read snapshot 内的 Workspace MAX(stream_seq)；与前端 eventCursor 比较。 */
+  as_of_event_seq: number;
+  source_versions?: Record<string, number>;
+  state: 'current' | 'partial';
+  missing_sources?: string[];
+}
+
+export interface DeliveryBriefTruncation {
+  attempts: boolean;
+  runs: boolean;
+  files: boolean;
+  artifacts: boolean;
+  comments: boolean;
+}
+
+export interface DeliveryBrief {
+  work_item: WorkItem;
+  acceptance_criteria: string[];
+  conclusion: DeliveryBriefConclusion;
+  attempts: AttemptSummary[];
+  runs: RunEvidence[];
+  changes: BriefChangeSet | null;
+  artifacts: Artifact[];
+  blocker: { code: string; message: string; source: string; run_id?: string | null; created_at: string } | null;
+  risks: RiskItem[];
+  /** requirement/review_feedback 评论（按 root revision 排序，上限 200）。 */
+  comments: TaskComment[];
+  freshness: DeliveryBriefFreshness;
+  truncation: DeliveryBriefTruncation;
 }
 
 // ── FTS 检索（会话元模型 S4：索引为派生存储，纯请求-响应，无 SSE）────
@@ -593,6 +767,7 @@ export const EVENT_NAMES = [
   'tool.completed',
   'tool.failed',
   'subagent.updated',
+  'file_changes.reverted',
   'approval.requested',
   'approval.resolved',
   'approval.expired',
@@ -600,8 +775,6 @@ export const EVENT_NAMES = [
   'artifact.updated',
   'usage.updated',
   'runtime.health_changed',
-  'runner.connected',
-  'runner.disconnected',
   'run.recovery_started',
   'run.recovery_completed',
   'run.recovery_failed',
@@ -616,6 +789,13 @@ export const EVENT_NAMES = [
   'coordinator.state_changed',
   'coordinator.blocked',
   'coordinator.completed',
+  // 任务控制面补全（RFC §10）：Location/context/comment 写入与流同事务提交。
+  'execution_host.updated',
+  'workspace_location.created',
+  'workspace_location.updated',
+  'workspace_location.unavailable',
+  'work_item.development_context_updated',
+  'task_comment.created',
 ] as const;
 
 /** 模型注册表条目（models/ 目录为真相源；词汇对齐 pi-ai provider profile）。 */

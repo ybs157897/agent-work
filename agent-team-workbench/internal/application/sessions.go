@@ -101,14 +101,15 @@ const (
 )
 
 // resolveResume 是 CreateRun 的会话决策点（Paperclip ResolveBeforeRun 对应物）。
-// 数据源优先级：task_sessions（带配置指纹）> 旧 execution_runs.session_ref 推断（播种兼容）。
-// 指纹漂移 → 丢弃开新会话；轮换阈值超限 → Rotate；返回 (resumeRef, resumeFromRunID,
-// outcome)：ref 非空且 outcome=Hit 表示 resume 候选（是否注入还看 binding 能力）。
-func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentProfileID, adapterID, runtimeLabel, configDigest string, previousRuns []*domain.ExecutionRun) (string, string, resumeOutcome) {
+// 数据源优先级：task_sessions（带组合指纹 config⊕context）> 旧 execution_runs.session_ref
+// 推断（播种兼容）。指纹漂移（含 context 身份变化）→ 丢弃开新会话；轮换阈值超限 →
+// Rotate；返回 (resumeRef, resumeFromRunID, outcome)：ref 非空且 outcome=Hit 表示
+// resume 候选（是否注入还看 binding 能力）。
+func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentProfileID, adapterID, runtimeLabel, fingerprint, configDigest string, previousRuns []*domain.ExecutionRun) (string, string, resumeOutcome) {
 	if adapterID != "" {
 		ts, err := s.store.TaskSessions().Get(ctx, wi.WorkspaceID, agentProfileID, adapterID, wi.ID)
 		if err == nil && ts != nil {
-			if ref := ts.SessionRef(); ref != "" && ts.Fingerprint() == configDigest {
+			if ref := ts.SessionRef(); ref != "" && ts.Fingerprint() == fingerprint {
 				if shouldRotateSession(ts) {
 					return "", "", resumeOutcomeRotate
 				}
@@ -123,7 +124,9 @@ func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentP
 			return "", "", resumeOutcomeDrift
 		}
 	}
-	// 播种兼容：迁移前只有 execution_runs.session_ref；同事务把可续接的旧 run 播种进 task_sessions。
+	// 播种兼容：迁移前只有 execution_runs.session_ref；同事务把可续接的旧 run 播种进
+	// task_sessions（config 半边用旧 run 的 config_digest 过滤，context 半边以当前
+	// Run 的组合指纹落锚，保证后续代际比较口径一致）。
 	if adapterID != "" {
 		if previous := resumablePreviousRun(previousRuns, adapterID, runtimeLabel, configDigest); previous != nil {
 			now := time.Now().UTC()
@@ -131,7 +134,7 @@ func (s *Service) resolveResume(ctx context.Context, wi *domain.WorkItem, agentP
 				ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: wi.WorkspaceID,
 				AgentProfileID: agentProfileID, AdapterID: adapterID, TaskKey: wi.ID,
 				ParentAnchorID: s.anchorParent(ctx, wi.WorkspaceID, agentProfileID, adapterID, wi.ID),
-				SessionParams:  map[string]any{"__ref": previous.SessionRef, "__fingerprint": configDigest},
+				SessionParams:  map[string]any{"__ref": previous.SessionRef, "__fingerprint": fingerprint},
 				CreatedAt:      now, UpdatedAt: now,
 			})
 			return previous.SessionRef, previous.ID, resumeOutcomeHit
@@ -159,84 +162,146 @@ func (s *Service) anchorParent(ctx context.Context, workspaceID, agentProfileID,
 }
 
 // RecordRunSessionUpdate 是会话句柄的唯一写点：execution_runs.session_ref/session_after
-// 与 task_sessions 锚点（含指纹）同事务双写。Clear 时删除锚点，下一轮 Run 将开新会话。
+// 与 task_sessions 锚点（含指纹）同事务双写。Clear 时写墓碑，下一轮 Run 将开新会话。
+// 锚点写入受 generation/anchor owner 门控（RFC §4.8）：旧 Run 迟到的 session/clear
+// 不得覆盖新代际锚点（墓碑也不许）。
 func (s *Service) RecordRunSessionUpdate(ctx context.Context, runID string, update runtime.SessionUpdate) error {
 	var workspaceID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
-		r, err := s.store.Runs().Get(ctx, runID)
-		if err != nil {
-			return err
-		}
-		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
-		if err != nil {
-			return err
-		}
-		if err := requireValidWorkItemRecordKind(wi); err != nil {
-			return err
-		}
-		workspaceID = r.WorkspaceID
-		if update.Clear {
-			// 墓碑而非删除：空 __ref 让下一轮 fresh，同时阻断播种兜底复活旧会话。
-			return s.writeAnchorTombstone(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, update.ClearReason)
-		}
-		if update.Ref == "" {
-			return fmt.Errorf("%w: session ref required", domain.ErrValidation)
-		}
-		if r.AdapterID != "" {
-			// 会话锚点：__ref/__fingerprint + adapter 私有参数。
-			// runs_count 仅在该 run 首次报告新 ref 时 +1（OnSession 与 ExecResult.Session
-			// 可能携带同一 ref 上报两次，幂等去重）。
-			delta := 0
-			if r.SessionRef != update.Ref {
-				delta = 1
-			}
-			conversation, _ := r.Input["conversation"].(map[string]any)
-			digest, _ := conversation["config_digest"].(string)
-			rotated, _ := conversation["session_rotation"].(bool)
-			params := map[string]any{"__ref": update.Ref, "__from_run_id": runID}
-			if digest != "" {
-				params["__fingerprint"] = digest
-			}
-			for k, v := range update.Params {
-				params[k] = v
-			}
-			now := time.Now().UTC()
-			anchor := &domain.TaskSession{
-				ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: r.WorkspaceID,
-				AgentProfileID: r.AgentProfileID, AdapterID: r.AdapterID, TaskKey: r.WorkItemID,
-				ParentAnchorID: s.anchorParent(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID),
-				SessionParams:  params, DisplayID: update.DisplayID,
-				CreatedAt: now, UpdatedAt: now,
-			}
-			if rotated && delta == 1 {
-				// 轮换代际首报：锚点整体换代（params 替换、计数清零重起、created_at 重置），
-				// 本 run 即新代第 1 次，旧代计数不再参与轮换判定。
-				anchor.RunsCount = 1
-				if err := s.store.TaskSessions().StartGeneration(ctx, anchor); err != nil {
-					return err
-				}
-			} else {
-				anchor.RunsCount = delta
-				if err := s.store.TaskSessions().Upsert(ctx, anchor); err != nil {
-					return err
-				}
-			}
-		}
-		if r.SessionRef == update.Ref && r.SessionAfter == update.Ref {
-			return nil
-		}
-		if r.Status.IsTerminal() {
-			return fmt.Errorf("%w: terminal run cannot change session ref", domain.ErrValidation)
-		}
-		expected := r.Version
-		r.SessionRef = update.Ref
-		r.SessionAfter = update.Ref
-		return s.store.Runs().Update(ctx, r, expected)
+		ws, err := s.recordRunSessionUpdateTx(ctx, runID, update)
+		workspaceID = ws
+		return err
 	})
 	if err == nil && workspaceID != "" {
 		s.notifier.Notify(workspaceID)
 	}
 	return err
+}
+
+// recordRunSessionUpdateTx 是会话句柄写入的事务内核心（RecordRunSessionUpdate
+// 与 ApplyRunnerEvent 的 run.session 全量语义应用共用）：锚点门控、墓碑、
+// 锚点/轮换代际与 execution_runs 双写都在同一事务内。
+func (s *Service) recordRunSessionUpdateTx(ctx context.Context, runID string, update runtime.SessionUpdate) (string, error) {
+	r, err := s.store.Runs().Get(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		return "", err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return "", err
+	}
+	// 锚点门：generation 一致 ∧ 本 Run 是当前 anchor owner 才放行。
+	allowed, ts, snap, err := s.taskSessionAnchorGate(ctx, r)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		// 迟到帧（同 checkout 串行后旧 Run 的尾部上报）：静默丢弃，不覆盖新锚点。
+		return r.WorkspaceID, nil
+	}
+	if update.Clear {
+		// 墓碑而非删除：空 __ref 让下一轮 fresh，同时阻断播种兜底复活旧会话。
+		if r.AdapterID == "" {
+			return r.WorkspaceID, nil
+		}
+		updated, err := s.writeAnchorTombstoneForOwner(ctx, ts, update.ClearReason)
+		if err != nil {
+			return "", err
+		}
+		if !updated {
+			return r.WorkspaceID, nil
+		}
+		return r.WorkspaceID, nil
+	}
+	if update.Ref == "" {
+		return "", fmt.Errorf("%w: session ref required", domain.ErrValidation)
+	}
+	if r.AdapterID != "" {
+		// 会话锚点：__ref/__fingerprint + adapter 私有参数。
+		// runs_count 仅在该 run 首次报告新 ref 时 +1（OnSession 与 ExecResult.Session
+		// 可能携带同一 ref 上报两次，幂等去重）。
+		delta := 0
+		if r.SessionRef != update.Ref {
+			delta = 1
+		}
+		conversation, _ := r.Input["conversation"].(map[string]any)
+		digest, _ := conversation["config_digest"].(string)
+		rotated, _ := conversation["session_rotation"].(bool)
+		fingerprint := digest
+		if snap != nil {
+			// 指纹含执行上下文身份：context generation/位置变化即漂移 → fresh。
+			fingerprint = SessionFingerprint(digest, snap)
+		}
+		params := map[string]any{"__ref": update.Ref, "__from_run_id": runID}
+		if fingerprint != "" {
+			params["__fingerprint"] = fingerprint
+		}
+		for k, v := range update.Params {
+			params[k] = v
+		}
+		now := time.Now().UTC()
+		anchor := &domain.TaskSession{
+			ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: r.WorkspaceID,
+			AgentProfileID: r.AgentProfileID, AdapterID: r.AdapterID, TaskKey: r.WorkItemID,
+			ParentAnchorID: s.anchorParent(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID),
+			SessionParams:  params, DisplayID: update.DisplayID,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		s.carryAnchorOwnership(anchor, ts, snap)
+		var updated bool
+		if rotated && delta == 1 {
+			// 轮换代际首报：锚点整体换代（params 替换、计数清零重起、created_at 重置），
+			// 本 run 即新代第 1 次，旧代计数不再参与轮换判定。
+			anchor.RunsCount = 1
+			updated, err = s.store.TaskSessions().StartGenerationIfAnchorOwner(ctx, anchor, ts.LastRunID, ts.AnchorRunSequence)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			anchor.RunsCount = delta
+			updated, err = s.store.TaskSessions().UpdateIfAnchorOwner(ctx, anchor, ts.LastRunID, ts.AnchorRunSequence)
+			if err != nil {
+				return "", err
+			}
+		}
+		if !updated {
+			// A newer Run claimed the anchor between the read gate and this callback.
+			// Drop this late update exactly as taskSessionAnchorGate would.
+			return r.WorkspaceID, nil
+		}
+	}
+	if r.SessionRef == update.Ref && r.SessionAfter == update.Ref {
+		return r.WorkspaceID, nil
+	}
+	if r.Status.IsTerminal() {
+		return "", fmt.Errorf("%w: terminal run cannot change session ref", domain.ErrValidation)
+	}
+	expected := r.Version
+	r.SessionRef = update.Ref
+	r.SessionAfter = update.Ref
+	if err := s.store.Runs().Update(ctx, r, expected); err != nil {
+		return "", err
+	}
+	return r.WorkspaceID, nil
+}
+
+// carryAnchorOwnership 把 Run 的 anchor/context 归属写回锚点行（session 上报与
+// claim 落同一套归属字段，防止 Upsert 的整列覆盖把归属清空）：
+// context 列以本 Run 快照为准；last_run_id/anchor_run_sequence 保持既有 claim 值。
+func (s *Service) carryAnchorOwnership(anchor *domain.TaskSession, ts *domain.TaskSession, snap *domain.ExecutionContextSnapshot) {
+	if ts != nil {
+		anchor.ContextSnapshotID = ts.ContextSnapshotID
+		anchor.ContextGeneration = ts.ContextGeneration
+		anchor.LastRunID = ts.LastRunID
+		anchor.AnchorRunSequence = ts.AnchorRunSequence
+	}
+	if snap != nil {
+		anchor.ContextSnapshotID = snap.ID
+		anchor.ContextGeneration = snap.ContextGeneration
+	}
 }
 
 // RecordRunUsage 落 execution_runs.usage_* 并累计 task_sessions 输入 token（轮换阈值输入）。
@@ -246,58 +311,65 @@ func (s *Service) RecordRunSessionUpdate(ctx context.Context, runID string, upda
 func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtime.Usage) error {
 	var workspaceID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
-		r, err := s.store.Runs().Get(ctx, runID)
-		if err != nil {
-			return err
-		}
-		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
-		if err != nil {
-			return err
-		}
-		if err := requireValidWorkItemRecordKind(wi); err != nil {
-			return err
-		}
-		workspaceID = r.WorkspaceID
-		// 锚点输入 token 幂等累计：同一 run 有两条上报路径（Callbacks.OnUsage 与
-		// ExecResult.Usage），且次数不限。按「本次值 − 该 run 上次已计入值」的差值
-		// 计入（execution_runs.usage_in 是覆盖语义，正好充当 run 维度的已计入水位）：
-		//   - 同值重复上报差值为 0，不双计；
-		//   - 后报大于先报（增量成长）只补差；
-		//   - 不同 run 从各自 run 行取水位，互不干扰。
-		// 上次口径非 per_run（basis 切换）时水位视为 0，避免跨口径差值失真。
-		prevIn, prevBasis := r.UsageIn, r.UsageBasis
-		// 用量列不属于状态机；迟到上报直接覆盖列值（不改 status/finished_at）。
-		r.UsageIn, r.UsageOut, r.UsageCached = usage.InputTokens, usage.OutputTokens, usage.CachedTokens
-		r.UsageBasis = string(usage.Basis)
-		if err := s.store.Runs().Update(ctx, r, r.Version); err != nil {
-			return err
-		}
-		data := map[string]any{
-			"usage_in": usage.InputTokens, "usage_out": usage.OutputTokens,
-			"usage_cached": usage.CachedTokens, "usage_basis": string(usage.Basis),
-		}
-		data["record_kind"] = string(workItemRecordKind(wi))
-		// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
-		if err := s.emit(ctx, r.WorkspaceID, domain.EventUsageUpdated,
-			domain.AggregateExecutionRun, r.ID, r.Version+1,
-			&RunEventRecord{RunID: r.ID, EventType: domain.EventUsageUpdated, Payload: data}, data); err != nil {
-			return err
-		}
-		if r.AdapterID != "" && usage.Basis == runtime.UsagePerRun {
-			accounted := int64(0)
-			if prevBasis == string(runtime.UsagePerRun) {
-				accounted = prevIn
-			}
-			if delta := usage.InputTokens - accounted; delta != 0 {
-				return s.store.TaskSessions().AddInputTokens(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, delta)
-			}
-		}
-		return nil
+		ws, err := s.recordRunUsageTx(ctx, runID, usage)
+		workspaceID = ws
+		return err
 	})
 	if err == nil && workspaceID != "" {
 		s.notifier.Notify(workspaceID)
 	}
 	return err
+}
+
+// recordRunUsageTx 是用量落账的事务内核心（RecordRunUsage 与 ApplyRunnerEvent 的
+// usage.updated 应用共用）：差值幂等累计口径保持一致。
+func (s *Service) recordRunUsageTx(ctx context.Context, runID string, usage runtime.Usage) (string, error) {
+	r, err := s.store.Runs().Get(ctx, runID)
+	if err != nil {
+		return "", err
+	}
+	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+	if err != nil {
+		return "", err
+	}
+	if err := requireValidWorkItemRecordKind(wi); err != nil {
+		return "", err
+	}
+	// 锚点输入 token 幂等累计：同一 run 有两条上报路径（Callbacks.OnUsage 与
+	// ExecResult.Usage），且次数不限。按「本次值 − 该 run 上次已计入值」的差值
+	// 计入（execution_runs.usage_in 是覆盖语义，正好充当 run 维度的已计入水位）：
+	//   - 同值重复上报差值为 0，不双计；
+	//   - 后报大于先报（增量成长）只补差；
+	//   - 不同 run 从各自 run 行取水位，互不干扰。
+	// 上次口径非 per_run（basis 切换）时水位视为 0，避免跨口径差值失真。
+	prevIn, prevBasis := r.UsageIn, r.UsageBasis
+	// 用量列不属于状态机；迟到上报直接覆盖列值（不改 status/finished_at）。
+	r.UsageIn, r.UsageOut, r.UsageCached = usage.InputTokens, usage.OutputTokens, usage.CachedTokens
+	r.UsageBasis = string(usage.Basis)
+	if err := s.store.Runs().Update(ctx, r, r.Version); err != nil {
+		return "", err
+	}
+	data := map[string]any{
+		"usage_in": usage.InputTokens, "usage_out": usage.OutputTokens,
+		"usage_cached": usage.CachedTokens, "usage_basis": string(usage.Basis),
+	}
+	data["record_kind"] = string(workItemRecordKind(wi))
+	// Update 在 DB 侧 version+1；emit 的 aggVersion 必须与落库后一致。
+	if err := s.emit(ctx, r.WorkspaceID, domain.EventUsageUpdated,
+		domain.AggregateExecutionRun, r.ID, r.Version+1,
+		&RunEventRecord{RunID: r.ID, EventType: domain.EventUsageUpdated, Payload: data}, data); err != nil {
+		return "", err
+	}
+	if r.AdapterID != "" && usage.Basis == runtime.UsagePerRun {
+		accounted := int64(0)
+		if prevBasis == string(runtime.UsagePerRun) {
+			accounted = prevIn
+		}
+		if delta := usage.InputTokens - accounted; delta != 0 {
+			return r.WorkspaceID, s.store.TaskSessions().AddInputTokens(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, delta)
+		}
+	}
+	return r.WorkspaceID, nil
 }
 
 // ResetTaskSession 手动清除会话锚点（设置页 / 自愈路径）；写入墓碑，下一轮 Run 开新会话
@@ -322,8 +394,17 @@ func (s *Service) ResetTaskSession(ctx context.Context, workspaceID, agentProfil
 	})
 }
 
-// writeAnchorTombstone 写入空 __ref 锚点：resolveResume 主路径判定 fresh，播种兜底被阻断。
+// writeAnchorTombstone 是用户 reset 等显式控制面命令的 tombstone 写点。它只清
+// 除调用开始时观察到的 owner；若并发 ClaimAnchor 已换代，则 CAS no-op，避免把
+// 旧命令的 material 覆盖进新 owner。无行时仅 INSERT DO NOTHING。
 func (s *Service) writeAnchorTombstone(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey, reason string) error {
+	return s.writeAnchorTombstoneForRun(ctx, workspaceID, agentProfileID, adapterID, taskKey, "", reason)
+}
+
+// writeAnchorTombstoneForRun is the recovery form: expectedRunID non-empty
+// means only that exact owner may be cleared. A retry/self-heal from an older
+// Run must not clear a newer owner's provider session.
+func (s *Service) writeAnchorTombstoneForRun(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey, expectedRunID, reason string) error {
 	if adapterID == "" {
 		return nil
 	}
@@ -332,12 +413,43 @@ func (s *Service) writeAnchorTombstone(ctx context.Context, workspaceID, agentPr
 	if reason != "" {
 		params["__cleared_reason"] = reason
 	}
-	return s.store.TaskSessions().Upsert(ctx, &domain.TaskSession{
+	anchor := &domain.TaskSession{
 		ID: domain.NewID(domain.PrefixTaskSess), WorkspaceID: workspaceID,
 		AgentProfileID: agentProfileID, AdapterID: adapterID, TaskKey: taskKey,
 		ParentAnchorID: s.anchorParent(ctx, workspaceID, agentProfileID, adapterID, taskKey),
 		SessionParams:  params, CreatedAt: now, UpdatedAt: now,
-	})
+	}
+	ts, err := s.store.TaskSessions().Get(ctx, workspaceID, agentProfileID, adapterID, taskKey)
+	if errors.Is(err, domain.ErrNotFound) {
+		_, insertErr := s.store.TaskSessions().InsertIfAbsent(ctx, anchor)
+		return insertErr
+	}
+	if err != nil {
+		return err
+	}
+	if expectedRunID != "" && ts.LastRunID != expectedRunID {
+		return nil
+	}
+	_, err = s.writeAnchorTombstoneForOwner(ctx, ts, reason)
+	return err
+}
+
+// writeAnchorTombstoneForOwner is the callback-side CAS form. Manual reset and
+// retry orchestration intentionally use writeAnchorTombstone above; a provider
+// callback must only clear the exact Run that still owns the claimed anchor.
+func (s *Service) writeAnchorTombstoneForOwner(ctx context.Context, owner *domain.TaskSession, reason string) (bool, error) {
+	params := map[string]any{}
+	if reason != "" {
+		params["__cleared_reason"] = reason
+	}
+	now := time.Now().UTC()
+	anchor := &domain.TaskSession{
+		WorkspaceID: owner.WorkspaceID, AgentProfileID: owner.AgentProfileID,
+		AdapterID: owner.AdapterID, TaskKey: owner.TaskKey,
+		ParentAnchorID: owner.ParentAnchorID, SessionParams: params,
+		DisplayID: owner.DisplayID, CreatedAt: owner.CreatedAt, UpdatedAt: now,
+	}
+	return s.store.TaskSessions().UpdateIfAnchorOwner(ctx, anchor, owner.LastRunID, owner.AnchorRunSequence)
 }
 
 // TaskSessionsByAgent 列出 Agent 名下 Task 的会话锚点（设置页展示）。Chat
@@ -385,7 +497,7 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 	}
 	healCtx := context.WithoutCancel(ctx)
 	if err := s.store.InTx(healCtx, func(ctx context.Context) error {
-		return s.writeAnchorTombstone(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, "session_unknown_heal")
+		return s.writeAnchorTombstoneForRun(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, r.ID, "session_unknown_heal")
 	}); err != nil {
 		return
 	}

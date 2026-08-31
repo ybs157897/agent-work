@@ -38,6 +38,82 @@ type Store interface {
 	Wakeups() scheduling.Store
 	// TaskCoordinators 持久化系统级 Task Coordinator 配置、根任务控制线与追加事件。
 	TaskCoordinators() TaskCoordinatorRepo
+	// ── Execution Context（任务控制面 RFC §4；接口由主智能体冻结，W2-CORE 实现）──
+	ExecutionHosts() ExecutionHostRepo
+	WorkspaceLocations() WorkspaceLocationRepo
+	WorkItemContexts() WorkItemContextRepo
+	ContextSnapshots() ContextSnapshotRepo
+	// TaskComments append-only 任务反馈流（RFC §4.9；W3-CMT 实现）。
+	TaskComments() TaskCommentRepo
+}
+
+// TaskCommentRepo 任务评论与根级 revision cursor 存储。
+// 全部写点必须在调用方事务内；cursor 行与根 Coordinator state 同事务创建、永不物理删除。
+type TaskCommentRepo interface {
+	// EnsureCursor 幂等创建 latest_revision=0 的 cursor 行（与根 Coordinator state 同事务）。
+	EnsureCursor(ctx context.Context, rootWorkItemID string) error
+	// Append 锁定 cursor 行分配单调 revision 并插入 comment（禁止 MAX(revision)+1）；
+	// 返回带 revision 的实体。client_key 非空时撞键（同 root 同 key）：
+	// body 一致返回既有行（幂等重放），body 不同返回 ErrIdempotencyConflict。
+	Append(ctx context.Context, c *domain.TaskComment) (*domain.TaskComment, error)
+	// ListByRoot 按根 revision 正序分页（afterRevision 之后，limit 上限）。
+	ListByRoot(ctx context.Context, rootWorkItemID string, afterRevision int64, limit int) ([]*domain.TaskComment, error)
+	// LatestRevision 返回 cursor 水位；无 cursor 返回 ErrNotFound（comment_coordinator_required 映射依据）。
+	LatestRevision(ctx context.Context, rootWorkItemID string) (int64, error)
+	// HasUnconsumedActionable 报告是否存在 revision > consumed 的 actionable 评论
+	//（Coordinator 终态钩子：存在则不得进入 waiting_user）。
+	HasUnconsumedActionable(ctx context.Context, rootWorkItemID string, consumedRevision int64) (bool, error)
+	// ListUnconsumed 返回 revision > consumed 的全部评论（正序），
+	// 供 Coordinator Run 创建事务快照进 Run input 并推进 consumed_comment_revision。
+	ListUnconsumed(ctx context.Context, rootWorkItemID string, consumedRevision int64) ([]*domain.TaskComment, error)
+}
+
+// ExecutionHostRepo 宿主身份与 mount 广告投影存储（RFC §4.1/§4.3）。
+// hello 只能更新广告投影；ExecutionHost 的创建只走受保护 enrollment/本机 bootstrap。
+type ExecutionHostRepo interface {
+	// EnsureLocalHost 幂等确保受保护本机 Host（domain.LocalHostID）存在。
+	EnsureLocalHost(ctx context.Context, now time.Time) (*domain.ExecutionHost, error)
+	Get(ctx context.Context, id string) (*domain.ExecutionHost, error)
+	// Create 仅受保护 enrollment 命令调用；hello 不得创建 Host。
+	Create(ctx context.Context, h *domain.ExecutionHost) error
+	Update(ctx context.Context, h *domain.ExecutionHost, expectedVersion int) error
+	List(ctx context.Context) ([]*domain.ExecutionHost, error)
+	SetStatus(ctx context.Context, id string, status domain.HostStatus, at time.Time) error
+	// UpsertMount 按 (host, alias) 覆盖广告投影（generation/checkouts 随 hello 换代）。
+	UpsertMount(ctx context.Context, m *domain.HostMount) error
+	GetMount(ctx context.Context, hostID, alias string) (*domain.HostMount, error)
+	ListMounts(ctx context.Context, hostID string) ([]*domain.HostMount, error)
+}
+
+// WorkspaceLocationRepo 业务 Workspace ↔ HostMount 绑定存储（RFC §4.4）。
+// identity/version 只由显式命令修改；status 可随健康投影变化。
+type WorkspaceLocationRepo interface {
+	Create(ctx context.Context, l *domain.WorkspaceLocation) error
+	Get(ctx context.Context, id string) (*domain.WorkspaceLocation, error)
+	Update(ctx context.Context, l *domain.WorkspaceLocation, expectedVersion int) error
+	ListByWorkspace(ctx context.Context, workspaceID string) ([]*domain.WorkspaceLocation, error)
+	// DefaultFor 返回默认 Location；无默认返回 ErrNotFound（调用方映射 workspace_location_required）。
+	DefaultFor(ctx context.Context, workspaceID string) (*domain.WorkspaceLocation, error)
+	SetStatus(ctx context.Context, id string, status domain.LocationStatus, at time.Time) error
+}
+
+// WorkItemContextRepo DevelopmentContext 存储（RFC §4.5）。root 与 user child
+// 有持久行；Plan child 默认继承根 context，不持久化重复副本。
+type WorkItemContextRepo interface {
+	Upsert(ctx context.Context, c *domain.DevelopmentContext) error
+	// Get 返回该 WorkItem 的显式 context；无行返回 ErrNotFound（调用方沿父链继承）。
+	Get(ctx context.Context, workItemID string) (*domain.DevelopmentContext, error)
+}
+
+// ContextSnapshotRepo 不可变 Snapshot 存储（RFC §4.6）。无 Update/Delete——
+// 不可变性由迁移 trigger 强制，仓储只暴露 Create/Get。
+type ContextSnapshotRepo interface {
+	Create(ctx context.Context, s *domain.ExecutionContextSnapshot) error
+	Get(ctx context.Context, id string) (*domain.ExecutionContextSnapshot, error)
+	GetByRun(ctx context.Context, runID string) (*domain.ExecutionContextSnapshot, error)
+	// HasActiveRunOnCheckout 报告同 Host 同 checkout/worktree ref 是否已有非终态 Run
+	//（同 checkout 第一版单活跃 Run；命中即 workspace_checkout_busy）。
+	HasActiveRunOnCheckout(ctx context.Context, hostID, checkoutRef string) (bool, error)
 }
 
 type WorkspaceRepo interface {
@@ -145,6 +221,10 @@ type PlanRepo interface {
 type RunRepo interface {
 	Create(ctx context.Context, r *domain.ExecutionRun) error
 	Get(ctx context.Context, id string) (*domain.ExecutionRun, error)
+	// SetContextSnapshot 在 Run 创建事务内回填 context_snapshot_id（写序：
+	// run.Create(snapshot 空) → snapshot.Create → SetContextSnapshot）。
+	// 只允许回填一次：已置快照的 Run 再写返回 ErrStateConflict（Snapshot 一对一不可换绑）。
+	SetContextSnapshot(ctx context.Context, runID, snapshotID string) error
 	// GetByClientKey 按 (workspace, client_key) 查回既有 run（实体级幂等重放路径）。
 	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.ExecutionRun, error)
 	Update(ctx context.Context, r *domain.ExecutionRun, expectedVersion int) error
@@ -249,9 +329,16 @@ type Notifier interface {
 }
 
 // Runner 注册与连接状态（M2 Runner WSS Gateway）。
+// v2：Runner 是基础设施，不属于单一 Workspace（workspace_id 列语义废弃）；
+// 归属真相是 execution_host_id；connection_epoch 每次新连接换代，只做 transport fencing。
 type Runner struct {
-	ID            string
-	WorkspaceID   string
+	ID              string
+	WorkspaceID     string // v2 起废弃：不再作为归属真相，仅为遗留行兼容保留
+	ExecutionHostID string
+	ConnectionEpoch string
+	// BootID 在 runnerd 进程启动时生成、网络重连保持不变。Gateway 只允许同一
+	// BootID 接回未释放 lease；不同 BootID 代表内存 pending/runs 已丢失。
+	BootID        string
 	Label         string
 	RunnerVersion string
 	OS            string
@@ -278,13 +365,26 @@ type RunnerRepo interface {
 	CreateLease(ctx context.Context, l *RunLease) error
 	ActiveLease(ctx context.Context, runID string) (*RunLease, error)
 	ReleaseLease(ctx context.Context, leaseID string, at time.Time) error
+	// ReleaseActiveLeasesByRunner 在 runner boot_id 变化时撤销该旧进程持有的
+	// 全部 active lease，并返回受影响 Run；不能只释放最高 fence 留低 fence 续租。
+	ReleaseActiveLeasesByRunner(ctx context.Context, runnerID string, at time.Time) ([]string, error)
 	// ExpireLeases 把过期未续租的 lease 释放，返回受影响 run。
 	ExpireLeases(ctx context.Context, now time.Time) ([]string, error)
 	// RenewLeasesByRunner 续租该 runner 持有且 run 仍非终态的活跃 lease
-	// （推进 renewed_until），并顺手释放已终态 run 的残留 lease；返回续租行数。
+	//（推进 renewed_until），并顺手释放已终态 run 的残留 lease；返回续租行数。
 	RenewLeasesByRunner(ctx context.Context, runnerID string, renewUntil time.Time) (int, error)
-	// RunnerEventDedup 按 (run_id, runner_id, runner_seq) 去重；重复返回 ErrIdempotencyConflict。
-	RunnerEventDedup(ctx context.Context, runID, runnerID string, runnerSeq int64) error
+	// RenewLeasesByRunnerIfEpoch v2：仅当 runner 当前 connection_epoch 与 boot_id
+	// 均一致才续租（旧连接或重启后的空内存进程不得续孤儿 lease）；失配返回 0 行。
+	RenewLeasesByRunnerIfEpoch(ctx context.Context, runnerID, epoch, bootID string, renewUntil time.Time) (int, error)
+	// Get 按 ID 读 Runner（hello 的 epoch/host 校验用）。
+	Get(ctx context.Context, runnerID string) (*Runner, error)
+	// ListActiveLeasesByRunner 返回该 Runner 持有、尚未释放且关联 Run 非终态的
+	// lease。Gateway 在进程重启或 connection epoch 换代时据此恢复 fencing。
+	ListActiveLeasesByRunner(ctx context.Context, runnerID string) ([]*RunLease, error)
+	// RunnerEventDedupV2 按 (run_id, lease_id, runner_id, producer_seq) 条件插入去重
+	//（RFC §8.3：dedup 不含 connection_epoch；event_id 随行记录供 ACK 回显对账）。
+	// 重复返回 ErrIdempotencyConflict。必须在 ApplyRunnerEvent 同事务内调用。
+	RunnerEventDedupV2(ctx context.Context, runID, leaseID, runnerID string, producerSeq int64, eventID string) error
 }
 
 // AuditRepo 不可变审计记录：审批、运行控制、凭据变更、导出等。
@@ -309,13 +409,26 @@ type CapabilitySnapshotRepo interface {
 // 清除锚点统一走墓碑语义（Upsert 空 __ref），不做物理 DELETE。
 type TaskSessionRepo interface {
 	Get(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string) (*domain.TaskSession, error)
+	// ClaimAnchor atomically reserves the next anchor sequence for a newly-created
+	// Run. The returned row is the durable owner after the claim; concurrent
+	// claims must never reuse a sequence or overwrite a later owner.
+	ClaimAnchor(ctx context.Context, t *domain.TaskSession) (*domain.TaskSession, error)
+	// InsertIfAbsent creates session material only when no anchor exists. It must
+	// never update a concurrently-claimed row.
+	InsertIfAbsent(ctx context.Context, t *domain.TaskSession) (bool, error)
 	// Upsert：params/display_id 整体替换；RunsCount/InputTokensCum 按 delta 原子累加
 	//（ON CONFLICT 语义，并发 Run 不丢计数）。行不存在时以 delta 为初值插入。
 	Upsert(ctx context.Context, t *domain.TaskSession) error
+	// UpdateIfAnchorOwner updates session material only while the supplied Run is
+	// still the claimed owner at the supplied sequence. It never changes anchor
+	// ownership and reports false for a late callback.
+	UpdateIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error)
 	// AddInputTokens 累加会话输入 token（行不存在时静默跳过，锚点由 Upsert 创建）。
 	AddInputTokens(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string, tokens int64) error
 	// StartGeneration 轮换换代：params 整体替换、计数覆盖重起、created_at 重置。
 	StartGeneration(ctx context.Context, t *domain.TaskSession) error
+	// StartGenerationIfAnchorOwner is the rotation variant of UpdateIfAnchorOwner.
+	StartGenerationIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error)
 	ListByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error)
 }
 

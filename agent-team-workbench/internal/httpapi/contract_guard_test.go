@@ -349,6 +349,10 @@ func TestContractGuardEventNamesMatchAsyncAPI(t *testing.T) {
 		domain.AggregateDispatch:        true,
 		domain.AggregateDecision:        true,
 		domain.AggregateTaskCoordinator: true,
+		// 任务控制面补全（task-control-surface RFC §10）。
+		domain.AggregateExecutionHost:     true,
+		domain.AggregateWorkspaceLocation: true,
+		domain.AggregateTaskComment:       true,
 	}
 	aggSchema := envelope.Properties["aggregate"]
 	if aggSchema == nil || aggSchema.Properties["type"] == nil {

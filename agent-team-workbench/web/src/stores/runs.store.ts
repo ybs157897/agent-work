@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { getRun, listApprovals, listArtifacts, listRunEvents } from '../api/endpoints';
 import type { ApprovalRequest, Artifact, CanonicalEvent, ExecutionRun } from '../api/types';
 import { extractDeltaChunk } from './delta-chunk';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 import { isOutputTraceEnabled, outputTraceEventText, traceOutput } from '../utils/output-trace';
 
 /** Run 时间线条目：来自 SSE 信封（协议 §6.2）或 run_seq 历史回放。 */
@@ -44,6 +45,8 @@ interface RunsStore {
   timelines: Record<string, TimelineEntry[]>;
   approvals: Record<string, ApprovalRequest[]>;
   artifacts: Record<string, Artifact[]>;
+  /** 文件变更读模型失效版本；file_changes.reverted 到达后卡片按 run 重拉。 */
+  changesRevision: Record<string, number>;
   /** 正在展示的 run（详情抽屉/对话页引用计数）；watched run 会拉取快照与历史。 */
   watching: Record<string, number>;
   /** 已加载过历史回放的 run。 */
@@ -58,6 +61,12 @@ interface RunsStore {
   loadHistory: (runId: string) => Promise<void>;
   /** 处理 run 域 SSE 事件；返回是否已消费。 */
   applyEvent: (ev: CanonicalEvent) => boolean;
+  /**
+   * 切换 Workspace 时清空全部 run 投影：timelines/historyLoaded/watching/approvals/
+   * artifacts/terminal map（observedRunTerminals）/fold buffer/in-flight promise 索引
+   * 与已见事件身份；reset 不取消在途 Promise，resolve 时由 scope guard 丢弃。
+   */
+  reset: () => void;
 }
 
 function entryText(ev: CanonicalEvent): string | undefined {
@@ -373,6 +382,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
   timelines: {},
   approvals: {},
   artifacts: {},
+  changesRevision: {},
   watching: {},
   historyLoaded: {},
 
@@ -396,10 +406,12 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
     }),
 
   fetchRun: async (runId) => {
+    const scope = captureScope();
     const existing = runSnapshotFetches.get(runId);
     if (existing) return existing;
     const request = getRun(runId)
       .then((run) => {
+        if (!isCurrent(scope)) return; // 切换后旧 Workspace 的 run 快照不回写
         const observed = observedRunTerminals.get(runId);
         const protectedRun = observed && !RUN_TERMINAL_STATUSES.has(run.status)
           ? { ...run, status: observed.status, updated_at: observed.occurredAt }
@@ -413,20 +425,26 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
   },
 
   fetchApprovals: async (runId) => {
+    const scope = captureScope();
     const { items } = await listApprovals(runId);
+    if (!isCurrent(scope)) return; // 切换后旧 Workspace 的审批不回写
     set((s) => ({ approvals: { ...s.approvals, [runId]: items } }));
   },
 
   fetchArtifacts: async (runId) => {
+    const scope = captureScope();
     const { items } = await listArtifacts(runId);
+    if (!isCurrent(scope)) return; // 切换后旧 Workspace 的产物不回写
     set((s) => ({ artifacts: { ...s.artifacts, [runId]: items } }));
   },
 
   loadHistory: async (runId) => {
+    const scope = captureScope();
     if (get().historyLoaded[runId]) return;
     set((s) => ({ historyLoaded: { ...s.historyLoaded, [runId]: true } }));
     try {
       const { items } = await listRunEvents(runId);
+      if (!isCurrent(scope)) return; // 切换后旧 Workspace 的历史不回写
       const history: TimelineEntry[] = items.map((e) => ({
         event_id: `hist-${runId}-${e.run_seq}`,
         stream_seq: 0,
@@ -446,8 +464,19 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       }));
     } catch {
       // 历史加载失败不阻塞实时流；下次 watch 重试。
+      if (!isCurrent(scope)) return;
       set((s) => ({ historyLoaded: { ...s.historyLoaded, [runId]: false } }));
     }
+  },
+
+  reset: () => {
+    liveTextFoldBuffers.clear();
+    liveReasoningFoldBuffers.clear();
+    liveEventKeys.clear();
+    runSnapshotFetches.clear();
+    runTerminalRefreshQueued.clear();
+    observedRunTerminals.clear();
+    set({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, changesRevision: {}, watching: {}, historyLoaded: {} });
   },
 
   applyEvent: (ev) => {
@@ -555,6 +584,16 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
                 data: retainedEventData,
               },
             ]),
+          },
+        }));
+      }
+      if (!duplicate && ev.type === 'file_changes.reverted') {
+        // 回滚可以由另一个窗口发起，或在 SSE replay 中补到；FileChangesCard
+        // 不以本地命令成功为唯一来源，订阅此单调版本后必须重拉权威 changes 状态。
+        set((s) => ({
+          changesRevision: {
+            ...s.changesRevision,
+            [runId]: (s.changesRevision[runId] ?? 0) + 1,
           },
         }));
       }
@@ -668,3 +707,5 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
     return false;
   },
 }));
+
+registerWorkspaceScopedReset(() => useRunsStore.getState().reset());

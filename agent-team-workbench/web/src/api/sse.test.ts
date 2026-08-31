@@ -113,6 +113,25 @@ describe('WorkspaceEventStream', () => {
     stream.stop();
   });
 
+  it('订阅 file_changes.reverted，使其他窗口与 SSE replay 可接收变更回滚', () => {
+    const events: CanonicalEvent[] = [];
+    const stream = new WorkspaceEventStream('ws_1', {
+      onEvent: (event) => events.push(event),
+      onStatus: () => undefined,
+      onCursorExpired: () => undefined,
+    });
+    stream.start(0);
+    const event: CanonicalEvent = {
+      ...makeEvent(1, 'file_changes.reverted'),
+      aggregate: { type: 'execution_run', id: 'run_1', version: 2 },
+      run_seq: 5,
+      data: { record_kind: 'task' },
+    };
+    FakeEventSource.instances[0].emitEvent('file_changes.reverted', event);
+    expect(events).toEqual([event]);
+    stream.stop();
+  });
+
   it('event_id 去重；非 events/v1 与未知类型不进入回调', () => {
     const events: CanonicalEvent[] = [];
     const stream = new WorkspaceEventStream('ws_1', {

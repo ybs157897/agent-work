@@ -97,6 +97,13 @@ type Store struct {
 	decisions    *DecisionRepo
 	search       *SearchRepo
 	coordinators *TaskCoordinatorRepo
+	// Execution context 四仓储（任务控制面 RFC §4；实现在 execution_contexts.go）。
+	execHosts    application.ExecutionHostRepo
+	locations    application.WorkspaceLocationRepo
+	wiContexts   application.WorkItemContextRepo
+	ctxSnapshots application.ContextSnapshotRepo
+	// TaskComment append-only 任务反馈流（任务控制面 RFC §4.9；实现在 task_comments.go）。
+	taskComments application.TaskCommentRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -122,6 +129,11 @@ func New(db *sql.DB, dialect Dialect) *Store {
 	s.decisions = &DecisionRepo{store: s}
 	s.search = &SearchRepo{store: s}
 	s.coordinators = &TaskCoordinatorRepo{store: s}
+	s.execHosts = &ExecutionHostRepo{store: s}
+	s.locations = &WorkspaceLocationRepo{store: s}
+	s.wiContexts = &WorkItemContextRepo{store: s}
+	s.ctxSnapshots = &ContextSnapshotRepo{store: s}
+	s.taskComments = &TaskCommentRepo{store: s}
 	return s
 }
 
@@ -142,6 +154,15 @@ func (s *Store) Dispatches() application.DispatchRepo              { return s.di
 func (s *Store) DecisionEntries() application.DecisionRepo         { return s.decisions }
 func (s *Store) Search() application.SearchRepo                    { return s.search }
 func (s *Store) TaskCoordinators() application.TaskCoordinatorRepo { return s.coordinators }
+
+// Execution context accessor（实现在 execution_contexts.go）。
+func (s *Store) ExecutionHosts() application.ExecutionHostRepo         { return s.execHosts }
+func (s *Store) WorkspaceLocations() application.WorkspaceLocationRepo { return s.locations }
+func (s *Store) WorkItemContexts() application.WorkItemContextRepo     { return s.wiContexts }
+func (s *Store) ContextSnapshots() application.ContextSnapshotRepo     { return s.ctxSnapshots }
+
+// TaskComment accessor（实现在 task_comments.go）。
+func (s *Store) TaskComments() application.TaskCommentRepo { return s.taskComments }
 
 // Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
 func (s *Store) Wakeups() scheduling.Store { return s.wakeups }

@@ -124,9 +124,13 @@ type TaskCoordinatorState struct {
 	BlockerMessage     string
 	LastError          string
 	Data               map[string]any
-	Version            int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// ConsumedCommentRevision 评论消费水位（RFC §4.9/§7.8）：revision ≤ 该值
+	// 的评论已被某个持久 Coordinator Run 的输入快照收录；与 Run 创建同事务推进，
+	// 不表示模型已正确执行。
+	ConsumedCommentRevision int64
+	Version                 int
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // TaskCoordinatorEvent is append-only causal history for the task read model.

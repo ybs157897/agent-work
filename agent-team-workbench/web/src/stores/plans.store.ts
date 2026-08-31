@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { getPlan, getWorkItemPlan } from '../api/endpoints';
 import type { CanonicalEvent, Plan } from '../api/types';
+import { captureScope, isCurrent, registerWorkspaceScopedReset } from './scope';
 
 /**
  * Plan 投影（M1 编排）：
@@ -18,6 +19,8 @@ interface PlansStore {
   applyEvent: (ev: CanonicalEvent) => boolean;
   /** 详情页打开时按主任务拉最新快照；缓存已建走 plan id 重拉，冷启动走按主任务端点。 */
   refreshFor: (workItemId: string) => Promise<void>;
+  /** 切换 Workspace 时清空 plan 缓存与在途合并状态。 */
+  reset: () => void;
 }
 
 /** 同一 plan 的事件突发（逐 step 执行）合并为一次在途请求 + 一次补拉，保证末次事件状态最终落缓存。 */
@@ -35,13 +38,16 @@ export const usePlansStore = create<PlansStore>()((set, get) => {
     }));
 
   const fetchPlan = async (planId: string): Promise<void> => {
+    const scope = captureScope();
     if (inflight[planId]) {
       dirty[planId] = true;
       return;
     }
     inflight[planId] = true;
     try {
-      cachePlan(await getPlan(planId));
+      const plan = await getPlan(planId);
+      if (!isCurrent(scope)) return; // 切换后旧 Workspace 的 plan 不回写
+      cachePlan(plan);
     } catch {
       // 只吞本次 GET 失败（网络/5xx）：SSE 仍在流上，下一个 plan.* 事件或
       // 详情页重开会重试；除此之外没有别的消费者需要这个错误。
@@ -73,6 +79,7 @@ export const usePlansStore = create<PlansStore>()((set, get) => {
     },
 
     refreshFor: async (workItemId) => {
+      const scope = captureScope();
       const cached = get().byWorkItem[workItemId];
       if (cached) {
         await fetchPlan(cached.id);
@@ -80,10 +87,20 @@ export const usePlansStore = create<PlansStore>()((set, get) => {
       }
       // 冷启动（刷新页面直开详情，SSE 索引未建）：按主任务直取最新 plan。
       try {
-        cachePlan(await getWorkItemPlan(workItemId));
+        const plan = await getWorkItemPlan(workItemId);
+        if (!isCurrent(scope)) return; // 切换后旧 Workspace 的 plan 不回写
+        cachePlan(plan);
       } catch {
         // 同 fetchPlan 口径：只吞本次 GET 失败（404 = 该任务无 plan）。
       }
     },
+
+    reset: () => {
+      for (const key of Object.keys(inflight)) delete inflight[key];
+      for (const key of Object.keys(dirty)) delete dirty[key];
+      set({ byWorkItem: {}, workItemOf: {} });
+    },
   };
 });
+
+registerWorkspaceScopedReset(() => usePlansStore.getState().reset());
