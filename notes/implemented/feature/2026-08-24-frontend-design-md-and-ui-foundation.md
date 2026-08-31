@@ -5,7 +5,7 @@ Status: implemented
 输入调研：VoltAgent/awesome-design-md（73 份 DESIGN.md，含 claude.ai 官网
 设计系统逆向）+ Anthropic 官方提示词教程补充源 + 本仓 `.cursor/skills/`
 （ui-design-brain / using-ui-stack）。完整设计方案见
-`agent-team-workbench-docs/frontend-design-md-redesign.md`。
+[`docs/archive/design/frontend-design-md-redesign.md`](../../../docs/archive/design/frontend-design-md-redesign.md)。
 
 ## 决策与理由
 

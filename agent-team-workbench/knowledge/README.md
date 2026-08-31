@@ -8,7 +8,7 @@
 
 ## 条目规范
 
-条目模板、编号规则、规范用词与修订流程以 `agent-team-workbench-docs/product-agent-charter.md` §3（立法阶段：法典化）为唯一依据，此处不重复定义。
+条目模板、编号规则、规范用词与修订流程以 [`docs/product/product-agent-charter.md`](../../docs/product/product-agent-charter.md) §3（立法阶段：法典化）为唯一依据，此处不重复定义。
 
 ## MVP 期约定
 

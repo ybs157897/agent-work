@@ -3,7 +3,7 @@
 Status: implemented
 
 输入：知乎《从 Chat UI 到 Agent UI》第三/五/八章对照审计。方案见
-`agent-team-workbench-docs/frontend-design-md-redesign.md` §7。
+[`docs/archive/design/frontend-design-md-redesign.md`](../../../docs/archive/design/frontend-design-md-redesign.md) §7。
 
 ## 决策与理由
 
