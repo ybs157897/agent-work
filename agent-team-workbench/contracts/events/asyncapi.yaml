@@ -256,6 +256,7 @@ components:
             - run.phase_entered
             - run.phase_closed
             - run.log_chunk
+            - run.decision
             # Execution Host / Workspace Location（任务控制面补全 RFC §10）
             - execution_host.updated
             - workspace_location.created

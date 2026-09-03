@@ -99,6 +99,33 @@ func LogChunkPayload(stream, chunk string, truncated bool) map[string]any {
 	return map[string]any{"stream": stream, "chunk": chunk, "truncated": truncated}
 }
 
+// Decision 决策类别词表（非治理域；治理决策由 turn_receipt phase1 承担）。
+const (
+	DecisionSelfHealRetry      = "self_heal_retry"     // session_unknown 触发的 fresh 自愈重试
+	DecisionCancelForward      = "cancel_forward"      // 取消意图前转到执行端
+	DecisionCoordinatorRedrive = "coordinator_redrive" // 普通（非受管）coordinator 重驱
+	DecisionRecoverySweep      = "recovery_sweep"      // 重启对账 sweeper 的合成收口
+)
+
+// DecisionPayload 构造 run.decision 的 data：kind（上表）+ reason + inputs
+// （关键输入证据，如 failure_code/session_ref/lease_id）+ 可选 link_run_id
+// （跨 run 因果：原 run → 新 run）。
+func DecisionPayload(kind, reason string, inputs map[string]any, linkRunID string) map[string]any {
+	data := map[string]any{"kind": kind, "reason": reason}
+	for k, v := range inputs {
+		data[k] = v
+	}
+	if linkRunID != "" {
+		data["link_run_id"] = linkRunID
+	}
+	return data
+}
+
+// Decision 落一条 run.decision（决策因果链锚点）。
+func (j *Journal) Decision(ctx context.Context, runID, kind, reason string, inputs map[string]any, linkRunID string) error {
+	return j.recordSafe(ctx, runID, domain.EventRunDecision, DecisionPayload(kind, reason, inputs, linkRunID))
+}
+
 // Journal 是 run 环节事件的薄封装：负责载荷形状与成对语义，不持有状态。
 type Journal struct {
 	record RecordFunc

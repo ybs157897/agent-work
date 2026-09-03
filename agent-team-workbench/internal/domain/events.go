@@ -121,11 +121,14 @@ const (
 	EventRunRecoveryFailed    = "run.recovery_failed"
 
 	// Run Journal（全环节日志，设计 notes/proposed/architecture/2026-09-02-run-journal-lifecycle-logging.md）。
-	// 三个事件均为 internal 类（见 internalEventNames）：只落 run_events，
+	// 四个事件均为 internal 类（见 internalEventNames）：只落 run_events，
 	// 不进 stream_events/outbox——SSE 与对话回放都看不到它们。
 	EventRunPhaseEntered = "run.phase_entered"
 	EventRunPhaseClosed  = "run.phase_closed"
 	EventRunLogChunk     = "run.log_chunk"
+	// EventRunDecision 记录非治理域的"为什么"（自愈重试/取消前转/普通重驱）；
+	// 治理域决策由 turn_receipt phase1 承担，不重复进这里。
+	EventRunDecision = "run.decision"
 
 	// 任务控制面补全（task-control-surface RFC §10）：执行上下文与任务反馈事件。
 	// 发布点随 I1（Execution Context）/I2（TaskComment）接线；接线时同步加入
@@ -176,7 +179,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
 	EventRuntimeHealthChanged: {},
 	EventRunRecoveryStarted:   {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},
-	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {},
+	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {}, EventRunDecision: {},
 	// 任务控制面补全（task-control-surface RFC §10）：执行上下文发布点（I1）。
 	EventExecutionHostUpdated:              {},
 	EventWorkspaceLocationCreated:          {},
@@ -198,7 +201,7 @@ func IsKnownEventName(name string) bool {
 // 查询（EventRepo.ListRunEvents）按此集合过滤，调试面用
 // ListRunEventsIncludeInternal 拿全量。
 var internalEventNames = map[string]struct{}{
-	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {},
+	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {}, EventRunDecision: {},
 }
 
 // IsInternalEventName 报告事件名是否 internal 类。
