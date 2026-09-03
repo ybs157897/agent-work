@@ -885,6 +885,16 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
                 <PanelRight className="h-4 w-4" />
               </button>
             )}
+            {latestRunId && (
+              <Link
+                to={`/runs/${latestRunId}/journal`}
+                className="inline-flex h-8 items-center rounded-button px-2 text-caption text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
+                title="查看运行环节时间线"
+                aria-label="查看运行环节时间线"
+              >
+                环节
+              </Link>
+            )}
             {latestRun && (
               <span className={`inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-surface-sunken px-2 py-0.5 text-caption font-medium ${runStatusColor(latestRun.status)}`}>
                 <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
