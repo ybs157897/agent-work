@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RuntimeBinding } from '../api/types';
 import { isTaskCoordinatorAgent } from '../utils/agent-scope';
-import { buildWakePayload, formatTokenCount, isCodexRuntime, normalizeReasoningEffort, runtimeDisplayLabel, sessionDisplayName } from './agents.page';
+import { buildWakePayload, createAgentNotice, formatTokenCount, isCodexRuntime, normalizeReasoningEffort, runtimeDisplayLabel, sessionDisplayName } from './agents.page';
 
 describe('Agent runtime options', () => {
   it('hides the protected system Coordinator from ordinary Agent configuration', () => {
@@ -53,5 +53,18 @@ describe('formatTokenCount', () => {
     expect(formatTokenCount(999)).toBe('999');
     expect(formatTokenCount(1200)).toBe('1.2k');
     expect(formatTokenCount(2_500_000)).toBe('2.5M');
+  });
+});
+
+describe('createAgentNotice', () => {
+  it('surfaces pending external sync instead of claiming full success', () => {
+    expect(createAgentNotice({ config_sync_pending: true }, 'Forge')).toEqual({
+      kind: 'warning',
+      message: '已创建 Agent Forge，外部配置同步待完成；修复条件后请重载配置',
+    });
+  });
+
+  it('keeps the normal success notice for an applied bundle', () => {
+    expect(createAgentNotice({}, 'Forge')).toEqual({ kind: 'success', message: '已添加 Agent Forge' });
   });
 });

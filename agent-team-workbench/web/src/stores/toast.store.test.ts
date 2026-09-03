@@ -9,10 +9,12 @@ describe('toast.store', () => {
   it('push appends and generates incrementing IDs', () => {
     useToastStore.getState().push('info', 'first');
     useToastStore.getState().push('success', 'second');
+    useToastStore.getState().push('warning', 'pending');
     const toasts = useToastStore.getState().toasts;
-    expect(toasts).toHaveLength(2);
+    expect(toasts).toHaveLength(3);
     expect(toasts[0].message).toBe('first');
     expect(toasts[1].message).toBe('second');
+    expect(toasts[2]).toMatchObject({ kind: 'warning', message: 'pending' });
     expect(toasts[1].id).toBe(toasts[0].id + 1);
   });
 

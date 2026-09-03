@@ -89,7 +89,7 @@ export function DeliveryBriefView({
   onRefresh: () => void;
 }) {
   return (
-    <section className="space-y-snug" aria-label="交付简报">
+    <section id={brief ? `delivery-brief-${brief.work_item.id}` : undefined} className="space-y-snug" aria-label="交付简报">
       <div className="flex items-center justify-between gap-snug">
         <h3 className="text-caption font-medium text-text-tertiary">交付简报</h3>
         <button

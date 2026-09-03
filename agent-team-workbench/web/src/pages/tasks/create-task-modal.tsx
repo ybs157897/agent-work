@@ -13,6 +13,10 @@ import { captureScope, isCurrent } from '../../stores/scope';
 const parentCandidates = (items: WorkItem[]) =>
   sortTasksTree(items.filter((t) => t.status !== 'completed' && t.status !== 'cancelled'));
 
+export function parseAcceptanceCriteria(value: string): string[] {
+  return value.split('\n').map((criterion) => criterion.trim()).filter(Boolean);
+}
+
 /** 发布 Task：根任务统一进入 Coordinator 队列；可选父任务挂为子任务。 */
 export function CreateTaskModal({
   open,
@@ -33,9 +37,12 @@ export function CreateTaskModal({
   const [parentId, setParentId] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const clientKey = useRef<string>();
+  const acceptanceItems = parseAcceptanceCriteria(acceptanceCriteria);
+  const rootTask = parentId === '';
+  const acceptanceInvalid = rootTask && acceptanceItems.length === 0;
 
   const submit = async () => {
-    if (!workspace || !title.trim()) return;
+    if (!workspace || !title.trim() || acceptanceInvalid) return;
     const scope = captureScope();
     if (scope.workspaceId !== workspace.id) return;
     setSubmitting(true);
@@ -51,10 +58,7 @@ export function CreateTaskModal({
         priority,
         due_date: dueDate || null,
         parent_id: parentId || undefined,
-        acceptance_criteria: acceptanceCriteria
-          .split('\n')
-          .map((criterion) => criterion.trim())
-          .filter(Boolean),
+        acceptance_criteria: acceptanceItems,
         client_key: clientKey.current,
       });
       if (!isCurrent(scope)) return;
@@ -71,6 +75,7 @@ export function CreateTaskModal({
       setPriority('medium');
       setDueDate('');
       setParentId('');
+
       clientKey.current = undefined;
       onClose();
     } catch (err) {
@@ -109,14 +114,24 @@ export function CreateTaskModal({
           />
         </label>
         <label className="block">
-          <span className="text-body text-text-secondary">验收标准 <span className="text-caption text-text-tertiary">（可选，每行一条）</span></span>
+          <span className="text-body text-text-secondary">
+            验收标准 <span className="text-caption text-text-tertiary">（{rootTask ? '根任务必填' : '子任务可选'}，每行一条）</span>
+          </span>
           <textarea
             value={acceptanceCriteria}
             onChange={(e) => setAcceptanceCriteria(e.target.value)}
             rows={3}
-            className={`${inputCls} resize-none`}
+            className={`${inputCls} resize-none ${acceptanceInvalid ? 'border-status-error' : ''}`}
             placeholder="例如：登录流程有自动化测试\n例如：失败时能看到恢复原因"
+            aria-required={rootTask}
+            aria-invalid={acceptanceInvalid}
+            aria-describedby={acceptanceInvalid ? 'root-acceptance-error' : undefined}
           />
+          {acceptanceInvalid && (
+            <p id="root-acceptance-error" className="mt-1 text-caption text-status-error" role="alert">
+              根任务至少填写一条验收标准；它会成为后续治理与验收的依据。
+            </p>
+          )}
         </label>
         <div className="grid grid-cols-2 gap-snug">
           <label className="block">
@@ -153,7 +168,7 @@ export function CreateTaskModal({
           </button>
           <button
             onClick={submit}
-            disabled={!title.trim() || submitting}
+            disabled={!title.trim() || acceptanceInvalid || submitting}
             className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all duration-150 hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {submitting ? '发布中…' : '发布任务'}
