@@ -37,6 +37,10 @@ type fakeEngine struct {
 	onStatus func(runID string, to domain.RunStatus)
 	// events 记录 RecordRunEvent 调用（Run Journal phase 事件断言用）。
 	events []recordedRunEvent
+	// recordSink 非空时 RecordRunEvent 同步镜像进 sink：测试把 fakeStore 的
+	// fakeEventRepo 接进来，使断言能经 ListRunEventsIncludeInternal 按生产
+	// run_events 的读取路径全量取回。
+	recordSink func(runID, evType string, data map[string]any)
 }
 
 // recordedRunEvent 是一次 RecordRunEvent 调用的实参快照。
@@ -99,6 +103,9 @@ func (f *fakeEngine) RecordRunProgress(ctx context.Context, runID string, progre
 
 func (f *fakeEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
 	f.events = append(f.events, recordedRunEvent{RunID: runID, EventType: evType, Data: data})
+	if f.recordSink != nil {
+		f.recordSink(runID, evType, data)
+	}
 	return nil
 }
 
