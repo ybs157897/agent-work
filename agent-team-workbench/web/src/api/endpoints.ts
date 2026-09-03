@@ -38,6 +38,7 @@ import type {
   RunEvent,
   RunChanges,
   RunChangeDiff,
+  RunJournal,
   RuntimeBinding,
   SearchKind,
   SearchItem,
@@ -497,6 +498,9 @@ export const listRunEvents = (runId: string) =>
   apiFetch<{ items: RunEvent[] }>(`/runs/${runId}/events`);
 
 export const listRunChanges = (runId: string) => apiFetch<RunChanges>(`/runs/${runId}/changes`);
+
+/** Run 环节时间线（七段相位只读投影；排障视图，404 = 该 run 无 journal）。 */
+export const getRunJournal = (runId: string) => apiFetch<RunJournal>(`/runs/${runId}/journal`);
 
 export const getRunChangeDiff = (runId: string, path: string) =>
   apiFetch<RunChangeDiff>(`/runs/${runId}/changes/diff?${new URLSearchParams({ path }).toString()}`);
