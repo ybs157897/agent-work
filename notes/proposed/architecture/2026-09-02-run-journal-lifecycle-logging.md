@@ -1,6 +1,6 @@
 # Run Journal：全生命周期环节日志设计（参考 DSH turn 日志）
 
-> 状态：proposed（未立项）
+> 状态：**M1 已立项**（2026-09-03 用户拍板 D1–D4，实施分支 codex/run-journal-m1）
 > 日期：2026-09-02
 > 复核：2026-09-03 已对 LoopX 合入后的 main（ca0ab59，+61k 行治理全栈）做增量复核，修订各处；修订点以【2026-09-03】标注。
 > 动机：参考 deepseek-harness 的 turn 日志（事件溯源 + 唯一写入口 + 边界埋点 + 崩溃闭合），让 ATW 的每个 run 在**每一个环节**都有可查询的日志锚点，故障定位 = 查日志，而不是猜。
@@ -157,17 +157,9 @@ LoopX 治理已合入 main（ca0ab59，迁移 0024–0042）。**turn_receipt �
 - receipt ↔ journal 互链查询（按 run_id 反查所属治理回合与 receipt digest）；
 - slog 结构化旁路（handler 从 Journal 派生，替换关键路径的 log.Printf——gateway 恢复路径的 `log.Printf("...标记 lost 失败...")` 类裸日志优先）。
 
-## 6. 决策点（待拍板）
+## 6. 决策点【2026-09-03 已全部拍板】
 
-- **D1 事件粒度**：`phase_entered`/`phase_closed` 成对（推荐，未闭合=故障点的语义是构造性的，与治理 receipt 的 contiguous phase 纪律同构）vs 单事件 `run.phase_changed`（省一半事件量，丢闭合语义）。
-- **D2 远程 runner 环节帧**：runner 协议 v2 加 phase 帧（真实但动协议）vs 远程 run 只覆盖网关可见环节（M1 够用，runner 内部仍黑盒）。【2026-09-03：审计 §7 的 Remote Runner 真实验收（断线/boot/session_unknown）本就待做，若 D2 通过可与之同期，共享环境成本】
-- **D3 log_chunk 上限**：64KB/run 环形截断（推荐，防爆表）vs 全量（排障更全，SQLite 体积风险）。
-- **D4 slog 替换范围**：只换关键环节 log.Printf（推荐——gateway 恢复失败、钩子失败等"出了事才看得到"的点）vs 全量 130+ 处（噪音大，收益递减）。
-
-## 7. 防回归清单
-
-- 新事件类型走既有契约门禁 B（事件名常量 ↔ asyncapi enum 双向对账），不加新门禁种类。
-- 每个环节埋点配一条"该环节失败 → 最后 phase 事件正确"的集成断言（证据匹配表面）。
-- 回放保真测试加 internal 过滤断言（钉死可见性分层）。
-- usage/runs_count 幂等路径不经 Journal 改道（phase 事件是旁路观测，不进事务关键路径的幂等键）。
-- 不引入异步落盘；若未来事件量成问题，优先在 `EventRepo.Append` 内做同事务批量，而不是 write-behind。
+- **D1 事件粒度 = 成对**：`phase_entered`/`phase_closed` 成对，未闭合=故障点的语义是构造性的，与治理 receipt 的 contiguous phase 纪律同构。
+- **D2 远程 runner 环节帧 = 加协议帧**：runner 协议 v2 增加 phase 帧，远程 runner 内环节（spawn/handshake/first_event）由 runner 侧上报；与审计 §7 的 Remote Runner 真实验收 gate 同期做（M2）。
+- **D3 log_chunk 上限 = 64KB/run 环形截断**：超出标记 truncated，防表膨胀。
+- **D4 slog 替换范围 = 只换关键环节**：gateway 恢复失败、钩子失败等"出了事才看得到"的点优先；不追全量 130+ 处。
