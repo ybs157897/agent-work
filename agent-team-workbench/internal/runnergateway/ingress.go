@@ -389,12 +389,16 @@ func (g *Gateway) eventTransportValid(rc *runnerConn, runID, leaseID, runnerID, 
 	return ok
 }
 
-// lateUsageTransportValid 是终态 usage.updated 的唯一 Gateway 例外。它只
-// 放行当前连接上已不在 activeRuns 镜像中的 Run；lease/fencing、Run 是否终态
-// 以及 lease 是否确实已释放，全部交由 Application 的原子命令最终校验。
-// 若内存中仍有该 Run（包括 lease/fencing 错配），继续走严格活动租约路径，
-// 防止活动 Run 的错误帧借此例外越过 transport fence。
-func (g *Gateway) lateUsageTransportValid(rc *runnerConn, runID, runnerID, epoch string) bool {
+// lateObservationTransportValid 是终态观测帧（usage.updated 与 Run Journal
+// 相位帧 run.phase_entered/closed，闭集见 application.LateTerminalObservationKind）
+// 的唯一 Gateway 例外。它只放行当前连接上已不在 activeRuns 镜像中的 Run；
+// lease/fencing、Run 是否终态以及 lease 是否确实已释放，全部交由 Application
+// 的原子命令最终校验。若内存中仍有该 Run（包括 lease/fencing 错配），继续走
+// 严格活动租约路径，防止活动 Run 的错误帧借此例外越过 transport fence。
+// 相位帧需要这条例外的理由：settle 闭包在终态 status 帧之后发出，而终态
+// 应用时 activeRuns 已被清理——不打这个洞，远程 run 的 journal 全部以
+// 未闭合 settle 收尾。
+func (g *Gateway) lateObservationTransportValid(rc *runnerConn, runID, runnerID, epoch string) bool {
 	if !g.eventConnectionValid(rc, runnerID, epoch) {
 		return false
 	}
@@ -420,11 +424,12 @@ func (g *Gateway) handleRunEvent(rc *runnerConn, env Envelope) {
 		return
 	}
 	// 与活动租约不匹配（旧 epoch / 旧 lease / 未知 run）：通常 ACK 但不应用。
-	// 终态后 activeRuns 已由网关清理时，仅 usage.updated 可继续进入
-	// Application；它会按已释放 lease、Run terminal、runner/fencing 做最终裁决。
+	// 终态后 activeRuns 已由网关清理时，终态观测帧（usage.updated / 相位闭包，
+	// 闭集见 application.LateTerminalObservationKind）可继续进入 Application；
+	// 它们按已释放 lease、Run terminal、runner/fencing 做最终裁决。
 	if !g.eventTransportValid(rc, p.RunID, p.LeaseID, p.RunnerID, p.ConnectionEpoch, p.FencingToken) {
-		if p.Event.Kind == domain.EventUsageUpdated &&
-			g.lateUsageTransportValid(rc, p.RunID, p.RunnerID, p.ConnectionEpoch) {
+		if application.LateTerminalObservationKind(p.Event.Kind) &&
+			g.lateObservationTransportValid(rc, p.RunID, p.RunnerID, p.ConnectionEpoch) {
 			// Continue to Application for the released-lease terminal observation.
 		} else {
 			log.Printf("runnergateway: 旧帧 ACK 不应用（run=%s lease=%s conn=%s）", p.RunID, p.LeaseID, rc.runnerID)

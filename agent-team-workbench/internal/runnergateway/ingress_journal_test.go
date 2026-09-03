@@ -120,12 +120,75 @@ func TestDispatchJournalClosedFailedOnOfferEnqueueFailure(t *testing.T) {
 	}
 	ev := journal[0]
 	if ev.Data["outcome"] != string(observability.PhaseFailed) {
-		t.Fatalf("入队失败 closed 应落 failed: %+v", ev.Data)
+		t.Fatalf("入队失败 closed 应落 failed: %+v", ev)
 	}
 	if ev.Data["route"] != "remote" {
-		t.Fatalf("失败 closed detail 应含 route: %+v", ev.Data)
+		t.Fatalf("失败 closed detail 应含 route: %+v", ev)
 	}
 	if lease := g.store.(*fakeStore).runners.leases; len(lease) != 1 || !lease[0].Released {
 		t.Fatalf("入队失败必须释放 DB lease: %+v", lease)
 	}
+}
+
+// ── Run Journal 相位帧（D2）：runner 内环节事件经 run.event 回传 ──────
+
+// 终态 status 应用后（activeRuns 镜像已清），迟到的相位闭包帧（如 settle）
+// 仍进应用层——终态观测例外扩面到相位帧；身份四要素与终态裁决由
+// Application 负责（见 application.RunnerLatePhase 系列测试）。
+func TestLatePhaseClosureFrameReachesApplicationAfterTerminal(t *testing.T) {
+	engine := newFakeEngine()
+	g, rc := newEventGateway(t, engine)
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_s", 1,
+		"run.status_changed", map[string]any{"status": "succeeded"}))
+	readAck(t, rc)
+	rc.mu.Lock()
+	_, stillActive := rc.activeRuns["run_1"]
+	rc.mu.Unlock()
+	if stillActive {
+		t.Fatal("前置失败：终态后 activeRuns 应已清理")
+	}
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_p", 2,
+		domain.EventRunPhaseClosed, map[string]any{"phase": "settle", "outcome": "ok"}))
+	if len(engine.inputs) != 2 || engine.inputs[1].Kind != domain.EventRunPhaseClosed {
+		t.Fatalf("迟到相位闭包应进应用层: %+v", engine.inputs)
+	}
+	ack := readAck(t, rc)
+	if ack.EventID != "revt_p" || ack.AckedProducerSeq != 2 {
+		t.Fatalf("ACK 应回显帧身份: %+v", ack)
+	}
+}
+
+// 活动 Run 仍在镜像时，错误 fencing 的相位帧不得借终态观测例外越过
+// transport fence：ackStale、不进应用层。
+func TestActiveRunPhaseFrameWrongFencingAckedStale(t *testing.T) {
+	engine := newFakeEngine()
+	g, rc := newEventGateway(t, engine)
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 8, "revt_bad", 1,
+		domain.EventRunPhaseClosed, map[string]any{"phase": "settle", "outcome": "ok"}))
+	if len(engine.inputs) != 0 {
+		t.Fatalf("错 fencing 相位帧不得进应用层: %+v", engine.inputs)
+	}
+	ack := readAck(t, rc)
+	if ack.EventID != "revt_bad" || ack.AckedProducerSeq != 1 {
+		t.Fatalf("stale ACK 应回显帧身份: %+v", ack)
+	}
+}
+
+// 被顶替的旧连接（superseded）上的迟到相位帧不享受例外：不进应用层。
+func TestSupersededConnPhaseFrameStaysStale(t *testing.T) {
+	engine := newFakeEngine()
+	g, rc := newEventGateway(t, engine)
+	g.mu.Lock()
+	rc.superseded = true
+	g.mu.Unlock()
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_sup", 2,
+		domain.EventRunPhaseClosed, map[string]any{"phase": "settle"}))
+	if len(engine.inputs) != 0 {
+		t.Fatalf("旧连接相位帧不得进应用层: %+v", engine.inputs)
+	}
+	readAck(t, rc)
 }
