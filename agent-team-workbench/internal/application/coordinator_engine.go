@@ -30,6 +30,7 @@ const (
 	coordinatorSettlementAction                = "settle_dispatch"
 	coordinatorCancelSettlementAction          = "settle_cancelled_goal"
 	coordinatorCancelSettlementTurnKeysDataKey = "settle_cancelled_goal_turn_keys"
+	coordinatorOpenDispatchIDsDataKey          = "open_dispatch_ids"
 )
 
 func mapsCloneAny(in map[string]any) map[string]any {
@@ -1342,78 +1343,100 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			fresh.Data["total_steps"] = len(plan.Steps)
 			fresh.Data["completed_steps"] = 0
 		} else {
-			// §7.11 终态钩子：进入 waiting_user 前必须检查未消费 actionable 评论
-			//（revision > consumed_watermark 且 kind IN (requirement, review_feedback)）。
-			// 存在则不进入 waiting_user、改排 queued/message，由下一轮消费评论；
-			// 该检查与 Coordinator state CAS 配合，不依赖进程内 Notify 消除竞态。
-			hasUnconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(ctx, fresh.RootWorkItemID, fresh.ConsumedCommentRevision)
-			if hcErr != nil {
-				return hcErr
-			}
-			if hasUnconsumed {
-				fresh.Status = domain.CoordinatorQueued
-				fresh.Phase = "message"
-				fresh.CurrentAction = "message"
-				fresh.Summary = "存在未消费任务反馈，Coordinator 继续处理"
-			} else {
-				// A governed Plan finish must have a canonical passed evaluation
-				// before the control line can expose user acceptance. A plain model
-				// finish (or a verdict that was never durably recorded) is a blocker,
-				// not an implicit completion path.
-				finishEvidenceReady := true
-				finishEvidenceReason := ""
-				if plan != nil && plan.Status == domain.PlanFinished {
-					if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID); goalErr == nil {
-						ready, reason, gateErr := s.CoordinatorFinishEvidenceReady(ctx, goal.ID, goal.CurrentTodoID, plan, run)
-						if gateErr != nil {
-							return gateErr
-						}
-						finishEvidenceReady, finishEvidenceReason = ready, reason
-					} else if !errors.Is(goalErr, domain.ErrNotFound) {
-						return goalErr
-					}
+			waitingOnDispatch := false
+			if evaluation, _ := run.Input["evaluation"].(bool); evaluation {
+				openDispatchIDs, openDispatchErr := s.openDispatchIDs(ctx, fresh.RootWorkItemID)
+				if openDispatchErr != nil {
+					return openDispatchErr
 				}
-				if !finishEvidenceReady {
-					fresh.Status = domain.CoordinatorBlocked
-					fresh.Phase = "validation"
-					fresh.BlockerCode = "governance_evidence_insufficient"
-					fresh.BlockerMessage = finishEvidenceReason
-					fresh.CurrentAction = "补齐 validation/evidence 后解除阻塞"
-					fresh.Summary = "完成决策缺少可验证证据"
-					fresh.LastError = finishEvidenceReason
-					handoffCleared = clearCoordinatorHandoffCheckpoint(fresh)
-					if root.Status == domain.WorkItemInProgress {
-						if err := s.blockLocked(ctx, root, BlockParams{Code: fresh.BlockerCode,
-							Message: fresh.BlockerMessage, Source: "governance_finish_gate"}); err != nil {
-							return err
+				delete(fresh.Data, coordinatorOpenDispatchIDsDataKey)
+				if len(openDispatchIDs) > 0 {
+					// A passed evaluation is not a completion receipt while another
+					// dispatch still owns a settlement continuation. Keep the control
+					// line available so that wake can be consumed; waiting_user would
+					// make scheduler preflight discard it and strand the batch.
+					fresh.Status = domain.CoordinatorRunning
+					fresh.Phase = "settling"
+					fresh.CurrentAction = "等待派发批次收口"
+					fresh.Summary = "评估已通过，仍在等待派发结算"
+					fresh.Data[coordinatorOpenDispatchIDsDataKey] = openDispatchIDs
+					waitingOnDispatch = true
+				}
+			}
+			if !waitingOnDispatch {
+				// §7.11 终态钩子：进入 waiting_user 前必须检查未消费 actionable 评论
+				//（revision > consumed_watermark 且 kind IN (requirement, review_feedback)）。
+				// 存在则不进入 waiting_user、改排 queued/message，由下一轮消费评论；
+				// 该检查与 Coordinator state CAS 配合，不依赖进程内 Notify 消除竞态。
+				hasUnconsumed, hcErr := s.store.TaskComments().HasUnconsumedActionable(ctx, fresh.RootWorkItemID, fresh.ConsumedCommentRevision)
+				if hcErr != nil {
+					return hcErr
+				}
+				if hasUnconsumed {
+					fresh.Status = domain.CoordinatorQueued
+					fresh.Phase = "message"
+					fresh.CurrentAction = "message"
+					fresh.Summary = "存在未消费任务反馈，Coordinator 继续处理"
+				} else {
+					// A governed Plan finish must have a canonical passed evaluation
+					// before the control line can expose user acceptance. A plain model
+					// finish (or a verdict that was never durably recorded) is a blocker,
+					// not an implicit completion path.
+					finishEvidenceReady := true
+					finishEvidenceReason := ""
+					if plan != nil && plan.Status == domain.PlanFinished {
+						if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID); goalErr == nil {
+							ready, reason, gateErr := s.CoordinatorFinishEvidenceReady(ctx, goal.ID, goal.CurrentTodoID, plan, run)
+							if gateErr != nil {
+								return gateErr
+							}
+							finishEvidenceReady, finishEvidenceReason = ready, reason
+						} else if !errors.Is(goalErr, domain.ErrNotFound) {
+							return goalErr
 						}
 					}
-					if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
-						return err
-					}
-				} else {
-					fresh.Status = domain.CoordinatorWaitingUser
-					fresh.Phase = "acceptance"
-					fresh.CurrentAction = "等待用户验收"
-					fresh.Summary = "Coordinator 已完成本轮任务"
-					if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
-						fresh.Data["completed_steps"] = total
-						fresh.Data["progress"] = float64(1)
-					}
-					// An evaluation pass has already moved the root review → acceptance
-					// before this Coordinator projection runs. Only the plain finish
-					// path starts at execution and needs the review transition here;
-					// never regress an existing acceptance projection back to review.
-					if root.Status == domain.WorkItemInProgress && root.Phase == domain.PhaseExecution {
-						rootExpected := root.Version
-						if err := root.EnterReview(time.Now().UTC()); err == nil {
-							if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
+					if !finishEvidenceReady {
+						fresh.Status = domain.CoordinatorBlocked
+						fresh.Phase = "validation"
+						fresh.BlockerCode = "governance_evidence_insufficient"
+						fresh.BlockerMessage = finishEvidenceReason
+						fresh.CurrentAction = "补齐 validation/evidence 后解除阻塞"
+						fresh.Summary = "完成决策缺少可验证证据"
+						fresh.LastError = finishEvidenceReason
+						handoffCleared = clearCoordinatorHandoffCheckpoint(fresh)
+						if root.Status == domain.WorkItemInProgress {
+							if err := s.blockLocked(ctx, root, BlockParams{Code: fresh.BlockerCode,
+								Message: fresh.BlockerMessage, Source: "governance_finish_gate"}); err != nil {
 								return err
 							}
-							if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
-								domain.AggregateWorkItem, root.ID, root.Version, nil,
-								map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
-								return err
+						}
+						if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+							return err
+						}
+					} else {
+						fresh.Status = domain.CoordinatorWaitingUser
+						fresh.Phase = "acceptance"
+						fresh.CurrentAction = "等待用户验收"
+						fresh.Summary = "Coordinator 已完成本轮任务"
+						if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
+							fresh.Data["completed_steps"] = total
+							fresh.Data["progress"] = float64(1)
+						}
+						// An evaluation pass has already moved the root review → acceptance
+						// before this Coordinator projection runs. Only the plain finish
+						// path starts at execution and needs the review transition here;
+						// never regress an existing acceptance projection back to review.
+						if root.Status == domain.WorkItemInProgress && root.Phase == domain.PhaseExecution {
+							rootExpected := root.Version
+							if err := root.EnterReview(time.Now().UTC()); err == nil {
+								if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
+									return err
+								}
+								if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
+									domain.AggregateWorkItem, root.ID, root.Version, nil,
+									map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
+									return err
+								}
 							}
 						}
 					}
@@ -1441,6 +1464,9 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 		}
 		if fresh.Status == domain.CoordinatorWaitingUser {
 			kind, summary, stage = domain.EventCoordinatorCompleted, "Coordinator 已交付，等待用户验收", "acceptance"
+		}
+		if fresh.Status == domain.CoordinatorRunning && fresh.Phase == "settling" {
+			kind, summary, stage = domain.EventCoordinatorStateChanged, "评估已通过，等待派发批次收口", "settlement"
 		}
 		if err := s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID, kind, summary,
 			run.ID, run.AgentProfileID, fresh.Attempt, "", nil,

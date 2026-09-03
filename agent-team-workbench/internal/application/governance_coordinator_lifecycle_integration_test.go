@@ -230,7 +230,7 @@ func TestPausedGoalKeepsPlanApprovalPendingUntilResume(t *testing.T) {
 }
 
 func TestPausedGoalPreservesSettlementWakeUntilResume(t *testing.T) {
-	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
+	ctx, db, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnvWithDatabase(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "pause settlement wake", RecordKind: domain.RecordKindTask,
 		AutoCoordinate: true, AcceptanceCriteria: []string{"settlement wake survives pause"},
@@ -284,6 +284,12 @@ func TestPausedGoalPreservesSettlementWakeUntilResume(t *testing.T) {
 	// creation. Resume must reconstruct one queued wake from the collecting
 	// Dispatch instead of assuming the old row is still usable.
 	if err := store.Wakeups().MarkWakeupStatus(ctx, settlement.ID, domain.WakeupStatusConsumed); err != nil {
+		t.Fatal(err)
+	}
+	// 刚 consumed 的 wake 可能仍在 CreateRunForWakeup 窗口内，不能立即复制；
+	// 这里回拨为陈旧 claim，精确模拟进程在抢占后崩溃且超过宽限期。
+	if _, err := db.Exec(`UPDATE agent_wakeup_requests SET updated_at=? WHERE id=?`,
+		time.Now().UTC().Add(-time.Minute), settlement.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.ResumeGoal(ctx, paused.ID, paused.Version); err != nil {

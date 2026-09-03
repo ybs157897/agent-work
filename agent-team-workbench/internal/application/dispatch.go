@@ -57,11 +57,11 @@ func (s *Service) emitDispatchCreated(ctx context.Context, workspaceID string, d
 }
 
 // resolvePlanDispatchID 返回 plan dispatch verb 派生子 run 的批次归属：
-// 优先继承 source run（lead 主线 run）的批次——子 run 与触发 plan 的用户消息
-// 同批次；source run 无批次或批次不属于 plan 主任务（API 手动提交 plan、存量
-// run）时落 trigger=lead_plan 兜底批次：同一 source run 幂等复用（审批续跑不再
-// 重复建），无 source run 的手动 plan 每次提交独立成批。须在创建成员 run 的
-// 同一事务内调用。
+// 优先继承 source run（lead 主线 run）的 running 批次——子 run 与触发 plan 的
+// 用户消息同批次；collecting 起成员集合已经冻结，settlement/recovery Run 再派发
+// 时必须落新的 trigger=lead_plan 批。source run 无可追加批次时，同一 source run
+// 只复用仍为 running 的兜底批次（审批续跑不重复建）；无 source run 的手动 plan
+// 每次提交独立成批。须在创建成员 run 的同一事务内调用。
 func (s *Service) resolvePlanDispatchID(ctx context.Context, plan *domain.Plan) (string, error) {
 	wi, err := s.store.WorkItems().Get(ctx, plan.WorkItemID)
 	if err != nil {
@@ -80,7 +80,7 @@ func (s *Service) resolvePlanDispatchID(ctx context.Context, plan *domain.Plan) 
 			if derr != nil {
 				return "", derr
 			}
-			if d.WorkItemID == plan.WorkItemID {
+			if d.WorkItemID == plan.WorkItemID && d.Status == domain.DispatchRunning {
 				return d.ID, nil
 			}
 		}
@@ -91,7 +91,8 @@ func (s *Service) resolvePlanDispatchID(ctx context.Context, plan *domain.Plan) 
 			return "", err
 		}
 		for _, d := range existing {
-			if d.Trigger == domain.DispatchTriggerLeadPlan && d.LeadRunID == plan.SourceRunID {
+			if d.Trigger == domain.DispatchTriggerLeadPlan && d.LeadRunID == plan.SourceRunID &&
+				d.Status == domain.DispatchRunning {
 				return d.ID, nil
 			}
 		}
