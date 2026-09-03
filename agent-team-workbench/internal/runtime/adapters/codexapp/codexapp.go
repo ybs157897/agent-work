@@ -33,6 +33,7 @@ import (
 
 	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -126,9 +127,13 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 	}
 
+	// Run Journal spawn 相位：进程拉起前进入，覆盖 TrustedCommand 解析、管道
+	// 建立与 Start 的全部 spawn_failed 出口；pid/pgid 在 OnSpawn 点已知后收口。
+	spawnAt := time.Now()
+	enterPhase(ex, observability.PhaseSpawn, 1, nil)
 	cmd, err := runtime.TrustedCommand(m.cfg.BinPath, m.commandArgs(snap)...)
 	if err != nil {
-		return failedResult(configFailure("spawn_failed", err.Error()))
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
 	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
@@ -141,22 +146,24 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return failedResult(configFailure("spawn_failed", err.Error()))
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return failedResult(configFailure("spawn_failed", err.Error()))
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return failedResult(configFailure("spawn_failed", err.Error()))
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	if err := cmd.Start(); err != nil {
-		return failedResult(configFailure("spawn_failed", err.Error()))
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	// pgid 必须在组长存活时采样（组长死后 Getpgid 失败，组级信号打不出去）。
 	pgid := processGroupID(cmd)
 	ex.Callbacks.OnSpawn(cmd.Process.Pid, pgid)
+	closePhase(ex, observability.PhaseSpawn, observability.PhaseOK, nil, spawnAt,
+		map[string]any{"pid": cmd.Process.Pid, "pgid": pgid})
 
 	s := &execStream{
 		module: m, ex: ex, ctx: ctx,
@@ -611,6 +618,31 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 	res := &pumpResult{}
 	// 任意退出路径（含流中断/失败）都带上已观测到的本轮用量。
 	defer func() { res.usage = s.usageSnapshot() }()
+	// Run Journal handshake 相位：覆盖 initialize 握手 + thread/start|resume
+	// 探测整段；resume 意图随 entered detail 可读。thread 建立即收口 ok，
+	// 其余退出路径（initialize 失败/流中断/协议错误/Ctx 取消）由 defer 收口——
+	// 失败 failure 复用 pump 既有分类（session_unknown 自愈判定证据随之可读）。
+	hsAt := time.Now()
+	resumed := s.resumeThreadID != ""
+	enterPhase(s.ex, observability.PhaseHandshake, 1, map[string]any{"resume": resumed})
+	handshakeDone := false
+	defer func() {
+		if handshakeDone {
+			return
+		}
+		if s.ctx.Err() != nil {
+			// Ctx 取消（终态意图/服务关停）不是握手故障：skipped 收口，不留假故障点。
+			closePhase(s.ex, observability.PhaseHandshake, observability.PhaseSkipped, nil, hsAt,
+				map[string]any{"resume": resumed})
+			return
+		}
+		failure := res.failure
+		if failure == nil {
+			failure = ioFailure("stream_failed", "stream ended before handshake completed", true)
+		}
+		closePhase(s.ex, observability.PhaseHandshake, observability.PhaseFailed, failure, hsAt,
+			map[string]any{"resume": resumed})
+	}()
 	// 1) initialize 握手（版本门）。
 	if _, err := s.request("initialize", initializeParams()); err != nil {
 		res.failure = ioFailure("io_failed", err.Error(), true)
@@ -700,6 +732,12 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 				// 首个 threadId 立即上报：崩溃也不丢 resume 时机。
 				res.session = &runtime.SessionUpdate{Ref: "codex://" + r.Thread.ID}
 				s.ex.Callbacks.OnSession(*res.session)
+				// thread 建立即握手收口并开启 first_event（等待本轮首个真实回调，
+				// 由 ModuleRunner 的回调面收口）；OnSession 是握手自身的上报，不算。
+				handshakeDone = true
+				closePhase(s.ex, observability.PhaseHandshake, observability.PhaseOK, nil, hsAt,
+					map[string]any{"resumed": resumed})
+				enterPhase(s.ex, observability.PhaseFirstEvent, 1, nil)
 				turnParams := map[string]any{
 					"threadId": r.Thread.ID,
 					"input":    []map[string]any{{"type": "text", "text": s.ex.Instruction}},
@@ -1380,13 +1418,16 @@ func (s *execStream) handleServerRequest(frame *rpcFrame) {
 
 // composeResult 终态判定优先级（对齐 kimi.terminalResult）：终态意图 >
 // turn/completed > 流中断分类。审批拒绝等无意图中断映射 cancelled（旧实现
-// running→cancelling→cancelled 语义）。
+// running→cancelling→cancelled 语义）。裁决分支经 settle 相位的 entered detail
+// 可读（verdict_branch）；settle 的 closed 由 ModuleRunner.recordTerminal 在
+// 终态落账后补齐，每 run 恰好一对。
 func composeResult(ex *runtime.ExecContext, ctx context.Context, in *pumpResult, waitErr error) runtime.ExecResult {
 	// 用量对任意终态都随行（已消费的 token 不因取消/失败而消失）。
 	result := runtime.ExecResult{Session: in.session, Usage: in.usage}
 	if ctx.Err() != nil {
 		// 进程被终止：按终态意图区分 cancelled/interrupted；
 		// 无意图（如服务关停）按 interrupted（保留 resume 时机）。
+		enterSettle(ex, "intent")
 		if kind, ok := ex.TerminalIntent(); ok && kind == runtime.ControlCancel {
 			result.Outcome = runtime.OutcomeCancelled
 		} else {
@@ -1396,18 +1437,23 @@ func composeResult(ex *runtime.ExecContext, ctx context.Context, in *pumpResult,
 	}
 	switch {
 	case in.failure != nil:
+		enterSettle(ex, "stream_broken")
 		result.Outcome, result.Failure = runtime.OutcomeFailed, in.failure
 	case in.finished && in.turnStatus == "completed":
+		enterSettle(ex, "turn_completed")
 		result.Outcome = runtime.OutcomeSucceeded
 	case in.finished && in.turnStatus == "failed":
+		enterSettle(ex, "turn_completed")
 		message := strings.TrimSpace(in.turnErrMsg)
 		if message == "" {
 			message = "codex turn failed"
 		}
 		result.Outcome, result.Failure = runtime.OutcomeFailed, codexFailure("turn_failed", message)
 	case in.finished:
+		enterSettle(ex, "intent")
 		result.Outcome = runtime.OutcomeCancelled
 	default:
+		enterSettle(ex, "stream_broken")
 		detail := "stream ended without turn/completed"
 		if waitErr != nil {
 			detail = fmt.Sprintf("%s; exit: %v", detail, waitErr)
@@ -1415,6 +1461,17 @@ func composeResult(ex *runtime.ExecContext, ctx context.Context, in *pumpResult,
 		result.Outcome, result.Failure = runtime.OutcomeFailed, ioFailure("stream_failed", detail, true)
 	}
 	return result
+}
+
+// enterSettle 终态裁决入口：发 run.phase_entered{settle, verdict_branch}。
+func enterSettle(ex *runtime.ExecContext, verdictBranch string) {
+	enterPhase(ex, observability.PhaseSettle, 1, map[string]any{"verdict_branch": verdictBranch})
+}
+
+// spawnFailed spawn 相位失败收口并返回失败结果（复用既有 spawn_failed 分类）。
+func spawnFailed(ex *runtime.ExecContext, started time.Time, f *runtime.Failure) runtime.ExecResult {
+	closePhase(ex, observability.PhaseSpawn, observability.PhaseFailed, f, started, nil)
+	return failedResult(f)
 }
 
 // terminalByIntent Ctx 取消后的终态：有终态意图 → interrupted/cancelled，否则 failed。
