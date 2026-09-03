@@ -160,6 +160,17 @@ type TaskCoordinatorState struct {
 	UpdatedAt               time.Time
 }
 
+// validPlanRepairErrorClass 是自动修复预算内可重试的错误类白名单：语法/结构/
+// 语义错误都可凭校验反馈自愈；authority/quota 属策略裁决，只能人工解除阻塞。
+func validPlanRepairErrorClass(class CoordinatorRepairErrorClass) bool {
+	switch class {
+	case CoordinatorRepairErrorSyntax, CoordinatorRepairErrorSchema, CoordinatorRepairErrorSemantic:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *TaskCoordinatorState) ValidateRepair() error {
 	if s == nil {
 		return fmt.Errorf("%w: coordinator state required", ErrValidation)
@@ -183,13 +194,13 @@ func (s *TaskCoordinatorState) ValidateRepair() error {
 		return nil
 	case CoordinatorRepairPending:
 		if s.RepairAttempt < 1 || s.RepairAttempt > 2 || s.RepairSourceRunID == "" ||
-			(s.RepairErrorClass != CoordinatorRepairErrorSyntax && s.RepairErrorClass != CoordinatorRepairErrorSchema) ||
+			!validPlanRepairErrorClass(s.RepairErrorClass) ||
 			s.RepairErrorCode == "" {
 			return fmt.Errorf("%w: invalid pending repair checkpoint", ErrValidation)
 		}
 	case CoordinatorRepairExhausted:
 		if s.RepairAttempt != 2 || s.RepairSourceRunID == "" ||
-			(s.RepairErrorClass != CoordinatorRepairErrorSyntax && s.RepairErrorClass != CoordinatorRepairErrorSchema) ||
+			!validPlanRepairErrorClass(s.RepairErrorClass) ||
 			s.RepairErrorCode == "" {
 			return fmt.Errorf("%w: invalid exhausted repair checkpoint", ErrValidation)
 		}
