@@ -1191,6 +1191,19 @@ export const EVENT_NAMES = [
   'task_comment.created',
 ] as const;
 
+/**
+ * internal 事件名单（Run Journal，与 domain/events.go internalEventNames 一致）。
+ * 这些事件只落 run_events、从不经 SSE 推送，因此不注册 EventSource listener；
+ * 读取走 /runs/{id}/journal 调试 API。事件契约测试按
+ * EVENT_NAMES ∪ INTERNAL_EVENT_NAMES == AsyncAPI enum 双向对账。
+ */
+export const INTERNAL_EVENT_NAMES = [
+  'run.phase_entered',
+  'run.phase_closed',
+  'run.log_chunk',
+  'run.decision',
+] as const;
+
 /** 模型注册表条目（models/ 目录为真相源；词汇对齐 pi-ai provider profile）。 */
 export interface ModelEntry {
   id: string;
