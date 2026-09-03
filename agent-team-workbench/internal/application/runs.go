@@ -1558,6 +1558,7 @@ func (s *Service) recordRunProgressTx(ctx context.Context, runID string, progres
 
 // RecordRunEvent 追加 Run 域事件（message/tool 流），只写 run_events + stream；
 // artifact.created 事件（mock 风格，载荷自带 sha256/logical_path）同时投影 artifacts 表。
+// internal 类事件（Run Journal）不落 stream，提交后跳过 SSE 唤醒。
 func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
 	var workspaceID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -1568,7 +1569,9 @@ func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data
 	if err != nil {
 		return err
 	}
-	s.notifier.Notify(workspaceID)
+	if !domain.IsInternalEventName(evType) {
+		s.notifier.Notify(workspaceID)
+	}
 	return nil
 }
 

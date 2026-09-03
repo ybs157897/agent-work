@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -25,8 +26,14 @@ type streamPayload struct {
 
 // Append 必须在事务内调用：分配 run_seq（可选）与 stream_seq，
 // 同一事务写 stream_events + outbox_messages。
+// internal 类事件（Run Journal，domain.IsInternalEventName）只落 run_events：
+// 不进 stream_events/outbox，SSE 与对话回放均不可见；且必须携带 runEvent
+// （internal 事件脱离 run 维度没有意义）。
 func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEvent *application.RunEventRecord) (*domain.CanonicalEvent, error) {
 	if !domain.IsKnownEventName(ev.Type) {
+		return nil, domain.ErrValidation
+	}
+	if domain.IsInternalEventName(ev.Type) && runEvent == nil {
 		return nil, domain.ErrValidation
 	}
 	db := r.store.exec(ctx)
@@ -40,6 +47,9 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 			timeParam(ev.OccurredAt)).Scan(&ev.RunSeq); err != nil {
 			return nil, r.store.mapErr(err)
 		}
+	}
+	if domain.IsInternalEventName(ev.Type) {
+		return ev, nil
 	}
 
 	payload, err := json.Marshal(streamPayload{
@@ -177,10 +187,32 @@ func (r *EventRepo) ListActivities(ctx context.Context, workspaceID string, limi
 	return out, rows.Err()
 }
 
-// ListRunEvents 按 run_seq 正序回放；payload 为 JSON 文本（可空）。
+// ListRunEvents 按 run_seq 正序回放 surface 事件（对话历史/SSE 投影用）；
+// internal 类事件（Run Journal）被过滤，取全量用 ListRunEventsIncludeInternal。
 func (r *EventRepo) ListRunEvents(ctx context.Context, runID string) ([]application.RunEvent, error) {
-	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT run_seq, agent_id, event_type, payload, occurred_at FROM run_events WHERE run_id=? ORDER BY run_seq`, runID)
+	return r.listRunEvents(ctx, runID, false)
+}
+
+// ListRunEventsIncludeInternal 按 run_seq 正序回放全部事件（含 internal 类）。
+// 调试/日志面专用；对话回放与模型上下文重建一律走 ListRunEvents。
+func (r *EventRepo) ListRunEventsIncludeInternal(ctx context.Context, runID string) ([]application.RunEvent, error) {
+	return r.listRunEvents(ctx, runID, true)
+}
+
+func (r *EventRepo) listRunEvents(ctx context.Context, runID string, includeInternal bool) ([]application.RunEvent, error) {
+	query := `SELECT run_seq, agent_id, event_type, payload, occurred_at FROM run_events WHERE run_id=?`
+	args := []any{runID}
+	if !includeInternal {
+		names := domain.InternalEventNames()
+		placeholders := make([]string, len(names))
+		for i, n := range names {
+			placeholders[i] = "?"
+			args = append(args, n)
+		}
+		query += ` AND event_type NOT IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	query += ` ORDER BY run_seq`
+	rows, err := r.store.query(ctx, r.store.exec(ctx), query, args...)
 	if err != nil {
 		return nil, err
 	}

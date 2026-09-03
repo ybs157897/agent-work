@@ -251,6 +251,11 @@ components:
             - run.recovery_started
             - run.recovery_completed
             - run.recovery_failed
+            # Run Journal（internal 类：只落 run_events，不经 stream_events 推送 SSE；
+            # 对话回放默认过滤，调试面按 visibility=all 读取）
+            - run.phase_entered
+            - run.phase_closed
+            - run.log_chunk
             # Execution Host / Workspace Location（任务控制面补全 RFC §10）
             - execution_host.updated
             - workspace_location.created
