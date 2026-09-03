@@ -20,16 +20,20 @@ export function Skeleton({ className, delayMs = 300 }: { className?: string; del
   );
 }
 
-/** 看板加载骨架：四列 × 卡片形状，匹配真实布局形态（审计 P1 #1/#2）。 */
+/** 看板加载骨架：Plane 风固定列宽 × 卡片形状。 */
 export function KanbanSkeleton() {
   return (
-    <div className="flex gap-4 h-full" role="status" aria-label="任务加载中">
-      {[0, 1, 2, 3].map((col) => (
-        <div key={col} className="flex-1 min-w-[240px] rounded-xl bg-surface-sunken/60 p-4 space-y-3">
-          <Skeleton className="h-6 w-24" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-16 w-3/4" />
+    <div className="flex h-full min-h-[32rem] gap-base overflow-x-auto" role="status" aria-label="任务加载中">
+      {[0, 1, 2, 3, 4].map((col) => (
+        <div key={col} className="flex w-[340px] shrink-0 flex-col gap-tight">
+          <div className="flex items-center gap-tight px-tight py-tight">
+            <Skeleton className="h-2.5 w-2.5 rounded-full" />
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-5 w-6 rounded-button" />
+          </div>
+          <Skeleton className="h-28 w-full rounded-card" />
+          <Skeleton className="h-28 w-full rounded-card" />
+          <Skeleton className="h-24 w-full rounded-card" />
         </div>
       ))}
     </div>

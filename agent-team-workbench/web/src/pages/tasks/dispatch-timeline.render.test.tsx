@@ -3,9 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DispatchCard } from '../../api/types';
 import type { ContentBlockDocument } from '../../utils/content-blocks';
 
-// renderToStaticMarkup 走 useSyncExternalStore 的 server snapshot（zustand 初始态），
-// setState 注入不可见：直接 mock store，让 fixture 可控。
-const storeState = vi.hoisted(() => ({
+const dispatchStoreState = vi.hoisted(() => ({
   byWorkItem: {} as Record<string, DispatchCard[]>,
   errorByWorkItem: {} as Record<string, string | undefined>,
   refreshFor: vi.fn(),
@@ -13,23 +11,22 @@ const storeState = vi.hoisted(() => ({
 const runStoreState = vi.hoisted(() => ({
   runs: {} as Record<string, unknown>,
   timelines: {} as Record<string, unknown[]>,
-  approvals: {} as Record<string, unknown[]>,
+  fetchRun: vi.fn(),
   watchRun: vi.fn(),
   unwatchRun: vi.fn(),
 }));
+
 vi.mock('../../stores/dispatches.store', () => ({
-  useDispatchesStore: (selector: (s: typeof storeState) => unknown) => selector(storeState),
+  useDispatchesStore: (selector: (state: typeof dispatchStoreState) => unknown) => selector(dispatchStoreState),
 }));
 vi.mock('../../stores/runs.store', () => ({
-  useRunsStore: (selector: (s: typeof runStoreState) => unknown) => selector(runStoreState),
+  useRunsStore: (selector: (state: typeof runStoreState) => unknown) => selector(runStoreState),
 }));
 
-import { AgentOutput } from '../../components/chat/agent-output';
-import { AssistantTurn } from '../../components/chat/assistant-turn';
-import { DispatchCardItem, DispatchRunRow, DispatchTimeline } from './dispatch-timeline';
-import { TaskRunOutput } from './task-run-output';
+import { DispatchRunRow, DispatchTimeline, taskAgentRuns } from './dispatch-timeline';
+import { projectTaskRunIO, TaskRunOutput } from './task-run-output';
 
-const card = (over: Partial<DispatchCard> = {}): DispatchCard => ({
+const card = (overrides: Partial<DispatchCard> = {}): DispatchCard => ({
   id: 'disp_1',
   work_item_id: 'wi_1',
   trigger: 'user_message',
@@ -41,7 +38,7 @@ const card = (over: Partial<DispatchCard> = {}): DispatchCard => ({
       agent_profile_id: 'agent_1',
       agent_name: '小明',
       status: 'succeeded',
-      summary: '完成初稿并自检',
+      summary: '执行 worker 任务',
     },
     {
       id: 'run_2',
@@ -49,141 +46,159 @@ const card = (over: Partial<DispatchCard> = {}): DispatchCard => ({
       agent_profile_id: 'agent_2',
       agent_name: '阿评',
       status: 'running',
-      summary: '评审中',
+      summary: '评审任务',
     },
   ],
   created_at: '2026-08-30T01:02:03Z',
-  ...over,
+  ...overrides,
+});
+
+const runCreated = (instruction: string) => ({
+  event_id: 'e1', stream_seq: 1, run_seq: 1, type: 'run.created',
+  occurred_at: '2026-08-30T01:00:00Z', data: { instruction },
+});
+
+const completed = (
+  id: string,
+  seq: number,
+  text: string,
+  contentBlocks?: ContentBlockDocument,
+  agentId = 'main',
+) => ({
+  event_id: id, stream_seq: seq, run_seq: seq, type: 'message.completed', role: 'assistant',
+  agent_id: agentId,
+  occurred_at: `2026-08-30T01:0${seq}:00Z`, text,
+  data: { role: 'assistant', ...(contentBlocks ? { content_blocks: contentBlocks } : {}) },
 });
 
 describe('DispatchTimeline', () => {
   beforeEach(() => {
-    storeState.byWorkItem = {};
-    storeState.errorByWorkItem = {};
-    storeState.refreshFor.mockClear();
+    dispatchStoreState.byWorkItem = {};
+    dispatchStoreState.errorByWorkItem = {};
+    dispatchStoreState.refreshFor.mockClear();
     runStoreState.runs = {};
     runStoreState.timelines = {};
-    runStoreState.approvals = {};
+    runStoreState.fetchRun.mockClear();
     runStoreState.watchRun.mockClear();
     runStoreState.unwatchRun.mockClear();
   });
 
-  it('渲染派发卡片：触发摘录、状态胶囊、会话数与展开语义（默认折叠）', () => {
-    storeState.byWorkItem = {
+  it('以 Agent 执行为一级列表，隐藏派发批次与过程摘要', () => {
+    dispatchStoreState.byWorkItem = {
       wi_1: [card({ trigger_message: { run_id: 'run_0', excerpt: '帮我出一版方案' } })],
     };
     const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(html).toContain('派发时间线');
-    expect(html).toContain('用户消息');
-    expect(html).toContain('帮我出一版方案');
-    expect(html).toContain('2 个会话');
-    expect(html).toContain('运行中');
-    expect(html).toContain('aria-expanded="false"');
-    // 成员行默认折叠不渲染，折叠态不出现成员摘要与对话入口。
-    expect(html).not.toContain('完成初稿并自检');
+    expect(html).toContain('执行 Agent');
+    expect(html).toContain('小明');
+    expect(html).toContain('阿评');
+    expect(html).toContain('输入');
+    expect(html).toContain('最终输出');
+    expect(html).not.toContain('派发时间线');
+    expect(html).not.toContain('帮我出一版方案');
+    expect(html).not.toContain('2 个会话');
   });
 
-  it('未拉取与空列表分别呈现加载与空态', () => {
-    const loading = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(loading).toContain('派发加载中…');
+  it('跨批次按 run id 去重并保持新批次优先', () => {
+    const older = card({ id: 'disp_old', created_at: '2026-08-29T00:00:00Z' });
+    const newer = card({
+      id: 'disp_new',
+      created_at: '2026-08-30T00:00:00Z',
+      runs: [{ ...older.runs[0], id: 'run_3', agent_name: '新 Agent' }, older.runs[1]],
+    });
+    expect(taskAgentRuns([newer, older]).map((item) => item.run.id)).toEqual(['run_3', 'run_2', 'run_1']);
+  });
 
-    storeState.byWorkItem = { wi_1: [] };
+  it('未拉取、空列表与失败分别呈现明确状态', () => {
+    expect(renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />)).toContain('执行记录加载中…');
+
+    dispatchStoreState.byWorkItem = { wi_1: [] };
     const empty = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(empty).toContain('尚无派发记录');
-    expect(empty).toContain('向该任务发送第一条消息后');
+    expect(empty).toContain('尚无 Agent 执行');
+
+    dispatchStoreState.errorByWorkItem = { wi_1: '派发记录加载失败，请重试' };
+    const failed = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('派发记录加载失败，请重试');
+    expect(failed).not.toContain('尚无 Agent 执行');
   });
 
-  it('成员行渲染：名字、run 状态、一行摘要与 Task 内正文入口', () => {
-    const html = renderToStaticMarkup(<DispatchRunRow run={card().runs[0]} />);
+  it('Agent 行只展示身份、状态与时间，不展示输入摘要', () => {
+    const html = renderToStaticMarkup(<DispatchRunRow run={card().runs[0]} createdAt="2026-08-30T01:02:03Z" />);
     expect(html).toContain('小明');
     expect(html).toContain('已成功');
-    expect(html).toContain('完成初稿并自检');
-    expect(html).toContain('aria-label="小明"'); // Avatar 可访问名
-    expect(html).toContain('查看 小明 的任务正文');
-    expect(html).not.toContain('/chat');
+    expect(html).toContain('aria-label="小明"');
+    expect(html).toContain('查看 小明 的输入与最终输出');
+    expect(html).not.toContain('执行 worker 任务');
+  });
+});
+
+describe('TaskRunOutput', () => {
+  beforeEach(() => {
+    runStoreState.runs = {};
+    runStoreState.timelines = {};
   });
 
-  it('TaskRunOutput 复用 AgentOutput 展示 Markdown 与 canonical ContentBlocks，不带 Chat 动作', () => {
+  it('成功 run 只展示输入和最后一条 assistant completed', () => {
+    runStoreState.runs = {
+      run_1: {
+        id: 'run_1', work_item_id: 'wi_1', agent_profile_id: 'agent_1', status: 'succeeded',
+        version: 1, created_at: '2026-08-30T01:00:00Z', updated_at: '2026-08-30T01:03:00Z',
+      },
+    };
+    runStoreState.timelines = {
+      run_1: [runCreated('执行 worker 任务'), completed('e2', 2, '阶段性说明'), completed('e3', 3, '最终交付结果')],
+    };
+
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="小明" />);
+    expect(html).toContain('输入');
+    expect(html).toContain('执行 worker 任务');
+    expect(html).toContain('最终输出');
+    expect(html).toContain('最终交付结果');
+    expect(html).not.toContain('阶段性说明');
+    expect(html).not.toContain('思考过程');
+    expect(html).not.toContain('工具调用');
+  });
+
+  it('保留最终输出的 canonical ContentBlocks', () => {
     const document: ContentBlockDocument = {
       version: 'languagegui/v1',
       blocks: [{ type: 'metric', title: 'Worker 指标', items: [{ label: '质量', value: '通过', tone: 'neutral' }] }],
     };
     runStoreState.runs = {
       run_1: {
-        id: 'run_1', work_item_id: 'wi_1', agent_profile_id: 'agent_1', status: 'succeeded',
-        version: 1, created_at: '2026-08-30T01:00:00Z', updated_at: '2026-08-30T01:01:00Z',
+        id: 'run_1', work_item_id: 'wi_1', status: 'succeeded', version: 1,
+        created_at: '2026-08-30T01:00:00Z', updated_at: '2026-08-30T01:03:00Z',
       },
     };
-    runStoreState.timelines = {
-      run_1: [
-        { event_id: 'e1', stream_seq: 1, run_seq: 1, type: 'run.created', occurred_at: '2026-08-30T01:00:00Z', data: { instruction: '执行 worker 任务' } },
-        { event_id: 'e2', stream_seq: 2, run_seq: 2, type: 'message.completed', occurred_at: '2026-08-30T01:01:00Z', text: 'Worker 正文结果', data: { role: 'assistant', content_blocks: document } },
-      ],
-    };
-
-    const html = renderToStaticMarkup(
-      <TaskRunOutput
-        run={{ ...card().runs[0], id: 'run_1' }}
-        agentName="小明"
-      />,
-    );
-
-    expect(html).toContain('Worker 正文结果');
+    runStoreState.timelines = { run_1: [runCreated('输入'), completed('e2', 2, '最终正文', document)] };
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="小明" />);
+    expect(html).toContain('最终正文');
     expect(html).toContain('data-content-block="metric"');
     expect(html).toContain('Worker 指标');
-    expect(html).toContain('aria-label="复制"');
-    expect(html).not.toContain('分叉对话');
-    expect(html).not.toContain('钉为决策');
-    expect(html).not.toContain('/chat');
   });
 
-  it('AgentOutput 与 Chat AssistantTurn 共享同一正文/结构化块渲染', () => {
-    const document: ContentBlockDocument = {
-      version: 'languagegui/v1',
-      blocks: [{ type: 'metric', title: '共享指标', items: [{ label: '结果', value: '通过', tone: 'neutral' }] }],
+  it('run 未成功时不把 completed 阶段说明冒充最终结果', () => {
+    const timeline = [runCreated('检查实现'), completed('e2', 2, '我先检查文件')];
+    expect(projectTaskRunIO(timeline, 'running')).toEqual({ input: '检查实现', output: '' });
+
+    runStoreState.runs = {
+      run_1: {
+        id: 'run_1', work_item_id: 'wi_1', status: 'running', version: 1,
+        created_at: '2026-08-30T01:00:00Z', updated_at: '2026-08-30T01:03:00Z',
+      },
     };
-    const output = renderToStaticMarkup(
-      <AgentOutput text="正文内容" contentBlocks={document} runId="run_1" messageId="msg_1" />,
-    );
-    const chat = renderToStaticMarkup(
-      <AssistantTurn text="正文内容" contentBlocks={document} agentName="小明" runId="run_1" messageId="msg_1" />,
-    );
-    expect(output).toContain('正文内容');
-    expect(chat).toContain('正文内容');
-    expect(output.match(/data-content-block="metric"/g)).toHaveLength(1);
-    expect(chat.match(/data-content-block="metric"/g)).toHaveLength(1);
-    expect(output).toContain('共享指标');
-    expect(chat).toContain('共享指标');
+    runStoreState.timelines = { run_1: timeline };
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="小明" />);
+    expect(html).toContain('Agent 完成执行后在这里显示最终结果');
+    expect(html).not.toContain('我先检查文件');
   });
 
-  it('未绑定 agent 的成员行禁用对话入口', () => {
-    const run = { ...card().runs[0], agent_profile_id: undefined, agent_name: undefined };
-    const html = renderToStaticMarkup(<DispatchRunRow run={run} />);
-    expect(html).toContain('未指派');
-    expect(html).toContain('disabled=""');
-    expect(html).toContain('成员未绑定 agent');
-  });
-
-  it('降级批次用 error 语义状态，触发文案按枚举回落', () => {
-    const html = renderToStaticMarkup(
-      <DispatchCardItem
-        card={card({ status: 'degraded', trigger: 'wakeup', trigger_message: undefined })}
-      />,
-    );
-    expect(html).toContain('已降级');
-    expect(html).toContain('bg-status-error');
-    expect(html).toContain('唤醒');
-    // 无 trigger_message 时回落首个成员摘要。
-    expect(html).toContain('完成初稿并自检');
-  });
-
-  it('请求失败显示就地错误与重试入口，不伪装为空态或加载中', () => {
-    storeState.errorByWorkItem = { wi_1: '派发记录加载失败，请重试' };
-    const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(html).toContain('role="alert"');
-    expect(html).toContain('派发记录加载失败，请重试');
-    expect(html).toContain('>重试</button>');
-    expect(html).not.toContain('派发加载中…');
-    expect(html).not.toContain('尚无派发记录');
+  it('忽略同一 Run 中较晚的子 Agent completed，只取 main 最终结果', () => {
+    const projection = projectTaskRunIO([
+      runCreated('汇总团队结果'),
+      completed('e2', 2, '主 Agent 最终交付'),
+      completed('e3', 3, '子 Agent 后到结果', undefined, 'subagent_1'),
+    ], 'succeeded');
+    expect(projection.output).toBe('主 Agent 最终交付');
   });
 });

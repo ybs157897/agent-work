@@ -1,26 +1,53 @@
-import { ChevronDown, GitBranch, KanbanSquare, List, Lock, Plus } from 'lucide-react';
+import {
+  Calendar,
+  ChevronDown,
+  GitBranch,
+  KanbanSquare,
+  LayoutList,
+  Plus,
+  Search,
+  SignalHigh,
+} from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { Priority, WorkItem, WorkItemStatus } from '../api/types';
-import { PriorityBadge } from '../components/priority-badge';
 import { KanbanSkeleton, ListSkeleton } from '../components/ui';
 import { useTasksStore, type ViewMode } from '../stores/tasks.store';
 import { childCountByParent, sortTasksTree } from '../utils/task-tree';
 import { isAwaitingAcceptance } from '../utils/task-phase';
 import { formatDueDate } from '../utils/format';
 import { CreateTaskModal } from './tasks/create-task-modal';
-import { ReviewQueueSummary } from './tasks/review-queue';
-import { TaskSearch } from './tasks/search-panel';
 
 // 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
 export { sortTasksTree, childCountByParent } from '../utils/task-tree';
 
-const COLUMNS: { id: WorkItemStatus; title: string }[] = [
-  { id: 'todo', title: '待办' },
-  { id: 'in_progress', title: '进行中' },
-  { id: 'completed', title: '完成' },
-  { id: 'blocked', title: '阻塞' },
+export const TASK_STATUS_COLUMNS: { id: WorkItemStatus; title: string; dot: string; ring: string }[] = [
+  { id: 'todo', title: '待办', dot: 'bg-status-standby', ring: 'ring-status-standby/30' },
+  { id: 'in_progress', title: '进行中', dot: 'bg-brand-primary', ring: 'ring-brand-primary/25' },
+  { id: 'completed', title: '完成', dot: 'bg-status-success', ring: 'ring-status-success/25' },
+  { id: 'blocked', title: '阻塞', dot: 'bg-status-error', ring: 'ring-status-error/25' },
+  { id: 'cancelled', title: '已取消', dot: 'bg-status-standby', ring: 'ring-status-standby/30' },
 ];
+
+const PRIORITY_DOT: Record<Priority, string> = {
+  low: 'bg-status-standby',
+  medium: 'bg-status-warning',
+  high: 'bg-status-error',
+  urgent: 'bg-status-error ring-2 ring-status-error/35',
+};
+
+const PRIORITY_LABEL: Record<Priority, string> = {
+  low: '低优',
+  medium: '中优',
+  high: '高优',
+  urgent: '紧急',
+};
+
+/** 仅展示用短键（Plane 风 WI-XXXXXX）；不改后端 id，不参与协议。 */
+function workItemKey(id: string): string {
+  const tail = id.replace(/^wi_?/i, '').slice(-6).toUpperCase();
+  return `WI-${tail || '------'}`;
+}
 
 /** 任务入口：看板只做观察与导航；Coordinator 管理状态，不允许看板拖拽改状态。 */
 export default function TasksPage() {
@@ -34,6 +61,7 @@ export default function TasksPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
+  const [query, setQuery] = useState('');
 
   // viewMode 是本地 UI 状态：放 URL，不进后端（协议 §4.1）；queue=review 与 view 独立。
   useEffect(() => {
@@ -50,97 +78,98 @@ export default function TasksPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const columns = COLUMNS.map((c) => ({
+  const visibleItems = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    if (!normalized) return items;
+    return items.filter((item) =>
+      item.id.toLocaleLowerCase().includes(normalized)
+      || item.title.toLocaleLowerCase().includes(normalized)
+      || item.description.toLocaleLowerCase().includes(normalized));
+  }, [items, query]);
+
+  const columns = TASK_STATUS_COLUMNS.map((c) => ({
     ...c,
-    tasks: items.filter((t) => t.status === c.id),
+    tasks: visibleItems.filter((t) => t.status === c.id),
   }));
   const childCounts = useMemo(() => childCountByParent(items), [items]);
 
   return (
-    <main className="layout-safe flex-1 min-h-0 flex flex-col py-comfortable">
-      {/* Header */}
-      <header className="mb-snug flex items-center justify-between gap-comfortable shrink-0 border-b border-border-subtle pb-snug">
-        <div className="flex items-center gap-snug">
-          <div>
-            <p className="text-caption uppercase tracking-widest text-text-tertiary">案牍 · Work Items</p>
-            <h2 className="mt-1 font-display text-h2 text-text-primary tracking-tight">任务看板</h2>
+    <main className="plane-board flex min-h-0 flex-1 flex-col">
+      <div className="plane-board-toolbar shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-snug px-base py-snug">
+          <div className="flex min-w-0 flex-wrap items-center gap-snug">
+            <h2 className="font-zh text-body-lg font-semibold tracking-tight text-text-primary">任务</h2>
+            <span className="plane-board-count">{visibleItems.length}</span>
+
+            <div className="plane-board-view-toggle ml-tight" role="group" aria-label="任务视图">
+              <button
+                type="button"
+                onClick={() => switchView('kanban')}
+                aria-pressed={viewMode === 'kanban'}
+                title="看板"
+                className="plane-board-view-btn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+              >
+                <KanbanSquare className="h-3.5 w-3.5" aria-hidden />
+                看板
+              </button>
+              <button
+                type="button"
+                onClick={() => switchView('list')}
+                aria-pressed={viewMode === 'list'}
+                title="列表"
+                className="plane-board-view-btn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+              >
+                <LayoutList className="h-3.5 w-3.5" aria-hidden />
+                列表
+              </button>
+            </div>
           </div>
-          <span className="hidden rounded-full border border-border-subtle bg-surface-raised px-2 py-0.5 text-caption text-text-secondary tabular-nums md:inline-flex">
-            {items.length} 项
-          </span>
-          <div className="flex bg-surface-base rounded-button p-1 border border-border-subtle" role="group" aria-label="任务视图">
+
+          <div className="flex flex-wrap items-center gap-tight">
+            <label className="relative inline-flex h-8 w-48 items-center sm:w-56">
+              <Search className="pointer-events-none absolute left-snug h-3.5 w-3.5 text-text-tertiary" aria-hidden />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索任务"
+                aria-label="搜索任务"
+                className="h-8 w-full rounded-button border border-border-subtle bg-surface-raised py-tight pl-8 pr-snug text-caption text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-brand-primary/40 focus:ring-2 focus:ring-brand-primary/20"
+              />
+            </label>
+            <FilterSelect
+              label="优先级"
+              value={filter.priority ?? ''}
+              options={[
+                { value: 'low', label: '低优' },
+                { value: 'medium', label: '中优' },
+                { value: 'high', label: '高优' },
+                { value: 'urgent', label: '紧急' },
+              ]}
+              onChange={(v) => setFilter({ ...filter, priority: (v || undefined) as Priority | undefined })}
+            />
             <button
               type="button"
-              onClick={() => switchView('kanban')}
-              aria-pressed={viewMode === 'kanban'}
-              className={`flex items-center gap-1.5 rounded-sm px-snug py-tight text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${
-                viewMode === 'kanban'
-                  ? 'bg-surface-raised shadow-sm text-text-primary'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
+              onClick={() => setCreateOpen(true)}
+              className="plane-board-add focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
             >
-              <KanbanSquare className="w-4 h-4" />
-              看板
-            </button>
-            <button
-              type="button"
-              onClick={() => switchView('list')}
-              aria-pressed={viewMode === 'list'}
-              className={`flex items-center gap-1.5 rounded-sm px-snug py-tight text-body font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${
-                viewMode === 'list'
-                  ? 'bg-surface-raised shadow-sm text-text-primary'
-                  : 'text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <List className="w-4 h-4" />
-              列表
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+              新建任务
             </button>
           </div>
         </div>
-
-        <div className="flex items-center gap-snug">
-          <button
-            type="button"
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex items-center gap-tight rounded-button bg-brand-primary px-base py-tight text-body font-medium text-text-inverse transition-all hover:bg-brand-accent active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
-          >
-            <Plus className="h-4 w-4" aria-hidden />
-            发布任务
-          </button>
-          <TaskSearch onOpenTask={(id) => navigate(`/tasks/${id}`)} />
-          <span className="text-caption uppercase tracking-widest text-text-tertiary">筛选</span>
-          <FilterSelect
-            label="优先级"
-            value={filter.priority ?? ''}
-            options={[
-              { value: 'low', label: '低优' },
-              { value: 'medium', label: '中优' },
-              { value: 'high', label: '高优' },
-              { value: 'urgent', label: '紧急' },
-            ]}
-            onChange={(v) => setFilter({ ...filter, priority: (v || undefined) as Priority | undefined })}
-          />
-          <span className="rounded-button border border-brand-primary/20 bg-brand-primary/5 px-snug py-tight text-caption text-brand-accent">
-            Coordinator 自动调度
-          </span>
-        </div>
-      </header>
-
-      {/* 复审队列摘要（RFC §12.4：服务端 total_count badge；展开走 ?queue=review） */}
-      <div className="mb-snug shrink-0">
-        <ReviewQueueSummary />
       </div>
 
-      {/* 看板 / 列表 */}
-      <section aria-label="任务看板" className="flex-1 min-h-0 overflow-x-auto pb-6">
+      <section aria-label="任务看板" className="plane-board-canvas min-h-0 flex-1 overflow-auto">
         {!loaded ? (
-          viewMode === 'kanban' ? <KanbanSkeleton /> : <ListSkeleton />
+          <div className="h-full p-snug">{viewMode === 'kanban' ? <KanbanSkeleton /> : <ListSkeleton />}</div>
         ) : viewMode === 'kanban' ? (
-          <div className="flex h-full min-w-[1040px] gap-snug">
+          <div className="flex h-full min-h-[32rem] gap-base overflow-x-auto px-base py-snug">
             {columns.map((col) => (
               <KanbanColumn
                 key={col.id}
                 title={col.title}
+                dotClass={col.dot}
+                ringClass={col.ring}
                 tasks={col.tasks}
                 childCounts={childCounts}
                 onCreate={col.id === 'todo' ? () => setCreateOpen(true) : undefined}
@@ -149,57 +178,53 @@ export default function TasksPage() {
             ))}
           </div>
         ) : (
-          <div className="bg-surface-raised rounded-card shadow-level-1 border border-border-subtle p-base h-full overflow-y-auto">
-            <div className="space-y-comfortable">
+          <div className="px-base py-snug">
+            <div className="plane-board-list-wrap">
+              <div className="plane-board-list-head">
+                <span>任务</span>
+                <span>截止时间</span>
+                <span className="text-right">优先级</span>
+              </div>
               {columns.map((col) => (
                 <div key={col.id}>
-                  <h3 className="font-display text-h3 text-text-primary mb-snug flex items-center gap-2">
-                    {col.title}
-                    <span className="text-text-tertiary text-body font-normal tabular-nums">
-                      {col.tasks.length}
-                    </span>
-                  </h3>
-                  <div className="space-y-tight">
-                    {sortTasksTree(col.tasks).map((entry) => (
-                      <div
-                        key={entry.item.id}
-                        onClick={() => navigate(`/tasks/${entry.item.id}`)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            navigate(`/tasks/${entry.item.id}`);
-                          }
-                        }}
-                        role="button"
-                        tabIndex={0}
-                        aria-label={`打开任务 ${entry.item.title}`}
-                        className="flex cursor-pointer items-center justify-between rounded-card border border-border-subtle p-snug transition-colors hover:bg-surface-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
-                      >
-                        <div className="flex items-center gap-4 min-w-0" style={{ paddingLeft: entry.depth * 24 }}>
-                          {entry.depth > 0 && <GitBranch className="w-3.5 h-3.5 text-text-tertiary shrink-0" />}
-                          <PriorityBadge priority={entry.item.priority} />
-                          <span
-                            className={`font-medium text-sm truncate ${
-                              entry.item.status === 'completed'
-                                ? 'line-through opacity-60'
-                                : 'text-text-primary'
-                            }`}
-                          >
-                            {entry.item.title}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-6">
-                          <span className="text-caption text-text-tertiary">Coordinator</span>
-                          <span className="text-caption text-text-tertiary tabular-nums w-12 text-right">
-                            {formatDueDate(entry.item.due_date)}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                    {col.tasks.length === 0 && (
-                      <div className="text-caption text-text-tertiary py-2">暂无任务</div>
-                    )}
+                  <div className="plane-board-list-group-head">
+                    <span className={`h-2.5 w-2.5 rounded-full ring-4 ${col.dot} ${col.ring}`} aria-hidden />
+                    <h3 className="text-caption font-semibold text-text-primary">{col.title}</h3>
+                    <span className="plane-board-count">{col.tasks.length}</span>
                   </div>
+                  {col.tasks.length === 0 ? (
+                    <div className="px-base py-snug text-caption text-text-tertiary">暂无任务</div>
+                  ) : (
+                    <ul>
+                      {sortTasksTree(col.tasks).map((entry) => (
+                        <li key={entry.item.id}>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/tasks/${entry.item.id}`)}
+                            aria-label={`打开任务 ${entry.item.title}，状态 ${col.title}，截止时间 ${formatDueDate(entry.item.due_date)}，优先级 ${PRIORITY_LABEL[entry.item.priority]}`}
+                            className="plane-board-list-row"
+                          >
+                            <div className="flex min-w-0 items-center gap-tight" style={{ paddingLeft: entry.depth * 20 }}>
+                              {entry.depth > 0 && <GitBranch className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />}
+                              <span className="plane-board-card-key shrink-0">{workItemKey(entry.item.id)}</span>
+                              <span
+                                className={`truncate text-[13px] font-medium ${
+                                  entry.item.status === 'completed' ? 'text-text-tertiary line-through' : 'text-text-primary'
+                                }`}
+                              >
+                                {entry.item.title}
+                              </span>
+                            </div>
+                            <span className="text-caption tabular-nums text-text-tertiary">{formatDueDate(entry.item.due_date)}</span>
+                            <div className="flex items-center justify-end gap-1">
+                              <span className={`h-2 w-2 rounded-full ${PRIORITY_DOT[entry.item.priority]}`} aria-hidden />
+                              <span className="text-caption text-text-secondary">{PRIORITY_LABEL[entry.item.priority]}</span>
+                            </div>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>
@@ -207,10 +232,7 @@ export default function TasksPage() {
         )}
       </section>
 
-      <CreateTaskModal
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-      />
+      <CreateTaskModal open={createOpen} onClose={() => setCreateOpen(false)} />
     </main>
   );
 }
@@ -227,16 +249,17 @@ function FilterSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative flex items-center gap-1 rounded-button border border-border-subtle bg-surface-raised px-snug py-tight text-body text-text-primary transition-colors hover:bg-surface-base cursor-pointer focus-within:ring-2 focus-within:ring-brand-primary/40">
-      <span className={value ? '' : 'text-text-tertiary'}>
+    <label className="plane-board-chip relative cursor-pointer transition-colors hover:bg-surface-sunken focus-within:ring-2 focus-within:ring-brand-primary/40">
+      <SignalHigh className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />
+      <span className={value ? 'font-medium text-text-primary' : 'plane-board-chip-muted'}>
         {value ? options.find((o) => o.value === value)?.label ?? label : label}
       </span>
-      <ChevronDown className="w-4 h-4 text-text-tertiary" />
+      <ChevronDown className="h-3.5 w-3.5 text-text-tertiary" aria-hidden />
       <select
         aria-label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="absolute inset-0 opacity-0 cursor-pointer"
+        className="absolute inset-0 cursor-pointer opacity-0"
       >
         <option value="">全部{label}</option>
         {options.map((o) => (
@@ -251,25 +274,28 @@ function FilterSelect({
 
 function KanbanColumn({
   title,
+  dotClass,
+  ringClass,
   tasks,
   childCounts,
   onCreate,
   onOpen,
 }: {
   title: string;
+  dotClass: string;
+  ringClass: string;
   tasks: WorkItem[];
   childCounts: Map<string, number>;
   onCreate?: () => void;
   onOpen: (taskId: string) => void;
 }) {
   return (
-    <div className="flex-1 min-w-0 flex flex-col rounded-card bg-surface-sunken">
-      <div className="flex items-center justify-between px-base py-snug shrink-0">
-        <div className="flex items-center gap-2">
-          <h3 className="font-semibold text-body-lg text-text-primary">{title}</h3>
-          <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-surface-raised border border-border-subtle text-caption font-medium text-text-secondary tabular-nums">
-            {tasks.length}
-          </span>
+    <div className="plane-board-column">
+      <div className="plane-board-column-header">
+        <div className="flex min-w-0 items-center gap-tight">
+          <span className={`h-2.5 w-2.5 shrink-0 rounded-full ring-4 ${dotClass} ${ringClass}`} aria-hidden />
+          <h3 className="truncate text-[13px] font-semibold text-text-primary">{title}</h3>
+          <span className="plane-board-count">{tasks.length}</span>
         </div>
         {onCreate && (
           <button
@@ -277,14 +303,14 @@ function KanbanColumn({
             onClick={onCreate}
             aria-label="发布任务"
             title="发布任务"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-base hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="h-4 w-4" aria-hidden />
           </button>
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-snug pb-snug space-y-snug">
+      <div className="flex flex-1 flex-col gap-tight overflow-y-auto pb-base">
         {tasks.map((task) => (
           <TaskCard
             key={task.id}
@@ -294,9 +320,8 @@ function KanbanColumn({
           />
         ))}
         {tasks.length === 0 && (
-          <div className="rounded-card border border-dashed border-border-strong/60 px-snug py-comfortable text-center text-caption text-text-tertiary">
-            <p>此列暂无任务</p>
-            <p className="mt-1">由 Coordinator 自动推进；可从待办列发布新任务</p>
+          <div className="plane-board-empty">
+            <p className="font-medium text-text-secondary">暂无任务</p>
           </div>
         )}
       </div>
@@ -315,103 +340,52 @@ function TaskCard({
 }) {
   const isCompleted = task.status === 'completed';
   const isBlocked = task.status === 'blocked';
-
-  let bgClass = 'bg-surface-raised';
-  if (isBlocked) {
-    bgClass = task.blocker?.code === 'permission'
-      ? 'bg-status-error/10 border-status-error/20'
-      : 'bg-status-warning/10 border-status-warning/20';
-  }
+  const due = formatDueDate(task.due_date);
 
   return (
-    <div
+    <button
+      type="button"
       onClick={onOpen}
-      role="button"
-      tabIndex={0}
-      aria-label={`打开任务 ${task.title}`}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
-      className={`rounded-card p-snug shadow-card border border-border-subtle cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-level-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40 ${bgClass}`}
+      aria-label={`打开任务 ${task.title}，状态 ${TASK_STATUS_COLUMNS.find((column) => column.id === task.status)?.title ?? task.status}，截止时间 ${due}，优先级 ${PRIORITY_LABEL[task.priority]}`}
+      className={`plane-board-card${isBlocked ? ' plane-board-card-blocked' : ''}`}
     >
-      <h4
-        className={`font-medium text-body text-text-primary mb-snug leading-snug ${
-          isCompleted ? 'line-through opacity-60' : ''
-        }`}
-      >
-        {task.title}
-      </h4>
-
-      <div className="mb-snug">
-        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-caption font-medium ${coordinatorCardClass(task)}`}>
-          <span className="mr-1 h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-          {coordinatorCardText(task)}
-        </span>
-      </div>
-
-      {isBlocked && task.blocker && (
-        <div className="text-caption font-medium text-status-error mb-snug">{task.blocker.message}</div>
-      )}
-
-      {isAwaitingAcceptance(task) && (
-        <div className="mb-snug">
+      <div className="flex items-center justify-between gap-tight">
+        <span className="plane-board-card-key">{workItemKey(task.id)}</span>
+        {isAwaitingAcceptance(task) && (
           <span
             title="run 成功待评审或评估通过，等待人工验收"
-            className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
+            className="rounded-button bg-brand-primary/10 px-1.5 py-px text-[11px] font-medium text-brand-accent"
           >
             待验收
           </span>
-        </div>
+        )}
+      </div>
+
+      <span className={`plane-board-card-title${isCompleted ? ' is-done' : ''}`}>{task.title}</span>
+
+      {isBlocked && task.blocker && (
+        <p className="mb-snug line-clamp-2 text-[11px] text-status-error">{task.blocker.message}</p>
       )}
 
-      <div className="flex items-center justify-between mt-auto">
-        <div className="flex items-center gap-1.5">
-          <PriorityBadge priority={task.priority} />
-          {task.locked_by_run_id && (
-            <span
-              title={`执行锁：run ${task.locked_by_run_id}（防止同任务双跑）`}
-              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-surface-base text-text-secondary border border-border-subtle"
-            >
-              <Lock className="w-3 h-3" />
-            </span>
-          )}
-          {task.parent_id && (
-            <span
-              title="编排派生的子任务"
-              className="inline-flex items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-brand-primary/10 text-brand-accent border border-brand-primary/20"
-            >
-              子任务
-            </span>
-          )}
-          {childCount > 0 && (
-            <span
-              title={`${childCount} 个直接子任务`}
-              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-surface-base text-text-secondary border border-border-subtle tabular-nums"
-            >
-              <GitBranch className="w-3 h-3" />
-              {childCount}
-            </span>
-          )}
-        </div>
-        <span className="text-caption text-text-tertiary tabular-nums">{formatDueDate(task.due_date)}</span>
+      <div className="plane-board-card-props">
+        <span className="inline-flex items-center gap-1" title={PRIORITY_LABEL[task.priority]}>
+          <span className={`h-2 w-2 rounded-full ${PRIORITY_DOT[task.priority]}`} aria-hidden />
+          {PRIORITY_LABEL[task.priority]}
+        </span>
+        {due !== '—' && (
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Calendar className="h-3 w-3 text-text-tertiary" aria-hidden />
+            {due}
+          </span>
+        )}
+        {task.parent_id && <span className="text-text-tertiary">子任务</span>}
+        {childCount > 0 && (
+          <span title={`${childCount} 个直接子任务`} className="inline-flex items-center gap-0.5 tabular-nums">
+            <GitBranch className="h-3 w-3 text-text-tertiary" aria-hidden />
+            {childCount}
+          </span>
+        )}
       </div>
-    </div>
+    </button>
   );
-}
-
-function coordinatorCardText(task: WorkItem): string {
-  if (task.status === 'completed') return 'Coordinator 已交付';
-  if (task.status === 'blocked') return 'Coordinator 等待介入';
-  if (task.status === 'in_progress') return 'Coordinator 执行中';
-  return 'Coordinator 接取中';
-}
-
-function coordinatorCardClass(task: WorkItem): string {
-  if (task.status === 'completed') return 'bg-status-success/10 text-status-success border-status-success/20';
-  if (task.status === 'blocked') return 'bg-status-error/10 text-status-error border-status-error/20';
-  if (task.status === 'in_progress') return 'bg-brand-primary/10 text-brand-accent border-brand-primary/20';
-  return 'bg-status-warning/10 text-status-warning border-status-warning/20';
 }

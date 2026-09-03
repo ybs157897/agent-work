@@ -10,7 +10,7 @@ import NotFoundPage from './pages/not-found.page';
 import { bootstrap } from './stores/bootstrap';
 import { useWorkspaceStore } from './stores/workspace.store';
 import { inkMotion } from './design/motion';
-import { isChatPath, isFullBleedPath } from './utils/route-layout';
+import { isChatPath, isFullBleedPath, isTasksPath } from './utils/route-layout';
 
 const AgentsPage = lazy(() => import('./pages/agents.page'));
 const ChatPage = lazy(() => import('./pages/chat.page'));
@@ -63,7 +63,7 @@ export default function App() {
 function AnimatedRoutes() {
   const location = useLocation();
   const reduceMotion = useReducedMotion();
-  const isFullBleed = isFullBleedPath(location.pathname);
+  const isFullBleed = isFullBleedPath(location.pathname) || isTasksPath(location.pathname);
   return (
     <AnimatePresence mode="wait">
       <motion.div
