@@ -1,0 +1,260 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "agent-team-workbench 当前架构",
+    "locale": "zh-CN",
+    "output": "agent-team-workbench.architecture.html",
+    "quality_profile": "showcase",
+    "viewBox": [1360, 700],
+    "repository": {
+      "url": "https://github.com/ybs157897/agent-work",
+      "revision": "6a385706a97c4e298b1665ef83c015107878fd74"
+    },
+    "views": [
+      {
+        "id": "operator-path",
+        "label": "操作员主路径",
+        "focus": ["web", "controlplane", "service", "modulerunner", "adapters"],
+        "note": "浏览器经 REST/SSE 进入控制面，由 ModuleRunner 驱动适配器执行。"
+      },
+      {
+        "id": "remote-runner",
+        "label": "远端 runner",
+        "focus": ["service", "gateway", "runnerd", "adapters"],
+        "note": "匹配在线 runner 时经 WSS 派发到 runnerd，本地再走 ModuleRunner。"
+      },
+      {
+        "id": "durable-state",
+        "label": "持久化与 MCP",
+        "focus": ["service", "db", "mcp", "scheduler"],
+        "note": "领域状态落在 SQLite/Postgres；Scheduler 唤醒建跑；atw-mcp 直连同一库。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "web/",
+      "sublabel": "Vite · React SPA",
+      "tag": ":5173",
+      "pos": [48, 168],
+      "size": [140, 56],
+      "sources": [{ "path": "agent-team-workbench/web/src/api/endpoints.ts", "label": "REST client" }]
+    },
+    {
+      "id": "controlplane",
+      "type": "backend",
+      "label": "cmd/control-plane",
+      "sublabel": "HTTP · SSE · WSS",
+      "tag": ":8080",
+      "pos": [300, 168],
+      "size": [160, 56],
+      "sources": [{ "path": "agent-team-workbench/cmd/control-plane/main.go", "label": "entrypoint" }]
+    },
+    {
+      "id": "service",
+      "type": "backend",
+      "label": "application.Service",
+      "sublabel": "用例 / 事务边界",
+      "pos": [580, 168],
+      "size": [168, 56],
+      "sources": [{ "path": "agent-team-workbench/internal/application/service.go", "label": "Service" }]
+    },
+    {
+      "id": "modulerunner",
+      "type": "backend",
+      "label": "ModuleRunner",
+      "sublabel": "唯一执行轨 · SPI v2",
+      "tag": "13 态",
+      "pos": [880, 168],
+      "size": [168, 56],
+      "sources": [
+        { "path": "agent-team-workbench/internal/runtime/module.go", "label": "ModuleRunner" },
+        { "path": "agent-team-workbench/internal/domain/run.go", "label": "run states" }
+      ]
+    },
+    {
+      "id": "adapters",
+      "type": "external",
+      "label": "Agent Adapters",
+      "sublabel": "Codex · Claude · Kimi · DSH",
+      "pos": [1160, 168],
+      "size": [168, 56],
+      "sources": [{ "path": "agent-team-workbench/internal/runtime/adapters/codexapp/codexapp.go", "label": "codexapp" }]
+    },
+    {
+      "id": "scheduler",
+      "type": "backend",
+      "label": "Scheduler",
+      "sublabel": "wakeup → CreateRun",
+      "pos": [580, 40],
+      "size": [168, 48],
+      "sources": [{ "path": "agent-team-workbench/internal/scheduling/loop.go", "label": "Scheduler" }]
+    },
+    {
+      "id": "gateway",
+      "type": "backend",
+      "label": "runnergateway",
+      "sublabel": "WSS /runner/v1",
+      "tag": "lease",
+      "pos": [880, 320],
+      "size": [168, 48],
+      "sources": [{ "path": "agent-team-workbench/internal/runnergateway/gateway.go", "label": "Gateway" }]
+    },
+    {
+      "id": "runnerd",
+      "type": "backend",
+      "label": "cmd/runnerd",
+      "sublabel": "远端 ModuleRunner",
+      "pos": [1160, 320],
+      "size": [168, 48],
+      "sources": [{ "path": "agent-team-workbench/cmd/runnerd/main.go", "label": "runnerd" }]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "sqlstore",
+      "sublabel": "SQLite / Postgres",
+      "tag": "workbench.db",
+      "pos": [580, 460],
+      "size": [168, 48],
+      "sources": [{ "path": "agent-team-workbench/internal/persistence/sqlstore/agents.go", "label": "sqlstore" }]
+    },
+    {
+      "id": "mcp",
+      "type": "backend",
+      "label": "cmd/atw-mcp",
+      "sublabel": "stdio MCP 工具",
+      "pos": [300, 460],
+      "size": [160, 48],
+      "sources": [{ "path": "agent-team-workbench/cmd/atw-mcp/main.go", "label": "atw-mcp" }]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "control-plane 进程",
+      "wraps": ["controlplane", "service", "modulerunner", "scheduler", "gateway"],
+      "pad": 20
+    },
+    {
+      "kind": "region",
+      "label": "远端执行进程",
+      "wraps": ["runnerd"],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "id": "web-to-cp",
+      "from": "web",
+      "to": "controlplane",
+      "label": "REST + SSE",
+      "variant": "emphasis",
+      "labelDy": -24
+    },
+    {
+      "id": "cp-to-service",
+      "from": "controlplane",
+      "to": "service",
+      "label": "httpapi",
+      "labelDy": -24
+    },
+    {
+      "id": "service-to-runner",
+      "from": "service",
+      "to": "modulerunner",
+      "label": "Dispatch",
+      "variant": "emphasis",
+      "labelDy": -24
+    },
+    {
+      "id": "runner-to-adapters",
+      "from": "modulerunner",
+      "to": "adapters",
+      "label": "SPI Execute",
+      "variant": "emphasis",
+      "labelDy": -24
+    },
+    {
+      "id": "scheduler-to-service",
+      "from": "scheduler",
+      "to": "service",
+      "label": "wakeup",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 18
+    },
+    {
+      "id": "service-to-gateway",
+      "from": "service",
+      "to": "gateway",
+      "label": "WSS 派发",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelDy": 20
+    },
+    {
+      "id": "gateway-to-runnerd",
+      "from": "gateway",
+      "to": "runnerd",
+      "label": "run.offer",
+      "labelDy": 28
+    },
+    {
+      "id": "runnerd-to-adapters",
+      "from": "runnerd",
+      "to": "adapters",
+      "label": "Execute",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 48
+    },
+    {
+      "id": "service-to-db",
+      "from": "service",
+      "to": "db",
+      "label": "SQL",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [640, 400]
+    },
+    {
+      "id": "mcp-to-db",
+      "from": "mcp",
+      "to": "db",
+      "label": "直连",
+      "labelDy": 28
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "控制面",
+      "items": [
+        "control-plane 承载 HTTP / SSE / runner WSS",
+        "Service 是用例边界；Scheduler 消费 wakeup"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "执行轨",
+      "items": [
+        "ModuleRunner 唯一推进 13 态 Run",
+        "在线 runner 经 gateway 派到 runnerd"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "持久化",
+      "items": [
+        "sqlstore：SQLite / Postgres",
+        "atw-mcp 直连共享库，不经 HTTP"
+      ]
+    }
+  ]
+}
