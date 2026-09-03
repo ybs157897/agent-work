@@ -494,6 +494,17 @@ func (s *Server) handleListRunEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": events})
 }
 
+// handleGetRunJournal 下发 Run Journal 调试投影（环节时间线 + 日志统计 +
+// 治理 receipt 互链；internal 事件投影，不进对话回放/SSE；只读，M3 查询面）。
+func (s *Server) handleGetRunJournal(w http.ResponseWriter, r *http.Request) {
+	journal, err := s.svc.GetRunJournal(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, journal)
+}
+
 // handleListWorkItemRuns 列出一个任务的全部 Run（对话轮次历史）。
 func (s *Server) handleListWorkItemRuns(w http.ResponseWriter, r *http.Request) {
 	runs, err := s.svc.RunsByWorkItem(r.Context(), r.PathValue("work_item_id"))
