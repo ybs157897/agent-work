@@ -24,8 +24,8 @@ function asyncAPIEventNames(): string[] {
 
 describe('Web EVENT_NAMES ↔ AsyncAPI', () => {
   it('SSE 名单 ∪ internal 名单与 AsyncAPI 双向一致，且两名单不相交', () => {
-    const sseNames = new Set(EVENT_NAMES);
-    const internalNames = new Set(INTERNAL_EVENT_NAMES);
+    const sseNames: Set<string> = new Set(EVENT_NAMES);
+    const internalNames: Set<string> = new Set(INTERNAL_EVENT_NAMES);
     for (const name of sseNames) {
       expect(internalNames.has(name), `${name} 同时出现在 SSE 与 internal 名单`).toBe(false);
     }
