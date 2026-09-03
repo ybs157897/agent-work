@@ -21,7 +21,7 @@ providers:
       label: DeepSeek
       provider: deepseek-official
       api: openai-completions
-      base_url: https://api.deepseek.com/v1
+      base_url: https://token.wasu.cn/v1
       api_key_env: DEEPSEEK_API_KEY
       models:
         - id: deepseek-v4-flash

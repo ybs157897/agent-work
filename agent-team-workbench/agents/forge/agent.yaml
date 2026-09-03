@@ -4,11 +4,10 @@ role: developer
 skills:
     - Go、React、测试
 runtime:
-    preferred: codex_local
+    preferred: kimi_local
     mode: default
 model:
-    ref: ox-alpha
-    reasoning_effort: medium
+    ref: deepseek-v4-flash
 permissions:
     approval_policy: approve_high_risk
     sandbox: workspace-write

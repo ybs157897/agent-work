@@ -4,11 +4,10 @@ role: ui
 skills:
     - 交互设计、视觉规范
 runtime:
-    preferred: codex_local
+    preferred: kimi_local
     mode: default
 model:
-    ref: ox-alpha
-    reasoning_effort: xhigh
+    ref: deepseek-v4-flash
 permissions:
     approval_policy: approve_high_risk
     sandbox: workspace-write
