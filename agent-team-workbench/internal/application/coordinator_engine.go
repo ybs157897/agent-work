@@ -1846,6 +1846,7 @@ func (s *Service) planEvaluationCoordinatorContext(ctx context.Context, plan *do
 	if plan.SourceRunID == "" {
 		return nil, nil, fmt.Errorf("%w: governed evaluation requires a source Coordinator Run", domain.ErrValidation)
 	}
+	useFallback, _ := state.Data["use_fallback"].(bool)
 	source, err := s.store.Runs().Get(ctx, plan.SourceRunID)
 	if err != nil {
 		return nil, nil, err
@@ -1854,6 +1855,7 @@ func (s *Service) planEvaluationCoordinatorContext(ctx context.Context, plan *do
 		"role": coordinatorRole, "root_work_item_id": state.RootWorkItemID,
 		"state_id": state.ID, "action": "evaluation", "plan_id": plan.ID,
 		"attempt": state.Attempt + 1, "source_run_id": plan.SourceRunID,
+		"use_fallback": useFallback,
 	}
 	admission := &coordinatorRunAdmission{
 		RootWorkItemID: state.RootWorkItemID, StateID: state.ID,
@@ -1870,6 +1872,7 @@ func (s *Service) planEvaluationCoordinatorContext(ctx context.Context, plan *do
 		contextData = handoffCoordinatorContext(state, handoff, targetAgentID, "evaluation")
 		contextData["plan_id"] = plan.ID
 		contextData["source_run_id"] = plan.SourceRunID
+		contextData["use_fallback"] = useFallback
 		if handoff.Target.Kind == domain.GovernanceActorRuntime {
 			contextData["handoff_target_runtime"] = handoff.Target.ID
 		}

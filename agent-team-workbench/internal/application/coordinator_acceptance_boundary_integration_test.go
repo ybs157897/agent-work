@@ -11,6 +11,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
+	"github.com/ybs/agent-team-workbench/internal/scheduling"
 )
 
 func prepareWorkItemForCoordinatorAcceptance(t *testing.T, ctx context.Context, store *sqlstore.Store, rootID string) *domain.WorkItem {
@@ -481,5 +482,207 @@ func TestTerminalTaskCannotCreateChildOrRequeueCoordinator(t *testing.T) {
 	}
 	if state.Status != domain.CoordinatorCompleted {
 		t.Fatalf("拒绝子项不得把不一致的 Coordinator state 重排: %+v", state)
+	}
+}
+
+// dispatchJoinDecisionForAcceptance 驱动首轮 Coordinator 决策 dispatch+join，
+// 返回派生的 Worker Run（子任务处于 in_progress/execution 投影）。
+func dispatchJoinDecisionForAcceptance(t *testing.T, ctx context.Context, svc *application.Service,
+	dispatcher *captureDispatcher, workerID string) *domain.ExecutionRun {
+	t.Helper()
+	decision := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch bounded work",` +
+		`"next_action":"wait for settlement","steps":[{"verb":"dispatch","agent_id":"` + workerID +
+		`","title":"work","instruction":"do work","acceptance":["done"]},{"verb":"join","children":"all"}]}`
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[0].ID, decision)
+	if len(dispatcher.runs) != 2 {
+		t.Fatalf("dispatch 决策必须创建恰好一个 Worker Run: runs=%d", len(dispatcher.runs))
+	}
+	return dispatcher.runs[1]
+}
+
+// consumeWorkerSettlementForAcceptance 消费 worker 终态后的 settlement 唤醒，
+// 返回新一轮 summary Coordinator Run（治理 turn 2）。
+func consumeWorkerSettlementForAcceptance(t *testing.T, ctx context.Context, svc *application.Service,
+	store *sqlstore.Store, dispatcher *captureDispatcher) *domain.ExecutionRun {
+	t.Helper()
+	wakeups, err := store.Wakeups().DueTimers(ctx, time.Now().UTC().Add(time.Second), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settlement *domain.WakeupRequest
+	for index := range wakeups {
+		if _, ok := wakeups[index].Context[domain.WakeupContextSettlementDispatchID].(string); ok {
+			settlement = &wakeups[index]
+			break
+		}
+	}
+	if settlement == nil {
+		t.Fatalf("worker settlement wakeup missing: %+v", wakeups)
+	}
+	scheduler := &scheduling.Scheduler{Store: store.Wakeups(), RunStarter: svc}
+	if outcome, err := scheduler.ConsumeOne(ctx, *settlement, time.Now().UTC()); err != nil || outcome != scheduling.OutcomeConsumed {
+		t.Fatalf("settlement wake failed: outcome=%s err=%v", outcome, err)
+	}
+	if len(dispatcher.runs) < 3 {
+		t.Fatalf("settlement 必须创建 summary Coordinator Run: runs=%d", len(dispatcher.runs))
+	}
+	return dispatcher.runs[len(dispatcher.runs)-1]
+}
+
+// driveGovernedFinishEvaluationForAcceptance 在 summary turn 提交
+// finish{evaluation:true}，跑通评估 verdict，把根任务送到待用户验收投影。
+func driveGovernedFinishEvaluationForAcceptance(t *testing.T, ctx context.Context, svc *application.Service,
+	store *sqlstore.Store, dispatcher *captureDispatcher, rootID string) *domain.WorkItem {
+	t.Helper()
+	summary := consumeWorkerSettlementForAcceptance(t, ctx, svc, store, dispatcher)
+	finishDecision := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"all evidence is complete",` +
+		`"next_action":"evaluate before user acceptance","steps":[{"verb":"finish","evaluation":true}]}`
+	completeCoordinatorPlanDecision(t, ctx, svc, summary.ID, finishDecision)
+	if len(dispatcher.runs) != 4 {
+		t.Fatalf("finish{evaluation:true} 必须创建恰好一个评估 Run: runs=%d", len(dispatcher.runs))
+	}
+	evaluation := dispatcher.runs[3]
+	if err := svc.RecordRunStatus(ctx, evaluation.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, evaluation.ID,
+		"评估通过。\n```verdict\n{\"pass\":true,\"reasons\":[\"验收标准已满足\"]}\n```"); err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.WorkItems().Get(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != domain.WorkItemInProgress || root.Phase != domain.PhaseAcceptance {
+		t.Fatalf("前置条件：governed finish 必须把根任务送到待验收投影: %+v", root)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorWaitingUser {
+		t.Fatalf("前置条件：Coordinator 必须 waiting_user: %+v", state)
+	}
+	return root
+}
+
+// F4 防回归：dispatch 子任务 worker run succeeded 停在 review 投影后没有任何独立
+// 完工路径（coordinated child 不能单独验收），根任务 AcceptWorkItem 必须在同一
+// 事务内级联验收直系子任务，消除滞留 in_progress/review 的僵尸子任务。
+func TestCoordinatedRootAcceptCascadesReviewChildren(t *testing.T) {
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "级联验收根任务", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := dispatchJoinDecisionForAcceptance(t, ctx, svc, dispatcher, workerID)
+	childID := worker.WorkItemID
+	if err := svc.RecordRunStatus(ctx, worker.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, worker.ID, "worker done"); err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.WorkItems().Get(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != domain.WorkItemInProgress || child.Phase != domain.PhaseReview {
+		t.Fatalf("前置条件：worker 成功后子任务应停在 review 投影: %+v", child)
+	}
+	root = driveGovernedFinishEvaluationForAcceptance(t, ctx, svc, store, dispatcher, root.ID)
+	accepted, err := svc.AcceptWorkItem(ctx, root.ID, root.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Status != domain.WorkItemCompleted {
+		t.Fatalf("根任务验收后应 completed: %+v", accepted)
+	}
+	child, err = store.WorkItems().Get(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != domain.WorkItemCompleted || child.Phase != "" {
+		t.Fatalf("根验收必须级联完工 review 子任务: %+v", child)
+	}
+	events, err := store.Events().Since(ctx, wsID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childCompleted := 0
+	for _, event := range events {
+		if event.Type == domain.EventWorkItemCompleted && event.AggregateID == childID {
+			childCompleted++
+		}
+	}
+	if childCompleted != 1 {
+		t.Fatalf("级联验收必须为子任务恰好写一条 completed 事件: %d", childCompleted)
+	}
+}
+
+// F4 防回归：仍在执行（phase=execution）的子任务不被级联关闭，保持其活跃投影；
+// 只有 review/acceptance 投影的直系子任务随根验收完工。
+func TestCoordinatedRootAcceptSkipsExecutingChildren(t *testing.T) {
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "执行中子任务不级联", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := dispatchJoinDecisionForAcceptance(t, ctx, svc, dispatcher, workerID)
+	childID := worker.WorkItemID
+	if err := svc.RecordRunStatus(ctx, worker.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, worker.ID, "worker done"); err != nil {
+		t.Fatal(err)
+	}
+	// 直接子任务之外再造一个仍在 execution 投影的直系子任务（活跃 worker 场景的
+	// 等价投影），级联必须跳过它。
+	now := time.Now().UTC()
+	executing := &domain.WorkItem{
+		ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: wsID, RecordKind: domain.RecordKindTask,
+		ParentID: root.ID, Title: "仍在执行的子任务", Status: domain.WorkItemInProgress,
+		Phase: domain.PhaseExecution, PhaseEnteredAt: &now,
+		Priority: domain.PriorityMedium, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.WorkItems().Create(ctx, executing); err != nil {
+		t.Fatal(err)
+	}
+	root = driveGovernedFinishEvaluationForAcceptance(t, ctx, svc, store, dispatcher, root.ID)
+	accepted, err := svc.AcceptWorkItem(ctx, root.ID, root.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Status != domain.WorkItemCompleted {
+		t.Fatalf("根任务验收后应 completed: %+v", accepted)
+	}
+	child, err := store.WorkItems().Get(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != domain.WorkItemCompleted {
+		t.Fatalf("review 子任务必须随根验收级联完工: %+v", child)
+	}
+	executing, err = store.WorkItems().Get(ctx, executing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executing.Status != domain.WorkItemInProgress || executing.Phase != domain.PhaseExecution {
+		t.Fatalf("execution 子任务不得被级联关闭: %+v", executing)
+	}
+	events, err := store.Events().Since(ctx, wsID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == domain.EventWorkItemCompleted && event.AggregateID == executing.ID {
+			t.Fatalf("execution 子任务不得写 completed 事件: %+v", event)
+		}
 	}
 }

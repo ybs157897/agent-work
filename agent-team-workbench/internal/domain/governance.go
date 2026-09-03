@@ -656,16 +656,20 @@ const (
 	GovernanceErrorPlanSemanticValidation GovernanceErrorCode = "plan_semantic_validation"
 	GovernanceErrorPlanAuthorityDenied    GovernanceErrorCode = "plan_authority_denied"
 	GovernanceErrorPlanQuotaDenied        GovernanceErrorCode = "plan_quota_denied"
-	GovernanceErrorCostPriceUnavailable   GovernanceErrorCode = "cost_price_unavailable"
-	GovernanceErrorUsageUnresolved        GovernanceErrorCode = "usage_unresolved"
+	// GovernanceErrorPlanExecutionFailed 标记计划步骤执行期的基础设施/配置失败
+	// （如评估 Run 创建被 Runtime 守卫拒绝）。它不是模型计划的语义错误，禁止
+	// 送进自动修复，只能人工排除控制面配置后解除阻塞。
+	GovernanceErrorPlanExecutionFailed  GovernanceErrorCode = "plan_execution_failed"
+	GovernanceErrorCostPriceUnavailable GovernanceErrorCode = "cost_price_unavailable"
+	GovernanceErrorUsageUnresolved      GovernanceErrorCode = "usage_unresolved"
 )
 
 func (c GovernanceErrorCode) Valid() bool {
 	switch c {
 	case GovernanceErrorPlanJSONSyntax, GovernanceErrorPlanSchemaValidation,
 		GovernanceErrorPlanSemanticValidation, GovernanceErrorPlanAuthorityDenied,
-		GovernanceErrorPlanQuotaDenied, GovernanceErrorCostPriceUnavailable,
-		GovernanceErrorUsageUnresolved:
+		GovernanceErrorPlanQuotaDenied, GovernanceErrorPlanExecutionFailed,
+		GovernanceErrorCostPriceUnavailable, GovernanceErrorUsageUnresolved:
 		return true
 	default:
 		return false

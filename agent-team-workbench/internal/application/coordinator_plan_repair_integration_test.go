@@ -648,10 +648,12 @@ func TestCoordinatorPlanRepairRuntimeRetryUsesSourceRuntimeAfterConfigChange(t *
 	}
 }
 
-func TestCoordinatorPlanDecisionSemanticAndAuthorityFailuresDoNotRepair(t *testing.T) {
+// F3 契约：语义错误纳入自动修复（凭校验反馈可自愈），authority 维持人工阻塞。
+func TestCoordinatorPlanDecisionSemanticRepairsAndAuthorityBlocks(t *testing.T) {
 	tests := []struct {
 		name        string
 		decision    func(workerID string) string
+		repairable  bool
 		blockerCode string
 	}{
 		{
@@ -659,7 +661,7 @@ func TestCoordinatorPlanDecisionSemanticAndAuthorityFailuresDoNotRepair(t *testi
 			decision: func(workerID string) string {
 				return `{"schema_version":"plan-decision/v2","kind":"plan","reason":"missing wait","next_action":"invalid","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"work","instruction":"do work","acceptance":["done"]}]}`
 			},
-			blockerCode: string(domain.GovernanceErrorPlanSemanticValidation),
+			repairable: true,
 		},
 		{
 			name: "authority",
@@ -680,20 +682,84 @@ func TestCoordinatorPlanDecisionSemanticAndAuthorityFailuresDoNotRepair(t *testi
 				t.Fatal(err)
 			}
 			completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[0].ID, tc.decision(workerID))
-			if len(dispatcher.runs) != 1 {
-				t.Fatalf("non-format failure must not consume repair budget: runs=%d", len(dispatcher.runs))
-			}
 			state, err := store.TaskCoordinators().GetState(ctx, root.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.repairable {
+				if len(dispatcher.runs) != 2 {
+					t.Fatalf("semantic failure must schedule exactly one repair Run: runs=%d", len(dispatcher.runs))
+				}
+				repair := dispatcher.runs[1]
+				if state.Status != domain.CoordinatorRunning || state.RepairStatus != domain.CoordinatorRepairPending ||
+					state.RepairAttempt != 1 || state.RepairErrorClass != domain.CoordinatorRepairErrorSemantic ||
+					state.RepairErrorCode != string(domain.GovernanceErrorPlanSemanticValidation) ||
+					state.CurrentRunID != repair.ID {
+					t.Fatalf("semantic failure must enter semantic repair: %+v", state)
+				}
+				if state.BlockerCode != "" {
+					t.Fatalf("semantic failure must not fall to a manual blocker: %+v", state)
+				}
+				if control, _ := repair.Input["task_coordinator"].(map[string]any); control["action"] != "repair_plan" {
+					t.Fatalf("repair Run must carry repair_plan action: %#v", control)
+				}
+				requireNoPlanForWorkItem(t, ctx, store, root.ID)
+				return
+			}
+			if len(dispatcher.runs) != 1 {
+				t.Fatalf("authority failure must not consume repair budget: runs=%d", len(dispatcher.runs))
+			}
 			if state.Status != domain.CoordinatorBlocked || state.BlockerCode != tc.blockerCode ||
 				state.RepairStatus != domain.CoordinatorRepairNone || state.RepairAttempt != 0 {
-				t.Fatalf("non-format failure classification mismatch: %+v", state)
+				t.Fatalf("authority failure classification mismatch: %+v", state)
 			}
 			requireNoPlanForWorkItem(t, ctx, store, root.ID)
 		})
 	}
+}
+
+// F3 防回归：语义违规决策（finish 与 join 同决策）进入 semantic 自动修复；两次
+// 修复后仍失败则按既有预算耗尽落 coordinator_plan_repair_exhausted 人工阻塞。
+func TestCoordinatorPlanSemanticRepairExhaustsAfterTwoFailedTurns(t *testing.T) {
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "语义修复预算耗尽", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"finish rides the barrier","next_action":"invalid","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"work","instruction":"do work","acceptance":["done"]},{"verb":"join","children":"all"},{"verb":"finish","evaluation":true}]}`
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[0].ID, invalid)
+	if len(dispatcher.runs) != 2 {
+		t.Fatalf("semantic failure must create repair attempt 1: runs=%d", len(dispatcher.runs))
+	}
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[1].ID, invalid)
+	if len(dispatcher.runs) != 3 {
+		t.Fatalf("first failed semantic repair must create repair attempt 2: runs=%d", len(dispatcher.runs))
+	}
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[2].ID, invalid)
+	if len(dispatcher.runs) != 3 {
+		t.Fatalf("second failed semantic repair must not create a third repair Run: runs=%d", len(dispatcher.runs))
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorBlocked || state.RepairStatus != domain.CoordinatorRepairExhausted ||
+		state.RepairAttempt != 2 || state.RepairErrorClass != domain.CoordinatorRepairErrorSemantic ||
+		state.RepairErrorCode != string(domain.GovernanceErrorPlanSemanticValidation) ||
+		state.BlockerCode != "coordinator_plan_repair_exhausted" || state.CurrentRunID != "" {
+		t.Fatalf("semantic repair exhaustion checkpoint mismatch: %+v", state)
+	}
+	root, err = store.WorkItems().Get(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != domain.WorkItemBlocked {
+		t.Fatalf("semantic repair exhaustion must block the root Task: %+v", root)
+	}
+	requireNoPlanForWorkItem(t, ctx, store, root.ID)
 }
 
 func TestCoordinatorPlanRepairRestartReplayCreatesOneRepairRun(t *testing.T) {

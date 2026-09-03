@@ -1365,6 +1365,35 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 			return err
 		}
 		s.audit(ctx, w.WorkspaceID, "work_item.accepted", w.ID, map[string]any{"title": w.Title})
+		// 验收级联（P5）：dispatch 子任务在 worker run succeeded 后停在
+		// review/acceptance 投影，且 coordinated child 不能单独验收——根任务验收
+		// 通过是它们唯一的完工触发点。同事务级联 Accept 直系子任务；仍在执行
+		// （phase=execution）或已终态的子任务跳过，不强行关闭。
+		children, err := s.store.WorkItems().ListByParent(ctx, w.ID)
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if child == nil || (child.RecordKind != "" && child.RecordKind != domain.RecordKindTask) {
+				continue
+			}
+			if child.Status != domain.WorkItemInProgress ||
+				(child.Phase != domain.PhaseReview && child.Phase != domain.PhaseAcceptance) {
+				continue
+			}
+			if err := child.Accept(time.Now().UTC()); err != nil {
+				return err
+			}
+			if err := s.store.WorkItems().Update(ctx, child, child.Version-1); err != nil {
+				return err
+			}
+			if err := s.emit(ctx, child.WorkspaceID, domain.EventWorkItemCompleted,
+				domain.AggregateWorkItem, child.ID, child.Version, nil,
+				map[string]any{"record_kind": string(workItemRecordKind(child))}); err != nil {
+				return err
+			}
+			s.audit(ctx, child.WorkspaceID, "work_item.accepted", child.ID, map[string]any{"title": child.Title})
+		}
 		if coordinatorState != nil {
 			expected := coordinatorState.Version
 			coordinatorState.Status = domain.CoordinatorCompleted
