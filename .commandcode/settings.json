@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(sed:*)",
+      "Shell(ls /Users/yin/Documents/ybs/code/agent-work/.worktrees/ 2>/dev/null; echo \"---\"; du -sh /Users/yin/Documents/ybs/code/agent-work/agent-team-workbench/web/node_modules 2>/dev/null || echo \"no node_modules\")",
+      "Shell(cd /Users/yin/Documents/ybs/code/agent-work/agent-team-workbench && for ext in go py ts tsx source md yaml json css html sh sql; do count=$(find . -type f -name \"*.$ext\" -not -path \"*/node_modules/*\" -not -path \"*/dist/*\" -not -path \"*/.git/*\" -exec cat {} + 2>/dev/null | wc -l); echo \"$ext: $count\"; done)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
