@@ -128,9 +128,13 @@ func (r *ModuleRunner) Dispatch(ctx context.Context, run *domain.ExecutionRun) e
 		Resolved:    resolved,
 		Instruction: EffectiveInstruction(run),
 		Session:     session,
-		Callbacks:   &runnerCallbacks{runner: r, runID: run.ID},
-		Controls:    ar.controls,
-		intent:      ar,
+		Callbacks: &runnerCallbacks{
+			runner: r, runID: run.ID,
+			journal: observability.NewJournal(r.engine.RecordRunEvent),
+			budget:  observability.NewLogBudget(),
+		},
+		Controls: ar.controls,
+		intent:   ar,
 	}
 	go r.execute(module, ex, ar)
 	return nil
@@ -362,6 +366,11 @@ type runnerCallbacks struct {
 	runID  string
 	once   sync.Once
 
+	// OnLog → run.log_chunk（internal）的落库通道与每 run 64KB 落库预算；
+	// journal 的 record 即 EngineSink.RecordRunEvent，不新增第二条写库路径。
+	journal *observability.Journal
+	budget  *observability.LogBudget
+
 	// 相位观测状态；回调可来自多个 adapter 协程，由 mu 串行化。
 	mu            sync.Mutex
 	feArmed       bool      // 已见 adapter 的 entered{first_event}
@@ -400,7 +409,15 @@ func (c *runnerCallbacks) OnProgress(progress float64) {
 }
 
 func (c *runnerCallbacks) OnLog(stream, line string) {
-	// 进程原始输出暂不进事件流（避免噪声）；M5 日志页接入。
+	// 进程原始输出 → run.log_chunk（internal，D3：64KB/run 防爆阀）——预算内
+	// 原样落库，首次超出截断标记 truncated，耗尽后静默丢弃。原始输出不是活动
+	// 信号：不触发 markRunning、不参与 first_event 收口。
+	if c.journal == nil || c.budget == nil {
+		return
+	}
+	if err := c.journal.LogLine(context.Background(), c.runID, stream, c.budget, line); err != nil {
+		log.Printf("module: run %s log_chunk 落库失败: %v", c.runID, err)
+	}
 }
 
 func (c *runnerCallbacks) OnSpawn(pid, processGroupID int) {

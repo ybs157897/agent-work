@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,7 +48,12 @@ func newRecordEngine() *recordEngine {
 
 func newTestCallbacks(engine *recordEngine) *runnerCallbacks {
 	runner := NewModuleRunner(engine)
-	return &runnerCallbacks{runner: runner, runID: engine.run.ID}
+	return &runnerCallbacks{
+		runner:  runner,
+		runID:   engine.run.ID,
+		journal: observability.NewJournal(engine.RecordRunEvent),
+		budget:  observability.NewLogBudget(),
+	}
 }
 
 // phaseEvent 在记录的事件里找指定 phase 的指定相位事件。
@@ -310,5 +316,48 @@ func TestModuleRunnerFallbackVisibleInSettleClose(t *testing.T) {
 	}
 	if code, _ := closed.data["failure_code"].(string); code != "" {
 		t.Fatalf("无 Failure 的 Outcome 不应带 failure_code: %+v", closed.data)
+	}
+}
+
+// TestOnLogLandsBudgetedChunks：OnLog 收口为 run.log_chunk——预算内原样落库，
+// 首次超出截断标记 truncated，耗尽后静默丢弃；原始输出不推进 Run 状态。
+func TestOnLogLandsBudgetedChunks(t *testing.T) {
+	engine := newRecordEngine()
+	cb := newTestCallbacks(engine)
+
+	first := strings.Repeat("a", 40960)
+	second := strings.Repeat("b", 40960)
+	cb.OnLog("stderr", first)
+	cb.OnLog("stderr", second) // 超出剩余额度：截断到剩余额度并标记 truncated
+	cb.OnLog("stderr", "tail") // 预算耗尽：静默丢弃
+
+	_, events := engine.snapshot()
+	var chunks []journaledEvent
+	for _, ev := range events {
+		if ev.typ == domain.EventRunLogChunk {
+			chunks = append(chunks, ev)
+		}
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("预算内应落 2 条 log_chunk，实际 %d: %v", len(chunks), events)
+	}
+	if got, _ := chunks[0].data["chunk"].(string); got != first {
+		t.Fatalf("预算内 chunk 应原样落库")
+	}
+	if truncated, _ := chunks[0].data["truncated"].(bool); truncated {
+		t.Fatalf("首条不应标记 truncated: %+v", chunks[0].data)
+	}
+	if got, _ := chunks[1].data["chunk"].(string); len(got) != observability.LogChunkBudgetBytes-40960 {
+		t.Fatalf("截断 chunk 应为剩余额度 %d 字节，实际 %d", observability.LogChunkBudgetBytes-40960, len(got))
+	}
+	if truncated, _ := chunks[1].data["truncated"].(bool); !truncated {
+		t.Fatalf("截断 chunk 应标记 truncated: %+v", chunks[1].data)
+	}
+	if stream, _ := chunks[0].data["stream"].(string); stream != "stderr" {
+		t.Fatalf("log_chunk 应携带 stream: %+v", chunks[0].data)
+	}
+	// OnLog 不触发 markRunning（原始输出不是活动信号）。
+	if got := engine.status(); got != domain.RunQueued {
+		t.Fatalf("OnLog 不得推进 Run 状态，实际 %s", got)
 	}
 }
