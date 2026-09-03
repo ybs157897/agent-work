@@ -893,6 +893,15 @@ func (e *moduleEngine) RecordRunProgress(ctx context.Context, runID string, prog
 }
 
 func (e *moduleEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
+	// Run Journal internal 事件只回传相位帧（run.phase_entered/phase_closed，
+	// D2：远程 runner 内 spawn/handshake/first_event 环节证据）。run.log_chunk
+	// 不上线——D3 的 64KB 预算是进程内落库纪律，不是带宽预算；run.decision
+	// 由控制面产生，不经 runner 转发。其余 internal 类静默丢弃：观测面缺帧
+	// 不打断业务路径（返回 nil 非错误）。
+	if domain.IsInternalEventName(evType) &&
+		evType != domain.EventRunPhaseEntered && evType != domain.EventRunPhaseClosed {
+		return nil
+	}
 	return e.r.emitEvent(runID, evType, data)
 }
 

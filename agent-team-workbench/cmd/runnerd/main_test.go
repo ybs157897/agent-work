@@ -281,6 +281,47 @@ func TestModuleEngineRecordRunStatusReportsSendFailure(t *testing.T) {
 	}
 }
 
+// D2 帧纪律：internal 相位帧（run.phase_entered/phase_closed）照常回传控制面；
+// run.log_chunk / run.decision 不上线——静默丢弃（nil 返回、无 pending、无帧），
+// 观测面缺帧不打断业务路径。
+func TestModuleEngineForwardsPhaseFramesDropsOtherInternal(t *testing.T) {
+	conn, frames := captureTestWS(t)
+	r := newTestRunner(t, conn, nil)
+	addLease(r, "run_1", "lease_1", 7)
+	e := &moduleEngine{r: r}
+
+	if err := e.RecordRunEvent(context.Background(), "run_1", domain.EventRunPhaseEntered,
+		map[string]any{"phase": "spawn", "attempt": 1}); err != nil {
+		t.Fatalf("相位帧应照常上报: %v", err)
+	}
+	env := readEnvelope(t, frames)
+	eventID, seq, kind, data := eventIdentity(t, env)
+	if kind != domain.EventRunPhaseEntered || seq != 1 || eventID == "" {
+		t.Fatalf("相位帧身份失真: id=%q seq=%d kind=%s", eventID, seq, kind)
+	}
+	if data["phase"] != "spawn" {
+		t.Fatalf("相位载荷失真: %+v", data)
+	}
+
+	for _, dropped := range []string{domain.EventRunLogChunk, domain.EventRunDecision} {
+		if err := e.RecordRunEvent(context.Background(), "run_1", dropped,
+			map[string]any{"chunk": "x"}); err != nil {
+			t.Fatalf("%s 应静默丢弃而非报错: %v", dropped, err)
+		}
+	}
+	select {
+	case raw := <-frames:
+		t.Fatalf("internal 非相位帧不得上线，实际: %s", raw)
+	case <-time.After(150 * time.Millisecond):
+	}
+	r.mu.Lock()
+	n := len(r.pending)
+	r.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("只有相位帧应入 pending，实际 %d 帧", n)
+	}
+}
+
 // ACK 按 (run, lease, producer_seq) 精确消化：一个 Run 的 ACK 不清另一个
 // Run 的 pending（v1 全局 contiguous_seq 已删除）。
 func TestAckIsolatesRuns(t *testing.T) {
