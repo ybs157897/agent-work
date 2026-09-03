@@ -1,29 +1,55 @@
 import { useEffect, useMemo } from 'react';
-import type { DispatchRun } from '../../api/types';
+import type { DispatchRun, RunStatus } from '../../api/types';
 import { AgentOutput } from '../../components/chat/agent-output';
 import { MessageActions } from '../../components/chat/message-actions';
-import { OutputLoadingIndicator, WorkActivityTimeline } from '../../components/chat/work-activity-timeline';
-import { ACTIVE, aggregateRunStream, buildMessages } from '../../stores/chat.store';
 import { useRunsStore, type TimelineEntry } from '../../stores/runs.store';
-import { buildTranscriptSegments } from '../../utils/chronological-transcript';
-import {
-  presentedTranscriptSegmentKey,
-  projectWorkActivityTimeline,
-  type PresentedTranscriptSegment,
-} from '../../utils/work-activity-timeline';
+import { parseContentBlockDocument, type ContentBlockDocument } from '../../utils/content-blocks';
 
-type TaskVisibleSegment = Extract<PresentedTranscriptSegment, { kind: 'assistant' | 'work-timeline' | 'thinking-placeholder' }>;
+export interface TaskRunIOProjection {
+  input: string;
+  output: string;
+  contentBlocks?: ContentBlockDocument;
+}
 
 /**
- * Task 侧的单个 Agent/run 正文投影。
+ * Task 详情只投影一次执行的输入与最终结果。
  *
- * 它只订阅指定 run 的事件历史，不写入 Chat store，也不提供 Chat 的
- * 分叉/钉决策操作；正文本体和 Chat 继续共享 AgentOutput。
+ * `message.completed` 在同一 run 中可能包含阶段性说明；只有 run 成功落终态后，
+ * 最后一条 assistant completed 才能作为最终输出，避免把执行过程误标成结果。
  */
+export function projectTaskRunIO(
+  timeline: readonly TimelineEntry[],
+  status: RunStatus,
+): TaskRunIOProjection {
+  const created = timeline.find((entry) => entry.type === 'run.created');
+  const input = typeof created?.data?.instruction === 'string' ? created.data.instruction.trim() : '';
+
+  if (status !== 'succeeded') return { input, output: '' };
+
+  let final: TimelineEntry | undefined;
+  for (const entry of timeline) {
+    if (entry.type !== 'message.completed') continue;
+    // 同一 Run 可包含子 Agent 事件；Task 行代表主执行 Agent，因此只允许
+    // main（以及旧事件缺省的 agent_id）成为最终输出。
+    if (entry.agent_id && entry.agent_id !== 'main') continue;
+    const role = entry.role ?? (typeof entry.data?.role === 'string' ? entry.data.role : undefined);
+    const itemType = typeof entry.data?.item_type === 'string' ? entry.data.item_type : undefined;
+    if ((role && role !== 'assistant') || itemType === 'plan') continue;
+    final = entry;
+  }
+
+  const output = typeof final?.text === 'string'
+    ? final.text.trim()
+    : typeof final?.data?.text === 'string'
+      ? final.data.text.trim()
+      : '';
+  const contentBlocks = parseContentBlockDocument(final?.data?.content_blocks) ?? undefined;
+  return { input, output, ...(contentBlocks ? { contentBlocks } : {}) };
+}
+
 export function TaskRunOutput({ run, agentName }: { run: DispatchRun; agentName: string }) {
   const snapshot = useRunsStore((state) => state.runs[run.id]);
   const timeline = useRunsStore((state) => state.timelines[run.id]);
-  const approvals = useRunsStore((state) => state.approvals[run.id] ?? []);
   const watchRun = useRunsStore((state) => state.watchRun);
   const unwatchRun = useRunsStore((state) => state.unwatchRun);
 
@@ -33,76 +59,52 @@ export function TaskRunOutput({ run, agentName }: { run: DispatchRun; agentName:
   }, [run.id, unwatchRun, watchRun]);
 
   const status = snapshot?.status ?? run.status;
-  const runStatuses = useMemo(() => ({ [run.id]: status }), [run.id, status]);
-  const timelineByRun = useMemo<Record<string, TimelineEntry[]>>(
-    () => ({ [run.id]: timeline ?? [] }),
-    [run.id, timeline],
+  const projection = useMemo(
+    () => projectTaskRunIO(timeline ?? [], status),
+    [status, timeline],
   );
-  const runStream = useMemo(() => aggregateRunStream(timeline ?? []), [timeline]);
-  const runActive = ACTIVE.has(status);
-  const messages = useMemo(
-    () => buildMessages([run.id], timelineByRun),
-    [run.id, timelineByRun],
-  );
-  const transcript = useMemo(() => {
-    const raw = buildTranscriptSegments(messages, {
-      runStatuses,
-      liveRunId: runActive ? run.id : undefined,
-      liveStream: runStream,
-      liveRunActive: runActive,
-      hasPendingApproval: approvals.some((approval) => approval.status === 'pending'),
-      showReasoning: true,
-    });
-    return projectWorkActivityTimeline(raw, {
-      runStatuses,
-      timingByRun: {
-        [run.id]: {
-          createdAt: snapshot?.created_at,
-          updatedAt: snapshot?.updated_at,
-        },
-      },
-    });
-  }, [approvals, messages, run.id, runActive, runStatuses, runStream, snapshot?.created_at, snapshot?.updated_at]);
-
-  const visible = transcript.filter((segment): segment is TaskVisibleSegment =>
-    segment.kind === 'assistant' || segment.kind === 'work-timeline' || segment.kind === 'thinking-placeholder');
+  const input = projection.input || run.summary?.trim() || '';
+  const outputPlaceholder = finalOutputPlaceholder(status);
 
   return (
-    <div className="mt-snug space-y-3 border-t border-border-subtle pt-snug" data-task-run-output={run.id}>
-      {timeline === undefined ? (
-        <p className="text-caption text-text-tertiary">正文加载中…</p>
-      ) : visible.length === 0 ? (
-        <p className="text-caption text-text-tertiary">该 Agent 尚未产生可展示正文</p>
-      ) : (
-        visible.map((segment) => <TaskTranscriptSegment key={presentedTranscriptSegmentKey(segment)} segment={segment} agentName={agentName} />)
-      )}
+    <div className="plane-task-agent-io" data-task-run-output={run.id}>
+      <section className="plane-task-io-block" aria-label={`${agentName} 的输入`}>
+        <h4 className="mb-tight text-caption font-semibold text-text-tertiary">输入</h4>
+        {timeline === undefined ? (
+          <p className="text-body text-text-tertiary">输入加载中…</p>
+        ) : input ? (
+          <p className="whitespace-pre-wrap break-words text-body leading-relaxed text-text-primary">{input}</p>
+        ) : (
+          <p className="text-body text-text-tertiary">无可展示输入</p>
+        )}
+      </section>
+
+      <section className="plane-task-io-block" aria-label={`${agentName} 的最终输出`}>
+        <h4 className="mb-tight text-caption font-semibold text-text-tertiary">最终输出</h4>
+        {timeline === undefined ? (
+          <p className="text-body text-text-tertiary">结果加载中…</p>
+        ) : projection.output || projection.contentBlocks ? (
+          <>
+            <AgentOutput
+              text={projection.output}
+              contentBlocks={projection.contentBlocks}
+              runId={run.id}
+              messageId={`${run.id}-task-final`}
+              showCaret={false}
+            />
+            {projection.output && <MessageActions text={projection.output} className="mt-tight" />}
+          </>
+        ) : (
+          <p className="text-body text-text-tertiary">{outputPlaceholder}</p>
+        )}
+      </section>
     </div>
   );
 }
 
-function TaskTranscriptSegment({
-  segment,
-  agentName,
-}: {
-  segment: TaskVisibleSegment;
-  agentName: string;
-}) {
-  if (segment.kind === 'assistant') {
-    return (
-      <article className="chat-assistant-turn" aria-label={`${agentName} 的任务正文`}>
-        <AgentOutput
-          text={segment.msg.text}
-          streaming={segment.streaming}
-          contentBlocks={segment.msg.contentBlocks}
-          runId={segment.msg.runId}
-          messageId={segment.renderKey ?? segment.msg.key}
-        />
-        {!segment.streaming && segment.msg.text && (
-          <MessageActions text={segment.msg.text} className="mt-2" />
-        )}
-      </article>
-    );
-  }
-  if (segment.kind === 'work-timeline') return <WorkActivityTimeline segment={segment} />;
-  return <OutputLoadingIndicator />;
+function finalOutputPlaceholder(status: RunStatus): string {
+  if (status === 'failed' || status === 'lost') return '本次执行失败，未生成最终结果';
+  if (status === 'cancelled' || status === 'interrupted') return '本次执行已结束，未生成最终结果';
+  if (status === 'succeeded') return '本次执行未返回可展示的最终结果';
+  return 'Agent 完成执行后在这里显示最终结果';
 }

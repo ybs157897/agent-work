@@ -7,7 +7,7 @@ import { InkBackdrop } from './ink/ink-backdrop';
 import { SseStatusPill } from './sse-status';
 import { WorkspaceSelector } from './workspace-selector';
 import { useWorkspaceStore } from '../stores/workspace.store';
-import { isChatPath, mainContentClassName } from '../utils/route-layout';
+import { isChatPath, isTasksPath, mainContentClassName } from '../utils/route-layout';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
@@ -34,6 +34,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   const workspace = useWorkspaceStore((state) => state.workspace);
   const breadcrumb = location.pathname.startsWith('/tasks/') ? '任务详情' : BREADCRUMBS[location.pathname] ?? '';
   const isChat = isChatPath(location.pathname);
+  const isTasksWorkspace = isTasksPath(location.pathname);
 
   return (
     <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-surface-base lg:flex-row">
@@ -52,12 +53,26 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {isChat ? null : (
-          <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-glass/90 px-comfortable backdrop-blur-md">
+          <header
+            className={`sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b px-comfortable ${
+              isTasksWorkspace ? 'plane-board-chrome' : 'border-border-subtle bg-surface-glass/90 backdrop-blur-md'
+            }`}
+          >
             <div className="flex min-w-0 items-center gap-snug text-body">
-              <span className="h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
-              <span className="truncate font-medium text-text-tertiary">{workspace?.name ?? '…'}</span>
-              <span className="text-border-strong" aria-hidden="true">/</span>
-              <span className="truncate font-display text-body-lg text-text-primary">{breadcrumb}</span>
+              <span className="plane-board-chrome-accent h-5 w-1 shrink-0 rounded-sm bg-brand-primary" aria-hidden="true" />
+              <span className="plane-board-chrome-muted truncate font-medium text-text-tertiary">
+                {workspace?.name ?? '…'}
+              </span>
+              <span className="plane-board-chrome-sep text-border-strong" aria-hidden="true">
+                /
+              </span>
+              <span
+                className={`plane-board-chrome-title truncate text-body-lg ${
+                  isTasksWorkspace ? 'font-zh font-semibold tracking-tight' : 'font-display text-text-primary'
+                }`}
+              >
+                {breadcrumb}
+              </span>
             </div>
             <SseStatusPill />
           </header>
@@ -68,7 +83,7 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
           tabIndex={-1}
           className={mainContentClassName(location.pathname)}
         >
-          {isChat ? null : <InkBackdrop />}
+          {isChat || isTasksWorkspace ? null : <InkBackdrop />}
           {children}
         </main>
       </div>

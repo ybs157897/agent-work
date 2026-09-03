@@ -9,13 +9,19 @@ export function isChatPath(pathname: string): boolean {
   return pathname === '/chat';
 }
 
-/** `<main>` 的滚动与皮肤：对话页挂 tx-scope 铺满墨底，其余路由保留宣纸 mesh。 */
+/** Task 列表与详情共用 Plane 白底工作面，不挂宣纸 mesh / 山水层。 */
+export function isTasksPath(pathname: string): boolean {
+  return pathname === '/tasks' || pathname.startsWith('/tasks/');
+}
+
+/** `<main>` 的滚动与皮肤：对话页挂 tx-scope；Task 工作区挂 plane-board-shell；其余保留宣纸 mesh。 */
 export function mainContentClassName(pathname: string): string {
-  const fullBleed = isFullBleedPath(pathname);
+  const tasksPath = isTasksPath(pathname);
+  const fullBleed = isFullBleedPath(pathname) || tasksPath;
   const chat = isChatPath(pathname);
   return [
     'relative isolate min-h-0 flex-1 focus:outline-none',
     fullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
-    chat ? 'tx-scope' : 'mesh-bg',
+    chat ? 'tx-scope' : tasksPath ? 'plane-board-shell' : 'mesh-bg',
   ].join(' ');
 }

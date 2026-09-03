@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkItem } from '../api/types';
-import { childCountByParent, sortTasksTree } from './tasks.page';
+import { childCountByParent, sortTasksTree, TASK_STATUS_COLUMNS } from './tasks.page';
 
 const wi = (id: string, createdAt: string, parentId?: string): WorkItem => ({
   id,
@@ -97,5 +97,17 @@ describe('childCountByParent', () => {
 
   it('空列表返回空 Map', () => {
     expect(childCountByParent([]).size).toBe(0);
+  });
+});
+
+describe('TASK_STATUS_COLUMNS', () => {
+  it('覆盖 WorkItem 的全部状态，取消任务不会从任务列表消失', () => {
+    expect(TASK_STATUS_COLUMNS.map((column) => column.id)).toEqual([
+      'todo',
+      'in_progress',
+      'completed',
+      'blocked',
+      'cancelled',
+    ]);
   });
 });
