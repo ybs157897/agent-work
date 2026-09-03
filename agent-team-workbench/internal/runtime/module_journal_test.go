@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -106,4 +107,208 @@ func TestInternalEventsDoNotAdvanceRun(t *testing.T) {
 type journaledEvent struct {
 	typ  string
 	data map[string]any
+}
+
+// scriptModule 可编程 AdapterModule：Execute 内执行 run 脚本后返回固定 Outcome。
+type scriptModule struct {
+	run     func(ex *ExecContext)
+	outcome Outcome
+}
+
+func (m *scriptModule) Manifest(context.Context) (AdapterManifest, error) {
+	return AdapterManifest{AdapterID: "fake"}, nil
+}
+
+func (m *scriptModule) Probe(context.Context, ProbeRequest) (ProbeResult, error) {
+	return ProbeResult{OK: true}, nil
+}
+
+func (m *scriptModule) Execute(ex *ExecContext) ExecResult {
+	if m.run != nil {
+		m.run(ex)
+	}
+	return ExecResult{Outcome: m.outcome}
+}
+
+// waitForPhaseEvent 轮询等待指定相位事件落库（closeSettle 在终态写入之后，
+// Dispatch 异步驱动下可能晚于 waitTerminal 返回）。
+func waitForPhaseEvent(t *testing.T, engine *recordEngine, eventType, phase string) journaledEvent {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, events := engine.snapshot()
+		if ev, ok := phaseEvent(t, events, eventType, phase); ok {
+			return ev
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("超时未等到 %s(%s)", eventType, phase)
+	return journaledEvent{}
+}
+
+// phaseSequence 返回相位事件的 "entered(first_event)" 形态交错序列。
+func phaseSequence(events []journaledEvent) []string {
+	var out []string
+	for _, ev := range events {
+		switch ev.typ {
+		case domain.EventRunPhaseEntered, domain.EventRunPhaseClosed:
+			p, _ := ev.data["phase"].(string)
+			name := "entered"
+			if ev.typ == domain.EventRunPhaseClosed {
+				name = "closed"
+			}
+			out = append(out, name+"("+p+")")
+		}
+	}
+	return out
+}
+
+func containsSubsequence(got, want []string) bool {
+	i := 0
+	for _, g := range got {
+		if i < len(want) && g == want[i] {
+			i++
+		}
+	}
+	return i == len(want)
+}
+
+// TestModuleRunnerJournalPhaseChain：adapter 发 entered{first_event} 后，首个
+// 真实回调（OnSession）收口 first_event 并开启 streaming；Execute 返回后
+// streaming 收口、module 侧补发 entered{settle}，recordTerminal 完成时以
+// terminal_status 收口——每 run 恰好一对 settle 事件。
+func TestModuleRunnerJournalPhaseChain(t *testing.T) {
+	engine := newRecordEngine()
+	runner := NewModuleRunner(engine)
+	runner.Register("fake", &scriptModule{outcome: OutcomeSucceeded, run: func(ex *ExecContext) {
+		// 模拟 adapter：handshake 结束后布防 first_event。
+		ex.Callbacks.OnEvent(domain.EventRunPhaseEntered,
+			observability.PhaseEnteredPayload(observability.PhaseFirstEvent, 1, nil))
+		ex.Callbacks.OnSession(SessionUpdate{Ref: "fake://s1"}) // 首个真实回调
+	}})
+	if err := runner.Dispatch(context.Background(), engine.run); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.waitTerminal(t); got != domain.RunSucceeded {
+		t.Fatalf("期望 succeeded，实际 %s", got)
+	}
+	waitForPhaseEvent(t, engine, domain.EventRunPhaseClosed, observability.PhaseSettle)
+
+	_, events := engine.snapshot()
+	seq := phaseSequence(events)
+	if !containsSubsequence(seq, []string{
+		"entered(first_event)", "closed(first_event)", "entered(streaming)",
+		"closed(streaming)", "entered(settle)", "closed(settle)",
+	}) {
+		t.Fatalf("相位链漂移: %v", seq)
+	}
+	entered, ok := phaseEvent(t, events, domain.EventRunPhaseEntered, observability.PhaseSettle)
+	if !ok {
+		t.Fatal("缺少 settle entered")
+	}
+	if attempt, _ := entered.data["attempt"].(int); attempt != 1 {
+		t.Fatalf("module 侧 settle entered attempt 应为 1: %+v", entered.data)
+	}
+	closed, _ := phaseEvent(t, events, domain.EventRunPhaseClosed, observability.PhaseSettle)
+	if closed.data["terminal_status"] != string(domain.RunSucceeded) {
+		t.Fatalf("settle closed 应带 terminal_status=succeeded: %+v", closed.data)
+	}
+	if _, has := closed.data["fallback"]; has {
+		t.Fatalf("正常终态不应带 fallback: %+v", closed.data)
+	}
+	// settle 恰好一对（重复 entered 会破坏「未闭合即故障点」定位语义）。
+	count := 0
+	for _, s := range seq {
+		if s == "entered(settle)" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("settle entered 应恰好一次，实际 %d: %v", count, seq)
+	}
+}
+
+// TestModuleRunnerSettleEnteredDedup：adapter 已在裁决入口自发 entered{settle}
+// （codexapp composeResult 形态）时，module 侧不得重复补发。
+func TestModuleRunnerSettleEnteredDedup(t *testing.T) {
+	engine := newRecordEngine()
+	runner := NewModuleRunner(engine)
+	runner.Register("fake", &scriptModule{outcome: OutcomeSucceeded, run: func(ex *ExecContext) {
+		ex.Callbacks.OnEvent(domain.EventRunPhaseEntered,
+			observability.PhaseEnteredPayload(observability.PhaseSettle, 1, map[string]any{"verdict_branch": "turn_completed"}))
+	}})
+	if err := runner.Dispatch(context.Background(), engine.run); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.waitTerminal(t); got != domain.RunSucceeded {
+		t.Fatalf("期望 succeeded，实际 %s", got)
+	}
+	waitForPhaseEvent(t, engine, domain.EventRunPhaseClosed, observability.PhaseSettle)
+
+	_, events := engine.snapshot()
+	count := 0
+	for _, ev := range events {
+		if ev.typ == domain.EventRunPhaseEntered {
+			if p, _ := ev.data["phase"].(string); p == observability.PhaseSettle {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("settle entered 应恰好一次（去重失败）: %d", count)
+	}
+}
+
+// TestModuleRunnerPanicClosesStreamingFailed：panic 兜底路径必须把未闭合的
+// streaming 以 failed 收口（DSH 式「未闭合即故障点」依赖成对纪律）。
+func TestModuleRunnerPanicClosesStreamingFailed(t *testing.T) {
+	engine := newRecordEngine()
+	runner := NewModuleRunner(engine)
+	runner.Register("fake", &scriptModule{outcome: OutcomeSucceeded, run: func(ex *ExecContext) {
+		ex.Callbacks.OnEvent(domain.EventRunPhaseEntered,
+			observability.PhaseEnteredPayload(observability.PhaseFirstEvent, 1, nil))
+		ex.Callbacks.OnSession(SessionUpdate{Ref: "fake://s1"})
+		panic("boom")
+	}})
+	if err := runner.Dispatch(context.Background(), engine.run); err != nil {
+		t.Fatal(err)
+	}
+	if got := engine.waitTerminal(t); got != domain.RunFailed {
+		t.Fatalf("panic 应落 failed，实际 %s", got)
+	}
+	closed := waitForPhaseEvent(t, engine, domain.EventRunPhaseClosed, observability.PhaseStreaming)
+	if closed.data["outcome"] != string(observability.PhaseFailed) {
+		t.Fatalf("streaming 应以 failed 收口: %+v", closed.data)
+	}
+	failure, _ := closed.data["failure"].(map[string]any)
+	if failure == nil || failure["code"] != "execute_panic" {
+		t.Fatalf("streaming 失败应携带 execute_panic: %+v", closed.data)
+	}
+	settleClosed := waitForPhaseEvent(t, engine, domain.EventRunPhaseClosed, observability.PhaseSettle)
+	if settleClosed.data["terminal_status"] != string(domain.RunFailed) {
+		t.Fatalf("settle closed terminal_status 应为 failed: %+v", settleClosed.data)
+	}
+}
+
+// TestModuleRunnerFallbackVisibleInSettleClose：「Outcome 必落终态」兜底回退
+// failed 时，settle closed detail 必须可辨（terminal_status=failed + fallback）。
+func TestModuleRunnerFallbackVisibleInSettleClose(t *testing.T) {
+	engine := newRecordEngine()
+	engine.rejectStatus = map[domain.RunStatus]error{domain.RunSucceeded: errors.New("rejected")}
+	runner := NewModuleRunner(engine)
+	cb := newTestCallbacks(engine)
+	cb.enterSettle(context.Background())
+	ex := &ExecContext{Run: engine.run, Callbacks: cb}
+	// queued→succeeding/succeeded 均不合法 → 兜底回退 failed。
+	runner.recordTerminal(context.Background(), ex, ExecResult{Outcome: OutcomeSucceeded})
+	if got := engine.status(); got != domain.RunFailed {
+		t.Fatalf("应回退 failed，实际 %s", got)
+	}
+	closed := waitForPhaseEvent(t, engine, domain.EventRunPhaseClosed, observability.PhaseSettle)
+	if closed.data["terminal_status"] != string(domain.RunFailed) || closed.data["fallback"] != true {
+		t.Fatalf("settle closed 应可辨 fallback: %+v", closed.data)
+	}
+	if code, _ := closed.data["failure_code"].(string); code != "" {
+		t.Fatalf("无 Failure 的 Outcome 不应带 failure_code: %+v", closed.data)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 )
 
 // ModuleRunner 把 AdapterModule 适配为进程内执行面：实现 application.Dispatcher
@@ -160,6 +161,13 @@ func (r *ModuleRunner) execute(module AdapterModule, ex *ExecContext, ar *active
 		result = module.Execute(ex)
 	}()
 
+	// streaming 相位在 Execute 返回即结束（首个真实回调开启，见 firstActivity）；
+	// 未开启（无任何真实回调）时跳过，避免无 entered 的孤儿 closed。随后进入
+	// settle（adapter 已发 entered{settle} 时去重，见 enterSettle）。
+	if rc, ok := ex.Callbacks.(*runnerCallbacks); ok {
+		rc.closeStreaming(bg, result)
+		rc.enterSettle(bg)
+	}
 	if result.Usage != nil {
 		_ = r.engine.RecordRunUsage(bg, runID, *result.Usage)
 	}
@@ -172,14 +180,21 @@ func (r *ModuleRunner) execute(module AdapterModule, ex *ExecContext, ar *active
 // recordTerminal Outcome → Run 终态；终态后不再产生任何副作用。
 // 补迁移或终态写入被状态机拒绝时回退 RunFailed：任何 Outcome 都必须能落终态，
 // Run 绝不因非法迁移卡在非终态（吞错只记日志会让 Run 无从排查地悬置）。
+// settle 相位（adapter 裁决入口或本函数进入时开启）在本函数完成时收口，
+// detail 带实际落点终态、失败码与 fallback 标记——journal 允许在终态之后
+// 落 internal 事件（存储层无终态门），settle 闭包是 run 的最后一笔证据。
 func (r *ModuleRunner) recordTerminal(bg context.Context, ex *ExecContext, result ExecResult) {
 	runID := ex.Run.ID
+	rc, _ := ex.Callbacks.(*runnerCallbacks)
+	var terminal domain.RunStatus
+	fallback := false
 	done := false
 	switch result.Outcome {
 	case OutcomeSucceeded:
 		// 中间态写入尽力而为（Run 已在 succeeding 时被拒属预期）；以终态写入定成败。
 		r.status(bg, runID, domain.RunSucceeding, nil)
 		done = r.status(bg, runID, domain.RunSucceeded, nil)
+		terminal = domain.RunSucceeded
 	case OutcomeFailed, OutcomeTimedOut:
 		data := map[string]any{"retryable": false}
 		family := FamilyInternal
@@ -199,6 +214,7 @@ func (r *ModuleRunner) recordTerminal(bg context.Context, ex *ExecContext, resul
 		}
 		data["family"] = string(family)
 		done = r.status(bg, runID, domain.RunFailed, data)
+		terminal = domain.RunFailed
 	case OutcomeCancelled, OutcomeInterrupted:
 		// application 语义：Control 前置 cancelling/interrupting 中间态。若 Control
 		// 早于该迁移到达（或被跳过），这里补一次中间迁移，避免终态写入被状态机拒绝。
@@ -219,19 +235,33 @@ func (r *ModuleRunner) recordTerminal(bg context.Context, ex *ExecContext, resul
 			}
 		}
 		done = r.status(bg, runID, target, nil)
+		terminal = target
 	default:
 		done = r.status(bg, runID, domain.RunFailed, map[string]any{
 			"code": "invalid_outcome", "message": string(result.Outcome), "family": string(FamilyInternal),
 		})
+		terminal = domain.RunFailed
 	}
 	if !done {
 		// 兜底回退：目标终态迁移被拒（如与用户控制命令竞态）时强制 failed，
 		// 保证非终态 Run 不悬置；Run 已是终态时此写同样被拒，属预期（用户意图优先）。
+		terminal = domain.RunFailed
+		fallback = true
 		r.status(bg, runID, domain.RunFailed, map[string]any{
 			"code":    "terminal_transition_rejected",
 			"message": "outcome " + string(result.Outcome) + " 未能落终态（状态机迁移被拒，回退 failed）",
 			"family":  string(FamilyConfig),
 		})
+	}
+	if rc != nil {
+		detail := map[string]any{"terminal_status": string(terminal)}
+		if result.Failure != nil {
+			detail["failure_code"] = result.Failure.Code
+		}
+		if fallback {
+			detail["fallback"] = true
+		}
+		rc.closeSettle(bg, detail)
 	}
 }
 
@@ -319,10 +349,28 @@ func (r *ModuleRunner) moduleCapability(ctx context.Context, module AdapterModul
 // ── 回调适配 ─────────────────────────────────────────────────────────
 
 // runnerCallbacks 把 adapter 回调转发到 EngineSink；首个活动信号触发 running。
+// Run Journal 的回调面职责也收敛在这里：
+//   - internal 相位事件只落 run_events，绝不推进 Run 状态（见 OnEvent 护栏）；
+//   - first_event 相位在 adapter 发 entered{first_event} 后布防，首个真实回调
+//     （surface 事件 / OnSession / OnUsage / OnSpawn / 审批发起）收口并开启
+//     streaming——OnLog 是原始输出不是活动信号，不参与；
+//   - streaming 相位由 execute 在 Execute 返回时收口；
+//   - settle 相位去重：codexapp 等在裁决入口自发 entered{settle}，未发时由
+//     module 侧补发，closed 在 recordTerminal 完成时补齐——每 run 恰好一对。
 type runnerCallbacks struct {
 	runner *ModuleRunner
 	runID  string
 	once   sync.Once
+
+	// 相位观测状态；回调可来自多个 adapter 协程，由 mu 串行化。
+	mu            sync.Mutex
+	feArmed       bool      // 已见 adapter 的 entered{first_event}
+	feArmedAt     time.Time // 布防时刻（first_event duration 起点）
+	feClosed      bool
+	streamingOpen bool
+	streamingAt   time.Time
+	settleEntered bool
+	settleAt      time.Time
 }
 
 func (c *runnerCallbacks) markRunning() {
@@ -336,14 +384,17 @@ func (c *runnerCallbacks) OnEvent(eventType string, data map[string]any) {
 		// Run Journal internal 事件（run.phase_* / run.log_chunk）是观测面：
 		// 只落 run_events，绝不触发 markRunning——否则 adapter 在 spawn/handshake
 		// 区间发的相位事件会把 starting→running 提前，run.started 语义被破坏。
+		c.observePhase(eventType, data)
 		_ = c.runner.engine.RecordRunEvent(context.Background(), c.runID, eventType, data)
 		return
 	}
+	c.firstActivity()
 	c.markRunning()
 	_ = c.runner.engine.RecordRunEvent(context.Background(), c.runID, eventType, data)
 }
 
 func (c *runnerCallbacks) OnProgress(progress float64) {
+	c.firstActivity()
 	c.markRunning()
 	_ = c.runner.engine.RecordRunProgress(context.Background(), c.runID, progress)
 }
@@ -353,10 +404,12 @@ func (c *runnerCallbacks) OnLog(stream, line string) {
 }
 
 func (c *runnerCallbacks) OnSpawn(pid, processGroupID int) {
+	c.firstActivity()
 	c.markRunning()
 }
 
 func (c *runnerCallbacks) OnUsage(u Usage) {
+	c.firstActivity()
 	c.markRunning()
 	_ = c.runner.engine.RecordRunUsage(context.Background(), c.runID, u)
 }
@@ -364,11 +417,13 @@ func (c *runnerCallbacks) OnUsage(u Usage) {
 func (c *runnerCallbacks) OnSession(update SessionUpdate) {
 	// 会话上报本身即活动信号：与 OnEvent 一致触发 running，
 	// 否则零事件空 turn（仅 OnSession + 终态）会因 starting→succeeding 非法迁移卡死。
+	c.firstActivity()
 	c.markRunning()
 	_ = c.runner.engine.RecordRunSessionUpdate(context.Background(), c.runID, update)
 }
 
 func (c *runnerCallbacks) RequestApproval(kind, risk, summary string) string {
+	c.firstActivity()
 	c.markRunning()
 	req, err := c.runner.engine.RequestApproval(context.Background(), c.runID, kind, risk, summary)
 	if err != nil || req == nil {
@@ -376,6 +431,102 @@ func (c *runnerCallbacks) RequestApproval(kind, risk, summary string) string {
 		return ""
 	}
 	return req.ID
+}
+
+// observePhase 记录 adapter 侧相位事实（经 internal 事件观测，不推进状态）。
+func (c *runnerCallbacks) observePhase(eventType string, data map[string]any) {
+	if eventType != domain.EventRunPhaseEntered {
+		return
+	}
+	phase, _ := data["phase"].(string)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch phase {
+	case observability.PhaseFirstEvent:
+		c.feArmed, c.feArmedAt = true, now
+	case observability.PhaseSettle:
+		c.settleEntered, c.settleAt = true, now
+	}
+}
+
+// firstActivity 首个真实回调：first_event 已布防时收口并开启 streaming；
+// 未布防（adapter 未进入 first_event，如 spawn/handshake 期回调）时是幂等 no-op。
+func (c *runnerCallbacks) firstActivity() {
+	c.mu.Lock()
+	fire := c.feArmed && !c.feClosed
+	var since time.Duration
+	if fire {
+		c.feClosed, c.streamingOpen, c.streamingAt = true, true, time.Now()
+		since = time.Since(c.feArmedAt)
+	}
+	c.mu.Unlock()
+	if !fire {
+		return
+	}
+	bg := context.Background()
+	_ = c.runner.engine.RecordRunEvent(bg, c.runID, domain.EventRunPhaseClosed,
+		observability.PhaseClosedPayload(observability.PhaseFirstEvent, observability.PhaseOK, nil, since.Milliseconds(), nil))
+	_ = c.runner.engine.RecordRunEvent(bg, c.runID, domain.EventRunPhaseEntered,
+		observability.PhaseEnteredPayload(observability.PhaseStreaming, 1, nil))
+}
+
+// closeStreaming 收口 streaming 相位（Execute 返回即流区间结束）。流区间以
+// failed/timed_out/未知 Outcome 结束时按 failed 收口并携带结果失败分类；
+// cancelled/interrupted 是意图终局不算流故障。未开启时跳过（无孤儿 closed）。
+func (c *runnerCallbacks) closeStreaming(bg context.Context, result ExecResult) {
+	c.mu.Lock()
+	open := c.streamingOpen
+	c.streamingOpen = false
+	since := time.Since(c.streamingAt)
+	c.mu.Unlock()
+	if !open {
+		return
+	}
+	outcome := observability.PhaseOK
+	var failure *observability.PhaseFailure
+	switch result.Outcome {
+	case OutcomeSucceeded, OutcomeCancelled, OutcomeInterrupted:
+	default:
+		outcome = observability.PhaseFailed
+		if result.Failure != nil {
+			failure = &observability.PhaseFailure{
+				Code: result.Failure.Code, Message: result.Failure.Message,
+				Family: string(result.Failure.Family), Retryable: result.Failure.Retryable,
+			}
+		} else {
+			failure = &observability.PhaseFailure{
+				Code: "outcome_failed", Message: string(result.Outcome), Family: string(FamilyInternal),
+			}
+		}
+	}
+	_ = c.runner.engine.RecordRunEvent(bg, c.runID, domain.EventRunPhaseClosed,
+		observability.PhaseClosedPayload(observability.PhaseStreaming, outcome, failure, since.Milliseconds(), nil))
+}
+
+// enterSettle 在 adapter 未发 entered{settle} 时由 module 侧补发（重复 entered
+// 会破坏「未闭合即故障点」的定位语义）。
+func (c *runnerCallbacks) enterSettle(bg context.Context) {
+	c.mu.Lock()
+	already := c.settleEntered
+	if !already {
+		c.settleEntered, c.settleAt = true, time.Now()
+	}
+	c.mu.Unlock()
+	if already {
+		return
+	}
+	_ = c.runner.engine.RecordRunEvent(bg, c.runID, domain.EventRunPhaseEntered,
+		observability.PhaseEnteredPayload(observability.PhaseSettle, 1, nil))
+}
+
+// closeSettle 收口 settle 相位（recordTerminal 完成即终态落账完成）。
+func (c *runnerCallbacks) closeSettle(bg context.Context, detail map[string]any) {
+	c.mu.Lock()
+	since := time.Since(c.settleAt)
+	c.mu.Unlock()
+	_ = c.runner.engine.RecordRunEvent(bg, c.runID, domain.EventRunPhaseClosed,
+		observability.PhaseClosedPayload(observability.PhaseSettle, observability.PhaseOK, nil, since.Milliseconds(), detail))
 }
 
 // ── 注册表条目（probe/binding 路径）──────────────────────────────────
