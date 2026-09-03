@@ -12,6 +12,7 @@ func TestCoordinatorWakeAtomicallyClaimsControlLineBeforeDispatch(t *testing.T) 
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "atomic wake", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

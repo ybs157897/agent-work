@@ -411,6 +411,7 @@ func TestReviewQueueChildUsesRootCommentWatermark(t *testing.T) {
 	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "带评论根任务", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

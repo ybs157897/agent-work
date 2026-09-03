@@ -134,6 +134,7 @@ func TestSlugifyChinese(t *testing.T) {
 func TestValidation(t *testing.T) {
 	r := NewRegistry(t.TempDir())
 	cases := []*Entry{
+		nil,
 		{ID: "Bad_ID", Provider: "p", Model: "m"},
 		{ID: "ok", Provider: "", Model: "m"},
 		{ID: "ok", Provider: "p", Model: ""},
@@ -143,6 +144,19 @@ func TestValidation(t *testing.T) {
 	for i, e := range cases {
 		if err := r.Upsert(e); !errors.Is(err, domain.ErrValidation) {
 			t.Fatalf("case %d 应拒绝: %v", i, err)
+		}
+	}
+}
+
+func TestValidationRejectsCredentialBearingBaseURL(t *testing.T) {
+	r := NewRegistry(t.TempDir())
+	for _, baseURL := range []string{
+		"https://user:password@example.com/v1",
+		"https://example.com/v1?api_key=secret",
+		"https://example.com/v1#secret",
+	} {
+		if err := r.Upsert(&Entry{ID: "safe", Provider: "p", Model: "m", BaseURL: baseURL}); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("credential-bearing base_url %q must be rejected: %v", baseURL, err)
 		}
 	}
 }

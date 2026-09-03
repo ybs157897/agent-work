@@ -38,7 +38,7 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	}
 
 	task := postWorkItem(t, mux, wsID,
-		`{"title":"发布任务","record_kind":"task"}`)
+		`{"title":"发布任务","record_kind":"task","acceptance_criteria":["任务可以被验收"]}`)
 	if task.Code != http.StatusCreated {
 		t.Fatalf("Task 创建应 201，实际 %d: %s", task.Code, task.Body.String())
 	}
@@ -165,7 +165,7 @@ func TestPublicTaskCreateDefaultsToTaskAndRejectsUnsafeInitialState(t *testing.T
 
 	// Omitting record_kind is the public Task contract. It must still enter the
 	// Coordinator path, and a caller cannot smuggle in a worker assignment.
-	defaultTask := postWorkItem(t, mux, wsID, `{"title":"缺省类型任务"}`)
+	defaultTask := postWorkItem(t, mux, wsID, `{"title":"缺省类型任务","acceptance_criteria":["缺省类型任务可以被验收"]}`)
 	if defaultTask.Code != http.StatusCreated {
 		t.Fatalf("缺省 record_kind 的 Task 创建应 201，实际 %d: %s", defaultTask.Code, defaultTask.Body.String())
 	}
@@ -178,7 +178,7 @@ func TestPublicTaskCreateDefaultsToTaskAndRejectsUnsafeInitialState(t *testing.T
 	}
 
 	manualDefaultTask := postWorkItem(t, mux, wsID,
-		`{"title":"缺省类型手工指派","agent_profile_id":"`+agentID+`"}`)
+		`{"title":"缺省类型手工指派","agent_profile_id":"`+agentID+`","acceptance_criteria":["不允许手工指派"]}`)
 	if manualDefaultTask.Code != http.StatusUnprocessableEntity ||
 		!strings.Contains(manualDefaultTask.Body.String(), "Coordinator") {
 		t.Fatalf("省略 record_kind 的 Task 也不得手工指派: %d %s", manualDefaultTask.Code, manualDefaultTask.Body.String())
@@ -186,7 +186,7 @@ func TestPublicTaskCreateDefaultsToTaskAndRejectsUnsafeInitialState(t *testing.T
 
 	for _, status := range []string{"in_progress", "completed", "cancelled", "blocked"} {
 		rec := postWorkItem(t, mux, wsID,
-			`{"title":"非法初始状态","status":"`+status+`"}`)
+			`{"title":"非法初始状态","status":"`+status+`","acceptance_criteria":["状态必须由 Coordinator 推进"]}`)
 		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "status") {
 			t.Fatalf("根 Task 初始 status=%s 应 fail-closed 422: %d %s", status, rec.Code, rec.Body.String())
 		}
@@ -231,7 +231,7 @@ func TestCoordinatedChildAcceptHTTPIsRejected(t *testing.T) {
 	wsID, _, _ := seedPlanHTTPEnv(t, s)
 	seedHTTPCoordinatorBinding(t, s, wsID)
 
-	rootRec := postWorkItem(t, mux, wsID, `{"title":"根任务","record_kind":"task"}`)
+	rootRec := postWorkItem(t, mux, wsID, `{"title":"根任务","record_kind":"task","acceptance_criteria":["根任务可被验收"]}`)
 	if rootRec.Code != http.StatusCreated {
 		t.Fatalf("根 Task 创建失败: %d %s", rootRec.Code, rootRec.Body.String())
 	}

@@ -362,6 +362,39 @@ describe('routeEvent 任务控制面新事件（RFC §10）', () => {
     }
   });
 
+  it('治理事件进入 SSE 白名单但不误路由为 Run', async () => {
+    const { EVENT_NAMES } = await import('../api/types');
+    const names = [
+      'goal.created',
+      'goal.state_changed',
+      'todo.created',
+      'todo.state_changed',
+      'todo.claim_changed',
+      'turn.receipt_appended',
+      'handoff.created',
+      'handoff.state_changed',
+      'goal.evidence_added',
+      'validation.result_recorded',
+      'projection.updated',
+      'projection.repair_state_changed',
+      'quota.reservation_changed',
+      'quota.spend_recorded',
+      'quota.gap_reconciled',
+      'delivery_brief.snapshot_created',
+    ];
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    useRunsStore.getState().reset();
+
+    for (const name of names) {
+      expect(EVENT_NAMES).toContain(name);
+      routeEvent(envelopeOf(name));
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useRunsStore.getState().timelines).toEqual({});
+  });
+
   it('file_changes.reverted 由 routeEvent 进入 run 时间线并推进 changes revision（其他窗口/replay 可重拉回滚态）', () => {
     useRunsStore.getState().reset();
     const reverted = envelopeOf('file_changes.reverted', { record_kind: 'task' });

@@ -12,6 +12,7 @@ func TestCoordinatedDispatchUsesSettlementWithoutChildrenQuietDoubleWake(t *test
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "单一汇总唤醒", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -22,9 +23,7 @@ func TestCoordinatedDispatchUsesSettlementWithoutChildrenQuietDoubleWake(t *test
 			t.Fatal(err)
 		}
 	}
-	planText := "```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行实现","acceptance":["完成"]},{"verb":"join","children":"all"}]` +
-		"\n```"
+	planText := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch one worker","next_action":"wait for the worker","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行实现","acceptance":["完成"]},{"verb":"join","children":"all"}]}`
 	if err := svc.RecordRunEvent(ctx, coordinatorRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)

@@ -56,6 +56,31 @@ type CreateRunParams struct {
 	// Task callers cannot choose workers once a root Coordinator exists; Plan,
 	// recovery and Coordinator turns populate this map explicitly.
 	CoordinatorContext map[string]any
+	// governanceContext is immutable audit identity inherited only by the
+	// internal Plan executor. Keeping it unexported prevents public Run callers
+	// from selecting which Goal's quota should govern a Run.
+	governanceContext map[string]any
+	// quotaAdmission is control-plane-only audit evidence computed inside the
+	// caller's authoritative transaction. Public callers cannot forge it.
+	quotaAdmission map[string]any
+	// usageQuotaAdmission is usage-kind admission audit evidence (kind →
+	// decision payload) computed inside the caller's authoritative pre-check.
+	// Like quotaAdmission it is unexported so public callers cannot forge it;
+	// createRunLocked freezes it into runInput["usage_quota_admission"].
+	usageQuotaAdmission map[string]any
+	// coordinatorAdmission is an in-process capability minted only by the
+	// Coordinator control paths. CoordinatorContext is persisted audit data, not
+	// an authority token: public CreateRun callers must not be able to claim the
+	// root control line by copying a map.
+	coordinatorAdmission *coordinatorRunAdmission
+}
+
+type coordinatorRunAdmission struct {
+	RootWorkItemID string
+	StateID        string
+	SourceRunID    string
+	Action         string
+	Delegated      bool
 }
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
@@ -78,16 +103,45 @@ func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunP
 	if err != nil {
 		return nil, err
 	}
-	s.notifier.Notify(run.WorkspaceID)
-	// 权威写入成功后才允许启动 Runtime 副作用。
-	if s.dispatcher != nil {
-		if err := s.dispatcher.Dispatch(context.WithoutCancel(ctx), run); err != nil {
-			_ = s.RecordRunStatus(context.WithoutCancel(ctx), run.ID, domain.RunFailed,
-				map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
-			return nil, err
-		}
+	if err := s.dispatchCommittedRun(ctx, run); err != nil {
+		return nil, err
 	}
 	return run, nil
+}
+
+// dispatchCommittedRun is the single post-commit side-effect boundary for
+// direct and self-heal Run creation. The Run/event transaction must already be
+// durable; a dispatch failure is reflected back into the same Run state
+// machine instead of deleting or retrying the insert.
+func (s *Service) dispatchCommittedRun(ctx context.Context, run *domain.ExecutionRun) error {
+	if run == nil {
+		return fmt.Errorf("%w: committed Run is required", domain.ErrValidation)
+	}
+	if s.notifier != nil {
+		s.notifier.Notify(run.WorkspaceID)
+	}
+	if s.dispatcher == nil {
+		return nil
+	}
+	dispatchCtx := context.WithoutCancel(ctx)
+	fresh, err := s.store.Runs().Get(dispatchCtx, run.ID)
+	if err != nil {
+		return err
+	}
+	_, pendingSelfHeal := pendingSelfHealSourceID(fresh)
+	if fresh.Status != domain.RunQueued && !(pendingSelfHeal && fresh.Status == domain.RunStarting) {
+		return nil // cancellation/recovery won after commit; never dispatch stale authority
+	}
+	if _, loaded := s.dispatchedRuns.LoadOrStore(fresh.ID, struct{}{}); loaded {
+		return nil
+	}
+	if err := s.dispatcher.Dispatch(dispatchCtx, fresh); err != nil {
+		s.dispatchedRuns.Delete(fresh.ID)
+		_ = s.RecordRunStatus(dispatchCtx, fresh.ID, domain.RunFailed,
+			map[string]any{"code": "dispatch_failed", "message": err.Error(), "retryable": true})
+		return err
+	}
+	return nil
 }
 
 // CreateRunIdempotent 实体级幂等创建：client_key 撞唯一索引时查回既有 run，
@@ -219,7 +273,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	// agent（大小写不敏感）→ 直达该 agent；未命中/无 @ 保持既有 assignee 行为
 	//（接诊）。必须在 agent 校验与 runtime 选择之前改写目标。
 	atMention := ""
-	if taskRecord && coordinatorState != nil && p.CoordinatorContext == nil && p.WakeContext == nil {
+	if taskRecord && coordinatorState != nil && wi.ID == coordinatorState.RootWorkItemID && p.CoordinatorContext == nil {
 		return nil, fmt.Errorf("%w: coordinated Task 只能由系统 Coordinator 或其 Plan 创建 Run", domain.ErrValidation)
 	}
 	if taskRecord && coordinatorState == nil && p.DispatchTrigger == domain.DispatchTriggerUserMessage {
@@ -234,6 +288,10 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	var agent *domain.AgentProfile
 	var coordinatorConfig *domain.TaskCoordinatorConfig
+	quotaAdmission := mapsCloneAny(p.quotaAdmission)
+	// usageAdmissionLocal 聚合受管 Worker/eval Run 创建闸产生的 usage kind
+	// 准入证据；与 p.usageQuotaAdmission（Coordinator 预检）合并冻结进 runInput。
+	var usageAdmissionLocal map[string]any
 	if p.AgentProfileID != "" {
 		a, err := s.store.Agents().Get(ctx, p.AgentProfileID)
 		if err != nil {
@@ -266,6 +324,94 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			agent = &copyAgent
 		}
 	}
+	if taskRecord && coordinatorState != nil && wi.ID == coordinatorState.RootWorkItemID {
+		if err := s.validateCoordinatorRunAdmission(ctx, wi, coordinatorState, agent, p); err != nil {
+			return nil, err
+		}
+		// A root coordinated Task may be run only by the protected system
+		// Coordinator, or by the exact delegated target of an accepted Handoff.
+		// Child Plan Runs keep their ordinary worker context and are deliberately
+		// outside this root-only guard.
+		if delegatedCoordinatorContext(p.CoordinatorContext) {
+			if err := s.validateDelegatedCoordinatorContext(ctx, wi, coordinatorState, agent, p.CoordinatorContext); err != nil {
+				return nil, err
+			}
+			copyAgent := *agent
+			copyAgent.Instructions = CoordinatorSystemPrompt
+			copyAgent.PromptVersion = domain.TaskCoordinatorPromptVersion
+			copyAgent.InstructionsEditable = false
+			agent = &copyAgent
+		} else if p.AutoHealOf != "" {
+			// A one-shot session_unknown heal may clone a historical root Worker
+			// Run. It must prove the source identity and remains an internal
+			// recovery of that existing Run, not a new public root dispatch.
+			parent, parentErr := s.store.Runs().Get(ctx, p.AutoHealOf)
+			if parentErr != nil || parent == nil || parent.WorkItemID != wi.ID || parent.AgentProfileID != p.AgentProfileID {
+				if parentErr != nil {
+					return nil, parentErr
+				}
+				return nil, fmt.Errorf("%w: session heal source Run does not match coordinated root", domain.ErrStateConflict)
+			}
+			if err := validateCoordinatedRootHealSource(parent); err != nil {
+				return nil, err
+			}
+		} else if agent == nil || !agent.Kind.IsSystem() || p.AgentProfileID != coordinatorState.CoordinatorAgentID {
+			return nil, fmt.Errorf("%w: coordinated root Task 只能由系统 Coordinator 或受证明的 Handoff target 创建 Run", domain.ErrValidation)
+		}
+	}
+	if p.governanceContext != nil && agent != nil {
+		goalID, _ := p.governanceContext["goal_id"].(string)
+		if goalID == "" {
+			return nil, fmt.Errorf("%w: governed Run lacks goal_id", domain.ErrValidation)
+		}
+		todoID, _ := p.governanceContext["todo_id"].(string)
+		turnSeq, ok := governanceInt64(p.governanceContext["turn_seq"])
+		if todoID == "" || !ok {
+			return nil, fmt.Errorf("%w: governed Run lacks todo_id/turn_seq", domain.ErrValidation)
+		}
+		// active_worker is deliberately limited to ordinary workers; system
+		// evaluation Runs do not consume that gauge, but they must still pass every
+		// usage/cost quota below.
+		if !agent.Kind.IsSystem() {
+			decision, err := s.ShouldRunLocked(ctx, ShouldRunRequest{
+				GoalID: goalID, Kind: domain.QuotaActiveWorker, Amount: 1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if decision.Enabled {
+				quotaAdmission = quotaDecisionPayload(decision)
+				if !decision.Allowed {
+					return nil, quotaDeniedError(decision)
+				}
+			}
+		}
+		// usage 政策适用于 Worker/evaluation/retry/heal：先冻结本 Turn
+		// reservation（get-or-create 复用 admission 快照），enforce 下余额耗尽
+		// 或已有 unresolved gap 时拒绝创建本 Run。
+		goal, err := s.store.Goals().Get(ctx, goalID)
+		if err != nil {
+			return nil, err
+		}
+		turnKey := domain.TurnKey{GoalID: goalID, TodoID: todoID, TurnSeq: turnSeq}
+		usageAdmissionLocal = map[string]any{}
+		for _, policy := range goal.QuotaPolicies {
+			if !usageQuotaKind(policy.Kind) {
+				continue
+			}
+			_, usageDecision, err := s.ensureUsageQuotaReservationLocked(ctx, goal, turnKey, policy)
+			if err != nil {
+				return nil, err
+			}
+			usageAdmissionLocal[string(policy.Kind)] = quotaDecisionPayload(*usageDecision)
+			// P1-1：enforce 拒绝条件 = decision.WouldDeny（!Allowed）——本 Turn
+			// 冻结容量耗尽（ReservedAmount==0）或 Goal 存在 unresolved usage
+			// 缺口都算，audit 只记录不拒绝。
+			if policy.Enforcement == domain.QuotaEnforcementEnforce && !usageDecision.Allowed {
+				return nil, quotaDeniedError(*usageDecision)
+			}
+		}
+	}
 	// Harness 编排：runtime 选择 = 显式 > Agent 偏好（含 fallbacks）> 兜底；
 	// 第一个存在 RuntimeBinding 的候选胜出，调度原因写入快照（协议 §8.2）。
 	label, reason, binding := orchestrator.DefaultRuntimeLabel, "default", (*domain.RuntimeBinding)(nil)
@@ -283,8 +429,13 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		}
 	}
 	if coordinatorConfig != nil {
+		repairPinnedRuntime := false
+		if action, _ := p.CoordinatorContext["action"].(string); action == "repair_plan" {
+			repairPinnedRuntime = true
+		}
 		configuredRuntime := label == coordinatorConfig.RuntimeLabel ||
-			(coordinatorConfig.FallbackRuntimeLabel != "" && label == coordinatorConfig.FallbackRuntimeLabel)
+			(coordinatorConfig.FallbackRuntimeLabel != "" && label == coordinatorConfig.FallbackRuntimeLabel) ||
+			repairPinnedRuntime
 		if !configuredRuntime {
 			return nil, fmt.Errorf("%w: Coordinator 配置的 Runtime 不可用，禁止静默回退到 %s", domain.ErrValidation, label)
 		}
@@ -296,6 +447,13 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		}
 		if !domain.TaskCoordinatorRuntimeMatchesAdapter(label, binding.AdapterID) {
 			return nil, fmt.Errorf("%w: Coordinator Runtime %q 与 adapter %q 不匹配", domain.ErrValidation, label, binding.AdapterID)
+		}
+	}
+	if p.CoordinatorContext != nil {
+		if pinnedRuntime := stringValue(p.CoordinatorContext["handoff_target_runtime"]); pinnedRuntime != "" {
+			if label != pinnedRuntime || binding == nil {
+				return nil, fmt.Errorf("%w: Handoff target Runtime %q unavailable; fallback is forbidden", domain.ErrValidation, pinnedRuntime)
+			}
 		}
 	}
 	if err := validateRequiredCapabilities(p.Requirements, binding); err != nil {
@@ -345,6 +503,34 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	if err := validateAdapterModel(binding, spec); err != nil {
 		return nil, err
 	}
+	// cost 配额 fail-closed（目标合同 R4）：启用 cost quota 的 Goal 要求 Run 固化
+	// 价格快照；audit/enforce 一律拒绝无价模型，杜绝结算期出现无法证明的成本。
+	costGoalID, _ := p.governanceContext["goal_id"].(string)
+	if costGoalID == "" && agent != nil && agent.Kind.IsSystem() && taskRecord {
+		costGoalID, err = rootGovernanceGoalID(ctx, s.store, wi.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if costGoalID != "" {
+		costGoal, err := s.store.Goals().Get(ctx, costGoalID)
+		if err != nil {
+			return nil, err
+		}
+		for _, policy := range costGoal.QuotaPolicies {
+			if policy.Kind != domain.QuotaCostMicroUSD {
+				continue
+			}
+			if spec.PriceSnapshot == nil {
+				return nil, &PlanDecisionError{
+					Code: domain.GovernanceErrorCostPriceUnavailable, Path: "/quota/cost_microusd",
+					Message: fmt.Sprintf("model %s has no price snapshot", spec.Ref),
+					Cause:   domain.ErrValidation,
+				}
+			}
+			break
+		}
+	}
 	// WorkItem 是验收标准的 canonical truth。旧的直接 CreateRun 调用曾只把
 	// criteria 放在 Run input；在首轮 Run 前把这份输入一次性回填到 WorkItem，
 	// 既保留历史入口又确保 Coordinator、evaluation 和 Brief 后续读取同一来源。
@@ -368,6 +554,22 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	runInput := orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
 		p.RuntimePreference, agent, label, reason)
+	if quotaAdmission != nil {
+		runInput["quota_admission"] = quotaAdmission
+	}
+	// usage kind 准入证据合并冻结：Coordinator 预检（p.usageQuotaAdmission）与
+	// 受管 Run 创建闸（usageAdmissionLocal）双来源，kind 键相同后者胜（同事务
+	// 内的创建闸结果更新）。unexported 字段保证公共调用方无法伪造。
+	if len(p.usageQuotaAdmission) > 0 || len(usageAdmissionLocal) > 0 {
+		usageAdmission := mapsCloneAny(p.usageQuotaAdmission)
+		if usageAdmission == nil {
+			usageAdmission = map[string]any{}
+		}
+		for kind, payload := range usageAdmissionLocal {
+			usageAdmission[kind] = payload
+		}
+		runInput["usage_quota_admission"] = usageAdmission
+	}
 	if !orchestrator.ApplyOutputContract(runInput, p.OutputContract) {
 		return nil, fmt.Errorf("%w: unsupported output_contract %q", domain.ErrValidation, p.OutputContract)
 	}
@@ -418,8 +620,25 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		modelSnapshot["reasoning_effort"] = spec.ReasoningEffort
 	}
 	r.Input["model"] = modelSnapshot
+	if spec.PriceSnapshot != nil {
+		price := *spec.PriceSnapshot
+		if err := price.Normalize(); err != nil {
+			return nil, fmt.Errorf("invalid model price snapshot: %w", err)
+		}
+		r.Input["price_snapshot"] = priceSnapshotInput(&price)
+	}
 	r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
 	r.Input["policy"] = orchestrator.PolicySnapshot(agent)
+	if p.CoordinatorContext != nil {
+		r.Input["task_coordinator"] = mapsCloneAny(p.CoordinatorContext)
+		r.Input["coordinator_prompt_version"] = domain.TaskCoordinatorPromptVersion
+		if plannerCoordinatorContext(p.CoordinatorContext) {
+			r.Input["control_decision"] = planDecisionControlSnapshot(binding, p.CoordinatorContext)
+		}
+	}
+	if p.governanceContext != nil {
+		r.Input["governance"] = mapsCloneAny(p.governanceContext)
+	}
 	configDigest := orchestrator.ConfigDigest(r.Input)
 	// 会话指纹 = config digest ⊕ 执行上下文身份（RFC §4.8）：context 变化
 	//（新 generation / 换 Location / 换 ref）必须 fresh/rotate，禁止跨 context resume。
@@ -489,10 +708,6 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	if p.Evaluation {
 		r.Input["evaluation"] = true
-	}
-	if p.CoordinatorContext != nil {
-		r.Input["task_coordinator"] = mapsCloneAny(p.CoordinatorContext)
-		r.Input["coordinator_prompt_version"] = domain.TaskCoordinatorPromptVersion
 	}
 	// 会话决议显式化（纯观测面）：为什么换了会话可查可审计；history_tier/
 	// history_stats 记录本次请求注入历史的实际档位与规模（分档留痕）。
@@ -602,6 +817,167 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	return r, nil
 }
 
+// validateCoordinatorRunAdmission proves that a root Coordinator Run was
+// created by one of the in-process control paths. The persisted context is
+// useful audit data, but it is intentionally not sufficient authority by
+// itself: callers of the exported CreateRun API cannot mint this capability.
+func (s *Service) validateCoordinatorRunAdmission(ctx context.Context, root *domain.WorkItem,
+	state *domain.TaskCoordinatorState, agent *domain.AgentProfile, p CreateRunParams) error {
+	proof := p.coordinatorAdmission
+	contextData := p.CoordinatorContext
+	if root == nil || state == nil || agent == nil || proof == nil || contextData == nil {
+		return fmt.Errorf("%w: Coordinator Run admission proof is incomplete", domain.ErrValidation)
+	}
+	// Historical root Worker self-heals predate the protected Coordinator role.
+	// Keep that narrow recovery path available only with the in-process proof
+	// minted by maybeSelfHeal; ordinary/public CreateRun callers cannot populate
+	// the unexported capability and therefore cannot use AutoHealOf to bypass the
+	// root Coordinator boundary.
+	if p.AutoHealOf != "" && stringValue(contextData["role"]) != coordinatorRole {
+		if stringValue(contextData["role"]) != coordinatorWorkerRole || proof.Delegated ||
+			proof.RootWorkItemID != root.ID || proof.StateID != state.ID ||
+			proof.SourceRunID != p.AutoHealOf || proof.Action != stringValue(contextData["action"]) ||
+			stringValue(contextData["root_work_item_id"]) != root.ID ||
+			stringValue(contextData["state_id"]) != state.ID || p.Evaluation || p.WakeContext != nil ||
+			p.AgentProfileID == "" {
+			return fmt.Errorf("%w: historical root Worker heal proof is incomplete", domain.ErrValidation)
+		}
+		parent, err := s.store.Runs().Get(ctx, p.AutoHealOf)
+		if err != nil {
+			return err
+		}
+		if err := validateCoordinatedRootHealSource(parent); err != nil {
+			return err
+		}
+		if parent.WorkspaceID != root.WorkspaceID || parent.WorkItemID != root.ID ||
+			parent.AgentProfileID != p.AgentProfileID {
+			return fmt.Errorf("%w: historical root Worker heal source identity mismatch", domain.ErrWorkspaceContextMismatch)
+		}
+		if state.CurrentRunID != "" && state.CurrentRunID != p.AutoHealOf {
+			return fmt.Errorf("%w: Coordinator control line is owned by another Run", domain.ErrStateConflict)
+		}
+		return nil
+	}
+	if proof.RootWorkItemID != root.ID || proof.StateID != state.ID ||
+		proof.Action == "" || proof.Action != stringValue(contextData["action"]) {
+		return fmt.Errorf("%w: Coordinator Run admission identity mismatch", domain.ErrStateConflict)
+	}
+	if stringValue(contextData["role"]) != coordinatorRole ||
+		stringValue(contextData["root_work_item_id"]) != root.ID ||
+		stringValue(contextData["state_id"]) != state.ID {
+		return fmt.Errorf("%w: Coordinator Run context is outside the protected state", domain.ErrWorkspaceContextMismatch)
+	}
+	delegated, delegatedOK := contextData["delegated"].(bool)
+	if !delegatedOK {
+		delegated = false
+	}
+	if delegated != proof.Delegated {
+		return fmt.Errorf("%w: Coordinator Run delegated proof mismatch", domain.ErrStateConflict)
+	}
+	attempt, attemptOK := governanceInt64(contextData["attempt"])
+	if !attemptOK || attempt != int64(state.Attempt+1) {
+		return fmt.Errorf("%w: Coordinator Run attempt proof mismatch", domain.ErrStateConflict)
+	}
+	switch state.Status {
+	case domain.CoordinatorQueued, domain.CoordinatorRunning, domain.CoordinatorWaitingRetry:
+	default:
+		return fmt.Errorf("%w: Coordinator state %s cannot admit a Run", domain.ErrStateConflict, state.Status)
+	}
+	if p.WakeContext != nil && proof.Action != "wakeup" {
+		return fmt.Errorf("%w: wake context is only valid for a wakeup Coordinator action", domain.ErrValidation)
+	}
+	if p.WakeContext == nil && proof.Action == "wakeup" {
+		return fmt.Errorf("%w: wakeup Coordinator action requires wake context", domain.ErrValidation)
+	}
+	if p.Evaluation != (proof.Action == "evaluation") {
+		return fmt.Errorf("%w: evaluation flag does not match Coordinator action", domain.ErrStateConflict)
+	}
+	if state.CurrentRunID != "" {
+		current, err := s.store.Runs().Get(ctx, state.CurrentRunID)
+		if err != nil {
+			return err
+		}
+		if current == nil || !current.Status.IsTerminal() || current.WorkItemID != root.ID ||
+			proof.SourceRunID != current.ID {
+			return fmt.Errorf("%w: active Coordinator control line cannot be replaced", domain.ErrStateConflict)
+		}
+		if proof.Delegated != isDelegatedCoordinatorRun(current) &&
+			!(!proof.Delegated && isSystemCoordinatorRun(current)) {
+			return fmt.Errorf("%w: Coordinator replacement source kind mismatch", domain.ErrStateConflict)
+		}
+	} else if proof.SourceRunID != "" {
+		return fmt.Errorf("%w: Coordinator Run has an unbound source checkpoint", domain.ErrStateConflict)
+	}
+	if contextSourceRunID := stringValue(contextData["source_run_id"]); contextSourceRunID != proof.SourceRunID {
+		return fmt.Errorf("%w: Coordinator source_run_id proof mismatch", domain.ErrStateConflict)
+	}
+	if delegated {
+		if agent.Kind.IsSystem() {
+			return fmt.Errorf("%w: delegated Coordinator must use an ordinary Agent", domain.ErrValidation)
+		}
+		return s.validateDelegatedCoordinatorContext(ctx, root, state, agent, contextData)
+	}
+	if !agent.Kind.IsSystem() || agent.ID != state.CoordinatorAgentID ||
+		p.AgentProfileID != state.CoordinatorAgentID {
+		return fmt.Errorf("%w: system Coordinator identity mismatch", domain.ErrValidation)
+	}
+	if p.AutoHealOf != "" {
+		parent, err := s.store.Runs().Get(ctx, p.AutoHealOf)
+		if err != nil {
+			return err
+		}
+		if err := validateCoordinatedRootHealSource(parent); err != nil {
+			return err
+		}
+		parentContext := coordinatorContextOf(parent)
+		if parent.WorkspaceID != root.WorkspaceID || parent.WorkItemID != root.ID ||
+			parent.AgentProfileID != state.CoordinatorAgentID || parent.AgentProfileID != p.AgentProfileID ||
+			!isSystemCoordinatorRun(parent) || stringValue(parentContext["root_work_item_id"]) != root.ID ||
+			stringValue(parentContext["state_id"]) != state.ID {
+			return fmt.Errorf("%w: Coordinator heal source identity mismatch", domain.ErrWorkspaceContextMismatch)
+		}
+		if proof.SourceRunID != p.AutoHealOf {
+			return fmt.Errorf("%w: Coordinator heal source does not match context source", domain.ErrStateConflict)
+		}
+	}
+	return nil
+}
+
+func validateCoordinatedRootHealSource(parent *domain.ExecutionRun) error {
+	if parent == nil || parent.Status != domain.RunFailed ||
+		parent.ErrorFamily != string(runtime.FamilySessionUnknown) {
+		return fmt.Errorf("%w: coordinated root heal requires a failed session_unknown source Run", domain.ErrStateConflict)
+	}
+	if healed, _ := parent.Input["auto_heal_of"].(string); strings.TrimSpace(healed) != "" {
+		return fmt.Errorf("%w: coordinated root heal source is already a heal Run", domain.ErrStateConflict)
+	}
+	conversation, _ := parent.Input["conversation"].(map[string]any)
+	if strings.TrimSpace(stringValue(conversation["resume_session_ref"])) == "" {
+		return fmt.Errorf("%w: coordinated root heal source has no lost session checkpoint", domain.ErrStateConflict)
+	}
+	return nil
+}
+
+// priceSnapshotInput is deliberately separate from the provider model map:
+// price changes must not change the provider session configuration digest.
+// Values remain typed integers until the Run input is serialized by storage.
+func priceSnapshotInput(price *domain.PriceSnapshotRef) map[string]any {
+	if price == nil {
+		return nil
+	}
+	return map[string]any{
+		"model_ref":                           price.ModelRef,
+		"currency":                            price.Currency,
+		"input_uncached_microusd_per_million": price.InputUncachedMicroUSDPerMillion,
+		"cache_read_microusd_per_million":     price.CacheReadMicroUSDPerMillion,
+		"cache_write_microusd_per_million":    price.CacheWriteMicroUSDPerMillion,
+		"output_microusd_per_million":         price.OutputMicroUSDPerMillion,
+		"effective_at":                        price.EffectiveAt.UTC().Format(time.RFC3339Nano),
+		"price_version":                       price.PriceVersion,
+		"digest":                              price.Digest,
+	}
+}
+
 func validateRequiredCapabilities(requirements map[string]string, binding *domain.RuntimeBinding) error {
 	for capability, level := range requirements {
 		if level != "required" {
@@ -611,11 +987,28 @@ func validateRequiredCapabilities(requirements map[string]string, binding *domai
 			return fmt.Errorf("%w: runtime capability %s", domain.ErrCapabilityMissing, capability)
 		}
 		actual := binding.Capabilities[capability]
+		if plannerControlCapability(capability) {
+			if actual != string(runtime.CapSupported) {
+				return fmt.Errorf("%w: runtime capability %s requires supported, got %s",
+					domain.ErrCapabilityMissing, capability, actual)
+			}
+			continue
+		}
 		if actual == "" || actual == string(runtime.CapUnavailable) {
 			return fmt.Errorf("%w: runtime capability %s", domain.ErrCapabilityMissing, capability)
 		}
 	}
 	return nil
+}
+
+func plannerControlCapability(capability string) bool {
+	switch capability {
+	case runtime.CapabilityStructuredTransport, runtime.CapabilitySchemaConstrainedOutput,
+		runtime.CapabilityControlToolCall:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateAdapterModel(binding *domain.RuntimeBinding, spec orchestrator.ModelSpec) error {
@@ -713,7 +1106,74 @@ func (s *Service) retryRun(ctx context.Context, runID string, coordinatorOwned b
 func (s *Service) createRetryRunLocked(ctx context.Context, parent *domain.ExecutionRun,
 	wi *domain.WorkItem, retryClientKey string) (*domain.ExecutionRun, error) {
 	now := time.Now().UTC()
+	if retryClientKey != "" {
+		existing, err := s.store.Runs().GetByClientKey(ctx, parent.WorkspaceID, retryClientKey)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return nil, err
+		}
+		if err == nil && existing != nil {
+			return nil, domain.ErrIdempotencyConflict
+		}
+	}
 	input := cloneInput(parent.Input)
+	delete(input, "quota_admission")
+	// usage 准入证据按本轮 gate 重算（父 Run 的快照不继承，政策移除时不残留）。
+	delete(input, "usage_quota_admission")
+	if governance, ok := input["governance"].(map[string]any); ok && parent.AgentProfileID != "" {
+		agent, err := s.store.Agents().Get(ctx, parent.AgentProfileID)
+		if err != nil {
+			return nil, err
+		}
+		if !agent.Kind.IsSystem() {
+			goalID, _ := governance["goal_id"].(string)
+			if goalID == "" {
+				return nil, fmt.Errorf("%w: governed Worker retry lacks goal_id", domain.ErrValidation)
+			}
+			decision, err := s.ShouldRunLocked(ctx, ShouldRunRequest{
+				GoalID: goalID, Kind: domain.QuotaActiveWorker, Amount: 1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if decision.Enabled {
+				input["quota_admission"] = quotaDecisionPayload(decision)
+				if !decision.Allowed {
+					return nil, quotaDeniedError(decision)
+				}
+			}
+			// usage 政策：retry 与首跑同闸（同一 reservation 冻结值）；gate
+			// 失败不创建 retry，Coordinator 走 replan/blocked。
+			todoID, _ := governance["todo_id"].(string)
+			turnSeq, turnSeqOK := governanceInt64(governance["turn_seq"])
+			if todoID == "" || !turnSeqOK {
+				return nil, fmt.Errorf("%w: governed Worker retry lacks todo_id/turn_seq", domain.ErrValidation)
+			}
+			goal, err := s.store.Goals().Get(ctx, goalID)
+			if err != nil {
+				return nil, err
+			}
+			turnKey := domain.TurnKey{GoalID: goalID, TodoID: todoID, TurnSeq: turnSeq}
+			usageAdmission := map[string]any{}
+			for _, policy := range goal.QuotaPolicies {
+				if !usageQuotaKind(policy.Kind) {
+					continue
+				}
+				_, usageDecision, err := s.ensureUsageQuotaReservationLocked(ctx, goal, turnKey, policy)
+				if err != nil {
+					return nil, err
+				}
+				usageAdmission[string(policy.Kind)] = quotaDecisionPayload(*usageDecision)
+				// P1-1：与首跑创建闸同口径——enforce 拒绝 = decision.WouldDeny
+				//（容量耗尽或 unresolved usage 缺口），retry 不绕过缺口 fail-closed。
+				if policy.Enforcement == domain.QuotaEnforcementEnforce && !usageDecision.Allowed {
+					return nil, quotaDeniedError(*usageDecision)
+				}
+			}
+			if len(usageAdmission) > 0 {
+				input["usage_quota_admission"] = usageAdmission
+			}
+		}
+	}
 	if conversation, ok := input["conversation"].(map[string]any); ok {
 		delete(conversation, "resume_session_ref")
 		delete(conversation, "resume_from_run_id")
@@ -845,6 +1305,11 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 	taskRecord := isTaskWorkItem(wi)
 	expected := r.Version
 	from := r.Status
+	if from == domain.RunStarting && to == domain.RunStarting {
+		if _, selfHeal := pendingSelfHealSourceID(r); selfHeal {
+			return nil // durable dispatch claim already emitted; runtime start is its idempotent acknowledgement
+		}
+	}
 	// F1 任务锁：run 首次进 running（queued/starting → running）先裁决任务执行锁，
 	// 防同一任务双跑。被活跃锁拒绝时不留半态——本 run 直接落 failed(work_item_locked)
 	// 终态，保证任何推进尝试都有终态归宿（红线：任何 Outcome 必须能落终态）。
@@ -856,6 +1321,14 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 			return s.transitionRunLocked(ctx, r, domain.RunFailed, map[string]any{
 				"code": "work_item_locked", "message": err.Error(), "retryable": true,
 			})
+		}
+	}
+	if isDelegatedCoordinatorRun(r) && taskRecord &&
+		(to == domain.RunStarting || to == domain.RunRunning || to == domain.RunWaitingApproval ||
+			to == domain.RunReconnecting || to == domain.RunSucceeding || to == domain.RunSucceeded ||
+			to.IsTerminal()) {
+		if err := s.renewDelegatedCoordinatorClaimForRun(ctx, r); err != nil {
+			return err
 		}
 	}
 	if err := r.Transition(to, time.Now().UTC()); err != nil {
@@ -992,11 +1465,14 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	}
 	r, _ := s.store.Runs().Get(ctx, runID)
 	if r != nil {
+		if r.Status.IsTerminal() {
+			s.dispatchedRuns.Delete(r.ID)
+		}
 		s.notifier.Notify(r.WorkspaceID)
 	}
 	// session_unknown 失败自愈：系统 Coordinator 由自己的有界恢复策略负责，
 	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。
-	if !isSystemCoordinatorRun(r) {
+	if !isGovernedCoordinatorRun(r) {
 		s.maybeSelfHeal(ctx, r)
 	}
 	if r != nil {
@@ -1009,9 +1485,15 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 			s.maybeExtractPlan(ctx, r)
 			// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
 			s.maybeSummarizeSegment(ctx, r)
+			// canonical usage：必须先于 Coordinator 终态决策——决策可能提交治理
+			// Plan 触发 admission 结算，结算 sweep 依赖 Run 的 canonical 已冻结。
+			s.maybeCanonicalizeRunUsage(ctx, r)
 			// 系统 Coordinator：在派发收口前创建有界 retry/recovery，保证新成员
 			// 能进入原 dispatch，避免批次先被错误收成 degraded。
 			s.maybeAdvanceTaskCoordinator(ctx, r)
+			// quota sweep：必须在 Coordinator 推进之后——retry checkpoint 先落，
+			// sweep 的关闭判定才能看到 pending retry，不会过早释放重试预算。
+			s.maybeSettleGovernanceTurnQuota(ctx, r)
 			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
 			s.maybeSettleDispatch(ctx, r)
 		}
@@ -1057,6 +1539,11 @@ func (s *Service) recordRunProgressTx(ctx context.Context, runID string, progres
 	if r.Status.IsTerminal() {
 		return r.WorkspaceID, nil
 	}
+	if isDelegatedCoordinatorRun(r) {
+		if err := s.renewDelegatedCoordinatorClaimForRun(ctx, r); err != nil {
+			return "", err
+		}
+	}
 	r.SetProgress(progress, time.Now().UTC())
 	// 未 bump 版本：以当前 DB 版本做守卫。
 	if err := s.store.Runs().Update(ctx, r, r.Version); err != nil {
@@ -1099,6 +1586,11 @@ func (s *Service) recordRunEventTx(ctx context.Context, runID, evType string, da
 	}
 	if err := requireValidWorkItemRecordKind(wi); err != nil {
 		return "", err
+	}
+	if isDelegatedCoordinatorRun(r) {
+		if err := s.renewDelegatedCoordinatorClaimForRun(ctx, r); err != nil {
+			return "", err
+		}
 	}
 	eventData := withWorkItemRecordKind(data, wi)
 	if evType == domain.EventArtifactCreated {
@@ -1302,7 +1794,36 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 		}
 		if a.Status == decision {
 			result = a
-			return nil // 幂等：重复相同决定直接返回（不重复建授权）
+			// 相同拒绝决定仍需重放治理收口：首次决定已持久化后，quota
+			// sweep/block 可能在事务外失败或进程崩溃。重建 plan 身份让
+			// post-commit 协调入口再次检查两个持久结果；成功路径本身
+			// 通过 phase6/Todo/Coordinator 的幂等状态不产生重复副作用。
+			if a.Kind == domain.ApprovalKindPlanDispatch && !approved {
+				resolvePlan, err = s.planForDispatchApproval(ctx, a)
+				if err != nil {
+					return err
+				}
+				resolveWS = resolvePlan.WorkspaceID
+			}
+			return nil // 幂等决定；治理拒绝的收口在事务提交后重放
+		}
+		if approved && a.Kind != domain.ApprovalKindPlanDispatch && a.RunID != "" {
+			run, runErr := s.store.Runs().Get(ctx, a.RunID)
+			if runErr != nil {
+				return runErr
+			}
+			state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, run.WorkItemID)
+			if stateErr == nil {
+				goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, state.RootWorkItemID)
+				if goalErr != nil {
+					return goalErr
+				}
+				if goal.Status != domain.GoalActive {
+					return fmt.Errorf("%w: paused or stopped Goal cannot resume a Runtime approval", domain.ErrStateConflict)
+				}
+			} else if !errors.Is(stateErr, domain.ErrNotFound) {
+				return stateErr
+			}
 		}
 		if err := a.Resolve(decision, by, reason, time.Now().UTC()); err != nil {
 			return err
@@ -1405,6 +1926,16 @@ func (s *Service) ResolveApproval(ctx context.Context, approvalID string, approv
 			// plan_dispatch 审批无 run 可转发：通知 workspace 即可；放行续跑的
 			// 副作用与 SubmitPlan 同惯例（权威提交后才分派/入 timer 唤醒）。
 			s.notifier.Notify(resolveWS)
+			// 拒绝的治理 Turn 必须收口：否则 reservation 永久 reserved、Todo
+			// 停在 waiting 占用后续配额。approval 决定已经是持久事实；quota
+			// 与 blocked 迁移在同一 post-decision 事务中完成，失败向调用方
+			// 返回错误，后续重复提交同一拒绝决定会重放该入口。
+			if !approved && resolvePlan != nil && resolvePlan.GovernanceTurnKey != nil {
+				turnKey := *resolvePlan.GovernanceTurnKey
+				if err := s.settleRejectedPlanDispatchTurn(ctx, turnKey); err != nil {
+					return result, err
+				}
+			}
 			if err := s.dispatchCreatedRuns(ctx, resumedRuns); err != nil {
 				return result, err
 			}
@@ -1542,6 +2073,10 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 	// lost 是终态（终态不可逆，§4.3）：resume 不复活旧 run，而是基于同一会话锚点
 	// 重新执行——task_sessions 锚点未清除，CreateRun 将按指纹续接 provider 会话。
 	if run.Status == domain.RunLost {
+		if coordinatorContextOf(run) != nil {
+			return nil, fmt.Errorf("%w: coordinated lost Run 由 durable Coordinator recovery 创建下一 Run",
+				domain.ErrStateConflict)
+		}
 		instruction, _ := run.Input["instruction"].(string)
 		if strings.TrimSpace(instruction) == "" {
 			return nil, fmt.Errorf("%w: lost run 缺少可恢复 instruction", domain.ErrValidation)
@@ -1577,4 +2112,9 @@ func (s *Service) Approvals(ctx context.Context, runID string) ([]*domain.Approv
 
 func (s *Service) Artifacts(ctx context.Context, runID string) ([]*domain.Artifact, error) {
 	return s.store.Runs().ListArtifacts(ctx, runID)
+}
+
+// Artifact returns one Run-owned artifact for path-scoped reviewer commands.
+func (s *Service) Artifact(ctx context.Context, artifactID string) (*domain.Artifact, error) {
+	return s.store.Runs().GetArtifact(ctx, artifactID)
 }

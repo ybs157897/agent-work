@@ -1,5 +1,5 @@
-// plan_extract.go M2 lead-as-planner 入口：run 终态后从助手最终文本提取
-// ```plan 围栏块，走 SubmitPlan 同一校验+执行路径（设计 note
+// plan_extract.go M2 lead-as-planner 入口：run 终态后从助手最终文本解码
+// PlanDecisionV2，走 SubmitPlan 同一校验+执行路径（设计 note
 // notes/implemented/orchestration/2026-08-23-m2-lead-planner-evaluation.md §1）。
 // 门控 agent.Role=="lead"；无 plan 块为正常 no-op；解析/校验失败不静默，
 // 主任务落 plan_parse_failed blocker。幂等由 plans.source_run_id 唯一索引兜底。
@@ -7,11 +7,8 @@ package application
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
-	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -19,69 +16,15 @@ import (
 // AgentRoleLead plan 提取门控的显式角色约定（配置可见，不加 schema 列）。
 const AgentRoleLead = "lead"
 
-// extractLastFencedBlock 提取文本中最后一个名为 name 的围栏代码块
-// （```name 起、``` 止），返回围栏内原文（逐行保留）；不存在返回 false。
-// 未闭合围栏宽容收尾（内容取到文本末尾），适配流式截断场景。
-func extractLastFencedBlock(text, name string) (string, bool) {
-	lines := strings.Split(text, "\n")
-	var content []string
-	inBlock, found := false, false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !inBlock {
-			if strings.HasPrefix(trimmed, "```") {
-				if strings.TrimSpace(strings.TrimPrefix(trimmed, "```")) == name {
-					inBlock, found = true, true
-					content = nil
-				}
-			}
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") {
-			inBlock = false
-			continue
-		}
-		content = append(content, line)
-	}
-	if !found {
-		return "", false
-	}
-	return strings.Join(content, "\n"), true
-}
-
-// parsePlanBlock 把 ```plan 围栏内容解码为提交步骤：JSON 数组，每项含 verb
-// 键 + 动词专属字段（与 openapi PlanStepSubmit 同构）。动词合法性交给
-// SubmitPlan 的 parsePlanSteps 统一校验（同一执行路径）。
-func parsePlanBlock(block string) ([]PlanStepInput, error) {
-	var raw []map[string]any
-	if err := json.Unmarshal([]byte(block), &raw); err != nil {
-		return nil, fmt.Errorf("plan 块 JSON 解析失败: %w", err)
-	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("plan 块为空数组")
-	}
-	steps := make([]PlanStepInput, 0, len(raw))
-	for i, item := range raw {
-		verb, _ := item["verb"].(string)
-		if verb == "" {
-			return nil, fmt.Errorf("plan 步骤 %d 缺少 verb 键", i)
-		}
-		payload := make(map[string]any, len(item))
-		for k, v := range item {
-			if k == "verb" {
-				continue
-			}
-			payload[k] = v
-		}
-		steps = append(steps, PlanStepInput{Verb: verb, Payload: payload})
-	}
-	return steps, nil
-}
-
 // maybeExtractPlan lead run 终态钩子（RecordRunStatus 终态提交后、事务外，
 // maybeAdvancePlans 同款位置；尽力而为）。plan 落在该 run 所属 work item 上。
 func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) {
 	if r == nil || r.Status != domain.RunSucceeded || r.AgentProfileID == "" {
+		return
+	}
+	if action, _ := coordinatorContextOf(r)["action"].(string); action == "evaluation" {
+		// Evaluation output is consumed by maybeProcessVerdict; it is not a
+		// Planner decision, even when a delegated target Agent owns the Plan.
 		return
 	}
 	wctx := context.WithoutCancel(ctx)
@@ -90,19 +33,30 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 		return
 	}
 	agent, err := s.store.Agents().Get(wctx, r.AgentProfileID)
-	if err != nil || (agent.Role != AgentRoleLead && !agent.Kind.IsSystem()) {
+	if err != nil || (agent.Role != AgentRoleLead && !isGovernedCoordinatorRun(r)) {
 		return
 	}
-	if agent.Kind.IsSystem() {
+	if isGovernedCoordinatorRun(r) {
 		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
-		if stateErr != nil || state.CurrentRunID != r.ID {
+		if stateErr != nil {
+			return
+		}
+		// Once a Handoff has been accepted, the source Run is fenced even if a
+		// late terminal frame still carries a PlanDecision. Preserve that frame
+		// as ordinary Run evidence only; the durable continuation owns the next
+		// Plan and is activated by maybeAdvanceTaskCoordinator below.
+		if handoffContinuationPending(state) &&
+			stringValue(state.Data[coordinatorHandoffSourceRunIDKey]) == r.ID {
+			return
+		}
+		if state.CurrentRunID != r.ID {
 			return
 		}
 	}
 	text, err := s.runFinalText(wctx, r.ID)
 	if err != nil {
 		log.Printf("plan: run %s 最终文本读取失败: %v", r.ID, err)
-		if agent.Kind.IsSystem() {
+		if isGovernedCoordinatorRun(r) {
 			action, _ := coordinatorContextOf(r)["action"].(string)
 			if action != "evaluation" {
 				s.blockForParseFailure(wctx, r, "plan_read_failed", "Coordinator 计划证据读取失败："+err.Error())
@@ -110,11 +64,19 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 		}
 		return
 	}
-	block, ok := extractLastFencedBlock(text, "plan")
-	if !ok {
+	if isGovernedCoordinatorRun(r) {
+		s.processSystemCoordinatorPlanDecision(wctx, r, text)
+		return
+	}
+	decision, source, found, err := DecodeCoordinatorPlanText(text)
+	if !found {
 		return // lead 可以只聊不派
 	}
-	steps, err := parsePlanBlock(block)
+	if err != nil {
+		s.blockForParseFailure(wctx, r, "plan_parse_failed", err.Error())
+		return
+	}
+	steps, err := PlanDecisionStepInputs(decision)
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "plan_parse_failed", err.Error())
 		return
@@ -122,6 +84,10 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 	if _, err := s.SubmitPlan(wctx, r.WorkspaceID, SubmitPlanParams{
 		WorkItemID: r.WorkItemID, AgentProfileID: r.AgentProfileID,
 		SourceRunID: r.ID, Steps: steps,
+		DecisionAudit: &PlanDecisionAuditInput{
+			SchemaVersion: decision.SchemaVersion, Candidate: source,
+			Reason: decision.Reason, NextAction: decision.NextAction, StepCount: len(decision.Steps),
+		},
 	}); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrIdempotencyConflict):

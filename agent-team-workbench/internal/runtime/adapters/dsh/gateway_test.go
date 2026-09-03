@@ -4,13 +4,13 @@
 package dsh
 
 import (
-	"os"
-
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -286,13 +286,18 @@ func (c *recordCallbacks) find(kind string) (recordedEvent, bool) {
 func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls chan runtime.Control) *runtime.ExecContext {
 	return &runtime.ExecContext{
 		Ctx:         ctx,
-		Run:         &domain.ExecutionRun{ID: "run_test", AdapterID: "dsh"},
+		Run:         &domain.ExecutionRun{ID: "run_test", AgentProfileID: "agent_test", AdapterID: "dsh"},
 		Resolved:    domain.ResolvedExecutionContext{CWD: os.TempDir(), AuthorizedRoot: os.TempDir()},
 		Instruction: "本轮指令：记住 ALPHA",
 		Session:     runtime.SessionState{Ref: ref},
 		Callbacks:   cb,
 		Controls:    controls,
 	}
+}
+
+func sameLegacyUsage(left, right runtime.Usage) bool {
+	return left.InputTokens == right.InputTokens && left.OutputTokens == right.OutputTokens &&
+		left.CachedTokens == right.CachedTokens && left.Basis == right.Basis
 }
 
 // runExecuteScript 起 Execute，prompt 到达后执行 script（推帧），再收结果。
@@ -317,6 +322,44 @@ func newTestGateway(f *fakeGateway) *Gateway {
 	})
 }
 
+func TestManifestCapabilities(t *testing.T) {
+	m, err := NewGateway(GatewayConfig{}).Manifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.AdapterID != "dsh" || m.AdapterVersion != "2.0.0" ||
+		m.Protocol.Name != "dsh-web-gateway" || m.Protocol.Version != "1" ||
+		m.SchemaDigest != "sha256:dsh-web-gateway-v1" {
+		t.Fatalf("manifest 标识漂移: %+v", m)
+	}
+	want := map[string]runtime.CapabilityLevel{
+		"streaming":                               runtime.CapSupported,
+		runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+		runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+		runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
+		"interrupt":                               runtime.CapSupported,
+		"resume":                                  runtime.CapSupported,
+		"multi_turn":                              runtime.CapSupported,
+		"steering":                                runtime.CapSupported,
+		"approval":                                runtime.CapSupported,
+		"system_prompt":                           runtime.CapSupported,
+		"workspace_files":                         runtime.CapSupported,
+		"terminal":                                runtime.CapUnavailable,
+		"structured_output":                       runtime.CapAdapterTranslated,
+		"permissions":                             runtime.CapSupported,
+		"modes":                                   runtime.CapAdapterTranslated,
+		"multi_vendor":                            runtime.CapAdapterTranslated,
+	}
+	if len(m.Capabilities) != len(want) {
+		t.Fatalf("capabilities 键集漂移: %+v", m.Capabilities)
+	}
+	for key, level := range want {
+		if m.Capabilities[key] != level {
+			t.Errorf("capability %s = %s, want %s", key, m.Capabilities[key], level)
+		}
+	}
+}
+
 func TestGatewayFreshTurn(t *testing.T) {
 	f := newFakeGateway(t)
 	f.handle("session.create", func(payload map[string]any) (any, *rpcWireError) {
@@ -335,8 +378,17 @@ func TestGatewayFreshTurn(t *testing.T) {
 	if p := f.waitCall("session.create"); p["cwd"] != os.TempDir() {
 		t.Fatalf("session.create cwd 不符（应取 Resolved.CWD）: %v", p)
 	}
-	if p := f.waitCall("session.prompt"); p["sessionId"] != "s_fresh" || p["mode"] != "queue" {
-		t.Fatalf("session.prompt 载荷不符: %v", p)
+	prompt := f.waitCall("session.prompt")
+	if prompt["sessionId"] != "s_fresh" || prompt["mode"] != "queue" {
+		t.Fatalf("session.prompt 载荷不符: %v", prompt)
+	}
+	for _, key := range []string{
+		"schema", "output_schema", "outputSchema", "response_format",
+		"tools", "tool_definitions", "toolDefinitions",
+	} {
+		if _, ok := prompt[key]; ok {
+			t.Fatalf("session.prompt.%s 当前 adapter 不应发送: %v", key, prompt)
+		}
 	}
 	if !f.called("session.selectModel") {
 		t.Fatal("fresh 会话应尝试 selectModel")
@@ -738,8 +790,11 @@ func TestGatewayUsageDeduplication(t *testing.T) {
 				t.Fatalf("OnUsage 帧数不符（want %d）: %+v", len(tc.wantFrms), frames)
 			}
 			for i, w := range tc.wantFrms {
-				if frames[i] != w {
+				if !sameLegacyUsage(frames[i], w) {
 					t.Fatalf("OnUsage 第 %d 帧不符（口径应与结算同源）: got %+v want %+v", i+1, frames[i], w)
+				}
+				if frames[i].ProviderReport == nil || frames[i].Canonical == nil {
+					t.Fatalf("OnUsage 第 %d 帧缺少 provider/canonical usage: %+v", i+1, frames[i])
 				}
 			}
 		})
@@ -894,5 +949,184 @@ func TestGatewayQueueProjectionFramesLogged(t *testing.T) {
 	}
 	if !queueSeen || !projectionSeen {
 		t.Fatalf("session/queue 与 session/projection 应记 OnLog: %v", cb.logs)
+	}
+}
+
+// P1-5 回归：input_total 只在三个输入分量全知时派生。cache-write 未知时不得
+// 把 write 隐式当 0（低估 total-token quota）；任一分量未知或求和溢出时
+// InputTokensTotal 保持未知（nil 即 unknown，不是 0）。
+func TestGatewayUsageBucketsCountersInputTotalDerivation(t *testing.T) {
+	i64 := func(v int64) *int64 { return &v }
+	cases := []struct {
+		name      string
+		buckets   dshUsageBuckets
+		wantTotal *int64
+	}{
+		{
+			name: "cache-write 未知 → total 保持未知",
+			buckets: dshUsageBuckets{
+				uncached: 100, uncachedKnown: true,
+				cacheRead: 8, cacheReadKnown: true,
+				output: 20, outputKnown: true, seen: true,
+			},
+			wantTotal: nil,
+		},
+		{
+			name: "三分量全知 → total=uncached+read+write",
+			buckets: dshUsageBuckets{
+				uncached: 100, uncachedKnown: true,
+				cacheRead: 8, cacheReadKnown: true,
+				cacheWrite: 12, cacheWriteKnown: true,
+				output: 20, outputKnown: true, seen: true,
+			},
+			wantTotal: i64(120),
+		},
+		{
+			name: "分量求和溢出 → total 保持未知（不伪造）",
+			buckets: dshUsageBuckets{
+				uncached: math.MaxInt64, uncachedKnown: true,
+				cacheRead: 1, cacheReadKnown: true,
+				cacheWrite: 1, cacheWriteKnown: true, seen: true,
+			},
+			wantTotal: nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.buckets.counters()
+			if tc.wantTotal == nil {
+				if got.InputTokensTotal != nil {
+					t.Fatalf("InputTokensTotal 应保持未知(nil)，得到 %d", *got.InputTokensTotal)
+				}
+				return
+			}
+			if got.InputTokensTotal == nil || *got.InputTokensTotal != *tc.wantTotal {
+				t.Fatalf("InputTokensTotal 不符: want %d got %+v", *tc.wantTotal, got.InputTokensTotal)
+			}
+		})
+	}
+}
+
+// P1-5 端到端：pushHappyTurn 的 usage 无 cacheWriteTokens，provider 报告的
+// input_total 必须保持未知（旧实现派生 108=100+8，把 write 隐式当 0）。
+func TestGatewayProviderReportTotalUnknownWhenCacheWriteMissing(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() { pushHappyTurn(f, "s_known", 1, 1) })
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if res.Usage == nil || res.Usage.ProviderReport == nil {
+		t.Fatalf("结算应携带 provider usage 报告: %+v", res.Usage)
+	}
+	counters := res.Usage.ProviderReport.Counters
+	if counters.InputTokensTotal != nil {
+		t.Fatalf("cache-write 未知时 input_total 必须保持 nil，得到 %d", *counters.InputTokensTotal)
+	}
+	if counters.InputUncachedTokens == nil || *counters.InputUncachedTokens != 100 ||
+		counters.CacheReadTokens == nil || *counters.CacheReadTokens != 8 ||
+		counters.CacheWriteTokens != nil {
+		t.Fatalf("已知分量必须逐项保留，未知分量保持 nil: %+v", counters)
+	}
+}
+
+// P1 回归：legacy 与 canonical 共用的数值入口 fail closed——负数/NaN/Inf/
+// 非整数/越界/非数值一律 unknown，合法值正常。
+func TestGatewayUsageValueFailsClosed(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  int64
+		ok    bool
+	}{
+		{"合法 float64", float64(42), 42, true},
+		{"合法 int", 42, 42, true},
+		{"合法 int64", int64(42), 42, true},
+		{"float64 零", float64(0), 0, true},
+		{"负数", float64(-1), 0, false},
+		{"NaN", math.NaN(), 0, false},
+		{"正无穷", math.Inf(1), 0, false},
+		{"负无穷", math.Inf(-1), 0, false},
+		{"非整数", float64(1.5), 0, false},
+		{"2^63 越界", float64(1 << 63), 0, false},
+		{"字符串", "42", 0, false},
+		{"字符串数字", "1024", 0, false},
+		{"json.Number", json.Number("1024"), 0, false},
+		{"布尔", true, 0, false},
+		{"nil", nil, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := dshUsageValue(tc.value)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("dshUsageValue(%v) = (%d,%v), want (%d,%v)", tc.value, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestGatewayLegacyTotalsFailClosedOnAggregateOverflow(t *testing.T) {
+	legacy := dshLegacyUsage{}
+	legacy.add(map[string]any{
+		"inputTokens": int64(math.MaxInt64 - 4), "cacheReadTokens": int64(10), "outputTokens": int64(7),
+	})
+	in, out, cached := legacy.totals()
+	if in != 0 || out != 7 || cached != 10 || !legacy.inputOverflow {
+		t.Fatalf("overflowing legacy input must stay zero without corrupting healthy projections: %+v totals=%d/%d/%d", legacy, in, out, cached)
+	}
+	legacy.add(map[string]any{"inputTokens": int64(1), "outputTokens": int64(math.MaxInt64)})
+	legacy.add(map[string]any{"outputTokens": int64(1)})
+	if in, out, cached := legacy.totals(); in != 0 || out != 0 || cached != 10 || !legacy.outputOverflow {
+		t.Fatalf("invalidated legacy dimensions must never resume after overflow: %+v totals=%d/%d/%d", legacy, in, out, cached)
+	}
+
+	buckets := dshUsageBuckets{}
+	buckets.add(map[string]any{"inputTokens": int64(math.MaxInt64 - 4)})
+	buckets.add(map[string]any{"inputTokens": int64(10)})
+	if buckets.uncachedKnown || buckets.counters().InputUncachedTokens != nil {
+		t.Fatalf("cross-frame overflow must make the canonical bucket unknown: %+v", buckets)
+	}
+}
+
+// P1 端到端：chunk usage 混入非法数值（负数/非整数）时 legacy 三值只累计
+// 合法分量——非法分量不累计也不伪造。旧实现把 int64(-50)/int64(1.5) 原样
+// 计入，产生负的累计用量污染 task_sessions。
+func TestGatewayLegacyUsageSkipsIllegalNumbers(t *testing.T) {
+	f := newFakeGateway(t)
+	g := newTestGateway(f)
+	cb := newRecordCallbacks()
+
+	res := runExecuteScript(t, g, newTestExec(context.Background(), "dsh://s_known", cb, make(chan runtime.Control, 8)), f,
+		func() {
+			f.push("", sessEvent("s_known", "turn/start", map[string]any{"turn": float64(1)}, 1))
+			f.push("", sessEvent("s_known", "assistant/chunk", map[string]any{
+				"turn": float64(1), "step": 1,
+				"chunk": map[string]any{"type": "text-delta", "index": 0, "text": "A"},
+				"usage": map[string]any{"inputTokens": float64(30), "outputTokens": float64(5), "cacheReadTokens": float64(2)},
+			}, 2))
+			f.push("", sessEvent("s_known", "assistant/chunk", map[string]any{
+				"turn": float64(1), "step": 2,
+				"chunk": map[string]any{"type": "text-delta", "index": 1, "text": "B"},
+				"usage": map[string]any{"inputTokens": float64(-50), "outputTokens": float64(1.5), "cacheReadTokens": float64(-4)},
+			}, 3))
+			f.push("", sessEvent("s_known", "turn/end", map[string]any{
+				"turn": float64(1), "reason": map[string]any{"kind": "completed"},
+			}, 4))
+		})
+
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+	if res.Usage == nil {
+		t.Fatal("结算应携带 usage")
+	}
+	// legacy 口径：InputTokens 含 cacheRead（与 pushHappyTurn 的 108=100+8 一致）。
+	// 合法分量 30+2/5/2；chunk2 的 -50、1.5、-4 一律不计。
+	if res.Usage.InputTokens != 32 || res.Usage.OutputTokens != 5 || res.Usage.CachedTokens != 2 {
+		t.Fatalf("legacy 三值应只含合法分量（32/5/2）: %+v", res.Usage)
 	}
 }

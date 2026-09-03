@@ -27,6 +27,7 @@ type Supervisor struct {
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
+	pgid    int // sampled immediately after start; the leader may be reaped before Close
 	started bool
 	stopped bool
 	restart int
@@ -113,11 +114,12 @@ func (s *Supervisor) spawnLocked() error {
 		return fmt.Errorf("拉起 dsh 网关失败: %w", err)
 	}
 	s.cmd = cmd
+	s.pgid = processGroupID(cmd)
 	s.started = true
 	monitorCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go s.monitor(monitorCtx, cmd)
-	log.Printf("dsh supervisor: 网关已启动 pid=%d %s", cmd.Process.Pid, s.BaseURL())
+	log.Printf("dsh supervisor: 网关已启动 pid=%d pgid=%d %s", cmd.Process.Pid, s.pgid, s.BaseURL())
 	return nil
 }
 
@@ -165,7 +167,7 @@ func (s *Supervisor) Close() {
 		s.cancel()
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
-		signalGroup(s.cmd, sigTerm)
+		signalGroup(s.cmd, s.pgid, sigTerm)
 		done := make(chan struct{})
 		go func() {
 			_ = s.cmd.Wait()
@@ -174,7 +176,7 @@ func (s *Supervisor) Close() {
 		select {
 		case <-done:
 		case <-time.After(3 * time.Second):
-			signalGroup(s.cmd, sigKill)
+			signalGroup(s.cmd, s.pgid, sigKill)
 			<-done
 		}
 	}

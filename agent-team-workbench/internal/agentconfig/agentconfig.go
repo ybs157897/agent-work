@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/dshcatalog"
 	"gopkg.in/yaml.v3"
@@ -120,6 +122,9 @@ func LoadDir(dir string) ([]*FileConfig, error) {
 }
 
 func loadOne(dir, slug string) (*FileConfig, error) {
+	if !ValidSlug(slug) {
+		return nil, fmt.Errorf("%w: invalid agent config slug %q", domain.ErrValidation, slug)
+	}
 	yamlPath := filepath.Join(dir, "agent.yaml")
 	data, err := os.ReadFile(yamlPath)
 	if os.IsNotExist(err) {
@@ -150,8 +155,11 @@ func loadOne(dir, slug string) (*FileConfig, error) {
 	if effort := strings.TrimSpace(strings.ToLower(cfg.Model.ReasoningEffort)); !validReasoningEffort[effort] {
 		return nil, fmt.Errorf("%w: %s: model.reasoning_effort 必须是 minimal|low|medium|high|xhigh|ultra", domain.ErrValidation, yamlPath)
 	}
-	if prompt, err := os.ReadFile(filepath.Join(dir, "prompt.md")); err == nil {
+	prompt, err := os.ReadFile(filepath.Join(dir, "prompt.md"))
+	if err == nil {
 		cfg.Prompt = string(prompt)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("%s: %w", filepath.Join(dir, "prompt.md"), err)
 	}
 	return cfg, nil
 }
@@ -168,11 +176,43 @@ func Slugify(name string) string {
 	return s
 }
 
-// WriteBack 把 AgentProfile 写回 agents/<slug>/（tmp + rename 近似原子）；返回实际 slug。
+// ValidSlug accepts both the canonical lowercase slug form emitted for new
+// Agents and legacy human-readable directory names. It rejects path control
+// characters and separators, so preserving an old safe slug cannot become a
+// path traversal.
+func ValidSlug(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed != value {
+		return false
+	}
+	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\\:`) {
+		return false
+	}
+	if filepath.Base(value) != value {
+		return false
+	}
+	return strings.IndexFunc(value, unicode.IsControl) < 0
+}
+
+// NormalizeSlug preserves a safe legacy slug and gives unsafe/empty values a
+// deterministic canonical directory name. The result is always safe for use
+// as one path component.
+func NormalizeSlug(value, name string) string {
+	if value = strings.TrimSpace(value); ValidSlug(value) {
+		return value
+	}
+	candidate := Slugify(name)
+	if ValidSlug(candidate) {
+		return candidate
+	}
+	return "agent"
+}
+
+// WriteBack 把 AgentProfile 写回 agents/<slug>/（durable tmp + fsync + rename）；返回实际 slug。
 // 目录已存在其他文件（如额外笔记）不清理。
 func WriteBack(dir string, a *domain.AgentProfile, taken map[string]bool) (string, error) {
-	slug := a.Slug
-	if slug == "" {
+	slug := strings.TrimSpace(a.Slug)
+	if !ValidSlug(slug) {
 		base := Slugify(a.Name)
 		slug = base
 		for i := 2; taken[slug]; i++ {
@@ -200,9 +240,5 @@ func WriteBack(dir string, a *domain.AgentProfile, taken map[string]bool) (strin
 }
 
 func writeAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return agentwork.WriteAtomicDurable(path, data, 0o644)
 }

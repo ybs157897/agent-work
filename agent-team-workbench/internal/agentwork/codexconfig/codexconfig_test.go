@@ -64,6 +64,21 @@ func TestApplyRejectsCompletionsProviderBeforeWritingConfig(t *testing.T) {
 	}
 }
 
+func TestValidateSpecRejectsCredentialBearingBaseURL(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://user:password@example.com/v1",
+		"https://example.com/v1?token=secret",
+		"https://example.com/v1#secret",
+	} {
+		if err := ValidateSpec(orchestrator.ModelSpec{
+			Provider: "openrouter", API: "openai-responses", Model: "model",
+			APIKeyEnv: "OPENROUTER_KEY", BaseURL: baseURL,
+		}); err == nil {
+			t.Fatalf("credential-bearing base_url %q must be rejected", baseURL)
+		}
+	}
+}
+
 func TestApplyUsesAgentReasoningEffort(t *testing.T) {
 	home := t.TempDir()
 	if err := Apply(home, orchestrator.ModelSpec{

@@ -102,25 +102,35 @@ type executor interface {
 }
 
 type Store struct {
-	db           *sql.DB
-	workspaces   *WorkspaceRepo
-	agents       *AgentRepo
-	workItems    *WorkItemRepo
-	plans        *PlanRepo
-	runs         *RunRepo
-	events       *EventRepo
-	idem         *IdempotencyRepo
-	bindings     *BindingRepo
-	runners      *RunnerRepo
-	audit        *AuditRepo
-	caps         *CapsRepo
-	tasks        *TaskSessionRepo
-	wakeups      *WakeupRepo
-	grants       *ApprovalGrantRepo
-	dispatches   *DispatchRepo
-	decisions    *DecisionRepo
-	search       *SearchRepo
-	coordinators *TaskCoordinatorRepo
+	db                     *sql.DB
+	workspaces             *WorkspaceRepo
+	agents                 *AgentRepo
+	agentConfigSyncIntents *AgentConfigSyncIntentRepo
+	workItems              *WorkItemRepo
+	plans                  *PlanRepo
+	runs                   *RunRepo
+	events                 *EventRepo
+	idem                   *IdempotencyRepo
+	bindings               *BindingRepo
+	runners                *RunnerRepo
+	audit                  *AuditRepo
+	caps                   *CapsRepo
+	tasks                  *TaskSessionRepo
+	wakeups                *WakeupRepo
+	grants                 *ApprovalGrantRepo
+	dispatches             *DispatchRepo
+	decisions              *DecisionRepo
+	search                 *SearchRepo
+	coordinators           *TaskCoordinatorRepo
+	goals                  *GoalRepo
+	todos                  *TodoRepo
+	turnReceipts           *TurnReceiptRepo
+	quotas                 *QuotaRepo
+	handoffs               *HandoffRepo
+	projections            *GovernanceProjectionRepo
+	validationResults      *ValidationResultRepo
+	deliveryBriefSnapshots *DeliveryBriefSnapshotRepo
+	quotaGapResolutions    *QuotaGapResolutionRepo
 	// Execution context 四仓储（任务控制面 RFC §4；实现在 execution_contexts.go）。
 	execHosts    application.ExecutionHostRepo
 	locations    application.WorkspaceLocationRepo
@@ -137,6 +147,7 @@ func New(db *sql.DB) *Store {
 	s := &Store{db: db}
 	s.workspaces = &WorkspaceRepo{store: s}
 	s.agents = &AgentRepo{store: s}
+	s.agentConfigSyncIntents = &AgentConfigSyncIntentRepo{store: s}
 	s.workItems = &WorkItemRepo{store: s}
 	s.plans = &PlanRepo{store: s}
 	s.runs = &RunRepo{store: s}
@@ -153,6 +164,15 @@ func New(db *sql.DB) *Store {
 	s.decisions = &DecisionRepo{store: s}
 	s.search = &SearchRepo{store: s}
 	s.coordinators = &TaskCoordinatorRepo{store: s}
+	s.goals = &GoalRepo{store: s}
+	s.todos = &TodoRepo{store: s}
+	s.turnReceipts = &TurnReceiptRepo{store: s}
+	s.quotas = &QuotaRepo{store: s}
+	s.handoffs = &HandoffRepo{store: s}
+	s.projections = &GovernanceProjectionRepo{store: s}
+	s.validationResults = &ValidationResultRepo{store: s}
+	s.deliveryBriefSnapshots = &DeliveryBriefSnapshotRepo{store: s}
+	s.quotaGapResolutions = &QuotaGapResolutionRepo{store: s}
 	s.execHosts = &ExecutionHostRepo{store: s}
 	s.locations = &WorkspaceLocationRepo{store: s}
 	s.wiContexts = &WorkItemContextRepo{store: s}
@@ -161,8 +181,11 @@ func New(db *sql.DB) *Store {
 	return s
 }
 
-func (s *Store) Workspaces() application.WorkspaceRepo             { return s.workspaces }
-func (s *Store) Agents() application.AgentRepo                     { return s.agents }
+func (s *Store) Workspaces() application.WorkspaceRepo { return s.workspaces }
+func (s *Store) Agents() application.AgentRepo         { return s.agents }
+func (s *Store) AgentConfigSyncIntents() application.AgentConfigSyncIntentRepo {
+	return s.agentConfigSyncIntents
+}
 func (s *Store) WorkItems() application.WorkItemRepo               { return s.workItems }
 func (s *Store) Plans() application.PlanRepo                       { return s.plans }
 func (s *Store) Runs() application.RunRepo                         { return s.runs }
@@ -178,6 +201,21 @@ func (s *Store) Dispatches() application.DispatchRepo              { return s.di
 func (s *Store) DecisionEntries() application.DecisionRepo         { return s.decisions }
 func (s *Store) Search() application.SearchRepo                    { return s.search }
 func (s *Store) TaskCoordinators() application.TaskCoordinatorRepo { return s.coordinators }
+func (s *Store) Goals() application.GoalRepo                       { return s.goals }
+func (s *Store) Todos() application.TodoRepo                       { return s.todos }
+func (s *Store) TurnReceipts() application.TurnReceiptRepo         { return s.turnReceipts }
+func (s *Store) Quotas() application.QuotaRepo                     { return s.quotas }
+func (s *Store) Handoffs() application.HandoffRepo                 { return s.handoffs }
+func (s *Store) GovernanceProjections() application.GovernanceProjectionRepo {
+	return s.projections
+}
+func (s *Store) ValidationResults() application.ValidationResultRepo { return s.validationResults }
+func (s *Store) DeliveryBriefSnapshots() application.DeliveryBriefSnapshotRepo {
+	return s.deliveryBriefSnapshots
+}
+func (s *Store) QuotaGapResolutions() application.QuotaGapResolutionRepo {
+	return s.quotaGapResolutions
+}
 
 // Execution context accessor（实现在 execution_contexts.go）。
 func (s *Store) ExecutionHosts() application.ExecutionHostRepo         { return s.execHosts }

@@ -19,4 +19,5 @@ runtimes/dsh/run_*.cordis.yml
 # 本地构建产物与开发数据库（勿提交）
 /control-plane
 /runnerd
+/host-registry.yaml
 workbench.db*

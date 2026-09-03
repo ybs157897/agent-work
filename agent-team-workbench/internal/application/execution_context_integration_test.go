@@ -150,6 +150,7 @@ func TestPlanFreezesSourceSnapshot(t *testing.T) {
 	seedCtx(t, store, ctx, wsID) // 幂等
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "冻结计划", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

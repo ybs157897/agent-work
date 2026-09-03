@@ -1,9 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Plan, WorkItem } from './types';
+import type { GovernanceDeliveryBriefSnapshot, GovernanceQuotaGapReconciliationInput, Plan, WorkItem } from './types';
 import {
   acceptWorkItem,
+  captureGovernanceDeliveryBriefSnapshot,
   getCoordinatorConfig,
   getCoordinatorSnapshot,
+  getGovernanceGoal,
+  getGovernanceGoalForWorkItem,
+  getGovernanceGoalQuota,
+  getGovernanceDeliveryBriefSnapshot,
+  getGovernanceMetrics,
+  getGovernanceHandoff,
+  getGovernanceProjection,
+  getGovernanceTurnQuota,
+  getGovernanceTurnReceipt,
+  getGovernanceTodo,
+  listGovernanceGoalEvidence,
+  listGovernanceGoalHandoffs,
+  listGovernanceGoals,
+  listGovernanceProjectionRepairs,
+  listGovernanceQuotaGapReconciliations,
+  reconcileGovernanceQuotaGap,
+  listGovernanceTodos,
+  repairGovernanceProjection,
+  claimGovernanceTodo,
+  releaseGovernanceTodo,
   createDecision,
   createPlan,
   createTaskComment,
@@ -66,6 +87,21 @@ const plan: Plan = {
   updated_at: '2026-08-23T10:01:00Z',
 };
 
+const briefSnapshot: GovernanceDeliveryBriefSnapshot = {
+  id: 'brief_1',
+  schema_version: 'delivery-brief-snapshot/v1',
+  goal_id: 'goal_1',
+  todo_id: 'todo_1',
+  work_item_id: 'wi_1',
+  snapshot_json: '{}',
+  canonical_digest: 'sha256:' + 'a'.repeat(64),
+  as_of_event_seq: 9,
+  source_versions: { work_item: 3 },
+  freshness_state: 'current',
+  created_at: '2026-08-23T10:01:00Z',
+  client_key: 'brief:capture:1',
+};
+
 describe('plan / tree endpoints', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -117,7 +153,7 @@ describe('plan / tree endpoints', () => {
   });
 
   it('getWorkItemTree: GET /work-items/{id}/tree', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ items: [] }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
     vi.stubGlobal('fetch', fetchMock);
 
     await getWorkItemTree('wi_1');
@@ -395,5 +431,111 @@ describe('run file changes endpoints', () => {
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('revert-key');
     expect(JSON.parse(init.body as string)).toEqual({ idempotency_key: 'revert-key' });
+  });
+});
+
+describe('native governance endpoints', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('uses workspace-scoped paths for reads and receipt/quota identity', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listGovernanceGoals('ws_1');
+    await getGovernanceGoal('ws_1', 'goal_1');
+    await getGovernanceGoalForWorkItem('ws_1', 'wi_1');
+    await getGovernanceMetrics('ws_1');
+    await listGovernanceTodos('ws_1', 'goal_1');
+    await getGovernanceTodo('ws_1', 'todo_1');
+    await getGovernanceGoalQuota('ws_1', 'goal_1');
+    await listGovernanceQuotaGapReconciliations('ws_1', 'goal_1');
+    await getGovernanceTurnReceipt('ws_1', 'goal_1', 'todo_1', 3);
+    await getGovernanceTurnQuota('ws_1', 'goal_1', 'todo_1', 3);
+    await listGovernanceGoalHandoffs('ws_1', 'goal_1');
+    await getGovernanceHandoff('ws_1', 'handoff_1');
+    await listGovernanceGoalEvidence('ws_1', 'goal_1');
+    await getGovernanceProjection('ws_1', 'goal_1');
+    await listGovernanceProjectionRepairs('ws_1', 'goal_1');
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/v1/workspaces/ws_1/goals',
+      '/api/v1/workspaces/ws_1/goals/goal_1',
+      '/api/v1/workspaces/ws_1/work-items/wi_1/goal',
+      '/api/v1/workspaces/ws_1/governance/metrics',
+      '/api/v1/workspaces/ws_1/goals/goal_1/todos',
+      '/api/v1/workspaces/ws_1/todos/todo_1',
+      '/api/v1/workspaces/ws_1/goals/goal_1/quota',
+      '/api/v1/workspaces/ws_1/goals/goal_1/quota/reconciliations',
+      '/api/v1/workspaces/ws_1/goals/goal_1/todos/todo_1/turns/3',
+      '/api/v1/workspaces/ws_1/goals/goal_1/todos/todo_1/turns/3/quota',
+      '/api/v1/workspaces/ws_1/goals/goal_1/handoffs',
+      '/api/v1/workspaces/ws_1/handoffs/handoff_1',
+      '/api/v1/workspaces/ws_1/goals/goal_1/evidence',
+      '/api/v1/workspaces/ws_1/goals/goal_1/projection',
+      '/api/v1/workspaces/ws_1/goals/goal_1/projection/repairs',
+    ]);
+  });
+
+  it('writes quota gap reconciliation only through the idempotent approval API', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({})));
+    vi.stubGlobal('fetch', fetchMock);
+    const input: GovernanceQuotaGapReconciliationInput = {
+      target: {
+        turn_key: { goal_id: 'goal_1', todo_id: 'todo_1', turn_seq: 2 },
+        quota_kind: 'output_tokens',
+        run_id: 'run_1',
+      },
+      amount: 42,
+      evidence: {
+        source_kind: 'artifact', source_id: 'art_1', verification: 'accepted',
+        summary: 'verified statement', recorded_at: '2026-09-02T00:00:00Z',
+      },
+      actor_id: 'user_1', reason: 'manual provider statement reconciliation', client_key: 'qgap-1',
+    };
+    await reconcileGovernanceQuotaGap('ws_1', 'goal_1', input);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/workspaces/ws_1/goals/goal_1/quota/reconciliations');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe('qgap-1');
+    expect(JSON.parse(init.body as string)).toEqual(input);
+  });
+
+  it('captures and reads immutable Delivery Brief evidence snapshots', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) =>
+      Promise.resolve(json(url.includes('delivery-brief-snapshots') ? briefSnapshot : {})),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await captureGovernanceDeliveryBriefSnapshot('ws_1', 'goal_1', 'todo_1', {
+      work_item_id: 'wi_1', client_key: 'brief:capture:1',
+    });
+    await getGovernanceDeliveryBriefSnapshot('ws_1', 'brief_1');
+
+    const [captureURL, captureInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(captureURL).toBe('/api/v1/workspaces/ws_1/goals/goal_1/todos/todo_1/evidence/delivery-brief-snapshots');
+    expect(captureInit.method).toBe('POST');
+    expect((captureInit.headers as Record<string, string>)['Idempotency-Key']).toBe('brief:capture:1');
+    expect(JSON.parse(captureInit.body as string)).toEqual({ work_item_id: 'wi_1', client_key: 'brief:capture:1' });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/v1/workspaces/ws_1/delivery-brief-snapshots/brief_1');
+  });
+
+  it('sends restricted governance commands with idempotency and explicit versions', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(json({})));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await claimGovernanceTodo('ws_1', 'todo_1', 'agent_1', 4, '2026-09-02T00:00:00Z');
+    await releaseGovernanceTodo('ws_1', 'todo_1', 'agent_1', 5);
+    await repairGovernanceProjection('ws_1', 'goal_1', { scope: ['evidence_summary'], client_key: 'repair-1' });
+
+    const first = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(first[0]).toBe('/api/v1/workspaces/ws_1/todos/todo_1/commands/claim');
+    expect(JSON.parse(first[1].body as string)).toMatchObject({ owner_agent_id: 'agent_1', expected_version: 4 });
+    expect((first[1].headers as Record<string, string>)['Idempotency-Key']).toContain('todo:claim:todo_1');
+    const second = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(second[0]).toBe('/api/v1/workspaces/ws_1/todos/todo_1/commands/release');
+    const third = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(third[0]).toBe('/api/v1/workspaces/ws_1/goals/goal_1/projection/commands/repair');
+    expect((third[1].headers as Record<string, string>)['Idempotency-Key']).toBe('repair-1');
   });
 });

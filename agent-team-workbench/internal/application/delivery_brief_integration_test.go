@@ -389,6 +389,7 @@ func TestDeliveryBriefPartialAndChatFailClosed(t *testing.T) {
 	// 非权限来源读取失败 → 可用部分 + missing_sources + state=partial。
 	wi, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "部分来源任务", AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -12,8 +12,20 @@ var (
 	ErrIllegalTransition   = errors.New("illegal state transition")
 	ErrTerminalImmutable   = errors.New("terminal state is immutable")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
-	ErrCapabilityMissing   = errors.New("required capability unavailable")
-	ErrValidation          = errors.New("domain validation failed")
+	// ErrIdempotencyClaimLost means a request no longer owns the durable
+	// idempotency placeholder. Completion/release must fail closed instead of
+	// mutating a replacement claimant's row.
+	ErrIdempotencyClaimLost = errors.New("idempotency claim lost")
+	ErrCapabilityMissing    = errors.New("required capability unavailable")
+	ErrValidation           = errors.New("domain validation failed")
+	// ErrAgentConfigSyncPending means an earlier external configuration bundle
+	// is still the sole active intent for this Agent; callers must reconcile it
+	// before changing the desired target.
+	ErrAgentConfigSyncPending = errors.New("agent configuration sync pending")
+	// ErrAgentConfigSyncConflict means the durable target and current Agent
+	// projection disagree. It is intentionally fail-closed until an operator
+	// resolves the external/database divergence.
+	ErrAgentConfigSyncConflict = errors.New("agent configuration sync conflict")
 	// ErrStateConflict 命令与当前资源状态冲突（非版本竞争）：如认领已被认领的
 	// 任务、打回不在评审/验收态的任务。区别于 ErrVersionConflict（乐观锁失配）。
 	ErrStateConflict = errors.New("command conflicts with current state")

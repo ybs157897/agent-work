@@ -65,6 +65,7 @@ type envelope struct {
 type runSpec struct {
 	RunID           string         `json:"run_id"`
 	AdapterID       string         `json:"adapter_id"`
+	AgentProfileID  string         `json:"agent_profile_id"`
 	ContextSnapshot wireSnapshot   `json:"context_snapshot"`
 	Input           map[string]any `json:"input"`
 	Policy          map[string]any `json:"policy"`
@@ -497,6 +498,10 @@ func (r *runner) readLoop(ctx context.Context, conn *websocket.Conn) error {
 }
 
 func (r *runner) handle(env envelope) {
+	if env.RunnerID != "" && env.RunnerID != r.id {
+		log.Printf("runnerd: 忽略目标 runner 不符帧（self=%s frame=%s method=%s）", r.id, env.RunnerID, env.Method)
+		return
+	}
 	switch env.Method {
 	case "server.welcome":
 		var p welcomePayload
@@ -540,6 +545,12 @@ func (r *runner) handleOffer(env envelope) {
 			}),
 		})
 	}
+	if env.RunnerID == "" || p.RunSpec.RunID == "" || p.RunSpec.RunID != env.RunID ||
+		p.RunSpec.AdapterID == "" || p.RunSpec.AgentProfileID == "" ||
+		p.LeaseID == "" || p.FencingToken < 1 {
+		reject("workspace", "run.offer 缺少一致的 run_id/adapter_id/agent_profile_id/lease 身份")
+		return
+	}
 
 	r.mu.Lock()
 	active := len(r.runs)
@@ -570,12 +581,10 @@ func (r *runner) handleOffer(env envelope) {
 		ConnectionEpoch: r.currentEpoch(), FencingToken: p.FencingToken,
 		SnapshotDigest: snap.SnapshotDigest, // Resolve 已验证 == 本地重算值
 	})
-	r.send(envelope{
-		V: protocolV2, MessageID: newMsgID(), Kind: "response", Method: "run.accept",
-		RunnerID: r.id, RunID: p.RunSpec.RunID, ReplyTo: env.MessageID,
-		SentAt: time.Now().UTC(), Payload: payload,
-	})
-
+	// Publish the local command fence before acknowledging the offer. Once the
+	// gateway observes run.accept it may immediately send cancel, steering, or
+	// approval commands; every such command must find this exact run/lease
+	// identity rather than fall through a registration window.
 	r.mu.Lock()
 	r.runs[p.RunSpec.RunID] = &runnerRun{release: release}
 	r.leases[p.RunSpec.RunID] = &leaseInfo{
@@ -588,6 +597,12 @@ func (r *runner) handleOffer(env envelope) {
 		(p.RunSpec.AdapterID == "kimi-appserver" && r.kimiModule != nil)
 	r.mu.Unlock()
 
+	r.send(envelope{
+		V: protocolV2, MessageID: newMsgID(), Kind: "response", Method: "run.accept",
+		RunnerID: r.id, RunID: p.RunSpec.RunID, ReplyTo: env.MessageID,
+		SentAt: time.Now().UTC(), Payload: payload,
+	})
+
 	if useModule {
 		r.runModule(p.RunSpec)
 		return
@@ -596,10 +611,13 @@ func (r *runner) handleOffer(env envelope) {
 }
 
 // runModule 用 SPI v2 模块执行（dsh 网关）：状态机由 ModuleRunner 驱动，
-// 事件经 moduleEngine 桥接为 run.event 上报。
+// 事件经 moduleEngine 桥接为 run.event 上报。AgentProfileID 是 adapter 侧
+// NewProviderUsageReport 的身份前提：缺失时 provider 原生用量报告造不出来，
+// 远程 Run 只能落 absent/unresolved usage 证据。
 func (r *runner) runModule(spec runSpec) {
 	run := &domain.ExecutionRun{
-		ID: spec.RunID, AdapterID: spec.AdapterID, Status: domain.RunQueued, Version: 1,
+		ID: spec.RunID, AdapterID: spec.AdapterID, AgentProfileID: spec.AgentProfileID,
+		Status: domain.RunQueued, Version: 1,
 		Input: spec.Input, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	r.mu.Lock()
@@ -712,8 +730,9 @@ func (r *runner) commandCurrent(p commandPayload) bool {
 		p.LeaseID == lease.LeaseID && p.FencingToken == lease.FencingToken
 }
 
-// handleAck 按 (run, lease, producer_seq) 精确删除 pending：一个 Run 的 ACK
-// 不清另一个 Run 的 pending（v1 全局 contiguous_seq 水位已删除）。
+// handleAck 按完整事件身份精确删除 pending。Run/lease/producer_seq 只是
+// 查找键；runner/fencing/event_id 仍必须与未确认帧逐字匹配，否则过期或
+// 伪造 ACK 会让 Runner 提前丢失至少一次投递证据。
 func (r *runner) handleAck(env envelope) {
 	var p ackPayload
 	if err := json.Unmarshal(env.Payload, &p); err != nil {
@@ -721,6 +740,15 @@ func (r *runner) handleAck(env envelope) {
 	}
 	key := pendingKey{RunID: p.RunID, LeaseID: p.LeaseID, Seq: p.AckedProducerSeq}
 	r.mu.Lock()
+	pending := r.pending[key]
+	if pending == nil || env.RunnerID != r.id || env.RunID != p.RunID ||
+		p.RunnerID != r.id || p.FencingToken != pending.Fencing ||
+		p.EventID != pending.EventID {
+		r.mu.Unlock()
+		log.Printf("runnerd: 忽略身份不匹配 ACK（run=%s lease=%s seq=%d event=%s）",
+			p.RunID, p.LeaseID, p.AckedProducerSeq, p.EventID)
+		return
+	}
 	delete(r.pending, key)
 	r.cleanupTerminalStateLocked(p.RunID)
 	n := len(r.pending)
@@ -888,11 +916,19 @@ func (e *moduleEngine) RecordRunSessionUpdate(ctx context.Context, runID string,
 	return e.r.emitEvent(runID, "run.session", data)
 }
 
+// RecordRunUsage 桥接 usage.updated：legacy 四字段之外必须透传 sealed
+// provider 原生报告（provider_report 键，typed struct 已 Seal，直接交给
+// encoding/json 序列化）——丢掉它远程 Run 就只能落 absent/unresolved usage
+// 证据，与进程内路径不等价。
 func (e *moduleEngine) RecordRunUsage(ctx context.Context, runID string, usage rt.Usage) error {
-	return e.r.emitEvent(runID, "usage.updated", map[string]any{
+	data := map[string]any{
 		"input_tokens": usage.InputTokens, "output_tokens": usage.OutputTokens,
 		"cached_tokens": usage.CachedTokens, "basis": string(usage.Basis),
-	})
+	}
+	if usage.ProviderReport != nil {
+		data["provider_report"] = usage.ProviderReport
+	}
+	return e.r.emitEvent(runID, "usage.updated", data)
 }
 
 func (e *moduleEngine) RequestApproval(ctx context.Context, runID, kind, risk, summary string) (*domain.ApprovalRequest, error) {

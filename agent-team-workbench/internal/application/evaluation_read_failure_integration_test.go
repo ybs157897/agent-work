@@ -94,6 +94,7 @@ func TestCoordinatorPlanEvidenceReadFailureBlocksInsteadOfAccepting(t *testing.T
 	}
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "计划证据读取失败", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

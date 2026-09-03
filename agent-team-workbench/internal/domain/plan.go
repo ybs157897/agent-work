@@ -108,6 +108,14 @@ type Plan struct {
 	WorkItemID     string
 	AgentProfileID string
 	SourceRunID    string
+	// ClientKey and GovernanceTurnKey identify a Plan compiled from one
+	// bounded governance turn. Legacy/API plans leave the whole governance
+	// identity empty; persistence enforces all-or-none for that group.
+	ClientKey             string
+	GovernanceTurnKey     *TurnKey
+	DecisionSchemaVersion string
+	DecisionSchemaDigest  string
+	DecisionDigest        string
 	// ContextSnapshotID / ContextGeneration 提交时冻结的执行上下文（RFC §4.7：
 	// Plan Worker 不重解析当前 context，只重验 Host-local mount/ref 仍可用）。
 	ContextSnapshotID string

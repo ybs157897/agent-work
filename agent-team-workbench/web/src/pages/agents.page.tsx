@@ -14,7 +14,7 @@ import {
   resetTaskSession,
   wakeAgent,
 } from '../api/endpoints';
-import type { AgentPolicy, AgentProfile, AgentPresetEntry, ModelEntry, PermissionPresetEntry, RuntimeBinding, TaskSession, WorkItem } from '../api/types';
+import type { AgentPolicy, AgentProfile, AgentPresetEntry, CreateAgentResponse, ModelEntry, PermissionPresetEntry, RuntimeBinding, TaskSession, WorkItem } from '../api/types';
 import {
   ConfigAvatar,
   ConfigEmptyState,
@@ -119,6 +119,13 @@ export function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+export function createAgentNotice(agent: Pick<CreateAgentResponse, 'config_sync_pending'>, name: string): { kind: 'success' | 'warning'; message: string } {
+  if (agent.config_sync_pending) {
+    return { kind: 'warning', message: `已创建 Agent ${name}，外部配置同步待完成；修复条件后请重载配置` };
+  }
+  return { kind: 'success', message: `已添加 Agent ${name}` };
 }
 
 function defaultAgentPreset(presets: AgentPresetEntry[]): string {
@@ -408,7 +415,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
         expected_version: agent.version,
       });
       upsert(updated);
-      toast.success(`配置已保存（agents/${updated.slug ?? ''}/）`);
+      toast.success('配置已保存');
     } catch (err) {
       if (err instanceof ApiError && err.isVersionConflict) {
         toast.error('配置已被他人修改，请刷新后重试');
@@ -655,7 +662,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
     if (!workspace || !name.trim()) return;
     setSubmitting(true);
     try {
-      await createAgent(workspace.id, {
+      const created = await createAgent(workspace.id, {
         name: name.trim(),
         role,
         skills: description.trim() ? [description.trim()] : [],
@@ -667,7 +674,9 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         },
       });
       await refresh();
-      toast.success(`已添加 Agent ${name.trim()}`);
+      const notice = createAgentNotice(created, name.trim());
+      if (notice.kind === 'warning') toast.warning(notice.message);
+      else toast.success(notice.message);
       setName('');
       setDescription('');
       onClose();

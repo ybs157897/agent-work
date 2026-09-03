@@ -180,13 +180,13 @@ type evDelta struct {
 	Delta   string `json:"delta"`
 }
 
-// tokenUsage 对齐 protocol TokenUsage：input = inputOther + inputCacheRead +
-// inputCacheCreation（与 dsh 口径一致：input 计入 cacheRead）；cached = cacheRead。
+// tokenUsage 对齐 protocol TokenUsage。指针保留协议字段的 presence：缺失
+// 不得在 canonical usage 中伪装成显式 zero。
 type tokenUsage struct {
-	InputOther         int64 `json:"inputOther"`
-	Output             int64 `json:"output"`
-	InputCacheRead     int64 `json:"inputCacheRead"`
-	InputCacheCreation int64 `json:"inputCacheCreation"`
+	InputOther         *int64 `json:"inputOther"`
+	Output             *int64 `json:"output"`
+	InputCacheRead     *int64 `json:"inputCacheRead"`
+	InputCacheCreation *int64 `json:"inputCacheCreation"`
 }
 
 type evStepCompleted struct {

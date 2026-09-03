@@ -23,6 +23,7 @@ import { ReturnTaskModal } from './return-modal';
 import { RunPanel } from './run-panel';
 import { TaskLedger } from './task-ledger';
 import { CoordinatorPanel } from './coordinator-panel';
+import { GovernancePanel } from './governance-panel';
 
 const STATUS_TEXT: Record<string, string> = {
   todo: '待办',
@@ -220,6 +221,8 @@ export function TaskDetail({
               resolution={coordinatorResolution}
               onRetry={() => void refreshCoordinator(task.id)}
             />
+
+            <GovernancePanel task={task} />
 
             {/* 评论与反馈（RFC §4.9：note/requirement 写入唯一入口，取代旧「追加指令」） */}
             <CommentThread

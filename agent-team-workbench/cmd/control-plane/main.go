@@ -172,13 +172,13 @@ func run() error {
 			Token:   env("ATW_KIMIAPP_TOKEN", ""),
 			Port:    atoiEnv("ATW_KIMIAPP_PORT", 0),
 			KimiBin: kimiAppBin,
-			Home:    env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()),
+			Home:    projectSpace.KimiHome(),
 			Model:   env("ATW_KIMIAPP_MODEL", ""),
 		})
 		// 退出时回收 kap-server 进程组（supervisor Close 幂等，未拉起也可安全调用）。
 		defer kimiModule.Close()
 		modules.RegisterTo(registry, "kimi-appserver", kimiModule)
-		log.Printf("kimiapp: 已注册（bin=%s home=%s）", kimiAppBin, env("ATW_KIMIAPP_HOME", projectSpace.KimiHome()))
+		log.Printf("kimiapp: 已注册（bin=%s home=%s）", kimiAppBin, projectSpace.KimiHome())
 	}
 	// M5 spike：ZCode probe-only 模块（SPI v2，Execute 报 start_unsupported）。
 	modules.RegisterTo(registry, "zcode-probe", zcode.New())
@@ -241,23 +241,6 @@ func run() error {
 		return fmt.Errorf("默认 Location bootstrap 失败: %w", err)
 	}
 
-	// agents/ 目录为 Agent 配置真相源：启动导入 DB 投影（协议 §4.1）。
-	agentCfg := agentconfig.NewImporter(env("AGENT_CONFIG_DIR", "agents"), store)
-	if wsIDs, err := store.Workspaces().ListIDs(ctx); err == nil {
-		for _, id := range wsIDs {
-			res, err := agentCfg.Import(ctx, id)
-			if err != nil {
-				return fmt.Errorf("导入 agents/ 配置失败: %w", err)
-			}
-			if res.Created+res.Updated > 0 {
-				log.Printf("agent 配置导入 workspace %s: %+v", id, res)
-			}
-		}
-	}
-
-	server := httpapi.NewServer(svc, store, hub)
-	server.SetAgentConfigSync(agentCfg)
-
 	// models/ 目录为模型注册表真相源：Run 创建时按 agent 的 model.ref 解析快照。
 	modelReg := modelconfig.NewRegistry(modelDir)
 	if entries, err := modelReg.List(); err != nil {
@@ -275,12 +258,68 @@ func run() error {
 		if err != nil || e == nil {
 			return orchestrator.ModelSpec{}, false
 		}
+		var price *domain.PriceSnapshotRef
+		if e.Price != nil {
+			copyPrice := *e.Price
+			price = &copyPrice
+		}
 		return orchestrator.ModelSpec{
 			Ref: e.ID, ProviderID: e.ProviderID, ProviderLabel: e.Category, Provider: e.Provider, API: e.API, Model: e.Model,
 			BaseURL: e.BaseURL, APIKeyEnv: e.APIKeyEnv,
-			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
+			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens, PriceSnapshot: price,
 		}, true
 	}
+
+	// agents/ 目录为 Agent 配置真相源：先重放 SQLite 中未完成的 durable
+	// sync-intent，再允许文件导入覆盖 DB 投影。Runtime homes 与模型解析器
+	// 只留在进程内，绝不写入 intent 快照。
+	agentCfg := agentconfig.NewImporter(env("AGENT_CONFIG_DIR", "agents"), store)
+	agentCfg.SetRuntimeConfig(agentconfig.RuntimeConfig{
+		CodexHome: projectSpace.CodexHome(), KimiHome: projectSpace.KimiHome(),
+		ResolveModel: svc.ModelResolver,
+	})
+	if reconciled, reconcileErr := agentCfg.Reconcile(ctx); reconcileErr != nil {
+		return fmt.Errorf("对账 Agent 配置同步 intent 失败: %w", reconcileErr)
+	} else if reconciled.Applied > 0 {
+		log.Printf("agent 配置同步 intent 已对账: %+v", reconciled)
+	}
+	if wsIDs, err := store.Workspaces().ListIDs(ctx); err == nil {
+		for _, id := range wsIDs {
+			res, err := agentCfg.Import(ctx, id)
+			if err != nil {
+				return fmt.Errorf("导入 agents/ 配置失败: %w", err)
+			}
+			if res.Created+res.Updated > 0 {
+				log.Printf("agent 配置导入 workspace %s: %+v", id, res)
+			}
+		}
+	}
+
+	// Native governance state recovery runs after Agent import (Todo scopes need
+	// durable owner identities) and before schedulers/recovery may advance work.
+	// Consistency issues are observable but never silently overwritten.
+	governanceWorkspaceIDs, err := store.Workspaces().ListIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("列出治理 workspace 失败: %w", err)
+	}
+	for _, workspaceID := range governanceWorkspaceIDs {
+		result, rebuildErr := svc.RebuildGovernanceState(ctx, workspaceID)
+		if rebuildErr != nil {
+			return fmt.Errorf("重建 workspace %s 治理状态失败: %w", workspaceID, rebuildErr)
+		}
+		if result.CreatedGoals+result.CreatedTodos > 0 {
+			log.Printf("governance state: workspace %s created goals=%d todos=%d",
+				workspaceID, result.CreatedGoals, result.CreatedTodos)
+		}
+		for _, issue := range result.Issues {
+			log.Printf("governance consistency issue: workspace=%s root=%s goal=%s code=%s message=%s",
+				workspaceID, issue.RootWorkItemID, issue.GoalID, issue.Code, issue.Message)
+		}
+	}
+
+	server := httpapi.NewServer(svc, store, hub)
+	server.SetAgentConfigSync(agentCfg)
+
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
@@ -303,6 +342,14 @@ func run() error {
 		log.Printf("遗留上下文对账未完全成功: %v", err)
 	} else if marked > 0 {
 		log.Printf("启动对账：%d 个无快照遗留 run 已收敛到 failed(execution_context_missing)", marked)
+	}
+	// session_unknown 自愈的 Run 与锚点墓碑已同事务提交，但进程可能
+	// 在 commit 后、Dispatcher 前退出。先按 deterministic client key 恢复这些
+	// queued Run，再让通用 orphan 对账收敛其余无 lease 运行。
+	if recovered, err := svc.RecoverPendingSelfHealRuns(ctx); err != nil {
+		log.Printf("启动自愈 Run 恢复未完全成功: %v", err)
+	} else if recovered > 0 {
+		log.Printf("启动恢复：%d 个 queued session-heal run 已重新分派", recovered)
 	}
 	// 清理上一进程遗留的「无 lease 且非终态」普通孤儿 run（进程内模块执行），
 	// 防止该 (agent, task) 的后续 wakeup 被永久 coalesce 进死 run；runner 路径有

@@ -19,10 +19,11 @@ func TestAutoCoordinatedRootRejectsNonTodoInitialStatus(t *testing.T) {
 		domain.WorkItemBlocked,
 	} {
 		_, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
-			Title:          "绕过验收的根 Task",
-			RecordKind:     domain.RecordKindTask,
-			Status:         status,
-			AutoCoordinate: true,
+			Title:              "绕过验收的根 Task",
+			RecordKind:         domain.RecordKindTask,
+			Status:             status,
+			AutoCoordinate:     true,
+			AcceptanceCriteria: []string{"test task acceptance"},
 		})
 		if !errors.Is(err, domain.ErrValidation) {
 			t.Fatalf("Coordinator root 初始 status=%s 应拒绝为 ErrValidation，实际 %v", status, err)
@@ -34,6 +35,7 @@ func TestAcceptCoordinatedChildCannotCompleteRootCoordinator(t *testing.T) {
 	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "根 Task", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

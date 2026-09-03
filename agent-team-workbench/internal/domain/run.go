@@ -75,6 +75,17 @@ type ExecutionRun struct {
 	UsageOut    int64
 	UsageCached int64
 	UsageBasis  string
+	// ProviderUsageReport is the latest mutable provider observation. Its
+	// digest/sequence are persisted separately from the legacy usage projection
+	// so progress callbacks can grow before terminal canonicalization.
+	ProviderUsageReport       *ProviderUsageReportV1
+	ProviderUsageReportDigest string
+	ProviderUsageReportSeq    int64
+	// CanonicalUsage is the terminal accounting snapshot. Once populated it is
+	// immutable; CanonicalUsageDigest repeats the sealed payload identity for
+	// indexed SQL checks and quota-spend lineage.
+	CanonicalUsage       *CanonicalUsageV1
+	CanonicalUsageDigest string
 	// ErrorFamily 跨 adapter 统一错误族，驱动重试与自愈策略。
 	ErrorFamily string
 	ClientKey   string
@@ -248,6 +259,23 @@ func (a *ApprovalRequest) Resolve(decision ApprovalStatus, by, reason string, no
 		return ErrValidation
 	}
 	a.Status = decision
+	a.ResolvedAt = &now
+	a.ResolvedBy = by
+	a.ResolveReason = reason
+	return nil
+}
+
+// Expire closes a pending approval whose execution target is no longer
+// current, such as a plan_dispatch gate superseded by a newer Plan. Expiry is
+// terminal and idempotent; resolved approvals cannot be rewritten.
+func (a *ApprovalRequest) Expire(by, reason string, now time.Time) error {
+	if a.Status == ApprovalExpired {
+		return nil
+	}
+	if a.Status != ApprovalPending {
+		return &TransitionError{Entity: "approval", From: string(a.Status), To: string(ApprovalExpired)}
+	}
+	a.Status = ApprovalExpired
 	a.ResolvedAt = &now
 	a.ResolvedBy = by
 	a.ResolveReason = reason

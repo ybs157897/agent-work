@@ -27,6 +27,10 @@ tags:
   - name: events
   - name: models
   - name: coordinator
+  - name: goals
+  - name: todos
+  - name: handoffs
+  - name: governance
 
 paths:
   /me:
@@ -119,6 +123,17 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfileCreate" } } } }
       responses:
         "201": { content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfile" } } } }
+        "202":
+          description: Agent 已持久化，外部配置同步待恢复循环或 reload 重试
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/AgentProfile"
+                  - type: object
+                    required: [config_sync_pending]
+                    properties:
+                      config_sync_pending: { type: boolean, const: true }
 
   /agent-profiles/{agent_profile_id}:
     parameters: [{ $ref: "#/components/parameters/AgentProfileId" }]
@@ -336,7 +351,7 @@ paths:
     post:
       tags: [work-items]
       operationId: unblockWorkItem
-      description: 解除阻塞回到 in_progress；恢复执行由用户显式创建新 Run。
+      description: 解除阻塞回到 in_progress；同事务恢复 Goal/Todo 与 Coordinator durable queued，提交后由 Coordinator 自动创建新 Run。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -577,6 +592,22 @@ paths:
       operationId: listArtifacts
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ArtifactList" } } } }
+
+  /runs/{run_id}/artifacts/{artifact_id}/commands/accept:
+    parameters:
+      - { $ref: "#/components/parameters/RunId" }
+      - { $ref: "#/components/parameters/ArtifactId" }
+    post:
+      tags: [artifacts]
+      operationId: acceptArtifact
+      summary: 接受一个 Run 产物作为验收证据
+      description: 仅 reviewer 可执行；Artifact 必须属于 path 中的 Run，accepted 之后不可回退。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Artifact" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /runs/{run_id}/changes:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
@@ -1131,6 +1162,436 @@ paths:
         "413": { description: body 超过 16 KiB（comment_body_too_large）, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  # Native governance read/command surface. Every route below is backed by a
+  # canonical application Service; the web client consumes these read models
+  # without recomputing governance state.
+  /workspaces/{workspace_id}/governance/metrics:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [governance]
+      operationId: getGovernanceMetrics
+      summary: 获取 Workspace 治理指标
+      description: 从 canonical workspace event stream 与 Goal/receipt/quota/Run 权威事实重算治理指标；不依赖进程内计数器。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceMetrics" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [goals]
+      operationId: listGoals
+      summary: 列出 Workspace 的治理 Goal
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/GoalList" } } } }
+
+  /workspaces/{workspace_id}/goals/{goal_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: getGoal
+      summary: 获取治理 Goal
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/commands/start:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    post:
+      tags: [goals]
+      operationId: startGoal
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceVersionCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/commands/pause:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    post:
+      tags: [goals]
+      operationId: pauseGoal
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceVersionCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/commands/resume:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    post:
+      tags: [goals]
+      operationId: resumeGoal
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceVersionCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/commands/cancel:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    post:
+      tags: [goals]
+      operationId: cancelGoal
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceVersionCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "202":
+          description: Goal 已提交取消；外部 Run/配额清理由 durable recovery checkpoint 继续处理，同一 Idempotency-Key 可安全重放。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GoalCancellationAccepted" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/todos:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: listGoalTodos
+      summary: 列出 Goal 的治理 Todo
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/TodoList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/todos/{todo_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    get:
+      tags: [todos]
+      operationId: getTodo
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Todo" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/todos/{todo_id}/commands/claim:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    post:
+      tags: [todos]
+      operationId: claimTodo
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TodoClaimCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Todo" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/todos/{todo_id}/commands/release:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    post:
+      tags: [todos]
+      operationId: releaseTodo
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/IfMatch" }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TodoReleaseCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Todo" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/todos/{todo_id}/commands/resolve-user-action:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    post:
+      tags: [todos]
+      operationId: resolveTodoUserAction
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TodoUserActionCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Todo" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/quota:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: getGoalQuota
+      summary: 获取 Goal 配额策略、已用、冻结与 unresolved 摘要
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/GoalQuota" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/quota/reconciliations:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: listQuotaGapReconciliations
+      summary: 列出 Goal 的不可变 usage 缺口对账裁决
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/QuotaGapResolutionList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [goals]
+      operationId: reconcileQuotaGap
+      summary: 以已通过或已接受的权威证据追加 usage 缺口对账
+      description: v1 仅支持 reconciled，不提供 waiver；原 spend、Run canonical usage 与 reservation 均不修改。
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/QuotaGapReconciliationCreate" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/QuotaGapResolution" } } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/turns/{turn_seq}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+      - { $ref: "#/components/parameters/TodoId" }
+      - { $ref: "#/components/parameters/TurnSeq" }
+    get:
+      tags: [goals]
+      operationId: getTurnReceipt
+      summary: 获取一个治理 Turn 的不可变 Receipt Header/Phase
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/TurnReceipt" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/turns/{turn_seq}/quota:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+      - { $ref: "#/components/parameters/TodoId" }
+      - { $ref: "#/components/parameters/TurnSeq" }
+    get:
+      tags: [goals]
+      operationId: getTurnQuota
+      summary: 获取一个治理 Turn 的 reservation/spend
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/QuotaTurn" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/work-items/{work_item_id}/goal:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/WorkItemId" }
+    get:
+      tags: [goals]
+      operationId: getGoalForWorkItem
+      summary: 获取任务所属根 Goal
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Goal" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/handoffs:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [handoffs]
+      operationId: listGoalHandoffs
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/HandoffList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/todos/{todo_id}/handoffs:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    get:
+      tags: [handoffs]
+      operationId: listTodoHandoffs
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/HandoffList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+
+  /workspaces/{workspace_id}/handoffs/{handoff_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/HandoffId" }
+    get:
+      tags: [handoffs]
+      operationId: getHandoff
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/handoffs:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    post:
+      tags: [handoffs]
+      operationId: createHandoff
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HandoffCreate" } } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/handoffs/{handoff_id}/commands/accept:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/HandoffId" }
+    post:
+      tags: [handoffs]
+      operationId: acceptHandoff
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HandoffAcceptCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/handoffs/{handoff_id}/commands/reject:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/HandoffId" }
+    post:
+      tags: [handoffs]
+      operationId: rejectHandoff
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/HandoffRejectCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/handoffs/{handoff_id}/commands/cancel:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/HandoffId" }
+    post:
+      tags: [handoffs]
+      operationId: cancelHandoff
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Handoff" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/evidence:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: listGoalEvidence
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceEvidenceList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/evidence/delivery-brief-snapshots:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+      - { $ref: "#/components/parameters/TodoId" }
+    post:
+      tags: [governance]
+      operationId: captureDeliveryBriefSnapshot
+      summary: 捕获不可变 Delivery Brief 证据快照
+      description: 捕获当前确定性 Delivery Brief；响应含受限 Artifact 元数据，因此需要审批权限。快照只追加不可更新。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeliveryBriefSnapshotCreate" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryBriefSnapshot" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/delivery-brief-snapshots/{snapshot_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/DeliveryBriefSnapshotId" }
+    get:
+      tags: [governance]
+      operationId: getDeliveryBriefSnapshot
+      summary: 获取不可变 Delivery Brief 证据快照
+      description: 读取已封存的确定性 Brief 快照；响应可能包含受限 Artifact 元数据，需要审批权限。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/DeliveryBriefSnapshot" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/projection:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: getGovernanceProjection
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/GovernanceGoalProjection" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/projection/repairs:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    get:
+      tags: [goals]
+      operationId: listProjectionRepairs
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ProjectionRepairList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/goals/{goal_id}/projection/commands/repair:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/GoalId" }
+    post:
+      tags: [goals]
+      operationId: repairGovernanceProjection
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ProjectionRepairCommand" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ProjectionRepairResult" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /workspaces/{workspace_id}/review-queue:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
@@ -1187,6 +1648,12 @@ components:
     WorkItemId: { name: work_item_id, in: path, required: true, schema: { type: string } }
     RunId: { name: run_id, in: path, required: true, schema: { type: string } }
     PlanId: { name: plan_id, in: path, required: true, schema: { type: string } }
+    GoalId: { name: goal_id, in: path, required: true, schema: { type: string, pattern: "^goal_" } }
+    TodoId: { name: todo_id, in: path, required: true, schema: { type: string, pattern: "^todo_" } }
+    TurnSeq: { name: turn_seq, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+    HandoffId: { name: handoff_id, in: path, required: true, schema: { type: string, pattern: "^handoff_" } }
+    DeliveryBriefSnapshotId: { name: snapshot_id, in: path, required: true, schema: { type: string, pattern: "^brief_" } }
+    ArtifactId: { name: artifact_id, in: path, required: true, schema: { type: string, pattern: "^artifact_" } }
     ApprovalId: { name: approval_id, in: path, required: true, schema: { type: string } }
     RuntimeBindingId: { name: runtime_binding_id, in: path, required: true, schema: { type: string } }
     ModelId: { name: model_id, in: path, required: true, schema: { type: string } }
@@ -1595,7 +2062,27 @@ components:
         agent_profile_id: { type: string, nullable: true, description: Chat 可选；公开 Task（含省略 record_kind）禁止传入，返回 422，由系统 Coordinator 选择 Worker }
         parent_id: { type: string, nullable: true, description: 同类型父记录 id }
         client_key: { type: string, description: 实体级幂等键 }
-        acceptance_criteria: { type: array, items: { type: string }, description: 根 Task 的验收标准，持久化在 Coordinator state 中 }
+        acceptance_criteria:
+          type: array
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 2000 }
+          description: 根 Task 必填且至少一条；子 Task 可省略。持久化在 WorkItem 与 Coordinator state 中。
+      allOf:
+        - if:
+            allOf:
+              - anyOf:
+                  - not: { required: [parent_id] }
+                  - allOf:
+                      - required: [parent_id]
+                      - properties:
+                          parent_id: { type: [string, "null"], enum: [null, ""] }
+              - anyOf:
+                  - not: { required: [record_kind] }
+                  - properties: { record_kind: { const: task } }
+          then:
+            required: [acceptance_criteria]
+            properties:
+              acceptance_criteria: { minItems: 1 }
 
     WorkItemPatch:
       type: object
@@ -2398,6 +2885,999 @@ components:
           items: { $ref: "#/components/schemas/TaskComment" }
         freshness: { $ref: "#/components/schemas/DeliveryBriefFreshness" }
         truncation: { $ref: "#/components/schemas/DeliveryBriefTruncation" }
+
+    PlanDecisionV2:
+      x-lifecycle: live
+      description: Planner 到 Control Plane 的唯一 production wire envelope；canonical shape 只在外部 JSON Schema 维护。
+      $ref: "../control/plan-decision-v2.schema.json"
+
+    PlannerControlCapability:
+      x-lifecycle: live
+      type: string
+      description: |
+        structured_transport 只表示机器可分帧传输；schema_constrained_output
+        表示 Provider 原生按给定 schema 约束生成；control_tool_call 表示可调用
+        typed control tool。三者不得互相推断，也不得由 adapter/provider 名称推断。
+      enum: [structured_transport, schema_constrained_output, control_tool_call]
+
+    GovernanceErrorCode:
+      x-lifecycle: live
+      type: string
+      enum:
+        - plan_json_syntax
+        - plan_schema_validation
+        - plan_semantic_validation
+        - plan_authority_denied
+        - plan_quota_denied
+        - cost_price_unavailable
+        - usage_unresolved
+
+    GoalStatus:
+      x-lifecycle: live
+      type: string
+      enum: [draft, active, waiting, blocked, completed, cancelled]
+
+    Goal:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: |
+        长期意图 aggregate；首版与一个 root Task WorkItem 一对一。它不复制
+        Plan/Run 列表，执行证据通过既有实体引用读取。
+      required:
+        - id
+        - workspace_id
+        - root_work_item_id
+        - objective
+        - acceptance_contract
+        - status
+        - phase
+        - current_todo_id
+        - quota_policies
+        - completion_evidence_summary
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, pattern: "^goal_[0-9A-HJKMNP-TV-Z]{26}$" }
+        workspace_id: { type: string, pattern: "^ws_" }
+        root_work_item_id: { type: string, pattern: "^wi_" }
+        objective: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance_contract:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 2000 }
+        status: { $ref: "#/components/schemas/GoalStatus" }
+        phase:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 服务端阶段投影标签；不是第二套状态机。
+        current_todo_id:
+          type: [string, "null"]
+          pattern: "^todo_[0-9A-HJKMNP-TV-Z]{26}$"
+        quota_policies:
+          type: array
+          maxItems: 8
+          items: { $ref: "#/components/schemas/QuotaPolicy" }
+        completion_evidence_summary:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GoalList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Goal" }
+
+    GoalCancellationAccepted:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: |
+        取消事务已经提交，但提交后 Run/配额清理仍需恢复循环重放。客户端不得
+        把该响应当成事务失败；使用同一 Idempotency-Key 重试会得到同一响应。
+      required: [goal, recovery_pending, recovery_checkpoint]
+      properties:
+        goal: { $ref: "#/components/schemas/Goal" }
+        recovery_pending: { type: boolean, const: true }
+        recovery_checkpoint:
+          type: object
+          additionalProperties: false
+          required: [kind, root_work_item_id]
+          properties:
+            kind: { type: string, enum: [goal_cancelled_cleanup] }
+            root_work_item_id: { type: string, pattern: "^wi_" }
+
+    GoalGovernanceMetrics:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      description: 单个已存在 Goal 的确定性 Turn/Run/已提交 token 与 cost spend 汇总。
+      required:
+        - goal_id
+        - turn_count
+        - run_count
+        - input_tokens_total
+        - input_uncached_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - output_tokens
+        - cost_microusd
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        turn_count: { type: integer, format: int64, minimum: 0 }
+        run_count: { type: integer, format: int64, minimum: 0 }
+        input_tokens_total: { type: integer, format: int64, minimum: 0 }
+        input_uncached_tokens: { type: integer, format: int64, minimum: 0 }
+        cache_read_tokens: { type: integer, format: int64, minimum: 0 }
+        cache_write_tokens: { type: integer, format: int64, minimum: 0 }
+        output_tokens: { type: integer, format: int64, minimum: 0 }
+        cost_microusd: { type: integer, format: int64, minimum: 0 }
+
+    GovernanceMetrics:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      description: 从 Workspace canonical event stream 与 Goal/receipt/quota/Run 权威事实重算的治理指标读模型。
+      required:
+        - workspace_id
+        - source_event_seq
+        - plan_decode_success
+        - plan_decode_errors
+        - repair_attempts
+        - repair_successes
+        - repair_blockers
+        - receipt_replays
+        - receipt_conflicts
+        - projection_divergences
+        - evidence_finish_rejections
+        - user_unblocks
+        - projection_updates
+        - handoffs
+        - evidence_items
+        - goal_summaries
+      properties:
+        workspace_id: { type: string, pattern: "^ws_" }
+        source_event_seq: { type: integer, format: int64, minimum: 0 }
+        plan_decode_success: { type: integer, format: int64, minimum: 0 }
+        plan_decode_errors:
+          type: object
+          additionalProperties: { type: integer, format: int64, minimum: 0 }
+        repair_attempts: { type: integer, format: int64, minimum: 0 }
+        repair_successes: { type: integer, format: int64, minimum: 0 }
+        repair_blockers: { type: integer, format: int64, minimum: 0 }
+        receipt_replays: { type: integer, format: int64, minimum: 0 }
+        receipt_conflicts: { type: integer, format: int64, minimum: 0 }
+        projection_divergences: { type: integer, format: int64, minimum: 0 }
+        evidence_finish_rejections: { type: integer, format: int64, minimum: 0 }
+        user_unblocks: { type: integer, format: int64, minimum: 0 }
+        projection_updates: { type: integer, format: int64, minimum: 0 }
+        handoffs: { type: integer, format: int64, minimum: 0 }
+        evidence_items: { type: integer, format: int64, minimum: 0 }
+        goal_summaries:
+          type: array
+          items: { $ref: "#/components/schemas/GoalGovernanceMetrics" }
+
+    GovernanceVersionCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+
+    TodoClass:
+      x-lifecycle: live
+      type: string
+      enum: [advancement, monitor, user_gate, blocker, validation]
+
+    TodoStatus:
+      x-lifecycle: live
+      type: string
+      enum: [pending, claimed, running, waiting, completed, blocked, cancelled]
+
+    DecisionScope:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [work_item_ids, agent_ids, runtime_capabilities, write_scopes, max_dispatch]
+      properties:
+        work_item_ids:
+          type: array
+          minItems: 1
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, pattern: "^wi_" }
+        agent_ids:
+          type: array
+          minItems: 1
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, pattern: "^agent_" }
+        runtime_capabilities:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/PlannerControlCapability" }
+        write_scopes:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          description: ExecutionContext 内允许写入的相对路径；仍由服务端逐项校验。
+          items: { type: string, minLength: 1, maxLength: 1024 }
+        max_dispatch: { type: integer, minimum: 0, maximum: 64 }
+
+    TodoClaim:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 当前治理所有权；与 Runner lease 分离。
+      required: [owner_agent_id, version, claimed_at, expires_at]
+      properties:
+        owner_agent_id: { type: string, pattern: "^agent_" }
+        version: { type: integer, minimum: 1 }
+        claimed_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    Todo:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - goal_id
+        - class
+        - status
+        - instruction
+        - acceptance
+        - resume_condition
+        - priority
+        - predecessors
+        - successors
+        - decision_scope
+        - claim
+        - claim_version
+        - last_turn_seq
+        - completion_turn_key
+        - completion_evidence_id
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, pattern: "^todo_[0-9A-HJKMNP-TV-Z]{26}$" }
+        goal_id: { type: string, pattern: "^goal_[0-9A-HJKMNP-TV-Z]{26}$" }
+        class: { $ref: "#/components/schemas/TodoClass" }
+        status: { $ref: "#/components/schemas/TodoStatus" }
+        instruction: { type: string, minLength: 1, maxLength: 20000 }
+        acceptance:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 2000 }
+        resume_condition: { type: [string, "null"], minLength: 1, maxLength: 4000 }
+        priority: { type: string, enum: [low, medium, high, urgent] }
+        predecessors:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, pattern: "^todo_" }
+        successors:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, pattern: "^todo_" }
+        decision_scope: { $ref: "#/components/schemas/DecisionScope" }
+        claim:
+          oneOf:
+            - { $ref: "#/components/schemas/TodoClaim" }
+            - { type: "null" }
+        claim_version: { type: integer, minimum: 0, description: 跨 release/expiry 保留的单调 claim generation；防 ABA。 }
+        last_turn_seq: { type: integer, format: int64, minimum: 0, description: admission 通过 Todo CAS 从此水位分配下一个 turn_seq。 }
+        completion_turn_key:
+          description: completed Todo 绑定的最新 admitted Turn；非 completed 时为 null。
+          oneOf:
+            - { $ref: "#/components/schemas/TurnKey" }
+            - { type: "null" }
+        completion_evidence_id:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 256
+          description: completed Todo 绑定的已接受权威证据 ID；非 completed 时为 null。
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    TodoList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Todo" }
+
+    TodoClaimCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [owner_agent_id, expected_version]
+      properties:
+        owner_agent_id: { type: string, pattern: "^agent_" }
+        expected_version: { type: integer, minimum: 1 }
+        expires_at: { type: string, format: date-time, description: 缺省为服务端 15 分钟后；不得超过调用方策略上限。 }
+
+    TodoReleaseCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [owner_agent_id, expected_version]
+      properties:
+        owner_agent_id: { type: string, pattern: "^agent_" }
+        expected_version: { type: integer, minimum: 1 }
+
+    TodoUserActionCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [resolution, actor_id]
+      properties:
+        resolution: { type: string, minLength: 1, maxLength: 4000 }
+        actor_id: { type: string, minLength: 1, maxLength: 256 }
+        expected_version: { type: integer, minimum: 0 }
+        client_key: { type: string, maxLength: 256 }
+
+    TurnKey:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 治理 Turn 的唯一身份；协议中不得再出现同义 turn_id。
+      required: [goal_id, todo_id, turn_seq]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, format: int64, minimum: 1 }
+
+    TurnDecision:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [turn_key, decision, reason, next_action, schema_version, validation_errors, recorded_at]
+      properties:
+        turn_key: { $ref: "#/components/schemas/TurnKey" }
+        decision: { type: string, enum: [execute, repair, replan, wait, user_action, finish] }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        next_action: { type: string, minLength: 1, maxLength: 2000 }
+        schema_version: { type: string, minLength: 1, maxLength: 128 }
+        plan_decision:
+          $ref: "#/components/schemas/PlanDecisionV2"
+          description: decision=execute 时必填；由 production decoder/semantic validator 强制。
+        validation_errors:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/GovernanceValidationError" }
+        recorded_at: { type: string, format: date-time }
+    GovernanceValidationError:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [code, message, path]
+      properties:
+        code: { $ref: "#/components/schemas/GovernanceErrorCode" }
+        message: { type: string, minLength: 1, maxLength: 4000 }
+        path: { type: string, minLength: 1, maxLength: 1024 }
+
+    TurnReceiptPhaseName:
+      x-lifecycle: live
+      type: string
+      description: phase_seq 固定依此顺序从 1 到 7；已发布 phase 不可改写或删除。
+      enum: [decision_decode, validation, durable_writeback, plan_compile, dispatch, quota_spend, projection_outbox]
+
+    TurnReceiptHeader:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      description: admission 创建的 immutable canonical record；RFC8785 编码后做 SHA-256 digest。
+      required: [turn_key, attempt, schema_version, input_snapshot_digest, admission_client_key, canonical_digest, created_at]
+      properties:
+        turn_key: { $ref: "#/components/schemas/TurnKey" }
+        attempt: { type: integer, minimum: 1 }
+        schema_version: { type: string, minLength: 1, maxLength: 128 }
+        input_snapshot_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        admission_client_key: { type: string, minLength: 1, maxLength: 256 }
+        source_run_id: { type: string, pattern: "^run_" }
+        plan_client_key: { type: string, minLength: 1, maxLength: 256 }
+        decision_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        created_at: { type: string, format: date-time }
+      allOf:
+        - if:
+            anyOf:
+              - required: [source_run_id]
+              - required: [plan_client_key]
+              - required: [decision_digest]
+          then:
+            required: [source_run_id, plan_client_key, decision_digest]
+
+    TurnReceiptPhase:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      description: append-only phase record；同 identity 同 digest 重放幂等，不同 digest 冲突。
+      required: [turn_key, phase_seq, phase, payload, canonical_digest, created_at]
+      properties:
+        turn_key: { $ref: "#/components/schemas/TurnKey" }
+        phase_seq: { type: integer, minimum: 1, maximum: 7 }
+        phase: { $ref: "#/components/schemas/TurnReceiptPhaseName" }
+        payload: { type: object, description: RFC8785 canonical JSON 的原始业务 payload。 }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        plan_id: { type: [string, "null"], pattern: "^plan_" }
+        run_ids:
+          type: array
+          maxItems: 64
+          uniqueItems: true
+          items: { type: string, pattern: "^run_" }
+        quota_reservation_keys:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 512 }
+        evidence:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        created_at: { type: string, format: date-time }
+
+    TurnReceipt:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [header, phases]
+      properties:
+        header: { $ref: "#/components/schemas/TurnReceiptHeader" }
+        phases:
+          type: array
+          items: { $ref: "#/components/schemas/TurnReceiptPhase" }
+
+    QuotaKind:
+      x-lifecycle: live
+      type: string
+      enum: [turn_count, active_worker, input_tokens_total, input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_microusd]
+
+    QuotaPolicy:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [kind, limit, enforcement]
+      properties:
+        kind: { $ref: "#/components/schemas/QuotaKind" }
+        limit: { type: integer, format: int64, minimum: 0 }
+        enforcement: { type: string, enum: [audit, enforce] }
+
+    QuotaReservation:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 唯一身份为 (goal_id,todo_id,turn_seq,quota_kind)，不另造 reservation id。只冻结 turn-level policy 与 aggregate amount；价格快照属于每个 Run，reservation 不持 price_digest。
+      required:
+        - goal_id
+        - todo_id
+        - turn_seq
+        - quota_kind
+        - status
+        - reserved_amount
+        - committed_amount
+        - released_amount
+        - policy_limit
+        - policy_enforcement
+        - policy_digest
+        - version
+        - created_at
+        - updated_at
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, format: int64, minimum: 1 }
+        quota_kind: { $ref: "#/components/schemas/QuotaKind" }
+        status: { type: string, enum: [reserved, committed, released, expired] }
+        reserved_amount: { type: integer, format: int64, minimum: 0 }
+        committed_amount: { type: integer, format: int64, minimum: 0 }
+        released_amount: { type: integer, format: int64, minimum: 0 }
+        policy_limit: { type: integer, format: int64, minimum: 0 }
+        policy_enforcement: { type: string, enum: [audit, enforce] }
+        policy_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    QuotaSpendEntry:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [goal_id, todo_id, turn_seq, quota_kind, run_id, amount, usage_basis, usage_digest, policy_digest, status, created_at]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, format: int64, minimum: 1 }
+        quota_kind: { $ref: "#/components/schemas/QuotaKind" }
+        run_id: { type: string, pattern: "^run_" }
+        amount: { type: integer, format: int64, minimum: 0 }
+        usage_basis: { type: string, const: per_run }
+        usage_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        policy_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        price_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        status: { type: string, enum: [committed, unresolved] }
+        reason: { type: string, maxLength: 2000 }
+        created_at: { type: string, format: date-time }
+
+    QuotaKindSummary:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [kind, committed, active_reserved, unresolved]
+      properties:
+        kind: { $ref: "#/components/schemas/QuotaKind" }
+        committed: { type: integer, format: int64, minimum: 0 }
+        active_reserved: { type: integer, format: int64, minimum: 0 }
+        active_worker: { type: integer, minimum: 0 }
+        unresolved:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaSpendEntry" }
+
+    GoalQuota:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [goal_id, policies, kinds]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        policies:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaPolicy" }
+        kinds:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaKindSummary" }
+
+    QuotaTurn:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [turn_key, reservations, spend]
+      properties:
+        turn_key: { $ref: "#/components/schemas/TurnKey" }
+        reservations:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaReservation" }
+        spend:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaSpendEntry" }
+
+    QuotaSpendKey:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [turn_key, quota_kind, run_id]
+      properties:
+        turn_key: { $ref: "#/components/schemas/TurnKey" }
+        quota_kind: { $ref: "#/components/schemas/QuotaKind" }
+        run_id: { type: string, pattern: "^run_" }
+
+    QuotaGapReconciliationCreate:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [target, amount, evidence, actor_id, reason]
+      properties:
+        target: { $ref: "#/components/schemas/QuotaSpendKey" }
+        amount: { type: integer, format: int64, minimum: 0 }
+        evidence: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        actor_id: { type: string, minLength: 1, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+
+    QuotaGapResolution:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [id, schema_version, target, original_usage_digest, original_policy_digest, status, amount, evidence, evidence_digest, canonical_digest, actor_kind, actor_id, reason, created_at]
+      properties:
+        id: { type: string, pattern: "^qgap_[0-9A-HJKMNP-TV-Z]{26}$" }
+        schema_version: { type: string, const: quota-gap-resolution/v1 }
+        target: { $ref: "#/components/schemas/QuotaSpendKey" }
+        original_usage_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        original_policy_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        original_price_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        status: { type: string, const: reconciled }
+        amount: { type: integer, format: int64, minimum: 0 }
+        evidence: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        evidence_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        actor_kind: { type: string, const: user }
+        actor_id: { type: string, minLength: 1, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+        created_at: { type: string, format: date-time }
+
+    QuotaGapResolutionList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaGapResolution" }
+
+    CanonicalUsage:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: |
+        只接受 per_run delta。input_tokens_total 仅用于总 token quota admission；
+        cost 只按四个 billable buckets 与固化 price digest 计算，禁止 cache 双计。
+        resolved_kinds/unresolved_kinds 按 quota kind 表达可证明边界；缺少 cost
+        price 不得抹掉已能证明的 input_tokens_total。
+      required: [schema_version, run_id, usage_basis, counters, resolved_kinds, unresolved_kinds, provenance, digest]
+      properties:
+        schema_version: { type: string, const: canonical-usage/v1 }
+        run_id: { type: string, pattern: "^run_" }
+        usage_basis: { type: string, const: per_run }
+        counters: { $ref: "#/components/schemas/UsageCountersV1" }
+        resolved_kinds:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/QuotaKind" }
+        unresolved_kinds:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/QuotaKind" }
+        unresolved_reason: { type: [string, "null"], minLength: 1, maxLength: 2000 }
+        cost_microusd: { type: integer, format: int64, minimum: 0 }
+        price_digest: { type: [string, "null"], pattern: "^sha256:[0-9a-f]{64}$" }
+        provenance: { $ref: "#/components/schemas/UsageProvenanceV1" }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+
+    UsageCountersV1:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      properties:
+        input_tokens_total: { type: integer, format: int64, minimum: 0 }
+        input_uncached_tokens: { type: integer, format: int64, minimum: 0 }
+        cache_read_tokens: { type: integer, format: int64, minimum: 0 }
+        cache_write_tokens: { type: integer, format: int64, minimum: 0 }
+        output_tokens: { type: integer, format: int64, minimum: 0 }
+
+    UsageProvenanceV1:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [adapter_id, protocol, protocol_version, source, reported_basis, agent_id, mapping]
+      properties:
+        adapter_id: { type: string, minLength: 1, maxLength: 512 }
+        protocol: { type: string, minLength: 1, maxLength: 512 }
+        protocol_version: { type: string, minLength: 1, maxLength: 512 }
+        source: { type: string, minLength: 1, maxLength: 512 }
+        reported_basis: { type: string, enum: [per_run, session_cumulative] }
+        agent_id: { type: string, pattern: "^agent_" }
+        session_ref: { type: string, maxLength: 1024 }
+        mapping: { type: string, minLength: 1, maxLength: 512 }
+        anchor_before: { $ref: "#/components/schemas/UsageCountersV1" }
+        anchor_after: { $ref: "#/components/schemas/UsageCountersV1" }
+        anchor_generation: { type: integer, format: int64, minimum: 0 }
+        anchor_sequence: { type: integer, format: int64, minimum: 0 }
+        anchor_observed_at: { type: string, format: date-time }
+
+    PriceSnapshotRef:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required:
+        - model_ref
+        - currency
+        - input_uncached_microusd_per_million
+        - cache_read_microusd_per_million
+        - cache_write_microusd_per_million
+        - output_microusd_per_million
+        - effective_at
+        - price_version
+        - digest
+      properties:
+        model_ref: { type: string, minLength: 1, maxLength: 256 }
+        currency: { type: string, const: USD }
+        input_uncached_microusd_per_million: { type: integer, format: int64, minimum: 0 }
+        cache_read_microusd_per_million: { type: integer, format: int64, minimum: 0 }
+        cache_write_microusd_per_million: { type: integer, format: int64, minimum: 0 }
+        output_microusd_per_million: { type: integer, format: int64, minimum: 0 }
+        effective_at: { type: string, format: date-time }
+        price_version: { type: string, minLength: 1, maxLength: 128 }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+
+    GovernanceActorRef:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind: { type: string, enum: [agent, runtime] }
+        id: { type: string, minLength: 1, maxLength: 256 }
+
+    HandoffStatus:
+      x-lifecycle: live
+      type: string
+      enum: [pending, accepted, transferred, rejected, cancelled]
+
+    Handoff:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 不复制 Provider session history；target 接受并取得 claim 后才允许 transferred。
+      required:
+        - id
+        - goal_id
+        - todo_id
+        - source
+        - target
+        - reason
+        - context_summary
+        - evidence
+        - open_risks
+        - status
+        - claim_transfer_state
+        - source_claim_version
+        - target_claim_version
+        - actor
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id: { type: string, pattern: "^handoff_[0-9A-HJKMNP-TV-Z]{26}$" }
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        source: { $ref: "#/components/schemas/GovernanceActorRef" }
+        target: { $ref: "#/components/schemas/GovernanceActorRef" }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        context_summary: { type: string, minLength: 1, maxLength: 20000 }
+        evidence:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        open_risks:
+          type: array
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 2000 }
+        status: { $ref: "#/components/schemas/HandoffStatus" }
+        claim_transfer_state: { type: string, enum: [retained_by_source, claimed_by_target, transferred] }
+        source_claim_version: { type: integer, minimum: 1 }
+        target_claim_version: { type: integer, minimum: 0 }
+        acceptance: { type: string, maxLength: 4000 }
+        resolution_reason: { type: string, maxLength: 4000 }
+        actor: { $ref: "#/components/schemas/GovernanceActorRef" }
+        client_key: { type: string, maxLength: 256 }
+        accepted_by: { $ref: "#/components/schemas/GovernanceActorRef", nullable: true }
+        accepted_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    HandoffList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Handoff" }
+
+    HandoffCreate:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [source, target, reason, context_summary]
+      properties:
+        source: { $ref: "#/components/schemas/GovernanceActorRef" }
+        target: { $ref: "#/components/schemas/GovernanceActorRef" }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+        context_summary: { type: string, minLength: 1, maxLength: 20000 }
+        evidence:
+          type: array
+          maxItems: 128
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        open_risks:
+          type: array
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 2000 }
+        actor: { $ref: "#/components/schemas/GovernanceActorRef" }
+        client_key: { type: string, maxLength: 256 }
+
+    HandoffAcceptCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [target, acceptance]
+      properties:
+        target: { $ref: "#/components/schemas/GovernanceActorRef" }
+        acceptance: { type: string, minLength: 1, maxLength: 4000 }
+
+    HandoffRejectCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+
+    GovernanceEvidenceItem:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 只引用既有权威实体、validation result 或 immutable Delivery Brief snapshot；无可变 Evidence aggregate。
+      required: [source_kind, source_id, verification, summary, recorded_at]
+      properties:
+        source_kind: { type: string, enum: [work_item, plan, run, artifact, approval, delivery_brief, validation_result] }
+        source_id: { type: string, minLength: 1, maxLength: 256 }
+        verification: { type: string, enum: [observed, passed, failed, accepted] }
+        summary: { type: string, minLength: 1, maxLength: 4000 }
+        recorded_at: { type: string, format: date-time }
+
+    DeliveryBriefSnapshotCreate:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 捕获指定 Task（缺省为 Goal root）的 Delivery Brief；client_key 用于服务端持久幂等重放。
+      properties:
+        work_item_id: { type: string, pattern: "^wi_[0-9A-HJKMNP-TV-Z]{26}$" }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+
+    DeliveryBriefSnapshot:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      description: 确定性 Delivery Brief 的 immutable canonical capture；可作为 GovernanceEvidence 的 delivery_brief 来源。
+      required: [id, schema_version, goal_id, todo_id, work_item_id, snapshot_json, canonical_digest, as_of_event_seq, source_versions, freshness_state, created_at]
+      properties:
+        id: { type: string, pattern: "^brief_[0-9A-HJKMNP-TV-Z]{26}$" }
+        schema_version: { type: string, const: delivery-brief-snapshot/v1 }
+        goal_id: { type: string, pattern: "^goal_[0-9A-HJKMNP-TV-Z]{26}$" }
+        todo_id: { type: string, pattern: "^todo_[0-9A-HJKMNP-TV-Z]{26}$" }
+        work_item_id: { type: string, pattern: "^wi_[0-9A-HJKMNP-TV-Z]{26}$" }
+        snapshot_json: { type: string, minLength: 2, description: RFC8785 canonical JSON object serialized as text; excludes generated_at }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        as_of_event_seq: { type: integer, format: int64, minimum: 0 }
+        source_versions: { type: object, additionalProperties: { type: integer, format: int64, minimum: 0 } }
+        freshness_state: { type: string, enum: [current, partial] }
+        created_at: { type: string, format: date-time }
+        client_key: { type: [string, "null"], minLength: 1, maxLength: 256 }
+
+    ProjectionRepair:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      description: 只 replay canonical Receipt/Event 重建投影；不得创建或修改 Receipt、Run、Plan 或 accepted Artifact。
+      required: [id, goal_id, status, scope, source_cursor, replayed_event_count, replayed_receipt_count, version, started_at, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^projection_repair_[0-9A-HJKMNP-TV-Z]{26}$" }
+        goal_id: { type: string, pattern: "^goal_[0-9A-HJKMNP-TV-Z]{26}$" }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        scope:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            type: string
+            enum: [goal_progress, todo_current_state, receipt_timeline, evidence_summary, next_action_checkpoint]
+        source_cursor:
+          type: object
+          additionalProperties: false
+          required: [event_stream_seq, through_turn_seq]
+          properties:
+            event_stream_seq: { type: integer, format: int64, minimum: 0 }
+            through_turn_seq: { type: integer, format: int64, minimum: 0 }
+        replayed_event_count: { type: integer, minimum: 0 }
+        replayed_receipt_count: { type: integer, minimum: 0 }
+        error_code: { type: [string, "null"], minLength: 1, maxLength: 128 }
+        error_message: { type: [string, "null"], minLength: 1, maxLength: 4000 }
+        client_key: { type: [string, "null"], minLength: 1, maxLength: 256 }
+        version: { type: integer, minimum: 1 }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    GovernanceEvidenceList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+
+    GovernanceGoalProjection:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      readOnly: true
+      required: [goal_id, goal_progress, todo_current_state, receipt_timeline, evidence_summary, next_action_checkpoint, counters, source_cursor, digest, version, updated_at]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        goal_progress: { type: object, additionalProperties: true }
+        todo_current_state: { type: object, additionalProperties: true }
+        receipt_timeline:
+          type: array
+          items: { type: object, additionalProperties: true }
+        evidence_summary:
+          type: array
+          items: { $ref: "#/components/schemas/GovernanceEvidenceItem" }
+        next_action_checkpoint: { type: object, additionalProperties: true }
+        counters: { type: object, additionalProperties: { type: integer, format: int64 } }
+        source_cursor:
+          type: object
+          additionalProperties: false
+          required: [event_stream_seq, through_turn_seq]
+          properties:
+            event_stream_seq: { type: integer, format: int64, minimum: 0 }
+            through_turn_seq: { type: integer, format: int64, minimum: 0 }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        version: { type: integer, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+
+    ProjectionRepairList:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ProjectionRepair" }
+
+    ProjectionRepairCommand:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      properties:
+        scope:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          items:
+            type: string
+            enum: [goal_progress, todo_current_state, receipt_timeline, evidence_summary, next_action_checkpoint]
+        client_key: { type: string, maxLength: 256 }
+
+    ProjectionRepairResult:
+      x-lifecycle: live
+      type: object
+      additionalProperties: false
+      required: [repair, projection]
+      properties:
+        repair: { $ref: "#/components/schemas/ProjectionRepair" }
+        projection: { $ref: "#/components/schemas/GovernanceGoalProjection" }
 
     Blocker:
       type: object

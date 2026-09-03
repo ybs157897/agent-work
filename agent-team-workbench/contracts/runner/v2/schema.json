@@ -120,10 +120,14 @@
         "run_spec": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["run_id", "adapter_id", "context_snapshot", "input", "policy"],
+          "required": ["run_id", "adapter_id", "agent_profile_id", "context_snapshot", "input", "policy"],
           "properties": {
             "run_id": { "type": "string" },
             "adapter_id": { "type": "string" },
+            "agent_profile_id": {
+              "type": "string",
+              "description": "Run 归属的 AgentProfile 身份（控制面 CreateRun 冻结）。Runner 的 adapter 必须把它绑定进 provider usage report 的 provenance.agent_id；缺失时远程 adapter 无法产出 sealed provider-usage/v1 报告，远程 Run 只能落 absent/unresolved usage 证据。控制面与 runnerd 同版本发布，字段为 required。"
+            },
             "context_snapshot": {
               "$ref": "#/$defs/ContextSnapshot",
               "description": "Run 创建时冻结的不可变 ExecutionContextSnapshot 的 wire 子集；Runner 只执行本地 registry 已授权的 mount/ref，不接受控制面提供的任意绝对路径"
@@ -270,7 +274,7 @@
         "event": {
           "type": "object",
           "additionalProperties": true,
-          "description": "canonical candidate event（message.*/tool.*/run.* 白名单，见 internal/runtime/spi.go）；run.session 事件必须携带 runtime.SessionUpdate：ref（非 clear 时必填）、display_id、clear 墓碑、clear_reason 与 params 私有参数；不得使用 session_ref 别名"
+          "description": "canonical candidate event（message.*/tool.*/run.* 白名单，见 internal/runtime/spi.go）；run.session 事件必须携带 runtime.SessionUpdate：ref（非 clear 时必填）、display_id、clear 墓碑、clear_reason 与 params 私有参数，不得使用 session_ref 别名；usage.updated 事件在 legacy 四字段（input_tokens/output_tokens/cached_tokens/basis）之外可携带可选 provider_report——sealed provider-usage/v1 报告（domain.ProviderUsageReportV1 的 JSON 形态，含 schema_version/run_id/basis/counters/provenance/digest），Runner 侧 adapter 产出并 Seal，控制面校验 digest 与 run/agent/adapter 身份后绑定 Run 行；畸形或 digest 失配按毒帧收口（run 落 failed(runner_event_invalid)），绝不静默丢弃"
         },
         "raw_ref": { "type": ["string", "null"], "description": "Provider 原始载荷引用 raw://..." }
       }
@@ -278,12 +282,14 @@
     "RunAck": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["v", "message_id", "kind", "method", "sent_at", "payload"],
+      "required": ["v", "message_id", "kind", "method", "runner_id", "run_id", "sent_at", "payload"],
       "properties": {
         "v": { "const": 2 },
         "message_id": { "type": "string", "pattern": "^msg_" },
         "kind": { "const": "ack" },
         "method": { "const": "ack" },
+        "runner_id": { "type": "string" },
+        "run_id": { "type": "string" },
         "sent_at": { "type": "string", "format": "date-time" },
         "payload": { "$ref": "#/$defs/RunAckPayload" }
       }

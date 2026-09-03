@@ -71,6 +71,16 @@ func (s *Service) ReconcileOrphanRuns(ctx context.Context) (int, error) {
 	var firstErr error
 	notified := map[string]bool{}
 	for _, run := range orphans {
+		if _, selfHeal := pendingSelfHealSourceID(run); selfHeal {
+			if _, dispatched := s.dispatchedRuns.Load(run.ID); dispatched {
+				continue
+			}
+			if paused, pauseErr := s.selfHealPausedByGoal(ctx, run); pauseErr == nil && paused {
+				continue
+			} else if pauseErr != nil && firstErr == nil {
+				firstErr = fmt.Errorf("inspect queued self-heal %s: %w", run.ID, pauseErr)
+			}
+		}
 		if err := s.markOrphanTerminal(ctx, run.ID); err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("reconcile run %s: %w", run.ID, err)

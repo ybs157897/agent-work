@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workbench.example/contracts/control/plan-decision-v2.schema.json",
+  "title": "PlanDecisionV2",
+  "description": "Planner 到 Control Plane 的唯一计划决策信封。通过本契约只代表 wire shape 合法；workspace、owner、source、barrier、authority、quota 与跨步骤引用仍由 Go 语义校验后经 SubmitPlan 执行。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "reason",
+    "next_action",
+    "steps"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "plan-decision/v2"
+    },
+    "kind": {
+      "const": "plan"
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "next_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/DispatchStep"
+          },
+          {
+            "$ref": "#/$defs/ConsultKnowledgeStep"
+          },
+          {
+            "$ref": "#/$defs/DeferStep"
+          },
+          {
+            "$ref": "#/$defs/JoinStep"
+          },
+          {
+            "$ref": "#/$defs/FinishStep"
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "AgentID": {
+      "type": "string",
+      "pattern": "^agent_\\S+$",
+      "description": "Opaque Agent Team Workbench agent profile ID；前缀固定，suffix 由一个或多个非空白字符组成，解码后仍须通过 domain ID 与 workspace scope 校验。"
+    },
+    "WorkItemID": {
+      "type": "string",
+      "pattern": "^wi_\\S+$",
+      "description": "Opaque Agent Team Workbench WorkItem ID；前缀固定，suffix 由一个或多个非空白字符组成，join 目标还须是当前 Task 的直接子任务。"
+    },
+    "WakeAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC3339 时间。"
+    },
+    "DispatchStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verb",
+        "agent_id",
+        "title",
+        "instruction",
+        "acceptance"
+      ],
+      "properties": {
+        "verb": {
+          "const": "dispatch"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/AgentID"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "urgent"
+          ]
+        },
+        "knowledge_from": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63,
+          "description": "必须小于当前 step index，且指向同一 decision 内更早的 consult_knowledge step；该跨步骤约束由 Go 语义校验。"
+        }
+      }
+    },
+    "ConsultKnowledgeStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verb",
+        "corpus",
+        "terms"
+      ],
+      "properties": {
+        "verb": {
+          "const": "consult_knowledge"
+        },
+        "corpus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^/\\\\\\r\\n]+$",
+          "not": {
+            "enum": [
+              ".",
+              ".."
+            ]
+          },
+          "description": "单层安全语料名；禁止路径分隔符、换行、. 与 ..。"
+        },
+        "terms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    },
+    "DeferStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verb"
+      ],
+      "properties": {
+        "verb": {
+          "const": "defer"
+        },
+        "wake_at": {
+          "$ref": "#/$defs/WakeAt"
+        }
+      },
+      "description": "wake_at 为空时，当前 Task 的等待集中必须存在 active child；该状态约束由 Go 语义校验。"
+    },
+    "JoinStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verb",
+        "children"
+      ],
+      "properties": {
+        "verb": {
+          "const": "join"
+        },
+        "children": {
+          "oneOf": [
+            {
+              "const": "all"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 128,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/WorkItemID"
+              }
+            }
+          ]
+        },
+        "wake_at": {
+          "$ref": "#/$defs/WakeAt"
+        }
+      }
+    },
+    "FinishStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verb"
+      ],
+      "properties": {
+        "verb": {
+          "const": "finish"
+        },
+        "evaluation": {
+          "type": "boolean"
+        }
+      },
+      "description": "同一 decision 若先出现 dispatch，finish 前必须先经过 join/defer；该顺序约束由 Go 语义校验。"
+    }
+  }
+}

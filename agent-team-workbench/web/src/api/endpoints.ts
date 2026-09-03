@@ -3,12 +3,26 @@ import type {
   Activity,
   AgentPolicy,
   AgentProfile,
+  CreateAgentResponse,
   ApprovalRequest,
   Artifact,
   Bootstrap,
   Dashboard,
   CoordinatorConfig,
   CoordinatorSnapshot,
+  GovernanceDeliveryBriefSnapshot,
+  GovernanceEvidenceItem,
+  GovernanceGoal,
+  GovernanceMetrics,
+  GovernanceGoalQuota,
+  GovernanceGoalProjection,
+  GovernanceHandoff,
+  GovernanceProjectionRepair,
+  GovernanceQuotaGapReconciliationInput,
+  GovernanceQuotaGapResolution,
+  GovernanceQuotaTurn,
+  GovernanceTodo,
+  GovernanceTurnReceipt,
   DecisionEntry,
   DeliveryBrief,
   DispatchCard,
@@ -58,6 +72,130 @@ export const getBootstrap = (workspaceId: string) =>
 export const getDashboard = (workspaceId: string) =>
   apiFetch<Dashboard>(`/workspaces/${workspaceId}/dashboard`);
 
+// ── Native governance（服务端 read model；状态/配额不在浏览器重算）───
+
+export const getGovernanceMetrics = (workspaceId: string) =>
+  apiFetch<GovernanceMetrics>(`/workspaces/${workspaceId}/governance/metrics`);
+
+export const listGovernanceGoals = (workspaceId: string) =>
+  apiFetch<{ items: GovernanceGoal[] }>(`/workspaces/${workspaceId}/goals`);
+
+export const getGovernanceGoal = (workspaceId: string, goalId: string) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/goals/${goalId}`);
+
+export const getGovernanceGoalForWorkItem = (workspaceId: string, workItemId: string) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/work-items/${workItemId}/goal`);
+
+export const startGovernanceGoal = (workspaceId: string, goalId: string, expectedVersion: number) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/goals/${goalId}/commands/start`, {
+    method: 'POST', body: { expected_version: expectedVersion }, idempotencyKey: `goal:start:${goalId}:${expectedVersion}`,
+  });
+
+export const pauseGovernanceGoal = (workspaceId: string, goalId: string, expectedVersion: number) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/goals/${goalId}/commands/pause`, {
+    method: 'POST', body: { expected_version: expectedVersion }, idempotencyKey: `goal:pause:${goalId}:${expectedVersion}`,
+  });
+
+export const resumeGovernanceGoal = (workspaceId: string, goalId: string, expectedVersion: number) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/goals/${goalId}/commands/resume`, {
+    method: 'POST', body: { expected_version: expectedVersion }, idempotencyKey: `goal:resume:${goalId}:${expectedVersion}`,
+  });
+
+export const cancelGovernanceGoal = (workspaceId: string, goalId: string, expectedVersion: number) =>
+  apiFetch<GovernanceGoal>(`/workspaces/${workspaceId}/goals/${goalId}/commands/cancel`, {
+    method: 'POST', body: { expected_version: expectedVersion }, idempotencyKey: `goal:cancel:${goalId}:${expectedVersion}`,
+  });
+
+export const listGovernanceTodos = (workspaceId: string, goalId: string) =>
+  apiFetch<{ items: GovernanceTodo[] }>(`/workspaces/${workspaceId}/goals/${goalId}/todos`);
+
+export const getGovernanceTodo = (workspaceId: string, todoId: string) =>
+  apiFetch<GovernanceTodo>(`/workspaces/${workspaceId}/todos/${todoId}`);
+
+export const claimGovernanceTodo = (
+  workspaceId: string,
+  todoId: string,
+  ownerAgentId: string,
+  expectedVersion: number,
+  expiresAt?: string,
+) =>
+  apiFetch<GovernanceTodo>(`/workspaces/${workspaceId}/todos/${todoId}/commands/claim`, {
+    method: 'POST',
+    body: { owner_agent_id: ownerAgentId, expected_version: expectedVersion, ...(expiresAt ? { expires_at: expiresAt } : {}) },
+    idempotencyKey: `todo:claim:${todoId}:${ownerAgentId}:${expectedVersion}`,
+  });
+
+export const releaseGovernanceTodo = (workspaceId: string, todoId: string, ownerAgentId: string, expectedVersion: number) =>
+  apiFetch<GovernanceTodo>(`/workspaces/${workspaceId}/todos/${todoId}/commands/release`, {
+    method: 'POST', body: { owner_agent_id: ownerAgentId, expected_version: expectedVersion },
+    idempotencyKey: `todo:release:${todoId}:${ownerAgentId}:${expectedVersion}`,
+  });
+
+export const getGovernanceGoalQuota = (workspaceId: string, goalId: string) =>
+  apiFetch<GovernanceGoalQuota>(`/workspaces/${workspaceId}/goals/${goalId}/quota`);
+
+export const listGovernanceQuotaGapReconciliations = (workspaceId: string, goalId: string) =>
+  apiFetch<{ items: GovernanceQuotaGapResolution[] }>(
+    `/workspaces/${workspaceId}/goals/${goalId}/quota/reconciliations`,
+  );
+
+export const reconcileGovernanceQuotaGap = (
+  workspaceId: string,
+  goalId: string,
+  input: GovernanceQuotaGapReconciliationInput,
+) => apiFetch<GovernanceQuotaGapResolution>(
+  `/workspaces/${workspaceId}/goals/${goalId}/quota/reconciliations`,
+  { method: 'POST', body: input, idempotencyKey: input.client_key },
+);
+
+export const getGovernanceTurnReceipt = (workspaceId: string, goalId: string, todoId: string, turnSeq: number) =>
+  apiFetch<GovernanceTurnReceipt>(`/workspaces/${workspaceId}/goals/${goalId}/todos/${todoId}/turns/${turnSeq}`);
+
+export const getGovernanceTurnQuota = (workspaceId: string, goalId: string, todoId: string, turnSeq: number) =>
+  apiFetch<GovernanceQuotaTurn>(`/workspaces/${workspaceId}/goals/${goalId}/todos/${todoId}/turns/${turnSeq}/quota`);
+
+export const listGovernanceGoalHandoffs = (workspaceId: string, goalId: string) =>
+  apiFetch<{ items: GovernanceHandoff[] }>(`/workspaces/${workspaceId}/goals/${goalId}/handoffs`);
+
+export const listGovernanceTodoHandoffs = (workspaceId: string, todoId: string) =>
+  apiFetch<{ items: GovernanceHandoff[] }>(`/workspaces/${workspaceId}/todos/${todoId}/handoffs`);
+
+export const getGovernanceHandoff = (workspaceId: string, handoffId: string) =>
+  apiFetch<GovernanceHandoff>(`/workspaces/${workspaceId}/handoffs/${handoffId}`);
+
+export const listGovernanceGoalEvidence = (workspaceId: string, goalId: string) =>
+  apiFetch<{ items: GovernanceEvidenceItem[] }>(`/workspaces/${workspaceId}/goals/${goalId}/evidence`);
+
+export const captureGovernanceDeliveryBriefSnapshot = (
+  workspaceId: string,
+  goalId: string,
+  todoId: string,
+  input: { work_item_id?: string; client_key?: string } = {},
+) =>
+  apiFetch<GovernanceDeliveryBriefSnapshot>(
+    `/workspaces/${workspaceId}/goals/${goalId}/todos/${todoId}/evidence/delivery-brief-snapshots`,
+    { method: 'POST', body: input, idempotencyKey: input.client_key },
+  );
+
+export const getGovernanceDeliveryBriefSnapshot = (workspaceId: string, snapshotId: string) =>
+  apiFetch<GovernanceDeliveryBriefSnapshot>(`/workspaces/${workspaceId}/delivery-brief-snapshots/${snapshotId}`);
+
+export const getGovernanceProjection = (workspaceId: string, goalId: string) =>
+  apiFetch<GovernanceGoalProjection>(`/workspaces/${workspaceId}/goals/${goalId}/projection`);
+
+export const listGovernanceProjectionRepairs = (workspaceId: string, goalId: string) =>
+  apiFetch<{ items: GovernanceProjectionRepair[] }>(`/workspaces/${workspaceId}/goals/${goalId}/projection/repairs`);
+
+export const repairGovernanceProjection = (
+  workspaceId: string,
+  goalId: string,
+  input: { scope?: GovernanceProjectionRepair['scope']; client_key?: string },
+) =>
+  apiFetch<{ repair: GovernanceProjectionRepair; projection: GovernanceGoalProjection }>(
+    `/workspaces/${workspaceId}/goals/${goalId}/projection/commands/repair`,
+    { method: 'POST', body: input, idempotencyKey: input.client_key },
+  );
+
 export const listActivities = (workspaceId: string) =>
   apiFetch<{ items: Activity[]; next_cursor: string | null }>(`/workspaces/${workspaceId}/activities`);
 
@@ -93,7 +231,7 @@ export interface CreateAgentInput {
 }
 
 export const createAgent = (workspaceId: string, input: CreateAgentInput) =>
-  apiFetch<AgentProfile>(`/workspaces/${workspaceId}/agent-profiles`, { method: 'POST', body: input });
+  apiFetch<CreateAgentResponse>(`/workspaces/${workspaceId}/agent-profiles`, { method: 'POST', body: input });
 
 export const enableAgent = (agentId: string) =>
   apiFetch<AgentProfile>(`/agent-profiles/${agentId}/commands/enable`, { method: 'POST', body: {} });

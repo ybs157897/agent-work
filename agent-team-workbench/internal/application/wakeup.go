@@ -19,6 +19,49 @@ import (
 
 // 编译期保证 Service 可直接作为调度循环的 RunStarter 注入。
 var _ scheduling.RunStarter = (*Service)(nil)
+var _ scheduling.WakeupPreflight = (*Service)(nil)
+
+// PreflightWakeup checks the immutable Goal lifecycle before the scheduler
+// claims a heartbeat slot or coalesces against an active Run. The check is
+// intentionally repeated by CreateRunForWakeup/createCoordinatorWakeRun so a
+// Goal pause racing the scheduler cannot be bypassed at the write boundary.
+func (s *Service) PreflightWakeup(ctx context.Context, workspaceID, agentProfileID, taskKey string) error {
+	if strings.HasPrefix(taskKey, "plan:") {
+		plan, err := s.store.Plans().Get(ctx, strings.TrimPrefix(taskKey, "plan:"))
+		if err != nil {
+			return err
+		}
+		if plan.WorkspaceID != workspaceID {
+			return domain.ErrNotFound
+		}
+		taskKey = plan.WorkItemID
+	}
+	wi, err := s.store.WorkItems().Get(ctx, taskKey)
+	if err != nil {
+		return err
+	}
+	if wi.WorkspaceID != workspaceID {
+		return domain.ErrNotFound
+	}
+	if err := requireTaskWorkItem(wi); err != nil {
+		return err
+	}
+	goal, err := s.GetGoalForWorkItem(ctx, wi.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	switch goal.Status {
+	case domain.GoalActive:
+		return nil
+	case domain.GoalWaiting:
+		return fmt.Errorf("%w: Goal is paused", scheduling.ErrWakeupDeferred)
+	default:
+		return scheduling.ErrWakeupNoop
+	}
+}
 
 // CreateRunForWakeup 把一次唤醒消费转成 CreateRun（taskKey 即 work item id）。
 // instruction 已由调度侧渲染（wakeContext["instruction"] 显式指令优先在此兜底）。
@@ -40,6 +83,9 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 	if err := requireTaskWorkItem(wi); err != nil {
 		return "", err
 	}
+	if err := s.PreflightWakeup(ctx, workspaceID, agentProfileID, wi.ID); err != nil {
+		return "", err
+	}
 	if strings.TrimSpace(instruction) == "" {
 		instruction, _ = wakeContext["instruction"].(string)
 	}
@@ -52,10 +98,57 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 		WakeContext:    wakeContext,
 	}
 	var coordinatorState *domain.TaskCoordinatorState
-	if agent, err := s.store.Agents().Get(ctx, agentProfileID); err == nil && agent.Kind.IsSystem() {
-		state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID)
+	governedState, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID)
+	if stateErr == nil {
+		goal, err := s.store.Goals().GetByRootWorkItem(ctx, governedState.RootWorkItemID)
 		if err != nil {
 			return "", err
+		}
+		if goal.Status == domain.GoalWaiting {
+			return "", fmt.Errorf("%w: Goal is paused", scheduling.ErrWakeupDeferred)
+		}
+		if goal.Status != domain.GoalActive {
+			return "", scheduling.ErrWakeupNoop
+		}
+	} else if !errors.Is(stateErr, domain.ErrNotFound) {
+		return "", stateErr
+	}
+	// A durable wake may have been enqueued for the historical system lead
+	// before a Handoff was accepted. Re-resolve the current ownership at the
+	// consumption boundary and route that already-claimed wake to the target;
+	// otherwise the system branch below would either create a forbidden system
+	// summary Run or reject the wake after the target claim became authoritative.
+	if governedState != nil {
+		handoff, _, _, targetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, governedState)
+		if handoffErr != nil {
+			return "", handoffErr
+		}
+		if handoff != nil {
+			agentProfileID = targetAgentID
+			p.AgentProfileID = targetAgentID
+		}
+	}
+	agent, agentErr := s.store.Agents().Get(ctx, agentProfileID)
+	if agentErr == nil && agent.Kind.IsSystem() && governedState != nil {
+		// A settlement wake queued before a Handoff was accepted can still name
+		// the system Coordinator. Re-resolve the current claim owner here so the
+		// old durable wake is consumed by the delegated target instead of being
+		// retried forever against the protected system identity.
+		handoff, _, _, targetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, governedState)
+		if handoffErr != nil {
+			return "", handoffErr
+		}
+		if handoff != nil && targetAgentID != agentProfileID {
+			agentProfileID = targetAgentID
+			p.AgentProfileID = targetAgentID
+			agent, agentErr = s.store.Agents().Get(ctx, agentProfileID)
+		}
+	}
+	switch {
+	case agentErr == nil && agent.Kind.IsSystem():
+		state := governedState
+		if state == nil {
+			return "", domain.ErrNotFound
 		}
 		if coordinatorStateExecutionStopped(state) {
 			return "", scheduling.ErrWakeupNoop
@@ -76,6 +169,37 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 			"state_id": state.ID, "action": "wakeup", "attempt": state.Attempt + 1,
 		}
 		coordinatorState = state
+	case agentErr == nil && governedState != nil:
+		// A settlement wake for a transferred Handoff is owned by the target
+		// Agent. Preserve the delegated Coordinator proof instead of falling
+		// through to public CreateRun (which must reject a root ordinary Agent).
+		handoff, goal, todo, targetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, governedState)
+		if handoffErr != nil {
+			return "", handoffErr
+		}
+		if handoff != nil && targetAgentID == agentProfileID {
+			if coordinatorStateExecutionStopped(governedState) {
+				return "", scheduling.ErrWakeupNoop
+			}
+			if err := s.ensureCoordinatorRuntimeReady(context.WithoutCancel(ctx), governedState); err != nil {
+				return "", err
+			}
+			preference := agent.RuntimePreference
+			if handoff.Target.Kind == domain.GovernanceActorRuntime {
+				preference = domain.RuntimePreference{Mode: "plan", Preferred: handoff.Target.ID}
+			}
+			p.RuntimePreference = &preference
+			p.CoordinatorContext = handoffCoordinatorContext(governedState, handoff, targetAgentID, "wakeup")
+			if handoff.Target.Kind == domain.GovernanceActorRuntime {
+				p.CoordinatorContext["handoff_target_runtime"] = handoff.Target.ID
+			}
+			if _, renewErr := s.renewHandoffTodoClaimLocked(ctx, goal, todo, handoff, targetAgentID); renewErr != nil {
+				return "", renewErr
+			}
+			coordinatorState = governedState
+		}
+	case agentErr != nil && !errors.Is(agentErr, domain.ErrNotFound):
+		return "", agentErr
 	}
 	// S3 回流：settle 唤醒产生的汇总 run 挂回原批次（dispatch_id=原批，
 	// input.wakeup 固化 settle 标记供终态钩子识别收口主体）；存量 wakeup
@@ -129,6 +253,16 @@ func (s *Service) createCoordinatorWakeRun(ctx context.Context, workItemID strin
 		if coordinatorStateExecutionStopped(fresh) {
 			return scheduling.ErrWakeupNoop
 		}
+		goal, err := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID)
+		if err != nil {
+			return err
+		}
+		if goal.Status == domain.GoalWaiting {
+			return fmt.Errorf("%w: Goal is paused", scheduling.ErrWakeupDeferred)
+		}
+		if goal.Status != domain.GoalActive {
+			return scheduling.ErrWakeupNoop
+		}
 		if coordinatorRetryPending(fresh) || coordinatorSettlementPending(fresh) {
 			return fmt.Errorf("%w: Coordinator recovery action is pending", domain.ErrStateConflict)
 		}
@@ -138,11 +272,41 @@ func (s *Service) createCoordinatorWakeRun(ctx context.Context, workItemID strin
 		if p.CoordinatorContext == nil {
 			p.CoordinatorContext = map[string]any{}
 		}
-		p.CoordinatorContext["state_id"] = fresh.ID
-		p.CoordinatorContext["root_work_item_id"] = fresh.RootWorkItemID
-		p.CoordinatorContext["role"] = coordinatorRole
-		p.CoordinatorContext["action"] = "wakeup"
-		p.CoordinatorContext["attempt"] = fresh.Attempt + 1
+		handoff, handoffGoal, handoffTodo, handoffTargetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, fresh)
+		if handoffErr != nil {
+			return handoffErr
+		}
+		if handoff != nil {
+			if p.AgentProfileID != handoffTargetAgentID {
+				return fmt.Errorf("%w: delegated Handoff wake must target current claim owner", domain.ErrStateConflict)
+			}
+			targetAgent, agentErr := s.store.Agents().Get(ctx, handoffTargetAgentID)
+			if agentErr != nil {
+				return agentErr
+			}
+			preference := targetAgent.RuntimePreference
+			if handoff.Target.Kind == domain.GovernanceActorRuntime {
+				preference = domain.RuntimePreference{Mode: "plan", Preferred: handoff.Target.ID}
+			}
+			p.RuntimePreference = &preference
+			p.CoordinatorContext = handoffCoordinatorContext(fresh, handoff, handoffTargetAgentID, "wakeup")
+			if handoff.Target.Kind == domain.GovernanceActorRuntime {
+				p.CoordinatorContext["handoff_target_runtime"] = handoff.Target.ID
+			}
+			if _, renewErr := s.renewHandoffTodoClaimLocked(ctx, handoffGoal, handoffTodo, handoff, handoffTargetAgentID); renewErr != nil {
+				return renewErr
+			}
+		} else {
+			p.CoordinatorContext["state_id"] = fresh.ID
+			p.CoordinatorContext["root_work_item_id"] = fresh.RootWorkItemID
+			p.CoordinatorContext["role"] = coordinatorRole
+			p.CoordinatorContext["action"] = "wakeup"
+			p.CoordinatorContext["attempt"] = fresh.Attempt + 1
+		}
+		p.coordinatorAdmission = &coordinatorRunAdmission{
+			RootWorkItemID: fresh.RootWorkItemID, StateID: fresh.ID,
+			Action: "wakeup", Delegated: handoff != nil,
+		}
 		run, err := s.createRunLocked(ctx, workItemID, p)
 		if err != nil {
 			return err
@@ -216,7 +380,7 @@ func coordinatorInstructionAlreadyEnveloped(instruction string) bool {
 	remainder := instruction[payloadStart+length:]
 	switch {
 	case strings.HasPrefix(instruction, "Task Coordinator settlement turn\n"):
-		return remainder == "\nEND_TASK_DATA_JSON_V1\n\nReview the worker results under your protected Coordinator system instruction. Return the next control decision in the required fenced plan format; never accept the task for the user."
+		return remainder == "\nEND_TASK_DATA_JSON_V1\n\nReview the worker results under your protected Coordinator system instruction. Return only the next raw PlanDecisionV2 JSON object; never accept the task for the user."
 	case strings.HasPrefix(instruction, "Task Coordinator automation turn\n"):
 		return remainder == "\nEND_TASK_DATA_JSON_V1\n\nUse the protected Coordinator system instruction to decide the next action. Never accept the task for the user."
 	default:

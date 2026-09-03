@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,7 +29,20 @@ const ctxKeyRequestID ctxKey = iota
 // AgentConfigSync 由 agentconfig.Importer 实现：agents/ 目录 ⇄ DB 投影的同步。
 type AgentConfigSync interface {
 	Import(ctx context.Context, workspaceID string) (agentconfig.ImportResult, error)
-	WriteBackOne(ctx context.Context, a *domain.AgentProfile) error
+}
+
+// AgentConfigIntentSync is the durable extension implemented by the real
+// agents/ importer. Legacy test/embedding synchronizers may keep the two
+// historical methods above; they deliberately do not opt into intent-backed
+// Agent PATCH semantics.
+type AgentConfigIntentSync interface {
+	ReconcileAgent(ctx context.Context, agentID string) error
+}
+
+// AgentConfigDurableReconciler is used by startup/reload paths to drain all
+// pending external effects before files are imported as DB truth.
+type AgentConfigDurableReconciler interface {
+	Reconcile(ctx context.Context) (agentconfig.ReconcileResult, error)
 }
 
 // Server 承载 REST + SSE；M1 认证为演示用户（owner），RBAC 守卫已接入（M4 会话化）。
@@ -50,7 +65,12 @@ func NewServer(svc *application.Service, store application.Store, hub *sse.Hub) 
 func (s *Server) SetDemoRole(role domain.MemberRole) { s.demoRole = role }
 
 // SetAgentConfigSync 挂载 agents/ 目录同步器（可选；未挂载时配置只落 DB）。
-func (s *Server) SetAgentConfigSync(sync AgentConfigSync) { s.agentCfg = sync }
+func (s *Server) SetAgentConfigSync(sync AgentConfigSync) {
+	s.agentCfg = sync
+	if _, durable := sync.(AgentConfigIntentSync); durable && s.svc != nil {
+		s.svc.EnableAgentConfigSyncIntents()
+	}
+}
 
 // SetModelRegistry 挂载 models/ 模型注册表（可选；未挂载时 /models 端点返回 404）。
 func (s *Server) SetModelRegistry(reg *modelconfig.Registry) { s.models = reg }
@@ -87,6 +107,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/bootstrap", s.guard(security.PermRead, s.handleBootstrap))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/dashboard", s.guard(security.PermRead, s.handleDashboard))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/activities", s.guard(security.PermRead, s.handleActivities))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/governance/metrics", s.guard(security.PermRead, s.handleGetGovernanceMetrics))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/search", s.guard(security.PermRead, s.handleSearch))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/events", s.guard(security.PermRead, s.handleSSE))
 
@@ -107,6 +128,41 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermRead, s.handleListWorkItems))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermWorkItemWrite, s.handleCreateWorkItem))
+	// Native governance read/command surface. All handlers delegate to the
+	// canonical Goal/Todo/Handoff/Evidence/ProjectionRepair Service ports.
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals", s.guard(security.PermRead, s.handleListGoals))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}", s.guard(security.PermRead, s.handleGetGoal))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/work-items/{work_item_id}/goal", s.guard(security.PermRead, s.handleGetWorkItemGoal))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/commands/start", s.guard(security.PermWorkItemWrite, s.handleStartGoal))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/commands/pause", s.guard(security.PermWorkItemWrite, s.handlePauseGoal))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/commands/resume", s.guard(security.PermWorkItemWrite, s.handleResumeGoal))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/commands/cancel", s.guard(security.PermWorkItemWrite, s.handleCancelGoal))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/todos", s.guard(security.PermRead, s.handleListGoalTodos))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/todos/{todo_id}", s.guard(security.PermRead, s.handleGetTodo))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/todos/{todo_id}/commands/claim", s.guard(security.PermWorkItemWrite, s.handleClaimTodo))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/todos/{todo_id}/commands/release", s.guard(security.PermWorkItemWrite, s.handleReleaseTodo))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/todos/{todo_id}/commands/resolve-user-action", s.guard(security.PermWorkItemWrite, s.handleResolveTodoUserAction))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/quota", s.guard(security.PermRead, s.handleGetGoalQuota))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/quota/reconciliations", s.guard(security.PermRead, s.handleListQuotaGapReconciliations))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/quota/reconciliations", s.guard(security.PermApproval, s.handleReconcileQuotaGap))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/turns/{turn_seq}", s.guard(security.PermRead, s.handleGetTurnReceipt))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/turns/{turn_seq}/quota", s.guard(security.PermRead, s.handleGetTurnQuota))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/handoffs", s.guard(security.PermRead, s.handleListGoalHandoffs))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/todos/{todo_id}/handoffs", s.guard(security.PermRead, s.handleListTodoHandoffs))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/handoffs/{handoff_id}", s.guard(security.PermRead, s.handleGetHandoff))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/handoffs", s.guard(security.PermWorkItemWrite, s.handleCreateHandoff))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/handoffs/{handoff_id}/commands/accept", s.guard(security.PermWorkItemWrite, s.handleAcceptHandoff))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/handoffs/{handoff_id}/commands/reject", s.guard(security.PermWorkItemWrite, s.handleRejectHandoff))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/handoffs/{handoff_id}/commands/cancel", s.guard(security.PermWorkItemWrite, s.handleCancelHandoff))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/evidence", s.guard(security.PermRead, s.handleGetGoalEvidence))
+	// Delivery Brief snapshots include restricted artifact metadata and are
+	// therefore limited to the approval permission even though ordinary Brief
+	// reads remain available to every reader.
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/todos/{todo_id}/evidence/delivery-brief-snapshots", s.guard(security.PermApproval, s.handleCaptureDeliveryBriefSnapshot))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/delivery-brief-snapshots/{snapshot_id}", s.guard(security.PermApproval, s.handleGetDeliveryBriefSnapshot))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/projection", s.guard(security.PermRead, s.handleGetGovernanceProjection))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals/{goal_id}/projection/repairs", s.guard(security.PermRead, s.handleListProjectionRepairs))
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/goals/{goal_id}/projection/commands/repair", s.guard(security.PermWorkItemWrite, s.handleRepairGovernanceProjection))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}", s.guard(security.PermRead, s.handleGetWorkItem))
 	mux.HandleFunc("PATCH /api/v1/work-items/{work_item_id}", s.guard(security.PermWorkItemWrite, s.handlePatchWorkItem))
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/commands/move", s.guard(security.PermWorkItemWrite, s.handleMoveWorkItem))
@@ -147,6 +203,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/approvals", s.guard(security.PermRead, s.handleListApprovals))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/approvals/{approval_id}/commands/resolve", s.guard(security.PermApproval, s.handleResolveApproval))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/artifacts", s.guard(security.PermRead, s.handleListArtifacts))
+	mux.HandleFunc("POST /api/v1/runs/{run_id}/artifacts/{artifact_id}/commands/accept", s.guard(security.PermApproval, s.handleAcceptArtifact))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/changes", s.guard(security.PermRead, s.handleRunChanges))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/changes/diff", s.guard(security.PermRead, s.handleRunChangeDiff))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/revert-changes", s.guard(security.PermRunControl, s.handleRevertRunChanges))
@@ -197,23 +254,33 @@ func (s *Server) withRequestID(next http.Handler) http.Handler {
 	})
 }
 
-// idempotencyClaimer 是 IdempotencyRepo 的可选扩展（sqlstore 已实现）：
+// idempotencyClaimer 是 IdempotencyRepo 的强制写命令扩展（sqlstore 已实现）：
 // claim-first 原子幂等——请求先 INSERT 占位行（status_code=NULL 表示执行中）再执行，
-// 消除旧 Check→exec→Record 间隙中并发同 key 双执行的竞态。
+// 消除旧 Check→exec→Record 间隙中并发同 key 双执行的竞态；SQLite 实现会在
+// 进程崩溃留下的过期占位上按同 hash 重新取得有限租约，且以 owner token
+// 防止旧请求完成/释放新请求的占位。
 type idempotencyClaimer interface {
 	// Claim 返回 true 表示占位成功（调用方独占执行权）；
 	// 返回 false 时 rec 非 nil：rec.StatusCode > 0 为已完成响应（可重放），
 	// rec.StatusCode == 0 表示同 hash 请求仍在执行中。
-	Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, error)
-	// Complete 把执行结果写回占位行（exec 产出确定性状态码后调用）。
-	Complete(ctx context.Context, workspaceID, key string, statusCode int, resultBody string) error
-	// Release 删除未完成占位行（exec 返回 5xx 时调用，允许客户端同 key 重试）。
-	Release(ctx context.Context, workspaceID, key string) error
+	Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, string, error)
+	// Complete 把执行结果写回占位行，并以 request hash + claim token
+	// 证明仍由本请求持有 owner fence。
+	Complete(ctx context.Context, workspaceID, key, requestHash, claimToken string, statusCode int, resultBody string) error
+	// Release 删除当前请求持有的未完成占位行（exec 返回 5xx 时调用）。
+	Release(ctx context.Context, workspaceID, key, requestHash, claimToken string) error
+	// Renew 延长 owner lease；没有续租能力的存储不能安全承载超过
+	// idempotencyClaimRenewInterval 的写命令。
+	Renew(ctx context.Context, workspaceID, key, requestHash, claimToken string) error
 }
 
+const (
+	idempotencyClaimRenewInterval = 5 * time.Minute
+	idempotencyFinalizeTimeout    = 10 * time.Second
+)
+
 // idempotent 包装写命令：校验 Idempotency-Key，重放或冲突（协议文档 §5.1）。
-// 存储实现 idempotencyClaimer 时走 claim-first 原子路径；否则退回 Check→exec→Record
-// （非原子，仅用于未实现 claimer 的测试替身）。
+// 只有带 owner fence 的 claim-first 存储才允许执行写命令。
 func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, scope string, exec func() (int, []byte)) {
 	key := r.Header.Get("Idempotency-Key")
 	if key == "" {
@@ -239,34 +306,15 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, scope string
 		return
 	}
 
-	// 兼容路径：Check→exec→Record（行为与旧版一致）。
-	rec, err := s.store.Idempotency().Check(r.Context(), scope, key)
-	if err != nil {
-		fail(w, r, err)
-		return
-	}
-	if rec != nil {
-		if rec.RequestHash != reqHash {
-			fail(w, r, domain.ErrIdempotencyConflict)
-			return
-		}
-		// 重放原结果，不重复副作用。
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Idempotent-Replayed", "true")
-		w.WriteHeader(rec.StatusCode)
-		_, _ = w.Write([]byte(rec.ResultBody))
-		return
-	}
-
-	status, result := exec()
-	if status < 500 {
-		_ = s.store.Idempotency().Record(r.Context(), scope, key, application.IdempotencyRecord{
-			RequestHash: reqHash, StatusCode: status, ResultBody: string(result),
-		})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(result)
+	// A store that cannot atomically claim and fence a request is not safe for
+	// write commands. The old Check→exec→Record fallback admitted a second
+	// execution window, so it is deliberately fail-closed.
+	writeProblem(w, r, Problem{
+		Type:  "https://workbench.example/problems/idempotency-not-durable",
+		Title: "Idempotency unavailable", Status: http.StatusInternalServerError,
+		Code: "idempotency_not_durable", Retryable: true,
+		Detail: "当前存储未提供带 owner fence 的幂等占位",
+	})
 }
 
 // idempotentClaimFirst：占位→执行→落盘/释放。
@@ -276,22 +324,28 @@ func (s *Server) idempotent(w http.ResponseWriter, r *http.Request, scope string
 //     ≥ 500 视为基础设施故障，Release 释放占位行，允许客户端以同 key 重试。
 func (s *Server) idempotentClaimFirst(c idempotencyClaimer, w http.ResponseWriter, r *http.Request,
 	scope, key, reqHash string, exec func() (int, []byte)) {
-	claimed, rec, err := c.Claim(r.Context(), scope, key, reqHash)
+	claimed, rec, claimToken, err := c.Claim(r.Context(), scope, key, reqHash)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
 	if !claimed {
+		if rec == nil {
+			writeProblem(w, r, Problem{
+				Type:  "https://workbench.example/problems/idempotency-claim-lost",
+				Title: "Idempotency claim unavailable", Status: http.StatusInternalServerError,
+				Code: "idempotency_claim_lost", Retryable: true,
+				Detail: "幂等占位状态无法确认，请稍后重试",
+			})
+			return
+		}
 		if rec.RequestHash != reqHash {
 			fail(w, r, domain.ErrIdempotencyConflict)
 			return
 		}
 		if rec.StatusCode > 0 {
 			// 重放原结果，不重复副作用。
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Idempotent-Replayed", "true")
-			w.WriteHeader(rec.StatusCode)
-			_, _ = w.Write([]byte(rec.ResultBody))
+			writeIdempotentResult(w, rec.StatusCode, []byte(rec.ResultBody), true)
 			return
 		}
 		writeProblem(w, r, Problem{
@@ -303,15 +357,107 @@ func (s *Server) idempotentClaimFirst(c idempotencyClaimer, w http.ResponseWrite
 		return
 	}
 
-	status, result := exec()
-	if status < 500 {
-		_ = c.Complete(r.Context(), scope, key, status, string(result))
-	} else {
-		_ = c.Release(r.Context(), scope, key)
+	requestCtx := r.Context()
+	leaseCtx, stopRenew := startIdempotencyRenewal(requestCtx, c, scope, key, reqHash, claimToken)
+	if leaseCtx != nil {
+		// Handler closures read the request context directly. Replace it with
+		// the lease context so losing the owner fence cancels a still-running
+		// command instead of allowing its side effect to continue unbounded.
+		*r = *r.WithContext(leaseCtx)
 	}
-	w.Header().Set("Content-Type", "application/json")
+	status, result := exec()
+	var renewErr error
+	if stopRenew != nil {
+		renewErr = stopRenew()
+	}
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(requestCtx), idempotencyFinalizeTimeout)
+	defer cancelFinalize()
+	if status < 500 {
+		if err := c.Complete(finalizeCtx, scope, key, reqHash, claimToken, status, string(result)); err != nil {
+			writeIdempotencyFinalizeFailure(w, r, err)
+			return
+		}
+	} else {
+		if err := c.Release(finalizeCtx, scope, key, reqHash, claimToken); err != nil {
+			writeIdempotencyFinalizeFailure(w, r, err)
+			return
+		}
+	}
+	if renewErr != nil && !errors.Is(renewErr, domain.ErrIdempotencyClaimLost) {
+		log.Printf("httpapi: idempotency claim renewal failed after exec: %v", renewErr)
+	}
+	writeIdempotentResult(w, status, result, false)
+}
+
+func startIdempotencyRenewal(ctx context.Context, c idempotencyClaimer, scope, key, requestHash, claimToken string) (context.Context, func() error) {
+	if claimToken == "" {
+		return nil, nil
+	}
+	renewCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(idempotencyClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := c.Renew(renewCtx, scope, key, requestHash, claimToken); err != nil {
+					cancel()
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+	return renewCtx, func() error {
+		cancel()
+		return <-done
+	}
+}
+
+func writeIdempotencyFinalizeFailure(w http.ResponseWriter, r *http.Request, err error) {
+	log.Printf("httpapi: idempotency claim finalization failed: %v", err)
+	writeProblem(w, r, Problem{
+		Type:  "https://workbench.example/problems/idempotency-finalize-failed",
+		Title: "Idempotency finalization failed", Status: http.StatusInternalServerError,
+		Code: "idempotency_finalize_failed", Retryable: true,
+		Detail: "命令结果未能可靠落盘，请稍后以同一 Idempotency-Key 重试",
+	})
+}
+
+// writeIdempotentResult reconstructs the response media type from the
+// persisted status/body. Idempotency records intentionally keep the stable
+// request/result fields only; a problem-shaped 4xx/5xx body must remain
+// application/problem+json on both the first response and a replay.
+func writeIdempotentResult(w http.ResponseWriter, status int, body []byte, replayed bool) {
+	if contentType := idempotentResultContentType(status, body); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
 	w.WriteHeader(status)
-	_, _ = w.Write(result)
+	if status != http.StatusNoContent && len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}
+
+func idempotentResultContentType(status int, body []byte) string {
+	if status == http.StatusNoContent || len(body) == 0 {
+		return ""
+	}
+	if status >= http.StatusBadRequest {
+		var problem struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(body, &problem); err == nil && problem.Type != "" {
+			return "application/problem+json"
+		}
+	}
+	return "application/json"
 }
 
 // renderJSON 在 exec 闭包内序列化响应与错误。
@@ -535,29 +681,43 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	last := after
 	sendBacklog := func() error {
-		events, err := s.store.Events().Since(r.Context(), wsID, last, 500)
-		if err != nil {
-			return err
-		}
-		for _, ev := range events {
-			data, err := json.Marshal(ev)
+		for {
+			events, err := s.store.Events().Since(r.Context(), wsID, last, 500)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.StreamSeq, ev.Type, data)
-			last = ev.StreamSeq
+			for _, ev := range events {
+				data, err := json.Marshal(ev)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.StreamSeq, ev.Type, data)
+				last = ev.StreamSeq
+			}
+			if len(events) < 500 {
+				break
+			}
 		}
 		flusher.Flush()
 		return nil
 	}
-	if err := sendBacklog(); err != nil {
-		return
-	}
 
+	// Subscribe before taking the first replay snapshot.  A commit between the
+	// cursor preflight and the replay must either be present in that snapshot or
+	// leave a buffered wakeup; subscribing afterwards loses that notification.
 	wake, unsub := s.hub.Subscribe(wsID)
 	defer unsub()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
+	if err := sendBacklog(); err != nil {
+		return
+	}
+	// Re-read from the cursor after the initial snapshot.  This closes the
+	// handoff window between replay completion and entering the select loop even
+	// when a producer committed without a timely notification.
+	if err := sendBacklog(); err != nil {
+		return
+	}
 
 	for {
 		select {

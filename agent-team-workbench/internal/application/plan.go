@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	workbenchcontracts "github.com/ybs/agent-team-workbench/contracts"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
@@ -35,6 +36,30 @@ type SubmitPlanParams struct {
 	// Guardrails M4 预算护栏（提交时固化进 plan；max_dispatch 提交期整单校验，
 	// max_tokens 在子任务静默唤醒点核算）。零值表示未设限。
 	Guardrails domain.PlanGuardrails
+	// DecisionAudit is supplied only by the protected Coordinator decoder. Its
+	// event is committed atomically with the Plan so a terminal-hook replay can
+	// never observe one without the other.
+	DecisionAudit *PlanDecisionAuditInput
+	// Governance identifies the admitted bounded turn that compiled this Plan.
+	// Nil preserves the existing API/Coordinator path; a non-nil identity is
+	// immutable and idempotent by workspace/client key plus decision digest.
+	Governance *PlanGovernanceInput
+}
+
+type PlanGovernanceInput struct {
+	ClientKey      string
+	TurnKey        domain.TurnKey
+	SchemaVersion  string
+	SchemaDigest   string
+	DecisionDigest string
+}
+
+type PlanDecisionAuditInput struct {
+	SchemaVersion string
+	Candidate     PlanCandidateSource
+	Reason        string
+	NextAction    string
+	StepCount     int
 }
 
 // planTask 逐动词解析后的步骤规约（校验在提交入口完成，执行期不再有引用错误）。
@@ -71,6 +96,9 @@ type planTask struct {
 // 校验失败（未知 verb / defer 无出口 / 缺字段 / join 目标非子任务 / 预算超限）返回
 // ErrValidation 且 plan 不落库。
 func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPlanParams) (*domain.Plan, error) {
+	if err := validatePlanGovernanceInput(p.Governance, p.DecisionAudit); err != nil {
+		return nil, err
+	}
 	tasks, err := parsePlanSteps(p.Steps)
 	if err != nil {
 		return nil, err
@@ -93,8 +121,9 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			}
 		}
 		if n > *p.Guardrails.MaxDispatch {
-			return nil, fmt.Errorf("%w: dispatch 步数 %d 超过 max_dispatch %d（整单拒绝，不部分执行）",
-				domain.ErrValidation, n, *p.Guardrails.MaxDispatch)
+			return nil, markPlanSubmissionFailure(planSubmissionFailureQuota,
+				fmt.Errorf("%w: dispatch 步数 %d 超过 max_dispatch %d（整单拒绝，不部分执行）",
+					domain.ErrValidation, n, *p.Guardrails.MaxDispatch))
 		}
 	}
 	if p.Guardrails.MaxTokens != nil && *p.Guardrails.MaxTokens < 0 {
@@ -135,14 +164,32 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		if owner.WorkspaceID != workspaceID {
 			return domain.ErrNotFound
 		}
+		governanceSourceRunID := ""
+		if p.Governance != nil {
+			governanceSourceRunID, err = s.validatePlanGovernanceLineageLocked(ctx, workspaceID, wi, owner, p.Governance)
+			if err != nil {
+				return err
+			}
+			existing, err := s.store.Plans().GetByClientKey(ctx, workspaceID, p.Governance.ClientKey)
+			if err != nil {
+				return err
+			}
+			if existing != nil {
+				if !samePlanGovernanceIntent(existing, wi.ID, owner.ID, governanceSourceRunID, p.Governance) {
+					return domain.ErrIdempotencyConflict
+				}
+				plan = existing
+				return nil
+			}
+		}
+		if p.Governance != nil && p.SourceRunID != governanceSourceRunID {
+			return fmt.Errorf("%w: governance Plan source Run differs from receipt decision", domain.ErrIdempotencyConflict)
+		}
 		coordinatedTask := false
 		if coordinator, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID); err == nil {
 			coordinatedTask = true
 			if coordinator.Status != domain.CoordinatorRunning {
 				return fmt.Errorf("%w: 当前 Coordinator 状态 %s 不允许提交 Plan", domain.ErrStateConflict, coordinator.Status)
-			}
-			if owner.ID != coordinator.CoordinatorAgentID || !owner.Kind.IsSystem() {
-				return fmt.Errorf("%w: coordinated Task 的 plan 只能由系统 Coordinator 提交", domain.ErrValidation)
 			}
 			if p.SourceRunID == "" {
 				return fmt.Errorf("%w: coordinated Task plan 必须关联 Coordinator source_run_id", domain.ErrValidation)
@@ -154,11 +201,30 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			if err != nil {
 				return err
 			}
-			if !isSystemCoordinatorRun(source) {
-				return fmt.Errorf("%w: plan source_run_id 不是系统 Coordinator Run", domain.ErrValidation)
+			if isSystemCoordinatorRun(source) {
+				if owner.ID != coordinator.CoordinatorAgentID || !owner.Kind.IsSystem() {
+					return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+						fmt.Errorf("%w: system Coordinator owner identity mismatch", domain.ErrStateConflict))
+				}
+			} else if isDelegatedCoordinatorRun(source) {
+				if err := s.validateDelegatedCoordinatorContext(ctx, wi, coordinator, owner, coordinatorContextOf(source)); err != nil {
+					return markPlanSubmissionFailure(planSubmissionFailureAuthority, err)
+				}
+			} else {
+				return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+					fmt.Errorf("%w: plan source_run_id 不是受保护 Coordinator Run", domain.ErrValidation))
 			}
 		} else if !errors.Is(err, domain.ErrNotFound) {
 			return err
+		}
+		if p.SourceRunID != "" {
+			existing, err := s.store.Plans().GetBySourceRun(ctx, p.SourceRunID)
+			if err != nil {
+				return err
+			}
+			if existing != nil {
+				return domain.ErrIdempotencyConflict
+			}
 		}
 		if coordinatedTask {
 			lastDispatch := -1
@@ -211,7 +277,8 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			}
 			for _, id := range joins {
 				if _, ok := own[id]; !ok {
-					return fmt.Errorf("%w: join step 目标 %s 不是本 plan 主任务的子任务", domain.ErrValidation, id)
+					return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+						fmt.Errorf("%w: join step 目标 %s 不是本 plan 主任务的子任务", domain.ErrValidation, id))
 				}
 			}
 		}
@@ -222,6 +289,14 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			WorkItemID: wi.ID, AgentProfileID: owner.ID, SourceRunID: p.SourceRunID,
 			Guardrails: p.Guardrails,
 			Status:     domain.PlanActive, Version: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		if p.Governance != nil {
+			turnKey := p.Governance.TurnKey
+			plan.ClientKey = p.Governance.ClientKey
+			plan.GovernanceTurnKey = &turnKey
+			plan.DecisionSchemaVersion = p.Governance.SchemaVersion
+			plan.DecisionSchemaDigest = p.Governance.SchemaDigest
+			plan.DecisionDigest = p.Governance.DecisionDigest
 		}
 		// Coordinator 提交 Plan 时把其 Run 的 context_snapshot_id/generation 固化进
 		// Plan（RFC §4.5/§4.7）：Plan Worker 一律从该 source snapshot 克隆逻辑身份，
@@ -249,10 +324,20 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 			if existing.Status == domain.PlanActive {
 				return fmt.Errorf("%w: work item 已有 active plan（%s），等待其完成或取消后再提交", domain.ErrValidation, existing.ID)
 			}
+			// A superseded waiting Plan can still contain pending approval/defer
+			// steps. Mark them skipped before terminalizing it so an older governed
+			// Turn cannot retain a quota reservation for work that no longer owns
+			// the control line.
+			if err := s.skipRemainingSteps(ctx, existing, 0); err != nil {
+				return err
+			}
 			if err := existing.Finish(now, plan.ID); err != nil {
 				return err
 			}
 			if err := s.store.Plans().Update(ctx, existing, existing.Version-1); err != nil {
+				return err
+			}
+			if err := s.expireSupersededPlanApprovals(ctx, existing, plan.ID, now); err != nil {
 				return err
 			}
 			if err := s.emit(ctx, workspaceID, domain.EventPlanFinished,
@@ -265,13 +350,28 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		if err := s.store.Plans().Create(ctx, plan); err != nil {
 			return err
 		}
+		planEventData := map[string]any{"work_item_id": wi.ID, "steps": len(plan.Steps),
+			"record_kind": string(domain.RecordKindTask)}
+		if plan.GovernanceTurnKey != nil {
+			planEventData["goal_id"] = plan.GovernanceTurnKey.GoalID
+			planEventData["todo_id"] = plan.GovernanceTurnKey.TodoID
+			planEventData["turn_seq"] = plan.GovernanceTurnKey.TurnSeq
+			planEventData["client_key"] = plan.ClientKey
+			planEventData["decision_schema_version"] = plan.DecisionSchemaVersion
+			planEventData["decision_schema_digest"] = plan.DecisionSchemaDigest
+			planEventData["decision_digest"] = plan.DecisionDigest
+		}
 		if err := s.emit(ctx, workspaceID, domain.EventPlanSubmitted,
 			domain.AggregatePlan, plan.ID, plan.Version, nil,
-			map[string]any{"work_item_id": wi.ID, "steps": len(plan.Steps),
-				"record_kind": string(domain.RecordKindTask)}); err != nil {
+			planEventData); err != nil {
 			return err
 		}
 
+		if coordinatedTask {
+			if err := s.finalizeCoordinatorPlanDecisionLocked(ctx, p); err != nil {
+				return err
+			}
+		}
 		return s.executePlanStepsFrom(ctx, wi, plan, tasks, 0, -1, &createdRuns, &deferWakeAt)
 	})
 	if err != nil {
@@ -291,6 +391,136 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 		}
 	}
 	return plan, nil
+}
+
+func validatePlanGovernanceInput(input *PlanGovernanceInput, audit *PlanDecisionAuditInput) error {
+	if input == nil {
+		return nil
+	}
+	if err := input.TurnKey.Validate(); err != nil {
+		return err
+	}
+	if input.ClientKey == "" || strings.TrimSpace(input.ClientKey) != input.ClientKey || len(input.ClientKey) > 256 {
+		return fmt.Errorf("%w: governance plan client_key must be trimmed and within 1..256 bytes", domain.ErrValidation)
+	}
+	if input.ClientKey != governancePlanClientKey(input.TurnKey) {
+		return fmt.Errorf("%w: governance plan client_key must be derived from TurnKey", domain.ErrValidation)
+	}
+	if input.SchemaVersion == "" || strings.TrimSpace(input.SchemaVersion) != input.SchemaVersion || len(input.SchemaVersion) > 128 {
+		return fmt.Errorf("%w: governance plan schema_version must be trimmed and within 1..128 bytes", domain.ErrValidation)
+	}
+	if !domain.ValidCanonicalDigest(input.SchemaDigest) || !domain.ValidCanonicalDigest(input.DecisionDigest) {
+		return fmt.Errorf("%w: governance plan schema/decision digests must be canonical sha256 values", domain.ErrValidation)
+	}
+	if input.SchemaVersion != planDecisionSchemaVersion || input.SchemaDigest != workbenchcontracts.PlanDecisionV2SchemaDigest() {
+		return fmt.Errorf("%w: governance Plan must use the canonical PlanDecisionV2 schema", domain.ErrValidation)
+	}
+	if audit != nil && audit.SchemaVersion != input.SchemaVersion {
+		return fmt.Errorf("%w: governance Plan decision audit/schema version mismatch", domain.ErrValidation)
+	}
+	return nil
+}
+
+func (s *Service) validatePlanGovernanceLineageLocked(ctx context.Context, workspaceID string,
+	workItem *domain.WorkItem, owner *domain.AgentProfile, input *PlanGovernanceInput) (string, error) {
+	goal, err := s.store.Goals().Get(ctx, input.TurnKey.GoalID)
+	if err != nil {
+		return "", err
+	}
+	todo, err := s.store.Todos().Get(ctx, input.TurnKey.TodoID)
+	if err != nil {
+		return "", err
+	}
+	if goal.WorkspaceID != workspaceID || goal.RootWorkItemID != workItem.ID ||
+		todo.GoalID != goal.ID {
+		return "", fmt.Errorf("%w: governance Plan Goal/Todo is outside the target root", domain.ErrWorkspaceContextMismatch)
+	}
+	header, err := s.store.TurnReceipts().GetHeader(ctx, input.TurnKey)
+	if err != nil {
+		return "", err
+	}
+	if header.SchemaVersion != input.SchemaVersion {
+		return "", domain.ErrIdempotencyConflict
+	}
+	phase, err := s.store.TurnReceipts().GetPhase(ctx, input.TurnKey, 1)
+	if err != nil {
+		return "", err
+	}
+	if phase.Payload["decision_digest"] != input.DecisionDigest ||
+		phase.Payload["schema_digest"] != input.SchemaDigest ||
+		phase.Payload["schema_version"] != input.SchemaVersion {
+		return "", domain.ErrIdempotencyConflict
+	}
+	sourceRunID, _ := phase.Payload["source_run_id"].(string)
+	if sourceRunID == "" {
+		return "", fmt.Errorf("%w: governance receipt lacks source Run", domain.ErrValidation)
+	}
+	source, err := s.store.Runs().Get(ctx, sourceRunID)
+	if err != nil {
+		return "", err
+	}
+	if source.WorkspaceID != workspaceID || source.WorkItemID != workItem.ID ||
+		source.AgentProfileID != owner.ID {
+		return "", fmt.Errorf("%w: governance receipt source Run is outside target authority", domain.ErrWorkspaceContextMismatch)
+	}
+	return sourceRunID, nil
+}
+
+// expireSupersededPlanApprovals closes every pending manual dispatch gate
+// belonging to the replaced Plan. The approval rows and their expiry events
+// share SubmitPlan's transaction, so a new Plan cannot commit while its old
+// gate remains executable.
+func (s *Service) expireSupersededPlanApprovals(ctx context.Context, plan *domain.Plan, supersededBy string, now time.Time) error {
+	return s.expirePlanDispatchApprovals(ctx, plan, "system:plan_superseded",
+		fmt.Sprintf("plan superseded by %s", supersededBy), now,
+		map[string]any{"superseded_by": supersededBy})
+}
+
+func (s *Service) expirePlanDispatchApprovals(ctx context.Context, plan *domain.Plan,
+	resolvedBy, reason string, now time.Time, extra map[string]any) error {
+	if plan == nil {
+		return nil
+	}
+	approvals, err := s.store.Runs().ListPendingPlanDispatchApprovals(ctx, plan.WorkItemID)
+	if err != nil {
+		return err
+	}
+	for _, approval := range approvals {
+		planID, _ := approval.RequestedBy["id"].(string)
+		if planID != plan.ID {
+			continue
+		}
+		if err := approval.Expire(resolvedBy, reason, now); err != nil {
+			return err
+		}
+		if err := s.store.Runs().UpdateApproval(ctx, approval); err != nil {
+			return err
+		}
+		data := map[string]any{
+			"kind": approval.Kind, "plan_id": plan.ID,
+			"resolved_by": approval.ResolvedBy, "reason": approval.ResolveReason,
+			"record_kind": string(domain.RecordKindTask),
+		}
+		for key, value := range extra {
+			data[key] = value
+		}
+		if seq, ok := asPlanInt(approval.RequestedBy["seq"]); ok {
+			data["seq"] = seq
+		}
+		if err := s.emit(ctx, plan.WorkspaceID, domain.EventApprovalExpired,
+			domain.AggregateApproval, approval.ID, 1, nil, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func samePlanGovernanceIntent(existing *domain.Plan, workItemID, agentID, sourceRunID string, input *PlanGovernanceInput) bool {
+	return existing != nil && input != nil && existing.WorkItemID == workItemID &&
+		existing.AgentProfileID == agentID && existing.SourceRunID == sourceRunID && existing.ClientKey == input.ClientKey &&
+		existing.GovernanceTurnKey != nil && existing.GovernanceTurnKey.Equal(input.TurnKey) &&
+		existing.DecisionSchemaVersion == input.SchemaVersion &&
+		existing.DecisionSchemaDigest == input.SchemaDigest && existing.DecisionDigest == input.DecisionDigest
 }
 
 // dispatchCreatedRuns 权威写入提交后启动 Runtime 副作用（SubmitPlan 与审批放行
@@ -383,16 +613,20 @@ func (s *Service) annotateDispatchSteps(ctx context.Context, workspaceID string,
 		}
 		a, err := s.store.Agents().Get(ctx, t.agentID)
 		if err != nil {
-			return fmt.Errorf("%w: dispatch step %q 目标 agent %s 不存在", domain.ErrValidation, t.title, t.agentID)
+			return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+				fmt.Errorf("%w: dispatch step %q 目标 agent %s 不存在", domain.ErrValidation, t.title, t.agentID))
 		}
 		if a.WorkspaceID != workspaceID {
-			return fmt.Errorf("%w: dispatch step %q 目标 agent %s 不属于当前 workspace", domain.ErrValidation, t.title, t.agentID)
+			return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+				fmt.Errorf("%w: dispatch step %q 目标 agent %s 不属于当前 workspace", domain.ErrValidation, t.title, t.agentID))
 		}
 		if a.Kind.IsSystem() {
-			return fmt.Errorf("%w: dispatch step %q 不能把系统 Task Coordinator 当作 Worker", domain.ErrValidation, t.title)
+			return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+				fmt.Errorf("%w: dispatch step %q 不能把系统 Task Coordinator 当作 Worker", domain.ErrValidation, t.title))
 		}
 		if a.Availability != domain.AgentEnabled {
-			return fmt.Errorf("%w: dispatch step %q 目标 agent %s 已停用", domain.ErrValidation, t.title, t.agentID)
+			return markPlanSubmissionFailure(planSubmissionFailureAuthority,
+				fmt.Errorf("%w: dispatch step %q 目标 agent %s 已停用", domain.ErrValidation, t.title, t.agentID))
 		}
 		t.approvalGate = a.Policy.ApprovalPolicy == domain.ApprovalPolicyManual
 	}
@@ -482,6 +716,7 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				AcceptanceCriteria:      t.acceptance,
 				DispatchID:              planDispatchID,
 				CoordinatorContext:      s.planWorkerCoordinatorContext(ctx, wi.ID, plan, st, t.agentID),
+				governanceContext:       planGovernanceRunContext(plan),
 				ContextSource:           workerContextSource,
 				ContextSourceSnapshotID: workerContextSnapshotID,
 			})
@@ -569,9 +804,14 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if evalContextSnapshotID == "" {
 				evalContextSource = ""
 			}
+			evalContext, coordinatorAdmission, contextErr := s.planEvaluationCoordinatorContext(ctx, plan)
+			if contextErr != nil {
+				return fmt.Errorf("构建评估 Coordinator proof: %w", contextErr)
+			}
 			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
 				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
-				CoordinatorContext: s.planEvaluationCoordinatorContext(ctx, plan),
+				CoordinatorContext: evalContext, coordinatorAdmission: coordinatorAdmission,
+				governanceContext: planGovernanceRunContext(plan),
 				// 评估快照克隆被评估 Plan 的 source snapshot（RFC §4.7：evaluation 不切换身份）。
 				ContextSource:           evalContextSource,
 				ContextSourceSnapshotID: evalContextSnapshotID,
@@ -579,12 +819,35 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if err != nil {
 				return fmt.Errorf("创建评估 run: %w", err)
 			}
+			st.ResultRunID = evalRun.ID
+			if err := s.store.Plans().UpdateStep(ctx, st); err != nil {
+				return err
+			}
+			if err := s.recordCoordinatorEvaluationDispatch(ctx, plan, evalRun); err != nil {
+				return err
+			}
 			*createdRuns = append(*createdRuns, evalRun)
 			return nil
 		}
 	}
 	// 所有 step 执行完（无 defer/finish）：顺序执行完即 finished。
 	return s.finishPlan(ctx, plan, len(plan.Steps), "")
+}
+
+func planGovernanceRunContext(plan *domain.Plan) map[string]any {
+	if plan == nil || plan.GovernanceTurnKey == nil {
+		return nil
+	}
+	return map[string]any{
+		"plan_id":                 plan.ID,
+		"goal_id":                 plan.GovernanceTurnKey.GoalID,
+		"todo_id":                 plan.GovernanceTurnKey.TodoID,
+		"turn_seq":                plan.GovernanceTurnKey.TurnSeq,
+		"plan_client_key":         plan.ClientKey,
+		"decision_schema_version": plan.DecisionSchemaVersion,
+		"decision_schema_digest":  plan.DecisionSchemaDigest,
+		"decision_digest":         plan.DecisionDigest,
+	}
 }
 
 // finishPlan 落终态：跳过 fromSeq 起的余下步骤并迁移 plan → finished。
@@ -684,15 +947,11 @@ func (s *Service) awaitPlanApproval(ctx context.Context, wi *domain.WorkItem, pl
 // dispatch 闸门随重解析重标注。
 func (s *Service) resolvePlanDispatchApproval(ctx context.Context, a *domain.ApprovalRequest, approved bool, reason string,
 	createdRuns *[]*domain.ExecutionRun, deferWakeAt **time.Time) (*domain.Plan, error) {
-	planID, _ := a.RequestedBy["id"].(string)
-	if planID == "" {
-		return nil, fmt.Errorf("%w: 审批 %s 的 RequestedBy 缺少 plan id", domain.ErrValidation, a.ID)
-	}
 	seq, ok := asPlanInt(a.RequestedBy["seq"])
 	if !ok {
 		return nil, fmt.Errorf("%w: 审批 %s 的 RequestedBy 缺少步骤 seq", domain.ErrValidation, a.ID)
 	}
-	plan, err := s.store.Plans().Get(ctx, planID)
+	plan, err := s.planForDispatchApproval(ctx, a)
 	if err != nil {
 		return nil, err
 	}
@@ -729,6 +988,9 @@ func (s *Service) resolvePlanDispatchApproval(ctx context.Context, a *domain.App
 		}
 		return plan, s.failStepAndPlan(ctx, plan, st, seq+1, msg)
 	}
+	if err := s.renewGovernancePlanApprovalClaim(ctx, plan); err != nil {
+		return nil, err
+	}
 	if err := plan.MarkActive(time.Now().UTC()); err != nil {
 		return nil, err
 	}
@@ -736,6 +998,140 @@ func (s *Service) resolvePlanDispatchApproval(ctx context.Context, a *domain.App
 		return nil, err
 	}
 	return plan, s.executePlanStepsFrom(ctx, wi, plan, tasks, seq, seq, createdRuns, deferWakeAt)
+}
+
+// renewGovernancePlanApprovalClaim keeps a delayed manual approval attached to
+// the same admitted Turn. An expired claim may be renewed only when the current
+// owner is still the governed Plan owner; a missing or transferred claim fails
+// closed rather than letting an old approval create a Worker without authority.
+func (s *Service) renewGovernancePlanApprovalClaim(ctx context.Context, plan *domain.Plan) error {
+	if plan == nil {
+		return fmt.Errorf("%w: plan dispatch approval requires a Plan", domain.ErrValidation)
+	}
+	goal, err := s.store.Goals().GetByRootWorkItem(ctx, plan.WorkItemID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if goal.Status != domain.GoalActive {
+		return fmt.Errorf("%w: paused or stopped Goal cannot approve a plan dispatch", domain.ErrStateConflict)
+	}
+	if plan.GovernanceTurnKey == nil {
+		return nil
+	}
+	key := *plan.GovernanceTurnKey
+	if key.GoalID != goal.ID || goal.CurrentTodoID != key.TodoID {
+		return fmt.Errorf("%w: governed Plan approval is no longer on the current Goal Todo", domain.ErrStateConflict)
+	}
+	todo, err := s.store.Todos().Get(ctx, key.TodoID)
+	if err != nil {
+		return err
+	}
+	if todo.GoalID != goal.ID || todo.LastTurnSeq != key.TurnSeq ||
+		(todo.Status != domain.TodoWaiting && todo.Status != domain.TodoClaimed) ||
+		todo.Claim == nil || todo.Claim.OwnerAgentID != plan.AgentProfileID ||
+		todo.ClaimVersion != todo.Claim.Version {
+		return fmt.Errorf("%w: governed plan dispatch requires the current Todo claim", domain.ErrStateConflict)
+	}
+	now := time.Now().UTC()
+	if todo.Claim.ExpiresAt.After(now) {
+		return nil
+	}
+	ownerID := todo.Claim.OwnerAgentID
+	released, err := s.store.Todos().Release(ctx, todo.ID, ownerID, now, todo.Version)
+	if err != nil {
+		return err
+	}
+	if err := s.emitTodoClaimChanged(ctx, goal.WorkspaceID, released, "expired", "", nil); err != nil {
+		return err
+	}
+	claimed, err := s.store.Todos().Claim(ctx, todo.ID, ownerID, now, now.Add(governancePlanClaimTTL), released.Version)
+	if err != nil {
+		return err
+	}
+	if released.Status != claimed.Status {
+		if err := s.emitTodoStateChanged(ctx, goal.WorkspaceID, claimed, released.Status); err != nil {
+			return err
+		}
+	}
+	return s.emitTodoClaimChanged(ctx, goal.WorkspaceID, claimed, "claimed", ownerID, &claimed.Claim.ExpiresAt)
+}
+
+// planForDispatchApproval resolves the durable plan identity embedded in a
+// plan_dispatch approval. Keeping this lookup separate lets an idempotent
+// replay reconstruct the governed Turn even after the plan was already failed
+// by the first rejection attempt; the replay must still repair any unfinished
+// post-decision settlement.
+func (s *Service) planForDispatchApproval(ctx context.Context, a *domain.ApprovalRequest) (*domain.Plan, error) {
+	if a == nil {
+		return nil, fmt.Errorf("%w: plan_dispatch approval is required", domain.ErrValidation)
+	}
+	planID, _ := a.RequestedBy["id"].(string)
+	if planID == "" {
+		return nil, fmt.Errorf("%w: 审批 %s 的 RequestedBy 缺少 plan id", domain.ErrValidation, a.ID)
+	}
+	if _, ok := asPlanInt(a.RequestedBy["seq"]); !ok {
+		return nil, fmt.Errorf("%w: 审批 %s 的 RequestedBy 缺少步骤 seq", domain.ErrValidation, a.ID)
+	}
+	plan, err := s.store.Plans().Get(ctx, planID)
+	if err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+// blockRejectedPlanDispatchTurnLocked 是拒绝收口的事务内核心。幂等：Todo 已非
+// waiting（并发收口）或已被新 Turn 接管时跳过；Coordinator 缺失（legacy Task）
+// 或已进入停止态时跳过不报错。transitionGovernanceTodoTurn 只允许 running
+// 起点，这里是拒绝专用路径；TodoWaiting→TodoBlocked 在 domain 状态机合法。
+func (s *Service) blockRejectedPlanDispatchTurnLocked(ctx context.Context, key domain.TurnKey) error {
+	goal, err := s.store.Goals().Get(ctx, key.GoalID)
+	if err != nil {
+		return err
+	}
+	todo, err := s.store.Todos().Get(ctx, key.TodoID)
+	if err != nil {
+		return err
+	}
+	current, err := rejectedPlanDispatchTurnIsCurrent(todo, key)
+	if err != nil {
+		return err
+	}
+	if !current {
+		return nil
+	}
+	from := todo.Status
+	expected := todo.Version
+	if err := todo.Transition(domain.TodoBlocked, time.Now().UTC()); err != nil {
+		return err
+	}
+	if err := s.store.Todos().Update(ctx, todo, expected); err != nil {
+		return err
+	}
+	if err := s.emitTodoStateChanged(ctx, goal.WorkspaceID, todo, from); err != nil {
+		return err
+	}
+	state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, goal.RootWorkItemID)
+	if errors.Is(stateErr, domain.ErrNotFound) {
+		return nil // legacy Task 无 Coordinator 可收口
+	}
+	if stateErr != nil {
+		return stateErr
+	}
+	if coordinatorStateExecutionStopped(state) {
+		return nil // 已 blocked/waiting_user/completed/cancelled：跳过
+	}
+	return s.blockCoordinator(ctx, state, nil, "plan_dispatch_rejected",
+		"派发审批被拒绝", "调整方案或解除阻塞后重试")
+}
+
+func rejectedPlanDispatchTurnIsCurrent(todo *domain.Todo, key domain.TurnKey) (bool, error) {
+	if todo == nil || todo.GoalID != key.GoalID || todo.ID != key.TodoID || todo.LastTurnSeq < key.TurnSeq {
+		return false, fmt.Errorf("%w: rejected turn settlement identity mismatch", domain.ErrStateConflict)
+	}
+	return todo.LastTurnSeq == key.TurnSeq && todo.Status == domain.TodoWaiting, nil
 }
 
 // skipRemainingSteps 把 fromSeq 起的步骤标记 skipped（defer/finish 之后的步骤不执行）。
@@ -979,19 +1375,29 @@ func (s *Service) failPlanForBudget(ctx context.Context, plan *domain.Plan, used
 		return
 	}
 	s.notifier.Notify(plan.WorkspaceID)
+	var activeCoordinatorRunID string
 	err = s.store.InTx(wctx, func(ctx context.Context) error {
 		wi, err := s.store.WorkItems().Get(ctx, plan.WorkItemID)
 		if err != nil {
 			return err
 		}
-		return s.blockLocked(ctx, wi, BlockParams{
+		params := BlockParams{
 			Code:    domain.PlanErrorBudgetExceeded,
 			Message: fmt.Sprintf("plan %s 预算超限：token 合计 %d 超过 max_tokens %d", plan.ID, used, limit),
 			Source:  "control_plane",
-		})
+		}
+		if err := s.blockLocked(ctx, wi, params); err != nil {
+			return err
+		}
+		activeCoordinatorRunID, err = s.markCoordinatorUserBlockedLocked(ctx, wi.ID, params)
+		return err
 	})
 	if err != nil {
 		log.Printf("plan: 预算 blocker 落库失败（work item %s）: %v", plan.WorkItemID, err)
+		return
+	}
+	if activeCoordinatorRunID != "" {
+		_, _ = s.ControlRun(wctx, activeCoordinatorRunID, "cancel")
 	}
 }
 

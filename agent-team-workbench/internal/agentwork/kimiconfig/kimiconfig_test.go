@@ -77,3 +77,17 @@ func TestApplyRequiresAPIKey(t *testing.T) {
 		t.Fatalf("expected API key error, got %v", err)
 	}
 }
+
+func TestValidateSpecRejectsCredentialBearingBaseURL(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://user:password@example.com/v1",
+		"https://example.com/v1?token=secret",
+		"https://example.com/v1#secret",
+	} {
+		if err := ValidateSpec(orchestrator.ModelSpec{
+			Provider: "moonshot", Model: "kimi-k2.7-code", APIKeyEnv: "MOONSHOT_KEY", BaseURL: baseURL,
+		}); err == nil {
+			t.Fatalf("credential-bearing base_url %q must be rejected", baseURL)
+		}
+	}
+}

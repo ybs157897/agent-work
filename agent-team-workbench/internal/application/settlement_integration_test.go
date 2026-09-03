@@ -3,6 +3,7 @@ package application_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,6 +395,145 @@ func TestSettlementPartialFailureDegraded(t *testing.T) {
 	settleDriveRun(t, ctx, svc, settlement.ID, "汇总（含失败项）", true)
 	if d := dispatchOf(t, ctx, store, batchID); d.Status != domain.DispatchDegraded {
 		t.Fatalf("有失败成员批应收口 degraded，实际 %s", d.Status)
+	}
+}
+
+func TestSettlementWakeReassignsDurableSystemWakeToCurrentHandoffTarget(t *testing.T) {
+	ctx, db, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnvWithDatabase(t)
+	defer db.Close()
+	now := time.Now().UTC()
+	targetID := "agent_settlement_handoff_target"
+	if err := store.Agents().Create(ctx, &domain.AgentProfile{
+		ID: targetID, WorkspaceID: wsID, Name: "Settlement handoff target", Role: "worker",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		RuntimePreference: domain.RuntimePreference{Preferred: "mock"},
+		Version:           1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "settlement Handoff reroute", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"a durable system wake follows the current Handoff target"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err := store.Goals().GetByRootWorkItem(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := usageDriveSourceDecision(t, ctx, svc, store, dispatcher.runs[0].ID, usageWorkerDecision(t, workerID))
+	if plan == nil || len(dispatcher.runs) != 2 {
+		t.Fatalf("precondition: system Coordinator must create one worker dispatch: plan=%+v runs=%d", plan, len(dispatcher.runs))
+	}
+	worker := dispatcher.runs[1]
+	settleDriveRun(t, ctx, svc, worker.ID, "worker completed before Handoff", true)
+
+	oldWakeups := settlementWakeups(t, ctx, store, state.CoordinatorAgentID, root.ID)
+	if len(oldWakeups) != 1 || oldWakeups[0].AgentProfileID != state.CoordinatorAgentID {
+		t.Fatalf("precondition: settlement wake must be durably addressed to system Coordinator: %+v", oldWakeups)
+	}
+	oldWake := oldWakeups[0]
+
+	todo, err := store.Todos().Get(ctx, goal.CurrentTodoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if todo.Claim == nil || todo.Claim.OwnerAgentID != state.CoordinatorAgentID {
+		t.Fatalf("precondition: system Coordinator must still own the governed Todo: %+v", todo)
+	}
+	handoff, err := svc.CreateHandoff(ctx, application.CreateHandoffParams{
+		GoalID: goal.ID, TodoID: todo.ID,
+		Source: domain.GovernanceActorRef{Kind: domain.GovernanceActorAgent, ID: state.CoordinatorAgentID},
+		Target: domain.GovernanceActorRef{Kind: domain.GovernanceActorAgent, ID: targetID},
+		Reason: "target takes over settlement", ContextSummary: "the already queued wake must not revive the system lead",
+		Actor: domain.GovernanceActorRef{Kind: domain.GovernanceActorAgent, ID: state.CoordinatorAgentID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AcceptHandoff(ctx, handoff.ID,
+		domain.GovernanceActorRef{Kind: domain.GovernanceActorAgent, ID: targetID}, "target accepts settlement"); err != nil {
+		t.Fatal(err)
+	}
+	transferred, err := store.Handoffs().Get(ctx, handoff.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transferred.Status != domain.HandoffTransferred || transferred.TargetClaimVersion <= todo.ClaimVersion {
+		t.Fatalf("Handoff must transfer to a new target claim generation: before=%+v after=%+v", todo, transferred)
+	}
+	todoAfterAccept, err := store.Todos().Get(ctx, todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if todoAfterAccept.Claim == nil || todoAfterAccept.Claim.OwnerAgentID != targetID ||
+		todoAfterAccept.ClaimVersion != transferred.TargetClaimVersion {
+		t.Fatalf("Handoff target claim must be current before consuming the old wake: todo=%+v handoff=%+v", todoAfterAccept, transferred)
+	}
+
+	rootRunsBefore, err := store.Runs().ListByWorkItem(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeIDs := make(map[string]struct{}, len(rootRunsBefore))
+	systemRunsBefore := 0
+	for _, run := range rootRunsBefore {
+		beforeIDs[run.ID] = struct{}{}
+		if run.AgentProfileID == state.CoordinatorAgentID {
+			systemRunsBefore++
+		}
+	}
+	scheduler := &scheduling.Scheduler{Store: store.Wakeups(), RunStarter: svc}
+	outcome, err := scheduler.ConsumeOne(ctx, oldWake, time.Now().UTC())
+	if err != nil || outcome != scheduling.OutcomeConsumed {
+		t.Fatalf("old system settlement wake must be consumed through delegated target: outcome=%s err=%v", outcome, err)
+	}
+
+	rootRunsAfter, err := store.Runs().ListByWorkItem(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootRunsAfter) != len(rootRunsBefore)+1 {
+		t.Fatalf("consuming one durable wake must create exactly one root Run: before=%d after=%d", len(rootRunsBefore), len(rootRunsAfter))
+	}
+	var newRun *domain.ExecutionRun
+	systemRunsAfter := 0
+	for _, run := range rootRunsAfter {
+		if run.AgentProfileID == state.CoordinatorAgentID {
+			systemRunsAfter++
+		}
+		if _, existed := beforeIDs[run.ID]; !existed {
+			if newRun != nil {
+				t.Fatalf("one durable wake must create exactly one new root Run: %+v", rootRunsAfter)
+			}
+			newRun = run
+		}
+	}
+	if newRun == nil {
+		t.Fatalf("consuming the durable wake must create one new root Run: before=%v after=%v", beforeIDs, rootRunsAfter)
+	}
+	if systemRunsAfter != systemRunsBefore {
+		t.Fatalf("consuming a delegated settlement wake must not create an extra system Coordinator Run: before=%d after=%d", systemRunsBefore, systemRunsAfter)
+	}
+	control, ok := newRun.Input["task_coordinator"].(map[string]any)
+	if !ok || newRun.AgentProfileID != targetID || control["role"] != "coordinator" ||
+		control["delegated"] != true || control["handoff_id"] != handoff.ID ||
+		control["handoff_target_agent_id"] != targetID ||
+		fmt.Sprint(control["handoff_target_claim_version"]) != fmt.Sprint(transferred.TargetClaimVersion) {
+		t.Fatalf("old wake must create a delegated target Run with exact Handoff proof: run=%+v", newRun)
+	}
+	currentTodo, err := store.Todos().Get(ctx, todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentTodo.Claim == nil || currentTodo.Claim.OwnerAgentID != targetID ||
+		currentTodo.ClaimVersion != transferred.TargetClaimVersion {
+		t.Fatalf("consuming a delegated settlement wake must preserve the target claim generation: %+v", currentTodo)
 	}
 }
 

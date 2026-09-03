@@ -164,6 +164,24 @@ func (r *RunnerRepo) ActiveLease(ctx context.Context, runID string) (*applicatio
 	return l, nil
 }
 
+// GetLease 按 lease_id 读租约（含已释放）。终态后补发的 usage 事件据此做
+// 「该 Run 已释放租约」的身份比对，而不是被活动租约检查一律打成 stale。
+func (r *RunnerRepo) GetLease(ctx context.Context, leaseID string) (*application.RunLease, error) {
+	l := &application.RunLease{}
+	var renewed scanTime
+	var released *time.Time
+	err := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT lease_id, run_id, runner_id, fencing_token, renewed_until, released_at
+		 FROM run_leases WHERE lease_id=?`, leaseID).
+		Scan(&l.LeaseID, &l.RunID, &l.RunnerID, &l.FencingToken, &renewed, &released)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	l.RenewedUntil = mustTime(renewed)
+	l.Released = released != nil
+	return l, nil
+}
+
 // ListActiveLeasesByRunner 恢复某 Runner 仍持有的非终态租约。Gateway 进程
 // 重启或 Runner 连接换 epoch 后以数据库为租约真相重建内存 fencing 表，不能把
 // pending event 当 stale ACK 掉。

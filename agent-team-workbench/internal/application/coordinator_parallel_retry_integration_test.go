@@ -11,6 +11,7 @@ func TestParallelWorkerSuccessDoesNotClearAnotherWorkersRetryCheckpoint(t *testi
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "并行 Worker retry", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -21,10 +22,7 @@ func TestParallelWorkerSuccessDoesNotClearAnotherWorkersRetryCheckpoint(t *testi
 			t.Fatal(err)
 		}
 	}
-	planText := "```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"A","instruction":"执行 A"},` +
-		`{"verb":"dispatch","agent_id":"` + workerID + `","title":"B","instruction":"执行 B"},` +
-		`{"verb":"join","children":"all"}]` + "\n```"
+	planText := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch two workers","next_action":"wait for both workers","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"A","instruction":"执行 A","acceptance":["A 完成并可验证"]},{"verb":"dispatch","agent_id":"` + workerID + `","title":"B","instruction":"执行 B","acceptance":["B 完成并可验证"]},{"verb":"join","children":"all"}]}`
 	if err := svc.RecordRunEvent(ctx, coordinatorRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)
@@ -74,6 +72,7 @@ func TestNonRetryableWorkerFailureBlocksAndClosesDispatchDegraded(t *testing.T) 
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "不可重试失败", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -84,9 +83,7 @@ func TestNonRetryableWorkerFailureBlocksAndClosesDispatchDegraded(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	planText := "```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行"},` +
-		`{"verb":"join","children":"all"}]` + "\n```"
+	planText := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch worker","next_action":"wait for worker","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行","acceptance":["实现结果通过验证"]},{"verb":"join","children":"all"}]}`
 	if err := svc.RecordRunEvent(ctx, coordinatorRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)
@@ -124,6 +121,7 @@ func TestUserBlockClosesOpenDispatchAndLateWorkerCannotReviveIt(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "用户暂停派发", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,9 +132,7 @@ func TestUserBlockClosesOpenDispatchAndLateWorkerCannotReviveIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	planText := "```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行"},` +
-		`{"verb":"join","children":"all"}]` + "\n```"
+	planText := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch worker","next_action":"wait for worker","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"实现","instruction":"执行","acceptance":["实现结果通过验证"]},{"verb":"join","children":"all"}]}`
 	if err := svc.RecordRunEvent(ctx, coordinatorRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)
@@ -186,6 +182,7 @@ func TestLateWorkerTerminalCannotClearNewCoordinatorRun(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "旧 Worker 不覆盖新统筹", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -196,10 +193,7 @@ func TestLateWorkerTerminalCannotClearNewCoordinatorRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	planText := "```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"A","instruction":"执行 A"},` +
-		`{"verb":"dispatch","agent_id":"` + workerID + `","title":"B","instruction":"执行 B"},` +
-		`{"verb":"join","children":"all"}]` + "\n```"
+	planText := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch two workers","next_action":"wait for both workers","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"A","instruction":"执行 A","acceptance":["A 完成并可验证"]},{"verb":"dispatch","agent_id":"` + workerID + `","title":"B","instruction":"执行 B","acceptance":["B 完成并可验证"]},{"verb":"join","children":"all"}]}`
 	if err := svc.RecordRunEvent(ctx, source.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)

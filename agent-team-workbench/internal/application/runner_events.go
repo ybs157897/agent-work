@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -62,6 +63,22 @@ func runnerSHA256(v string) bool {
 	return true
 }
 
+// decodeProviderUsageReport 把 usage.updated 帧的 provider_report（sealed
+// domain.ProviderUsageReportV1 的 JSON 形态，经网关 map[string]any 往返）
+// 还原为 typed 报告。类型不对（如字符串）或字段畸形返回错误——调用方按毒帧
+// 收口；digest 一致性由调用方 VerifyDigest 判定。
+func decodeProviderUsageReport(raw any) (*domain.ProviderUsageReportV1, error) {
+	marshaled, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var report domain.ProviderUsageReportV1
+	if err := json.Unmarshal(marshaled, &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
 func parseRunnerSession(data map[string]any) (runtime.SessionUpdate, bool) {
 	update := runtime.SessionUpdate{}
 	if raw, exists := data["ref"]; exists {
@@ -109,6 +126,30 @@ func parseRunnerSession(data map[string]any) (runtime.SessionUpdate, bool) {
 // 由网关在投递前校验，不参与事件身份）。
 func activeLeaseMatches(l *RunLease, leaseID, runnerID string, fencing int64) bool {
 	return l != nil && !l.Released && l.LeaseID == leaseID && l.RunnerID == runnerID && l.FencingToken == fencing
+}
+
+// releasedLeaseUsageAllowed 判定「已释放租约 + 终态 Run」的迟到 usage.updated
+// 是否放行（终态观测例外）。租约按 lease_id 读含已释放行，身份四要素
+// （lease_id/run/runner/fencing）必须与帧完全一致，且 Run 已终态——非终态
+// Run 命中已释放租约说明租约被 sweep/接管收走，仍按 stale 拒绝。lease 不存在
+// （ErrNotFound）按不满足处理；其他存储错误上返（瞬态失败不 ACK，Runner 重试）。
+func (s *Service) releasedLeaseUsageAllowed(ctx context.Context, in RunnerEventInput) (bool, error) {
+	lease, err := s.store.Runners().GetLease(ctx, in.LeaseID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if lease == nil || !lease.Released ||
+		lease.RunID != in.RunID || lease.RunnerID != in.RunnerID || lease.FencingToken != in.FencingToken {
+		return false, nil
+	}
+	r, err := s.store.Runs().Get(ctx, in.RunID)
+	if err != nil {
+		return false, err
+	}
+	return r.Status.IsTerminal(), nil
 }
 
 // RunnerEventInput 是 Gateway 完成 transport 校验后交给应用层的事件命令。
@@ -170,8 +211,23 @@ func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (Ru
 			return err
 		}
 		if !activeLeaseMatches(lease, in.LeaseID, in.RunnerID, in.FencingToken) {
-			ack.Outcome = RunnerEventStale
-			return nil
+			// 终态观测例外（仅 usage.updated）：终态事件在步骤⑤同事务释放
+			// lease，而 runnerd 终态后保留租约 framing 补发 session/usage——
+			// 丢帧重传/断线重连场景下合法的迟到 usage 不得被打成 stale。
+			// 严格身份（lease_id/run/runner/fencing 四要素）+ 租约确已释放 +
+			// Run 已终态，三者齐备才放行；其余一律维持 stale。
+			if in.Kind != domain.EventUsageUpdated {
+				ack.Outcome = RunnerEventStale
+				return nil
+			}
+			allowed, err := s.releasedLeaseUsageAllowed(ctx, in)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				ack.Outcome = RunnerEventStale
+				return nil
+			}
 		}
 		// ② 同事务 dedup 条件插入（dedup key 不含 connection_epoch）。
 		if err := s.store.Runners().RunnerEventDedupV2(ctx, in.RunID, in.LeaseID, in.RunnerID, in.ProducerSeq, in.EventID); err != nil {
@@ -240,6 +296,22 @@ func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (Ru
 			if usage.Basis != runtime.UsagePerRun && usage.Basis != runtime.UsageSessionCumulative {
 				poison = true
 				break
+			}
+			// provider 原生报告（可选，sealed provider-usage/v1 的 JSON 形态）：
+			// 存在则还原为 typed 报告并校验 digest；类型不对/字段畸形/digest
+			// 失配与数值校验失败同语义——毒帧收口，不静默丢证据。recordRunUsageTx
+			// 的 bindProviderUsageReport 还会再验 run/agent/adapter 身份（双重
+			// 防线）；缺席时保持 legacy 行为（老 runner/无 report adapter 兼容）。
+			if raw, exists := data["provider_report"]; exists {
+				report, err := decodeProviderUsageReport(raw)
+				if err == nil {
+					err = report.VerifyDigest()
+				}
+				if err != nil {
+					poison = true
+					break
+				}
+				usage.ProviderReport = report
 			}
 			if _, err := s.recordRunUsageTx(ctx, in.RunID, usage); err != nil {
 				return err
@@ -354,7 +426,8 @@ func (s *Service) replayRunTerminalHooks(ctx context.Context, r *domain.Executio
 	if r == nil || !r.Status.IsTerminal() {
 		return
 	}
-	if !isSystemCoordinatorRun(r) {
+	s.dispatchedRuns.Delete(r.ID)
+	if !isGovernedCoordinatorRun(r) {
 		s.maybeSelfHeal(ctx, r)
 	}
 	if wi, werr := s.store.WorkItems().Get(ctx, r.WorkItemID); werr == nil && isTaskWorkItem(wi) {
@@ -362,7 +435,11 @@ func (s *Service) replayRunTerminalHooks(ctx context.Context, r *domain.Executio
 		s.maybeProcessVerdict(ctx, r)
 		s.maybeExtractPlan(ctx, r)
 		s.maybeSummarizeSegment(ctx, r)
+		// canonical usage 先于 Coordinator 终态决策（决策可能触发 admission 结算）；
+		// quota sweep 随其后（retry checkpoint 先落，关闭判定才能看到 pending retry）。
+		s.maybeCanonicalizeRunUsage(ctx, r)
 		s.maybeAdvanceTaskCoordinator(ctx, r)
+		s.maybeSettleGovernanceTurnQuota(ctx, r)
 		s.maybeSettleDispatch(ctx, r)
 	}
 }

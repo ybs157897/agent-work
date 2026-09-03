@@ -70,13 +70,16 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 		AdapterID: "kimi-appserver", AdapterVersion: "1.0.0",
 		Protocol: runtime.Protocol{Name: "kimi-kap-server", Version: "2"},
 		Capabilities: map[string]runtime.CapabilityLevel{
-			"streaming":  runtime.CapSupported, // assistant.delta / thinking.delta
-			"multi_turn": runtime.CapSupported,
-			"resume":     runtime.CapSupported, // 会话原生续会 + 40401 探测
-			"steering":   runtime.CapSupported, // prompts + prompts::steer
-			"approval":   runtime.CapSupported, // event.approval.requested + approvals REST
-			"subagents":  runtime.CapSupported, // Kimi AgentSwarm 与普通 Agent 子 Agent
-			"swarm":      runtime.CapSupported, // session profile swarm_mode + AgentSwarm
+			"streaming":                               runtime.CapSupported, // assistant.delta / thinking.delta
+			runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+			runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+			runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
+			"multi_turn":                              runtime.CapSupported,
+			"resume":                                  runtime.CapSupported, // 会话原生续会 + 40401 探测
+			"steering":                                runtime.CapSupported, // prompts + prompts::steer
+			"approval":                                runtime.CapSupported, // event.approval.requested + approvals REST
+			"subagents":                               runtime.CapSupported, // Kimi AgentSwarm 与普通 Agent 子 Agent
+			"swarm":                                   runtime.CapSupported, // session profile swarm_mode + AgentSwarm
 			// REST abort（WS 无 abort 帧）：turn 级精确取消，非进程级。
 			"interrupt":       runtime.CapSupported,
 			"workspace_files": runtime.CapSupported,
@@ -118,17 +121,24 @@ func (m *Module) Close() { m.sup.Close() }
 
 // turnState 一次 Execute 的可变状态（事件循环协程写，收尾读）。
 type turnState struct {
-	promptID      string // 本轮提交的 prompt_id（abort 目标）
-	activeTurn    int64  // 本 prompt 触发的 turn 编号；0=尚未开始
-	activeSeen    bool
-	answer        strings.Builder // assistant.delta 累计（合成 message.completed）
-	usageIn       int64           // turn.step.completed.usage 逐 step 累计（per_run）
-	usageOut      int64
-	usageCached   int64
-	usageSeen     bool
-	endReason     string           // turn.ended.reason
-	failure       *runtime.Failure // turn.ended.error 权威失败
-	sessionUpdate *runtime.SessionUpdate
+	promptID             string // 本轮提交的 prompt_id（abort 目标）
+	activeTurn           int64  // 本 prompt 触发的 turn 编号；0=尚未开始
+	activeSeen           bool
+	answer               strings.Builder // assistant.delta 累计（合成 message.completed）
+	usageIn              int64           // legacy total（inputOther+cacheRead+cacheCreation）
+	usageOut             int64
+	usageCached          int64 // legacy cache-read projection
+	usageUncached        int64
+	usageCacheRead       int64
+	usageCacheWrite      int64
+	usageUncachedKnown   bool
+	usageOutputKnown     bool
+	usageCacheReadKnown  bool
+	usageCacheWriteKnown bool
+	usageSeen            bool
+	endReason            string           // turn.ended.reason
+	failure              *runtime.Failure // turn.ended.error 权威失败
+	sessionUpdate        *runtime.SessionUpdate
 	// pendingTools tracks only identified tool calls. KAP can emit turn.ended
 	// before a result; those calls are closed synthetically at turn end.
 	pendingTools map[string]string
@@ -150,6 +160,159 @@ type childTurnState struct {
 	usageCached int64
 	pending     map[string]string
 	results     map[string]struct{}
+}
+
+func tokenUsageValue(value *int64) (int64, bool) {
+	if value == nil || *value < 0 {
+		return 0, false
+	}
+	return *value, true
+}
+
+func addUsageValue(current, value int64) (int64, bool) {
+	next, err := domain.CheckedAddNonNegative(current, value)
+	return next, err == nil
+}
+
+func (s *turnState) addUsage(u *tokenUsage) {
+	if u == nil {
+		return
+	}
+	other, otherKnown := tokenUsageValue(u.InputOther)
+	read, readKnown := tokenUsageValue(u.InputCacheRead)
+	write, writeKnown := tokenUsageValue(u.InputCacheCreation)
+	out, outputKnown := tokenUsageValue(u.Output)
+
+	inputKnown := otherKnown && readKnown && writeKnown
+	if inputKnown {
+		input, ok := addUsageValue(other, read)
+		if ok {
+			input, ok = addUsageValue(input, write)
+			if ok {
+				if next, sumOK := addUsageValue(s.usageIn, input); sumOK {
+					s.usageIn = next
+				} else {
+					inputKnown = false
+				}
+			} else {
+				inputKnown = false
+			}
+		} else {
+			inputKnown = false
+		}
+	} else {
+		// Preserve legacy best-effort totals for fields that are present while
+		// marking the canonical total unresolved until all dimensions are known.
+		for _, value := range []struct {
+			value int64
+			known bool
+			label string
+		}{
+			{other, otherKnown, "input_other"},
+			{read, readKnown, "input_cache_read"},
+			{write, writeKnown, "input_cache_creation"},
+		} {
+			if value.known {
+				if next, ok := addUsageValue(s.usageIn, value.value); ok {
+					s.usageIn = next
+				}
+			}
+		}
+	}
+	if outputKnown {
+		if next, ok := addUsageValue(s.usageOut, out); ok {
+			s.usageOut = next
+		} else {
+			outputKnown = false
+		}
+	}
+	if readKnown {
+		if next, ok := addUsageValue(s.usageCached, read); ok {
+			s.usageCached = next
+		} else {
+			readKnown = false
+		}
+	}
+	if otherKnown {
+		if next, ok := addUsageValue(s.usageUncached, other); !ok {
+			otherKnown = false
+		} else {
+			s.usageUncached = next
+		}
+	}
+	if readKnown {
+		if next, ok := addUsageValue(s.usageCacheRead, read); !ok {
+			readKnown = false
+		} else {
+			s.usageCacheRead = next
+		}
+	}
+	if writeKnown {
+		if next, ok := addUsageValue(s.usageCacheWrite, write); !ok {
+			writeKnown = false
+		} else {
+			s.usageCacheWrite = next
+		}
+	}
+	if !s.usageSeen {
+		s.usageUncachedKnown = otherKnown
+		s.usageOutputKnown = outputKnown
+		s.usageCacheReadKnown = readKnown
+		s.usageCacheWriteKnown = writeKnown
+	} else {
+		s.usageUncachedKnown = s.usageUncachedKnown && otherKnown
+		s.usageOutputKnown = s.usageOutputKnown && outputKnown
+		s.usageCacheReadKnown = s.usageCacheReadKnown && readKnown
+		s.usageCacheWriteKnown = s.usageCacheWriteKnown && writeKnown
+	}
+	s.usageSeen = true
+}
+
+func (s *turnState) usageCounters() domain.UsageCountersV1 {
+	counters := domain.UsageCountersV1{
+		InputUncachedTokens: kimiUsageCounter(s.usageUncached, s.usageUncachedKnown),
+		CacheReadTokens:     kimiUsageCounter(s.usageCacheRead, s.usageCacheReadKnown),
+		CacheWriteTokens:    kimiUsageCounter(s.usageCacheWrite, s.usageCacheWriteKnown),
+		OutputTokens:        kimiUsageCounter(s.usageOut, s.usageOutputKnown),
+	}
+	if counters.InputUncachedTokens != nil && counters.CacheReadTokens != nil && counters.CacheWriteTokens != nil {
+		if total, ok := addUsageValue(*counters.InputUncachedTokens, *counters.CacheReadTokens); ok {
+			if total, ok = addUsageValue(total, *counters.CacheWriteTokens); ok {
+				counters.InputTokensTotal = &total
+			}
+		}
+	}
+	return counters
+}
+
+func kimiUsageCounter(value int64, known bool) *int64 {
+	if !known {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func (s *turnState) usageSnapshot(ex *runtime.ExecContext) *runtime.Usage {
+	if !s.usageSeen {
+		return nil
+	}
+	usage := runtime.Usage{
+		InputTokens: s.usageIn, OutputTokens: s.usageOut,
+		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
+	}
+	sessionRef := ""
+	if s.sessionUpdate != nil {
+		sessionRef = s.sessionUpdate.Ref
+	}
+	report, err := runtime.NewProviderUsageReport(ex, sessionRef,
+		"kimi-appserver", "kimi-kap-server", "2", "turn.step.completed",
+		"inputOther/inputCacheRead/inputCacheCreation/output; input_total=sum(input buckets)",
+		runtime.UsagePerRun, s.usageCounters())
+	if err == nil {
+		usage = runtime.AttachProviderUsage(usage, report)
+	}
+	return &usage
 }
 
 type fileSnapshot struct {
@@ -673,23 +836,23 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		_ = json.Unmarshal(frame.Payload, &ev)
 		if !isMainAgent(ev.AgentID) {
 			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil && ev.Usage != nil {
-				in := ev.Usage.InputOther + ev.Usage.InputCacheRead + ev.Usage.InputCacheCreation
+				other, _ := tokenUsageValue(ev.Usage.InputOther)
+				read, _ := tokenUsageValue(ev.Usage.InputCacheRead)
+				write, _ := tokenUsageValue(ev.Usage.InputCacheCreation)
+				out, _ := tokenUsageValue(ev.Usage.Output)
+				in := other + read + write
 				c.usageIn += in
-				c.usageOut += ev.Usage.Output
-				c.usageCached += ev.Usage.InputCacheRead
+				c.usageOut += out
+				c.usageCached += read
 				p.ex.Callbacks.OnEvent(domain.EventUsageUpdated, map[string]any{"agent_id": ev.AgentID, "usage_in": c.usageIn, "usage_out": c.usageOut, "usage_cached": c.usageCached, "usage_basis": string(runtime.UsagePerRun)})
 			}
 			return false
 		}
 		if p.myTurn(ev.TurnID, ev.AgentID) && ev.Usage != nil {
-			p.state.usageIn += ev.Usage.InputOther + ev.Usage.InputCacheRead + ev.Usage.InputCacheCreation
-			p.state.usageOut += ev.Usage.Output
-			p.state.usageCached += ev.Usage.InputCacheRead
-			p.state.usageSeen = true
-			p.ex.Callbacks.OnUsage(runtime.Usage{
-				InputTokens: p.state.usageIn, OutputTokens: p.state.usageOut,
-				CachedTokens: p.state.usageCached, Basis: runtime.UsagePerRun,
-			})
+			p.state.addUsage(ev.Usage)
+			if usage := p.state.usageSnapshot(p.ex); usage != nil {
+				p.ex.Callbacks.OnUsage(*usage)
+			}
 		}
 	case "subagent.spawned", "subagent.started", "subagent.suspended", "subagent.completed", "subagent.failed":
 		p.handleSubagent(frame)
@@ -1113,11 +1276,8 @@ func (p *eventPump) handleApproval(frame wsFrame) {
 // 终态（意图 > 失败 > 服务端 cancelled > 成功）。
 func turnEndResult(ex *runtime.ExecContext, state *turnState) runtime.ExecResult {
 	result := runtime.ExecResult{Session: state.sessionUpdate}
-	if state.usageSeen && (state.usageIn > 0 || state.usageOut > 0) {
-		result.Usage = &runtime.Usage{
-			InputTokens: state.usageIn, OutputTokens: state.usageOut,
-			CachedTokens: state.usageCached, Basis: runtime.UsagePerRun,
-		}
+	if usage := state.usageSnapshot(ex); usage != nil {
+		result.Usage = usage
 	}
 	switch {
 	case ex.Ctx.Err() != nil:
@@ -1140,7 +1300,9 @@ func intentResult(ex *runtime.ExecContext, state *turnState) runtime.ExecResult 
 	if kind, ok := ex.TerminalIntent(); ok && kind == runtime.ControlCancel {
 		outcome = runtime.OutcomeCancelled
 	}
-	return runtime.ExecResult{Outcome: outcome, Session: state.sessionUpdate}
+	result := runtime.ExecResult{Outcome: outcome, Session: state.sessionUpdate}
+	result.Usage = state.usageSnapshot(ex)
+	return result
 }
 
 // ── 配置投影 ──────────────────────────────────────────────────────────

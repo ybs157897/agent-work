@@ -8,6 +8,7 @@ import { useCoordinatorStore } from './coordinator.store';
 import { useDecisionsStore } from './decisions.store';
 import { useDispatchesStore } from './dispatches.store';
 import { useLogsStore } from './logs.store';
+import { useGovernanceStore } from './governance.store';
 import { usePlansStore } from './plans.store';
 import { useReviewQueueStore } from './review-queue.store';
 import { useRunsStore } from './runs.store';
@@ -117,6 +118,17 @@ export function routeEvent(ev: CanonicalEvent): void {
     // 评论信封不带 body：按根 Task 失效重取评论流（RFC §10）。
     useCommentsStore.getState().applyEvent(ev);
     refreshReviewQueue();
+    return;
+  }
+  if (ev.type.startsWith('goal.') || ev.type.startsWith('todo.') || ev.type === 'turn.receipt_appended'
+    || ev.type === 'handoff.created' || ev.type === 'handoff.state_changed'
+    || ev.type === 'goal.evidence_added' || ev.type === 'validation.result_recorded'
+    || ev.type === 'projection.updated' || ev.type === 'projection.repair_state_changed'
+    || ev.type === 'quota.reservation_changed' || ev.type === 'quota.spend_recorded' || ev.type === 'quota.gap_reconciled'
+    || ev.type === 'delivery_brief.snapshot_created') {
+    // Governance events only invalidate the server read model; the browser
+    // never derives Goal progress, Todo state or quota from event payloads.
+    useGovernanceStore.getState().applyEvent(ev);
     return;
   }
   if (ev.type.startsWith('artifact.')) {

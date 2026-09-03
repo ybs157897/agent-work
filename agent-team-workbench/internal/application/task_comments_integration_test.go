@@ -89,6 +89,7 @@ func TestAppendTaskCommentNoteDoesNotWakeCoordinator(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "备注不唤醒", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +121,7 @@ func TestRequirementCommentAtWaitingUserAtomicallyRequeues(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "评论驱动重排", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +184,7 @@ func TestAppendTaskCommentValidationContract(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "评论校验", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +237,7 @@ func TestListTaskCommentsPaginationAndLegacyGuard(t *testing.T) {
 	ctx, svc, _, _, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "评论分页", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -272,6 +276,7 @@ func TestRequirementCommentPreservesWaitingRetryCheckpoint(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "重试检查点", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -316,6 +321,7 @@ func TestRequirementCommentDoesNotLiftBlocked(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "阻塞不解除", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -355,6 +361,7 @@ func TestRequirementCommentClientKeyReplay(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "实体幂等", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -394,6 +401,7 @@ func TestRequirementCommentOnQuietCheckpointRequeuesAndConsumes(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "安静检查点", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -452,6 +460,7 @@ func TestRequirementCommentMidFlightWaitsForRecovery(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "中途评论", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -535,6 +544,7 @@ func TestConsumedWatermarkRollsBackWithRunCreation(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "水位回滚", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -577,22 +587,24 @@ func TestConsumedWatermarkRollsBackWithRunCreation(t *testing.T) {
 	if err != nil || len(unconsumed) != 1 || unconsumed[0].ID != second.ID {
 		t.Fatalf("失败后评论必须保持未消费: %+v err=%v", unconsumed, err)
 	}
-	// 恢复：blockCoordinatorForStartFailure 已置 blocked，直接改排 queued 走恢复循环。
-	expected := state.Version
-	state.Status = domain.CoordinatorQueued
-	state.Phase = "message"
-	state.CurrentAction = "message"
-	state.BlockerCode, state.BlockerMessage = "", ""
-	state.CurrentRunID = ""
-	if err := store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
+	// 恢复：启动失败已原子阻塞 WorkItem/Coordinator/Goal/Todo，只能经显式
+	// Unblock 恢复；该命令会再追加一条系统 requirement 评论，新的控制轮必须
+	// 一并消费失败前已提交的评论和恢复评论。
+	root, err = store.WorkItems().Get(ctx, root.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ResumeDueTaskCoordinators(ctx, wsID, 10); err != nil {
+	if _, err := svc.UnblockWorkItem(ctx, root.ID, root.Version); err != nil {
+		t.Fatal(err)
+	}
+	latestRevision, err := store.TaskComments().LatestRevision(ctx, root.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	state, _ = store.TaskCoordinators().GetState(ctx, root.ID)
-	if state.ConsumedCommentRevision != second.Revision {
-		t.Fatalf("恢复后消费水位应=%d: %d", second.Revision, state.ConsumedCommentRevision)
+	if state.ConsumedCommentRevision != latestRevision || state.ConsumedCommentRevision < second.Revision {
+		t.Fatalf("恢复后必须消费 durable 评论水位=%d（含失败前 revision %d）: %d",
+			latestRevision, second.Revision, state.ConsumedCommentRevision)
 	}
 }
 
@@ -600,6 +612,7 @@ func TestTerminalHookDoesNotPassUnconsumedActionable(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "终态钩子", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -657,18 +670,15 @@ func TestTerminalHookDoesNotPassUnconsumedActionable(t *testing.T) {
 
 func TestAcceptReturnCommentRaces(t *testing.T) {
 	prepare := func(t *testing.T) (context.Context, *application.Service, *sqlstore.Store, *captureDispatcher, string, *domain.WorkItem) {
-		ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
+		ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 		root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 			Title: "竞态", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+			AcceptanceCriteria: []string{"test task acceptance"},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.ControlRun(ctx, dispatcher.runs[0].ID, "cancel"); err != nil {
-			t.Fatal(err)
-		}
-		prepared := prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-		setCoordinatorWaitingUser(t, ctx, store, root.ID)
+		prepared := prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
 		return ctx, svc, store, dispatcher, wsID, prepared
 	}
 
@@ -761,18 +771,15 @@ func TestAcceptReturnCommentRaces(t *testing.T) {
 }
 
 func TestConcurrentAcceptAndRequirementCommentHaveOneWinner(t *testing.T) {
-	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "并发单赢家", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ControlRun(ctx, dispatcher.runs[0].ID, "cancel"); err != nil {
-		t.Fatal(err)
-	}
-	prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-	setCoordinatorWaitingUser(t, ctx, store, root.ID)
+	root = prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
 
 	const racers = 1 // Accept 与 requirement 各一个竞争者：§5.2.9 只允许一方成功
 	var wg sync.WaitGroup
@@ -818,8 +825,25 @@ func TestUnblockAppendsRequirementCommentAndQueues(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "解除阻塞", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err := store.Goals().GetByRootWorkItem(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	todo, err := store.Todos().Get(ctx, goal.CurrentTodoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ClaimTodo(ctx, todo.ID, state.CoordinatorAgentID, todo.Version,
+		time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.ControlRun(ctx, dispatcher.runs[0].ID, "cancel"); err != nil {
@@ -830,9 +854,33 @@ func TestUnblockAppendsRequirementCommentAndQueues(t *testing.T) {
 	}, 0); err != nil {
 		t.Fatal(err)
 	}
-	state, _ := store.TaskCoordinators().GetState(ctx, root.ID)
+	state, _ = store.TaskCoordinators().GetState(ctx, root.ID)
 	if state.Status != domain.CoordinatorBlocked {
 		t.Fatalf("前置：应 blocked: %+v", state)
+	}
+	goal, err = store.Goals().Get(ctx, goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	todo, err = store.Todos().Get(ctx, todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goal.Status != domain.GoalBlocked || goal.Phase != "blocked" ||
+		todo.Status != domain.TodoBlocked || todo.Claim != nil {
+		t.Fatalf("BlockWorkItem 应原子阻塞治理状态并释放 claim: goal=%+v todo=%+v", goal, todo)
+	}
+	blockedEvents, err := store.Events().Since(ctx, wsID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.StartCoordinator(ctx, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	replayedBlockEvents, err := store.Events().Since(ctx, wsID, 0, 1000)
+	if err != nil || len(replayedBlockEvents) != len(blockedEvents) {
+		t.Fatalf("blocked Coordinator replay must not duplicate governance events: before=%d after=%d err=%v",
+			len(blockedEvents), len(replayedBlockEvents), err)
 	}
 	if _, err := svc.UnblockWorkItem(ctx, root.ID, 0); err != nil {
 		t.Fatal(err)
@@ -853,12 +901,41 @@ func TestUnblockAppendsRequirementCommentAndQueues(t *testing.T) {
 	if state.ConsumedCommentRevision != 1 {
 		t.Fatalf("Unblock 评论应被本轮消费: %d", state.ConsumedCommentRevision)
 	}
+	goal, err = store.Goals().Get(ctx, goal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	todo, err = store.Todos().Get(ctx, todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goal.Status != domain.GoalActive || goal.Phase != "execution" ||
+		todo.Status != domain.TodoPending || todo.Claim != nil {
+		t.Fatalf("Unblock 应恢复无旧 claim 的治理状态: goal=%+v todo=%+v", goal, todo)
+	}
+	root, err = store.WorkItems().Get(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unblockedEvents, err := store.Events().Since(ctx, wsID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UnblockWorkItem(ctx, root.ID, root.Version); err == nil {
+		t.Fatal("replaying an already applied unblock must fail closed")
+	}
+	replayedUnblockEvents, err := store.Events().Since(ctx, wsID, 0, 1000)
+	if err != nil || len(replayedUnblockEvents) != len(unblockedEvents) {
+		t.Fatalf("failed unblock replay must not duplicate governance events: before=%d after=%d err=%v",
+			len(unblockedEvents), len(replayedUnblockEvents), err)
+	}
 }
 
 func TestUserAddedChildAppendsRequirementComment(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "新增子任务", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

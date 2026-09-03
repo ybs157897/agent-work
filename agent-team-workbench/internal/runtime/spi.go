@@ -4,6 +4,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -48,6 +50,78 @@ type Usage struct {
 	OutputTokens int64      `json:"output_tokens"`
 	CachedTokens int64      `json:"cached_tokens"`
 	Basis        UsageBasis `json:"basis"`
+
+	// ProviderReport preserves the adapter's native usage shape and provenance.
+	// It is deliberately separate from the legacy projection above: cached
+	// tokens must not be silently reinterpreted as one billing bucket.
+	ProviderReport *domain.ProviderUsageReportV1 `json:"provider_report,omitempty"`
+	// Canonical is populated only when ProviderReport is already per-run. A
+	// session-cumulative report remains available for the persistent anchor
+	// owner, but is never treated as a per-run delta here.
+	Canonical *domain.CanonicalUsageV1 `json:"canonical_usage,omitempty"`
+}
+
+// NewProviderUsageReport binds provider observations to the immutable Run and
+// agent identity supplied by the control plane. Adapters must not invent an
+// agent id when a direct caller omitted the execution identity.
+func NewProviderUsageReport(
+	ex *ExecContext,
+	sessionRef string,
+	adapterID string,
+	protocol string,
+	protocolVersion string,
+	source string,
+	mapping string,
+	basis UsageBasis,
+	counters domain.UsageCountersV1,
+) (*domain.ProviderUsageReportV1, error) {
+	if ex == nil || ex.Run == nil {
+		return nil, fmt.Errorf("provider usage report requires a Run identity")
+	}
+	runID := strings.TrimSpace(ex.Run.ID)
+	agentID := strings.TrimSpace(ex.Run.AgentProfileID)
+	if runID == "" || agentID == "" {
+		return nil, fmt.Errorf("provider usage report requires run and agent identities")
+	}
+	if strings.TrimSpace(sessionRef) == "" {
+		sessionRef = ex.Session.Ref
+	}
+	report := &domain.ProviderUsageReportV1{
+		SchemaVersion: domain.ProviderUsageReportSchemaVersionV1,
+		RunID:         runID,
+		Basis:         string(basis),
+		Counters:      counters,
+		Provenance: domain.UsageProvenanceV1{
+			AdapterID:       adapterID,
+			Protocol:        protocol,
+			ProtocolVersion: protocolVersion,
+			Source:          source,
+			ReportedBasis:   string(basis),
+			AgentID:         agentID,
+			SessionRef:      sessionRef,
+			Mapping:         mapping,
+		},
+	}
+	if err := report.Seal(); err != nil {
+		return nil, err
+	}
+	return report, nil
+}
+
+// AttachProviderUsage attaches a sealed provider report and, for per-run
+// reports, its canonicalized form. Cumulative reports intentionally remain
+// uncanonicalized until the persistent session-anchor owner computes a delta.
+func AttachProviderUsage(usage Usage, report *domain.ProviderUsageReportV1) Usage {
+	if report == nil {
+		return usage
+	}
+	usage.ProviderReport = report
+	if report.Basis == domain.UsageBasisPerRun {
+		if canonical, err := domain.CanonicalizeProviderUsageReport(report); err == nil {
+			usage.Canonical = canonical
+		}
+	}
+	return usage
 }
 
 // Failure 结构化失败；Code 保持 adapter 粒度，Family 用于跨 adapter 统一策略。

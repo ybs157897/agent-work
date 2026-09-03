@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -161,6 +162,30 @@ func TestModePolicySnapshotAndConfigDigest(t *testing.T) {
 	}
 }
 
+func TestConfigDigestIncludesStableControlDecisionContractButNotRepairAttempt(t *testing.T) {
+	input := map[string]any{
+		"system_prompt": "coordinator-v2",
+		"control_decision": map[string]any{
+			"schema_version": "plan-decision/v2",
+			"schema_digest":  "sha256:first",
+			"transport_mode": "text_decoder",
+			"capabilities": map[string]any{
+				"schema_constrained_output": "unavailable",
+			},
+			"repair_attempt": 0,
+		},
+	}
+	base := ConfigDigest(input)
+	input["control_decision"].(map[string]any)["repair_attempt"] = 1
+	if got := ConfigDigest(input); got != base {
+		t.Fatalf("repair attempt must retain the provider session contract: got=%s want=%s", got, base)
+	}
+	input["control_decision"].(map[string]any)["schema_digest"] = "sha256:second"
+	if got := ConfigDigest(input); got == base {
+		t.Fatal("schema digest drift must prevent provider session reuse")
+	}
+}
+
 func TestEffectiveModel(t *testing.T) {
 	b := &domain.RuntimeBinding{Provider: "deepseek", Model: "deepseek-v4-flash"}
 	agent := &domain.AgentProfile{ModelOverride: domain.ModelRef{Model: "deepseek-v4-pro"}}
@@ -204,6 +229,56 @@ func TestEffectiveModelRegistryRef(t *testing.T) {
 	spec = EffectiveModel(agent, b, resolve)
 	if spec.Ref != "" || spec.Provider != "mock-provider" || spec.Model != "mock-model-v1" {
 		t.Fatalf("ref 未命中应回退 binding: %+v", spec)
+	}
+}
+
+func TestEffectiveModelCarriesPriceSnapshotAndInvalidatesMismatchedOverride(t *testing.T) {
+	price := &domain.PriceSnapshotRef{
+		ModelRef:                        "deepseek-v4-flash",
+		Currency:                        "USD",
+		InputUncachedMicroUSDPerMillion: 10,
+		CacheReadMicroUSDPerMillion:     2,
+		CacheWriteMicroUSDPerMillion:    3,
+		OutputMicroUSDPerMillion:        20,
+		EffectiveAt:                     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		PriceVersion:                    "price-v1",
+	}
+	if err := price.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(ref string) (ModelSpec, bool) {
+		if ref != price.ModelRef {
+			return ModelSpec{}, false
+		}
+		return ModelSpec{Ref: ref, Provider: "deepseek", Model: ref, PriceSnapshot: price}, true
+	}
+	agent := &domain.AgentProfile{ModelOverride: domain.ModelRef{Ref: price.ModelRef}}
+	spec := EffectiveModel(agent, nil, resolve)
+	if spec.PriceSnapshot == nil || spec.PriceSnapshot.Digest != price.Digest {
+		t.Fatalf("registry price snapshot missing: %+v", spec)
+	}
+	if spec.PriceSnapshot == price {
+		t.Fatal("effective model must not expose mutable registry pointer")
+	}
+
+	// An explicit model override changes the priced model; retaining the old
+	// quote would charge the wrong model.
+	agent.ModelOverride.Model = "deepseek-v4-pro"
+	spec = EffectiveModel(agent, nil, resolve)
+	if spec.PriceSnapshot != nil {
+		t.Fatalf("mismatched explicit model override must clear price snapshot: %+v", spec)
+	}
+}
+
+func TestConfigDigestIgnoresIndependentPriceSnapshot(t *testing.T) {
+	input := map[string]any{
+		"model":          map[string]any{"provider": "deepseek", "model": "deepseek-v4-flash"},
+		"price_snapshot": map[string]any{"digest": "sha256:one"},
+	}
+	base := ConfigDigest(input)
+	input["price_snapshot"].(map[string]any)["digest"] = "sha256:two"
+	if got := ConfigDigest(input); got != base {
+		t.Fatalf("independent price snapshot must not change provider config digest: got=%s want=%s", got, base)
 	}
 }
 

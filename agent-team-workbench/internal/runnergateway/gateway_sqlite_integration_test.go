@@ -111,8 +111,12 @@ func TestSQLiteHelloThenRemoteDispatch(t *testing.T) {
 		VALUES (?,?,?,'chat',?,?)`, workItemID, workspaceID, "runner", now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO execution_runs(id,workspace_id,work_item_id,status,input,version,created_at,updated_at)
-		VALUES (?,?,?,'queued','{}',1,?,?)`, runID, workspaceID, workItemID, now, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO agent_profiles(id,workspace_id,name,role,created_at,updated_at)
+		VALUES (?,?,?,'worker',?,?)`, "agent_runner_gateway", workspaceID, "runner worker", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO execution_runs(id,workspace_id,work_item_id,agent_profile_id,status,input,version,created_at,updated_at)
+		VALUES (?,?,?,?,'queued','{}',1,?,?)`, runID, workspaceID, workItemID, "agent_runner_gateway", now, now); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := rootSnapshotFor(hostID)
@@ -123,7 +127,7 @@ func TestSQLiteHelloThenRemoteDispatch(t *testing.T) {
 	snapshot.MountGeneration = mount.RegistryGeneration
 	snapshot.RepositoryIdentity = mount.RepositoryIdentity
 	snapshot.SnapshotDigest = snapshot.ComputeDigest()
-	if err := g.Dispatch(ctx, &domain.ExecutionRun{ID: runID, Input: map[string]any{"instruction": "remote"}}, snapshot, "mock"); err != nil {
+	if err := g.Dispatch(ctx, &domain.ExecutionRun{ID: runID, AgentProfileID: "agent_runner_gateway", Input: map[string]any{"instruction": "remote"}}, snapshot, "mock"); err != nil {
 		t.Fatalf("remote dispatch: %v", err)
 	}
 	lease, err := store.Runners().ActiveLease(ctx, runID)

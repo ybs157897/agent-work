@@ -107,6 +107,11 @@ func (r *ModuleRunner) Dispatch(ctx context.Context, run *domain.ExecutionRun) e
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ar := &activeModuleRun{adapterID: run.AdapterID, cancel: cancel, controls: make(chan Control, 8)}
 	r.mu.Lock()
+	if _, exists := r.active[run.ID]; exists {
+		r.mu.Unlock()
+		cancel()
+		return nil
+	}
 	r.active[run.ID] = ar
 	r.mu.Unlock()
 

@@ -208,6 +208,20 @@ func addLease(r *runner, runID, leaseID string, fencing int64) {
 	r.leases[runID] = &leaseInfo{LeaseID: leaseID, FencingToken: fencing}
 }
 
+func pendingAck(t *testing.T, r *runner, runID, leaseID string, seq int64) ackPayload {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	event := r.pending[pendingKey{RunID: runID, LeaseID: leaseID, Seq: seq}]
+	if event == nil {
+		t.Fatalf("pending event missing for ACK: run=%s lease=%s seq=%d", runID, leaseID, seq)
+	}
+	return ackPayload{
+		RunID: runID, LeaseID: leaseID, RunnerID: r.id,
+		FencingToken: event.Fencing, AckedProducerSeq: seq, EventID: event.EventID,
+	}
+}
+
 // ── 事件桥接与 pending（v2）──────────────────────────────────────────
 
 // run.session 帧必须携带完整 SessionUpdate（Clear 墓碑 + Params 私有参数）。
@@ -279,9 +293,10 @@ func TestAckIsolatesRuns(t *testing.T) {
 	_ = r.emitEvent("run_a", "run.status_changed", map[string]any{"status": "succeeded"}) // seq 2（终态）
 	_ = r.emitEvent("run_b", "message.delta", nil)                                        // seq 1
 
+	ack := pendingAck(t, r, "run_a", "lease_a", 1)
 	r.handle(envelope{
-		V: protocolV2, Method: "ack",
-		Payload: mustJSON(ackPayload{RunID: "run_a", LeaseID: "lease_a", AckedProducerSeq: 1, EventID: "revt_x"}),
+		V: protocolV2, Method: "ack", RunnerID: r.id, RunID: ack.RunID,
+		Payload: mustJSON(ack),
 	})
 
 	r.mu.Lock()
@@ -297,6 +312,46 @@ func TestAckIsolatesRuns(t *testing.T) {
 	}
 	if !runBSeq1 {
 		t.Fatal("run_b 的 pending 不得被 run_a 的 ACK 清除")
+	}
+}
+
+func TestAckRequiresFullPendingEventIdentity(t *testing.T) {
+	r := newTestRunner(t, dialTestWS(t), nil)
+	addLease(r, "run_a", "lease_a", 7)
+	_ = r.emitEvent("run_a", "message.delta", nil)
+	valid := pendingAck(t, r, "run_a", "lease_a", 1)
+
+	invalid := []struct {
+		envelopeRunner string
+		envelopeRun    string
+		payload        ackPayload
+	}{
+		{r.id, valid.RunID, valid},
+		{r.id, valid.RunID, valid},
+		{r.id, valid.RunID, valid},
+		{"runner_other", valid.RunID, valid},
+		{r.id, "run_other", valid},
+	}
+	invalid[0].payload.RunnerID = "runner_other"
+	invalid[1].payload.FencingToken++
+	invalid[2].payload.EventID = "revt_other"
+	for _, candidate := range invalid {
+		r.handle(envelope{V: protocolV2, Method: "ack", RunnerID: candidate.envelopeRunner,
+			RunID: candidate.envelopeRun, Payload: mustJSON(candidate.payload)})
+		r.mu.Lock()
+		_, stillPending := r.pending[pendingKey{RunID: "run_a", LeaseID: "lease_a", Seq: 1}]
+		r.mu.Unlock()
+		if !stillPending {
+			t.Fatalf("identity-mismatched ACK removed pending event: %+v", candidate)
+		}
+	}
+
+	r.handle(envelope{V: protocolV2, Method: "ack", RunnerID: r.id, RunID: valid.RunID, Payload: mustJSON(valid)})
+	r.mu.Lock()
+	_, stillPending := r.pending[pendingKey{RunID: "run_a", LeaseID: "lease_a", Seq: 1}]
+	r.mu.Unlock()
+	if stillPending {
+		t.Fatal("fully matching ACK must remove pending event")
 	}
 }
 
@@ -339,9 +394,8 @@ func TestTerminalStatusFinalizesRun(t *testing.T) {
 	if !pendingTerminal {
 		t.Fatal("终态未 ACK 时应保留 terminal pending 标记")
 	}
-	r.handle(envelope{V: protocolV2, Method: "ack", Payload: mustJSON(ackPayload{
-		RunID: "run_1", LeaseID: "lease_1", AckedProducerSeq: 1, EventID: "revt_terminal",
-	})})
+	ack := pendingAck(t, r, "run_1", "lease_1", 1)
+	r.handle(envelope{V: protocolV2, Method: "ack", RunnerID: r.id, RunID: ack.RunID, Payload: mustJSON(ack)})
 	r.mu.Lock()
 	_, hasLeaseAfterAck := r.leases["run_1"]
 	_, hasSeqAfterAck := r.seqs["run_1"]
@@ -361,9 +415,8 @@ func TestTerminalAckCleansOnlyThatRunState(t *testing.T) {
 	addLease(r, "run_b", "lease_b", 2)
 	_ = r.emitEvent("run_a", "run.status_changed", map[string]any{"status": "succeeded"})
 	_ = r.emitEvent("run_b", "run.status_changed", map[string]any{"status": "succeeded"})
-	r.handle(envelope{V: protocolV2, Method: "ack", Payload: mustJSON(ackPayload{
-		RunID: "run_a", LeaseID: "lease_a", AckedProducerSeq: 1, EventID: "revt_a",
-	})})
+	ack := pendingAck(t, r, "run_a", "lease_a", 1)
+	r.handle(envelope{V: protocolV2, Method: "ack", RunnerID: r.id, RunID: ack.RunID, Payload: mustJSON(ack)})
 	r.mu.Lock()
 	_, aLease := r.leases["run_a"]
 	_, bLease := r.leases["run_b"]
@@ -453,7 +506,9 @@ func TestRunLoopResendsUnackedTerminalFrameAfterReconnect(t *testing.T) {
 	// 按 (run, lease, seq) 回 ACK：pending 收敛到空。
 	ack, _ := json.Marshal(envelope{
 		V: protocolV2, MessageID: "msg_ack_test", Kind: "ack", Method: "ack",
-		Payload: mustJSON(ackPayload{RunID: "run_t1", LeaseID: "lease_t1", AckedProducerSeq: firstSeq, EventID: firstID}),
+		RunnerID: "runner_test", RunID: "run_t1", SentAt: time.Now().UTC(),
+		Payload: mustJSON(ackPayload{RunID: "run_t1", LeaseID: "lease_t1", RunnerID: "runner_test",
+			FencingToken: 7, AckedProducerSeq: firstSeq, EventID: firstID}),
 	})
 	if err := conn2.WriteMessage(websocket.TextMessage, ack); err != nil {
 		t.Fatalf("发送 ACK 失败: %v", err)
@@ -584,7 +639,8 @@ func offerEnvelope(t *testing.T, runID, leaseID string, fencing int64, snap doma
 	_ = worktree
 	payload := mustJSON(offerPayload{
 		LeaseID: leaseID, FencingToken: fencing,
-		RunSpec: runSpec{RunID: runID, AdapterID: "mock", ContextSnapshot: wire, Input: input},
+		RunSpec: runSpec{RunID: runID, AdapterID: "mock", AgentProfileID: "agent_remote",
+			ContextSnapshot: wire, Input: input},
 	})
 	return envelope{
 		V: protocolV2, MessageID: "msg_offer", Kind: "request", Method: "run.offer",
@@ -779,6 +835,99 @@ func TestOfferRejectsOnCapacity(t *testing.T) {
 	}
 }
 
+func TestOfferRejectsMissingOrMismatchedIdentity(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*envelope)
+	}{
+		{
+			name: "missing run id",
+			mutate: func(env *envelope) {
+				var payload offerPayload
+				if err := json.Unmarshal(env.Payload, &payload); err != nil {
+					panic(err)
+				}
+				payload.RunSpec.RunID = ""
+				env.Payload = mustJSON(payload)
+			},
+		},
+		{
+			name:   "envelope run mismatch",
+			mutate: func(env *envelope) { env.RunID = "run_other" },
+		},
+		{
+			name: "missing adapter",
+			mutate: func(env *envelope) {
+				var payload offerPayload
+				if err := json.Unmarshal(env.Payload, &payload); err != nil {
+					panic(err)
+				}
+				payload.RunSpec.AdapterID = ""
+				env.Payload = mustJSON(payload)
+			},
+		},
+		{
+			name: "missing agent",
+			mutate: func(env *envelope) {
+				var payload offerPayload
+				if err := json.Unmarshal(env.Payload, &payload); err != nil {
+					panic(err)
+				}
+				payload.RunSpec.AgentProfileID = ""
+				env.Payload = mustJSON(payload)
+			},
+		},
+		{
+			name: "missing lease",
+			mutate: func(env *envelope) {
+				var payload offerPayload
+				if err := json.Unmarshal(env.Payload, &payload); err != nil {
+					panic(err)
+				}
+				payload.LeaseID = ""
+				env.Payload = mustJSON(payload)
+			},
+		},
+		{
+			name: "invalid fencing token",
+			mutate: func(env *envelope) {
+				var payload offerPayload
+				if err := json.Unmarshal(env.Payload, &payload); err != nil {
+					panic(err)
+				}
+				payload.FencingToken = 0
+				env.Payload = mustJSON(payload)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, frames := captureTestWS(t)
+			r := newTestRunner(t, conn, nil)
+			env := offerEnvelope(t, "run_1", "lease_1", 7, domain.ExecutionContextSnapshot{}, nil)
+			tc.mutate(&env)
+			r.handle(env)
+			got := readEnvelope(t, frames)
+			if got.Method != "run.reject" {
+				t.Fatalf("身份不完整的 offer 必须 reject，收到 %s", got.Method)
+			}
+			var payload rejectPayload
+			if err := json.Unmarshal(got.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Reason != "workspace" {
+				t.Fatalf("身份不完整的 offer 必须 workspace reject: %+v", payload)
+			}
+			r.mu.Lock()
+			active := len(r.runs)
+			r.mu.Unlock()
+			if active != 0 {
+				t.Fatalf("被拒 offer 不得进入执行: %d", active)
+			}
+		})
+	}
+}
+
 // run.command 语义保持（v2 framing）：mock 路径 interrupt 投递控制 channel。
 func TestRunCommandInterruptReachesMockControl(t *testing.T) {
 	reg := newTestRegistry(t)
@@ -838,4 +987,162 @@ func TestParseCredentialHost(t *testing.T) {
 	if _, _, ok := parseCredentialHost("garbage"); ok {
 		t.Fatal("非法格式必须拒绝")
 	}
+}
+
+// ── agent 身份与 provider_report 透传（P1-3 回归钉）─────────────────
+
+// TestOfferPayloadDecodesAgentProfileID：offer run_spec 的 agent_profile_id
+// 必须进 runSpec——远程 adapter 侧 provider usage report 的身份前提。
+func TestOfferPayloadDecodesAgentProfileID(t *testing.T) {
+	var p offerPayload
+	if err := json.Unmarshal([]byte(`{
+		"lease_id": "lease_1", "fencing_token": 7,
+		"run_spec": {"run_id": "run_1", "adapter_id": "dsh", "agent_profile_id": "agent_remote"}
+	}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.RunSpec.AgentProfileID != "agent_remote" {
+		t.Fatalf("run_spec.agent_profile_id 未解码: %+v", p.RunSpec)
+	}
+}
+
+// capturingModule 捕获 ModuleRunner 传入的 ExecContext 后即成功收尾。
+type capturingModule struct {
+	captured chan *rt.ExecContext
+}
+
+func (m *capturingModule) Manifest(ctx context.Context) (rt.AdapterManifest, error) {
+	return rt.AdapterManifest{}, nil
+}
+
+func (m *capturingModule) Probe(ctx context.Context, req rt.ProbeRequest) (rt.ProbeResult, error) {
+	return rt.ProbeResult{}, nil
+}
+
+func (m *capturingModule) Execute(ex *rt.ExecContext) rt.ExecResult {
+	m.captured <- ex
+	return rt.ExecResult{Outcome: rt.OutcomeSucceeded}
+}
+
+// runModule 建 ExecutionRun 必须携带 offer 下发的 AgentProfileID：
+// 缺失时 adapter 侧 NewProviderUsageReport 报身份缺失，远程 report 造不出来。
+func TestRunModuleCarriesAgentProfileID(t *testing.T) {
+	conn := dialTestWS(t)
+	r := newTestRunner(t, conn, nil)
+	addLease(r, "run_mod", "lease_mod", 7)
+	captured := make(chan *rt.ExecContext, 1)
+	r.modules = rt.NewModuleRunner(&moduleEngine{r: r})
+	r.modules.Register("dsh", &capturingModule{captured: captured})
+
+	r.runModule(runSpec{RunID: "run_mod", AdapterID: "dsh", AgentProfileID: "agent_remote"})
+
+	select {
+	case ex := <-captured:
+		if ex.Run == nil || ex.Run.AgentProfileID != "agent_remote" {
+			t.Fatalf("ExecContext.Run 缺 agent 身份: %+v", ex.Run)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("模块未被分派")
+	}
+}
+
+// sealedUsageReport 走真实 adapter 路径（NewProviderUsageReport + Seal）构造
+// sealed provider 原生用量报告；计数满足守恒恒等式 total = uncached+read+write。
+func sealedUsageReport(t *testing.T, runID, agentID string) *domain.ProviderUsageReportV1 {
+	t.Helper()
+	total, uncached, read, write, out := int64(300), int64(200), int64(50), int64(50), int64(80)
+	report, err := rt.NewProviderUsageReport(
+		&rt.ExecContext{
+			Run:     &domain.ExecutionRun{ID: runID, AgentProfileID: agentID},
+			Session: rt.SessionState{Ref: "dsh://sess_p1"},
+		},
+		"", "dsh", "dsh-web-gateway", "1", "final", "native_accumulators", rt.UsagePerRun,
+		domain.UsageCountersV1{
+			InputTokensTotal: &total, InputUncachedTokens: &uncached,
+			CacheReadTokens: &read, CacheWriteTokens: &write, OutputTokens: &out,
+		},
+	)
+	if err != nil {
+		t.Fatalf("sealed provider usage report 构造失败: %v", err)
+	}
+	return report
+}
+
+// RecordRunUsage 带 ProviderReport：usage.updated 帧必须含 provider_report 且
+// JSON 往返后 digest/身份不变——远程 Run 丢它就只能落 absent usage 证据。
+func TestModuleEngineUsageFrameCarriesProviderReport(t *testing.T) {
+	conn, frames := captureTestWS(t)
+	r := newTestRunner(t, conn, nil)
+	addLease(r, "run_usage", "lease_1", 7)
+	e := &moduleEngine{r: r}
+	report := sealedUsageReport(t, "run_usage", "agent_remote")
+
+	usage := rt.AttachProviderUsage(rt.Usage{
+		InputTokens: 300, OutputTokens: 80, CachedTokens: 50, Basis: rt.UsagePerRun,
+	}, report)
+	if err := e.RecordRunUsage(context.Background(), "run_usage", usage); err != nil {
+		t.Fatalf("RecordRunUsage: %v", err)
+	}
+
+	_, _, kind, data := eventIdentity(t, readEnvelope(t, frames))
+	if kind != "usage.updated" {
+		t.Fatalf("事件类型 = %q，期望 usage.updated", kind)
+	}
+	raw, err := json.Marshal(data["provider_report"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got domain.ProviderUsageReportV1
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("provider_report 往返失败: %v", err)
+	}
+	if got.Digest != report.Digest {
+		t.Fatalf("provider_report 往返后 digest 失真: %q != %q", got.Digest, report.Digest)
+	}
+	if err := got.VerifyDigest(); err != nil {
+		t.Fatalf("往返后报告必须仍通过 digest 校验: %v", err)
+	}
+	if got.RunID != "run_usage" || got.Provenance.AgentID != "agent_remote" {
+		t.Fatalf("provider_report 身份丢失: run=%s agent=%s", got.RunID, got.Provenance.AgentID)
+	}
+	// legacy 四字段照常在帧内。
+	if numField(t, data, "input_tokens") != 300 || numField(t, data, "output_tokens") != 80 ||
+		numField(t, data, "cached_tokens") != 50 || data["basis"] != string(rt.UsagePerRun) {
+		t.Fatalf("legacy 用量字段缺失: %+v", data)
+	}
+}
+
+// 无 ProviderReport 的 usage.updated 保持 legacy 帧形态：不出现 provider_report 键。
+func TestModuleEngineUsageFrameWithoutReportStaysLegacy(t *testing.T) {
+	conn, frames := captureTestWS(t)
+	r := newTestRunner(t, conn, nil)
+	addLease(r, "run_usage", "lease_1", 7)
+	e := &moduleEngine{r: r}
+
+	if err := e.RecordRunUsage(context.Background(), "run_usage", rt.Usage{
+		InputTokens: 5, OutputTokens: 2, CachedTokens: 0, Basis: rt.UsageSessionCumulative,
+	}); err != nil {
+		t.Fatalf("RecordRunUsage: %v", err)
+	}
+
+	_, _, kind, data := eventIdentity(t, readEnvelope(t, frames))
+	if kind != "usage.updated" {
+		t.Fatalf("事件类型 = %q，期望 usage.updated", kind)
+	}
+	if _, exists := data["provider_report"]; exists {
+		t.Fatalf("无 report 不得出现 provider_report 键: %+v", data)
+	}
+	if numField(t, data, "input_tokens") != 5 || data["basis"] != string(rt.UsageSessionCumulative) {
+		t.Fatalf("legacy 用量字段缺失: %+v", data)
+	}
+}
+
+// numField 取事件 data 数值字段（JSON 往返后为 float64）。
+func numField(t *testing.T, data map[string]any, key string) int64 {
+	t.Helper()
+	f, ok := data[key].(float64)
+	if !ok {
+		t.Fatalf("data[%q] 非数值: %v", key, data[key])
+	}
+	return int64(f)
 }

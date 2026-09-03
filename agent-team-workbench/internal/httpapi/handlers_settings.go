@@ -1,17 +1,13 @@
 package httpapi
 
 import (
-	"log"
+	"encoding/json"
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/ybs/agent-team-workbench/internal/agentwork"
-	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
-	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
-	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 )
 
 // ── RuntimeBinding / 模型配置（设置页）───────────────────────────────
@@ -190,30 +186,40 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.ModelOverride = req.ModelOverride
 		patch.Policy = req.Policy
+		var durable AgentConfigIntentSync
+		if s.agentCfg != nil {
+			var ok bool
+			durable, ok = s.agentCfg.(AgentConfigIntentSync)
+			if !ok {
+				return renderProblem(http.StatusInternalServerError, "agent_config_sync_not_durable",
+					"Agent configuration sync unavailable",
+					"configured Agent file synchronizer does not support durable recovery")
+			}
+		}
 		a, err := s.svc.UpdateAgent(r.Context(), agentID, patch)
 		if err != nil {
 			return problemBytes(err)
 		}
-		if spec, ok := s.codexModelSpecForAgent(a); ok {
-			home := agentwork.Resolve(s.workbenchRoot).CodexHome()
-			if err := codexconfig.Apply(home, spec); err != nil {
-				return renderProblem(http.StatusBadRequest, "codex_config", "Codex 配置失败", err.Error())
-			}
-		}
-		if spec, ok := s.kimiModelSpecForAgent(a); ok {
-			home := agentwork.Resolve(s.workbenchRoot).KimiHome()
-			if err := kimiconfig.Apply(home, spec); err != nil {
-				return renderProblem(http.StatusBadRequest, "kimi_config", "Kimi 配置失败", err.Error())
-			}
-		}
-		// 文件为真相源：DB 更新成功后回写 agents/<slug>/；失败只记日志不阻断（reload 可修复）。
-		if s.agentCfg != nil {
-			if err := s.agentCfg.WriteBackOne(r.Context(), a); err != nil {
-				log.Printf("agent 配置回写文件失败（%s）: %v", a.ID, err)
+		if durable != nil {
+			if syncErr := durable.ReconcileAgent(r.Context(), a.ID); syncErr != nil {
+				return s.agentConfigIntentFailure(syncErr)
 			}
 		}
 		return renderJSON(w, r, http.StatusOK, toAgentDTO(a))
 	})
+}
+
+func (s *Server) agentConfigIntentFailure(err error) (int, []byte) {
+	if errors.Is(err, domain.ErrAgentConfigSyncConflict) {
+		return renderProblem(http.StatusConflict, "agent_config_sync_conflict",
+			"Agent configuration sync conflict", "Agent 配置目标与当前投影不一致，请修复冲突后重新对账")
+	}
+	b, _ := json.Marshal(Problem{
+		Type:  "https://workbench.example/problems/agent-config-sync-failed",
+		Title: "Agent configuration sync failed", Status: http.StatusInternalServerError,
+		Code: "agent_config_sync_failed", Detail: "Agent 外部配置尚未可靠落盘，请修复外部条件后重试", Retryable: true,
+	})
+	return http.StatusInternalServerError, b
 }
 
 // handleReloadAgentConfig 重新扫描 agents/ 目录并导入 DB 投影（文件为真相源）。
@@ -223,12 +229,48 @@ func (s *Server) handleReloadAgentConfig(w http.ResponseWriter, r *http.Request)
 		if s.agentCfg == nil {
 			return renderProblem(http.StatusNotFound, "agent_config_disabled", "Agent config disabled", "未配置 agents/ 目录")
 		}
+		if durable, ok := s.agentCfg.(AgentConfigDurableReconciler); ok {
+			if _, reconcileErr := durable.Reconcile(r.Context()); reconcileErr != nil {
+				return s.agentConfigIntentFailure(reconcileErr)
+			}
+		}
 		res, err := s.agentCfg.Import(r.Context(), wsID)
 		if err != nil {
-			return problemBytes(err)
+			return s.agentConfigImportFailure(err)
 		}
 		return renderJSON(w, r, http.StatusOK, res)
 	})
+}
+
+func (s *Server) agentConfigImportFailure(err error) (int, []byte) {
+	status := http.StatusInternalServerError
+	code := "agent_config_import_failed"
+	title := "Agent configuration import failed"
+	retryable := true
+	switch {
+	case errors.Is(err, domain.ErrAgentConfigSyncConflict):
+		status = http.StatusConflict
+		code = "agent_config_sync_conflict"
+		title = "Agent configuration sync conflict"
+		retryable = false
+	case errors.Is(err, domain.ErrVersionConflict):
+		status = http.StatusConflict
+		code = "version_conflict"
+		title = "Agent configuration changed"
+	case errors.Is(err, domain.ErrValidation):
+		status = http.StatusUnprocessableEntity
+		code = "agent_config_import_invalid"
+		title = "Agent configuration is invalid"
+		retryable = false
+	}
+	// Importer errors can contain absolute yaml/prompt paths. Keep the public
+	// response stable and actionable without reflecting filesystem details.
+	b, _ := json.Marshal(Problem{
+		Type: "https://workbench.example/problems/" + code, Title: title,
+		Status: status, Code: code, Retryable: retryable,
+		Detail: "Agent 配置目录无法安全导入，请修复外部配置后重试",
+	})
+	return status, b
 }
 
 // ── WorkItem PATCH（普通字段；status 走 commands）────────────────────
@@ -299,54 +341,4 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		}
 		return renderJSON(w, r, http.StatusAccepted, toRunDTO(run))
 	})
-}
-
-func (s *Server) codexModelSpecForAgent(a *domain.AgentProfile) (orchestrator.ModelSpec, bool) {
-	if a == nil || strings.TrimSpace(a.RuntimePreference.Preferred) != "codex_local" {
-		return orchestrator.ModelSpec{}, false
-	}
-	resolve := func(ref string) (orchestrator.ModelSpec, bool) {
-		if s.models == nil {
-			return orchestrator.ModelSpec{}, false
-		}
-		e, err := s.models.Get(ref)
-		if err != nil || e == nil {
-			return orchestrator.ModelSpec{}, false
-		}
-		return orchestrator.ModelSpec{
-			Ref: e.ID, ProviderID: e.ProviderID, ProviderLabel: e.Category, Provider: e.Provider, API: e.API, Model: e.Model,
-			BaseURL: e.BaseURL, APIKeyEnv: e.APIKeyEnv,
-			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
-		}, true
-	}
-	spec := orchestrator.EffectiveModel(a, nil, resolve)
-	if strings.TrimSpace(spec.Model) == "" {
-		return orchestrator.ModelSpec{}, false
-	}
-	return spec, true
-}
-
-func (s *Server) kimiModelSpecForAgent(a *domain.AgentProfile) (orchestrator.ModelSpec, bool) {
-	if a == nil || strings.TrimSpace(a.RuntimePreference.Preferred) != "kimi_local" {
-		return orchestrator.ModelSpec{}, false
-	}
-	resolve := func(ref string) (orchestrator.ModelSpec, bool) {
-		if s.models == nil {
-			return orchestrator.ModelSpec{}, false
-		}
-		e, err := s.models.Get(ref)
-		if err != nil || e == nil {
-			return orchestrator.ModelSpec{}, false
-		}
-		return orchestrator.ModelSpec{
-			Ref: e.ID, ProviderID: e.ProviderID, ProviderLabel: e.Category, Provider: e.Provider, API: e.API, Model: e.Model,
-			BaseURL: e.BaseURL, APIKeyEnv: e.APIKeyEnv,
-			ContextWindow: e.ContextWindow, MaxTokens: e.MaxTokens,
-		}, true
-	}
-	spec := orchestrator.EffectiveModel(a, nil, resolve)
-	if strings.TrimSpace(spec.Model) == "" {
-		return orchestrator.ModelSpec{}, false
-	}
-	return spec, true
 }

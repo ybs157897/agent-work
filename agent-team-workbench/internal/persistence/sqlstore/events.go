@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -14,11 +15,12 @@ type EventRepo struct{ store *Store }
 // streamPayload 是 stream_events.payload 中保存的 envelope 可变部分；
 // stream_seq / event_id / type / aggregate 由列承载，读取时重组完整 envelope。
 type streamPayload struct {
-	RunSeq        int64              `json:"run_seq,omitempty"`
-	AgentID       string             `json:"agent_id,omitempty"`
-	Actor         *domain.EventActor `json:"actor,omitempty"`
-	CorrelationID string             `json:"correlation_id,omitempty"`
-	Data          map[string]any     `json:"data,omitempty"`
+	RunSeq           int64              `json:"run_seq,omitempty"`
+	AgentID          string             `json:"agent_id,omitempty"`
+	Actor            *domain.EventActor `json:"actor,omitempty"`
+	CorrelationID    string             `json:"correlation_id,omitempty"`
+	AggregateVersion int                `json:"aggregate_version"`
+	Data             map[string]any     `json:"data,omitempty"`
 }
 
 // Append 必须在事务内调用：分配 run_seq（可选）与 stream_seq，
@@ -41,7 +43,8 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 	}
 
 	payload, err := json.Marshal(streamPayload{
-		RunSeq: ev.RunSeq, AgentID: ev.AgentID, Actor: ev.Actor, CorrelationID: ev.CorrelationID, Data: ev.Data,
+		RunSeq: ev.RunSeq, AgentID: ev.AgentID, Actor: ev.Actor, CorrelationID: ev.CorrelationID,
+		AggregateVersion: ev.Aggregate.Version, Data: ev.Data,
 	})
 	if err != nil {
 		return nil, err
@@ -49,12 +52,12 @@ func (r *EventRepo) Append(ctx context.Context, ev *domain.CanonicalEvent, runEv
 
 	if err := r.store.queryRow(ctx, db,
 		`INSERT INTO stream_events(workspace_id, stream_seq, event_id, event_type,
-			aggregate_type, aggregate_id, payload, occurred_at)
-		 VALUES (?, (SELECT COALESCE(MAX(stream_seq),0)+1 FROM stream_events WHERE workspace_id=?),
-			?, ?, ?, ?, ?, ?)
-		 RETURNING stream_seq`,
+			aggregate_type, aggregate_id, aggregate_version, payload, occurred_at)
+			 VALUES (?, (SELECT COALESCE(MAX(stream_seq),0)+1 FROM stream_events WHERE workspace_id=?),
+			?, ?, ?, ?, ?, ?, ?)
+			 RETURNING stream_seq`,
 		ev.WorkspaceID, ev.WorkspaceID, ev.EventID, ev.Type, ev.AggregateType, ev.AggregateID,
-		string(payload), timeParam(ev.OccurredAt)).Scan(&ev.StreamSeq); err != nil {
+		ev.Aggregate.Version, string(payload), timeParam(ev.OccurredAt)).Scan(&ev.StreamSeq); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 
@@ -85,7 +88,7 @@ func (r *EventRepo) Since(ctx context.Context, workspaceID string, afterSeq int6
 	}
 
 	rows, err := r.store.query(ctx, db,
-		`SELECT stream_seq, event_id, event_type, aggregate_type, aggregate_id, payload, occurred_at
+		`SELECT stream_seq, event_id, event_type, aggregate_type, aggregate_id, aggregate_version, payload, occurred_at
 		 FROM stream_events WHERE workspace_id=? AND stream_seq>?
 		 ORDER BY stream_seq LIMIT ?`, workspaceID, afterSeq, limit)
 	if err != nil {
@@ -98,8 +101,9 @@ func (r *EventRepo) Since(ctx context.Context, workspaceID string, afterSeq int6
 		ev := &domain.CanonicalEvent{ContractVersion: "events/v1", WorkspaceID: workspaceID}
 		var raw string
 		var occurred scanTime
+		var aggregateVersion int
 		if err := rows.Scan(&ev.StreamSeq, &ev.EventID, &ev.Type, &ev.AggregateType, &ev.AggregateID,
-			&raw, &occurred); err != nil {
+			&aggregateVersion, &raw, &occurred); err != nil {
 			return nil, err
 		}
 		ev.OccurredAt = mustTime(occurred)
@@ -117,7 +121,10 @@ func (r *EventRepo) Since(ctx context.Context, workspaceID string, afterSeq int6
 		ev.Actor = p.Actor
 		ev.CorrelationID = p.CorrelationID
 		ev.Data = p.Data
-		ev.Aggregate = domain.AggregateRef{Type: ev.AggregateType, ID: ev.AggregateID}
+		// 0031 makes aggregate_version durable. Legacy rows are deliberately
+		// read as version 0; zero is the explicit compatibility value for
+		// historical events that never carried an aggregate version.
+		ev.Aggregate = domain.AggregateRef{Type: ev.AggregateType, ID: ev.AggregateID, Version: aggregateVersion}
 		out = append(out, ev)
 	}
 	return out, rows.Err()
@@ -203,6 +210,12 @@ func (r *EventRepo) ListRunEvents(ctx context.Context, runID string) ([]applicat
 
 type IdempotencyRepo struct{ store *Store }
 
+// A process can die after claiming a key and before Complete/Release. Claims
+// whose explicit expiry is older than this bounded lease are reclaimable only for the same request hash;
+// a different hash remains a conflict forever. Live HTTP handlers renew their
+// owner token, so a long operation is not mistaken for a crashed process.
+const idempotencyClaimLease = 15 * time.Minute
+
 // fetch 读回一条幂等记录；不存在返回 (nil, nil)。
 // status_code 为 NULL（claim 占位中，见 Claim）时 StatusCode 读出为 0。
 func (r *IdempotencyRepo) fetch(ctx context.Context, workspaceID, key string) (*application.IdempotencyRecord, error) {
@@ -231,56 +244,122 @@ func (r *IdempotencyRepo) Check(ctx context.Context, workspaceID, key string) (*
 }
 
 func (r *IdempotencyRepo) Record(ctx context.Context, workspaceID, key string, rec application.IdempotencyRecord) error {
+	if rec.StatusCode < 100 || rec.StatusCode > 599 {
+		return domain.ErrValidation
+	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
-		 VALUES (?,?,?,?,?,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
+		`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, claim_token, claim_expires_at, created_at)
+		 VALUES (?,?,?,?,?,NULL,NULL,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
 		workspaceID, key, rec.RequestHash, rec.ResultBody, rec.StatusCode, timeParam(timeNow()))
 	return r.store.mapErr(err)
 }
 
-// Claim 是 claim-first 幂等协议的占位原语（零迁移）：
-// 利用现有列表达状态——行存在即占位，status_code IS NULL 表示执行中，非 NULL 表示已完成。
+// Claim 是 claim-first 幂等协议的占位原语（0037 claim_token/claim_expires_at）：
+// 利用现有列表达状态——行存在即占位，status_code IS NULL 表示执行中，非 NULL 表示已完成；
+// 同 hash 的过期 NULL 占位可被一次性回收，防止进程崩溃留下永久 in_progress。
 //
 //	(true, nil, nil)  → 占位成功，调用方独占执行权（此后 Complete 或 Release）；
 //	(false, rec, nil) → 同 key 行已存在：rec.StatusCode > 0 为已完成响应（可重放），
 //	                     rec.StatusCode == 0 表示同 hash 请求仍在执行中。
 //
 // 若并发对手刚好在占位冲突与读回之间 Release 了行（窗口极小），重试一次 INSERT。
-func (r *IdempotencyRepo) Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, error) {
+func (r *IdempotencyRepo) Claim(ctx context.Context, workspaceID, key, requestHash string) (bool, *application.IdempotencyRecord, string, error) {
 	for attempt := 0; attempt < 2; attempt++ {
+		claimToken := domain.NewID("idemclaim_")
+		now := timeNow()
 		res, err := r.store.execStmt(ctx, r.store.exec(ctx),
-			`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, created_at)
-			 VALUES (?,?,?,NULL,NULL,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
-			workspaceID, key, requestHash, timeParam(timeNow()))
+			`INSERT INTO idempotency_keys(workspace_id, key, request_hash, result_ref, status_code, claim_token, claim_expires_at, created_at)
+			 VALUES (?,?,?,NULL,NULL,?,?,?) ON CONFLICT (workspace_id, key) DO NOTHING`,
+			workspaceID, key, requestHash, claimToken, timeParam(now.Add(idempotencyClaimLease)), timeParam(now))
 		if err != nil {
-			return false, nil, r.store.mapErr(err)
+			return false, nil, "", r.store.mapErr(err)
 		}
 		if n, err := res.RowsAffected(); err == nil && n > 0 {
-			return true, nil, nil
+			return true, nil, claimToken, nil
 		}
 		rec, err := r.fetch(ctx, workspaceID, key)
 		if err != nil {
-			return false, nil, err
+			return false, nil, "", err
 		}
 		if rec != nil {
-			return false, rec, nil
+			if rec.StatusCode == 0 && rec.RequestHash == requestHash {
+				res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+					`DELETE FROM idempotency_keys
+					 WHERE workspace_id=? AND key=? AND request_hash=? AND status_code IS NULL AND claim_expires_at<?`,
+					workspaceID, key, requestHash,
+					timeParam(now))
+				if err != nil {
+					return false, nil, "", r.store.mapErr(err)
+				}
+				if n, _ := res.RowsAffected(); n > 0 {
+					// The next loop performs the replacement claim. A competing
+					// claimant is serialized by SQLite and will observe its fresh
+					// row as in-progress.
+					continue
+				}
+			}
+			return false, rec, "", nil
 		}
 	}
-	return false, nil, domain.ErrIdempotencyConflict
+	return false, nil, "", domain.ErrIdempotencyConflict
 }
 
-// Complete 把执行结果写回占位行（仅当仍处于未完成状态，防止覆盖他人结果）。
-func (r *IdempotencyRepo) Complete(ctx context.Context, workspaceID, key string, statusCode int, resultBody string) error {
-	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`UPDATE idempotency_keys SET result_ref=?, status_code=? WHERE workspace_id=? AND key=? AND status_code IS NULL`,
-		resultBody, statusCode, workspaceID, key)
-	return r.store.mapErr(err)
+// Complete 把执行结果写回占位行；request hash + claim token 共同构成
+// owner fence，旧请求不能覆盖被回收后重新取得的同一 key。
+func (r *IdempotencyRepo) Complete(ctx context.Context, workspaceID, key, requestHash, claimToken string, statusCode int, resultBody string) error {
+	if claimToken == "" || requestHash == "" {
+		return domain.ErrIdempotencyClaimLost
+	}
+	if statusCode < 100 || statusCode > 599 {
+		return domain.ErrValidation
+	}
+	result, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE idempotency_keys SET result_ref=?, status_code=?, claim_token=NULL, claim_expires_at=NULL
+		 WHERE workspace_id=? AND key=? AND request_hash=? AND claim_token=? AND status_code IS NULL`,
+		resultBody, statusCode, workspaceID, key, requestHash, claimToken)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return domain.ErrIdempotencyClaimLost
+	}
+	return nil
 }
 
-// Release 删除未完成的占位行：exec 返回 5xx 时调用，允许客户端以同 key 重试。
-func (r *IdempotencyRepo) Release(ctx context.Context, workspaceID, key string) error {
-	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`DELETE FROM idempotency_keys WHERE workspace_id=? AND key=? AND status_code IS NULL`,
-		workspaceID, key)
-	return r.store.mapErr(err)
+// Renew 延长仍由当前请求持有的 claim lease，避免长操作被误判为崩溃。
+func (r *IdempotencyRepo) Renew(ctx context.Context, workspaceID, key, requestHash, claimToken string) error {
+	if claimToken == "" || requestHash == "" {
+		return domain.ErrIdempotencyClaimLost
+	}
+	now := timeNow()
+	result, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE idempotency_keys SET claim_expires_at=?
+		 WHERE workspace_id=? AND key=? AND request_hash=? AND claim_token=? AND status_code IS NULL`,
+		timeParam(now.Add(idempotencyClaimLease)), workspaceID, key, requestHash, claimToken)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return domain.ErrIdempotencyClaimLost
+	}
+	return nil
+}
+
+// Release 删除当前请求持有的未完成占位；exec 返回 5xx 时调用，允许客户端
+// 以同 key 重试。旧 owner 不得删除 replacement claim。
+func (r *IdempotencyRepo) Release(ctx context.Context, workspaceID, key, requestHash, claimToken string) error {
+	if claimToken == "" || requestHash == "" {
+		return domain.ErrIdempotencyClaimLost
+	}
+	result, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`DELETE FROM idempotency_keys
+		 WHERE workspace_id=? AND key=? AND request_hash=? AND claim_token=? AND status_code IS NULL`,
+		workspaceID, key, requestHash, claimToken)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return domain.ErrIdempotencyClaimLost
+	}
+	return nil
 }

@@ -58,6 +58,11 @@ export interface AgentProfile {
   version: number;
 }
 
+/** POST /workspaces/{id}/agent-profiles；202 时外部配置仍待对账。 */
+export interface CreateAgentResponse extends AgentProfile {
+  config_sync_pending?: boolean;
+}
+
 /** 跨 Run 会话锚点（GET /agent-profiles/{id}/task-sessions；墓碑行服务端已过滤）。 */
 export interface TaskSession {
   id: string;
@@ -142,6 +147,331 @@ export interface WorkItem {
   /** 任务台账滚动摘要（S2 确定性生成）：仅详情响应携带，列表/bootstrap 省略。 */
   rolling_digest?: string;
   version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Native governance read model（WP6；服务端权威，前端不重算）──────────
+
+export type GoalStatus = 'draft' | 'active' | 'waiting' | 'blocked' | 'completed' | 'cancelled';
+export type TodoClass = 'advancement' | 'monitor' | 'user_gate' | 'blocker' | 'validation';
+export type TodoStatus = 'pending' | 'claimed' | 'running' | 'waiting' | 'completed' | 'blocked' | 'cancelled';
+export type GovernanceQuotaKind =
+  | 'turn_count'
+  | 'active_worker'
+  | 'input_tokens_total'
+  | 'input_uncached_tokens'
+  | 'cache_read_tokens'
+  | 'cache_write_tokens'
+  | 'output_tokens'
+  | 'cost_microusd';
+export type GovernanceQuotaEnforcement = 'audit' | 'enforce';
+
+export interface GovernanceQuotaPolicy {
+  kind: GovernanceQuotaKind;
+  limit: number;
+  enforcement: GovernanceQuotaEnforcement;
+}
+
+export interface GovernanceEvidenceItem {
+  source_kind: 'work_item' | 'plan' | 'run' | 'artifact' | 'approval' | 'delivery_brief' | 'validation_result';
+  source_id: string;
+  verification: 'observed' | 'passed' | 'failed' | 'accepted';
+  summary: string;
+  recorded_at: string;
+}
+
+export interface GovernanceDeliveryBriefSnapshot {
+  id: string;
+  schema_version: 'delivery-brief-snapshot/v1';
+  goal_id: string;
+  todo_id: string;
+  work_item_id: string;
+  snapshot_json: string;
+  canonical_digest: string;
+  as_of_event_seq: number;
+  source_versions: Record<string, number>;
+  freshness_state: 'current' | 'partial';
+  created_at: string;
+  client_key?: string;
+}
+
+export interface GovernanceGoal {
+  id: string;
+  workspace_id: string;
+  root_work_item_id: string;
+  objective: string;
+  acceptance_contract: string[];
+  status: GoalStatus;
+  phase: string;
+  current_todo_id: string | null;
+  quota_policies: GovernanceQuotaPolicy[];
+  completion_evidence_summary: GovernanceEvidenceItem[];
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GovernanceDecisionScope {
+  work_item_ids: string[];
+  agent_ids: string[];
+  runtime_capabilities: string[];
+  write_scopes: string[];
+  max_dispatch: number;
+}
+
+export interface GovernanceTodoClaim {
+  owner_agent_id: string;
+  version: number;
+  claimed_at: string;
+  expires_at: string;
+}
+
+export interface GovernanceTodo {
+  id: string;
+  goal_id: string;
+  class: TodoClass;
+  status: TodoStatus;
+  instruction: string;
+  acceptance: string[];
+  resume_condition: string | null;
+  priority: Priority;
+  predecessors: string[];
+  successors: string[];
+  decision_scope: GovernanceDecisionScope;
+  claim: GovernanceTodoClaim | null;
+  claim_version: number;
+  last_turn_seq: number;
+  completion_turn_key: GovernanceTurnKey | null;
+  completion_evidence_id: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GovernanceTurnKey {
+  goal_id: string;
+  todo_id: string;
+  turn_seq: number;
+}
+
+export interface GovernanceTurnReceiptHeader {
+  turn_key: GovernanceTurnKey;
+  attempt: number;
+  schema_version: string;
+  input_snapshot_digest: string;
+  admission_client_key: string;
+  source_run_id?: string;
+  plan_client_key?: string;
+  decision_digest?: string;
+  canonical_digest: string;
+  created_at: string;
+}
+
+export interface GovernanceTurnReceiptPhase {
+  turn_key: GovernanceTurnKey;
+  phase_seq: number;
+  phase: string;
+  payload: Record<string, unknown>;
+  canonical_digest: string;
+  plan_id?: string;
+  run_ids?: string[];
+  quota_reservation_keys?: string[];
+  evidence?: GovernanceEvidenceItem[];
+  created_at: string;
+}
+
+export interface GovernanceTurnReceipt {
+  header: GovernanceTurnReceiptHeader;
+  phases: GovernanceTurnReceiptPhase[];
+}
+
+export interface GovernanceQuotaReservation {
+  goal_id: string;
+  todo_id: string;
+  turn_seq: number;
+  quota_kind: GovernanceQuotaKind;
+  status: 'reserved' | 'committed' | 'released' | 'expired';
+  reserved_amount: number;
+  committed_amount: number;
+  released_amount: number;
+  policy_limit: number;
+  policy_enforcement: GovernanceQuotaEnforcement;
+  policy_digest: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GovernanceQuotaSpendEntry {
+  goal_id: string;
+  todo_id: string;
+  turn_seq: number;
+  quota_kind: Exclude<GovernanceQuotaKind, 'turn_count' | 'active_worker'>;
+  run_id: string;
+  amount: number;
+  usage_basis: 'per_run';
+  usage_digest: string;
+  policy_digest: string;
+  price_digest?: string;
+  status: 'committed' | 'unresolved';
+  reason?: string;
+  created_at: string;
+}
+
+export interface GovernanceQuotaKindSummary {
+  kind: GovernanceQuotaKind;
+  committed: number;
+  active_reserved: number;
+  active_worker?: number;
+  unresolved: GovernanceQuotaSpendEntry[];
+}
+
+export interface GovernanceGoalQuota {
+  goal_id: string;
+  policies: GovernanceQuotaPolicy[];
+  kinds: GovernanceQuotaKindSummary[];
+}
+
+export interface GovernanceQuotaTurn {
+  turn_key: GovernanceTurnKey;
+  reservations: GovernanceQuotaReservation[];
+  spend: GovernanceQuotaSpendEntry[];
+}
+
+export interface GovernanceQuotaSpendKey {
+  turn_key: GovernanceTurnKey;
+  quota_kind: Exclude<GovernanceQuotaKind, 'turn_count' | 'active_worker'>;
+  run_id: string;
+}
+
+export interface GovernanceQuotaGapResolution {
+  id: string;
+  schema_version: 'quota-gap-resolution/v1';
+  target: GovernanceQuotaSpendKey;
+  original_usage_digest: string;
+  original_policy_digest: string;
+  original_price_digest?: string;
+  status: 'reconciled';
+  amount: number;
+  evidence: GovernanceEvidenceItem;
+  evidence_digest: string;
+  canonical_digest: string;
+  actor_kind: 'user';
+  actor_id: string;
+  reason: string;
+  client_key?: string;
+  created_at: string;
+}
+
+export interface GovernanceQuotaGapReconciliationInput {
+  target: GovernanceQuotaSpendKey;
+  amount: number;
+  evidence: GovernanceEvidenceItem;
+  actor_id: string;
+  reason: string;
+  client_key?: string;
+}
+
+export interface GovernanceGoalMetrics {
+  goal_id: string;
+  turn_count: number;
+  run_count: number;
+  input_tokens_total: number;
+  input_uncached_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+  cost_microusd: number;
+}
+
+export interface GovernanceMetrics {
+  workspace_id: string;
+  source_event_seq: number;
+  plan_decode_success: number;
+  plan_decode_errors: Record<string, number>;
+  repair_attempts: number;
+  repair_successes: number;
+  repair_blockers: number;
+  receipt_replays: number;
+  receipt_conflicts: number;
+  projection_divergences: number;
+  evidence_finish_rejections: number;
+  user_unblocks: number;
+  projection_updates: number;
+  handoffs: number;
+  evidence_items: number;
+  goal_summaries: GovernanceGoalMetrics[];
+}
+
+export type GovernanceActorKind = 'agent' | 'runtime';
+export type GovernanceHandoffStatus = 'pending' | 'accepted' | 'transferred' | 'rejected' | 'cancelled';
+export type GovernanceClaimTransferState = 'retained_by_source' | 'claimed_by_target' | 'transferred';
+
+export interface GovernanceActorRef {
+  kind: GovernanceActorKind;
+  id: string;
+}
+
+export interface GovernanceHandoff {
+  id: string;
+  goal_id: string;
+  todo_id: string;
+  source: GovernanceActorRef;
+  target: GovernanceActorRef;
+  reason: string;
+  context_summary: string;
+  evidence: GovernanceEvidenceItem[];
+  open_risks: string[];
+  acceptance?: string;
+  status: GovernanceHandoffStatus;
+  claim_transfer_state: GovernanceClaimTransferState;
+  source_claim_version: number;
+  target_claim_version: number;
+  actor: GovernanceActorRef;
+  client_key?: string;
+  accepted_by?: GovernanceActorRef;
+  accepted_at?: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GovernanceProjectionCursor {
+  event_stream_seq: number;
+  through_turn_seq: number;
+}
+
+export interface GovernanceGoalProjection {
+  goal_id: string;
+  goal_progress: Record<string, unknown>;
+  todo_current_state: Record<string, unknown>;
+  receipt_timeline: Record<string, unknown>[];
+  evidence_summary: GovernanceEvidenceItem[];
+  next_action_checkpoint: Record<string, unknown>;
+  counters: Record<string, number>;
+  source_cursor: GovernanceProjectionCursor;
+  digest: string;
+  version: number;
+  updated_at: string;
+}
+
+export type GovernanceProjectionRepairStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface GovernanceProjectionRepair {
+  id: string;
+  goal_id: string;
+  status: GovernanceProjectionRepairStatus;
+  scope: ('goal_progress' | 'todo_current_state' | 'receipt_timeline' | 'evidence_summary' | 'next_action_checkpoint')[];
+  source_cursor: GovernanceProjectionCursor;
+  replayed_event_count: number;
+  replayed_receipt_count: number;
+  error_code?: string;
+  error_message?: string;
+  client_key?: string;
+  version: number;
+  started_at: string;
+  completed_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -789,6 +1119,23 @@ export const EVENT_NAMES = [
   'coordinator.state_changed',
   'coordinator.blocked',
   'coordinator.completed',
+  // Native governance intent/receipt events；只触发服务端 read model 失效重取。
+  'goal.created',
+  'goal.state_changed',
+  'todo.created',
+  'todo.state_changed',
+  'todo.claim_changed',
+  'turn.receipt_appended',
+  'handoff.created',
+  'handoff.state_changed',
+  'goal.evidence_added',
+  'validation.result_recorded',
+  'projection.updated',
+  'projection.repair_state_changed',
+  'quota.reservation_changed',
+  'quota.spend_recorded',
+  'quota.gap_reconciled',
+  'delivery_brief.snapshot_created',
   // 任务控制面补全（RFC §10）：Location/context/comment 写入与流同事务提交。
   'execution_host.updated',
   'workspace_location.created',

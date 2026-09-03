@@ -49,6 +49,26 @@ const (
 	EventCoordinatorCompleted       = "coordinator.completed"
 	EventCoordinatorStateChanged    = "coordinator.state_changed"
 
+	// Native governance events are emitted only by the Goal/Todo/Receipt
+	// Service transaction. They observe intent and canonical receipts; they do
+	// not create or advance WorkItem/Plan/Run execution state.
+	EventGoalCreated                  = "goal.created"
+	EventGoalStateChanged             = "goal.state_changed"
+	EventTodoCreated                  = "todo.created"
+	EventTodoStateChanged             = "todo.state_changed"
+	EventTodoClaimChanged             = "todo.claim_changed"
+	EventTurnReceiptAppended          = "turn.receipt_appended"
+	EventHandoffCreated               = "handoff.created"
+	EventHandoffStateChanged          = "handoff.state_changed"
+	EventGoalEvidenceAdded            = "goal.evidence_added"
+	EventValidationRecorded           = "validation.result_recorded"
+	EventProjectionUpdated            = "projection.updated"
+	EventProjectionRepairChanged      = "projection.repair_state_changed"
+	EventQuotaReservationChanged      = "quota.reservation_changed"
+	EventQuotaSpendRecorded           = "quota.spend_recorded"
+	EventDeliveryBriefSnapshotCreated = "delivery_brief.snapshot_created"
+	EventQuotaGapReconciled           = "quota.gap_reconciled"
+
 	EventRunCreated         = "run.created"
 	EventRunStarted         = "run.started"
 	EventRunStatusChanged   = "run.status_changed"
@@ -122,7 +142,16 @@ var eventNameWhitelist = map[string]struct{}{
 	EventCoordinatorAttemptUpdated: {}, EventCoordinatorRetryScheduled: {},
 	EventCoordinatorRecoveryStarted: {}, EventCoordinatorBlocked: {},
 	EventCoordinatorCompleted: {}, EventCoordinatorStateChanged: {},
-	EventRunCreated: {}, EventRunStarted: {}, EventRunStatusChanged: {},
+	EventGoalCreated: {}, EventGoalStateChanged: {},
+	EventTodoCreated: {}, EventTodoStateChanged: {}, EventTodoClaimChanged: {},
+	EventTurnReceiptAppended: {},
+	EventHandoffCreated:      {}, EventHandoffStateChanged: {},
+	EventGoalEvidenceAdded: {}, EventValidationRecorded: {},
+	EventProjectionUpdated: {}, EventProjectionRepairChanged: {},
+	EventQuotaReservationChanged: {}, EventQuotaSpendRecorded: {},
+	EventDeliveryBriefSnapshotCreated: {},
+	EventQuotaGapReconciled:           {},
+	EventRunCreated:                   {}, EventRunStarted: {}, EventRunStatusChanged: {},
 	EventRunProgressUpdated: {}, EventRunPlanUpdated: {}, EventRunCompleted: {},
 	EventRunFailed: {}, EventRunCancelled: {}, EventRunLost: {}, EventSessionDecision: {},
 	EventSessionCompacted: {},
@@ -154,18 +183,26 @@ func IsKnownEventName(name string) bool {
 
 // 聚合类型。
 const (
-	AggregateWorkspace       = "workspace"
-	AggregateAgentProfile    = "agent_profile"
-	AggregateWorkItem        = "work_item"
-	AggregatePlan            = "plan"
-	AggregateExecutionRun    = "execution_run"
-	AggregateApproval        = "approval"
-	AggregateArtifact        = "artifact"
-	AggregateRuntimeBinding  = "runtime_binding"
-	AggregateRunner          = "runner"
-	AggregateDispatch        = "dispatch"
-	AggregateDecision        = "decision"
-	AggregateTaskCoordinator = "task_coordinator"
+	AggregateWorkspace             = "workspace"
+	AggregateAgentProfile          = "agent_profile"
+	AggregateWorkItem              = "work_item"
+	AggregatePlan                  = "plan"
+	AggregateExecutionRun          = "execution_run"
+	AggregateApproval              = "approval"
+	AggregateArtifact              = "artifact"
+	AggregateRuntimeBinding        = "runtime_binding"
+	AggregateRunner                = "runner"
+	AggregateDispatch              = "dispatch"
+	AggregateDecision              = "decision"
+	AggregateTaskCoordinator       = "task_coordinator"
+	AggregateGoal                  = "goal"
+	AggregateTodo                  = "todo"
+	AggregateHandoff               = "handoff"
+	AggregateValidationResult      = "validation_result"
+	AggregateGovernanceProjection  = "governance_projection"
+	AggregateProjectionRepair      = "projection_repair"
+	AggregateDeliveryBriefSnapshot = "delivery_brief_snapshot"
+	AggregateQuotaGapResolution    = "quota_gap_resolution"
 
 	// 任务控制面补全（task-control-surface RFC §10）新增聚合，与
 	// asyncapi.yaml CanonicalEventEnvelope.aggregate.type.enum 严格一致。

@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -87,4 +88,60 @@ func numData(v any) int64 {
 		return int64(f)
 	}
 	return -1
+}
+
+func TestRecordRunUsageRejectsRegressionWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	wi := seedRunEnv(t, ctx, svc, store)
+	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: wi.AgentProfileID, Instruction: "monotonic usage",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := atwruntime.Usage{InputTokens: 100, OutputTokens: 20, CachedTokens: 10, Basis: atwruntime.UsagePerRun}
+	if err := svc.RecordRunUsage(ctx, run.ID, first); err != nil {
+		t.Fatal(err)
+	}
+	beforeRun, err := store.Runs().Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSession, err := store.TaskSessions().Get(ctx, wi.WorkspaceID, wi.AgentProfileID, run.AdapterID, wi.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := store.Events().Since(ctx, wi.WorkspaceID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regressed := atwruntime.Usage{InputTokens: 80, OutputTokens: 19, CachedTokens: 9, Basis: atwruntime.UsagePerRun}
+	if err := svc.RecordRunUsage(ctx, run.ID, regressed); err == nil {
+		t.Fatal("per_run counters must reject a backward report")
+	}
+	afterRun, err := store.Runs().Get(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSession, err := store.TaskSessions().Get(ctx, wi.WorkspaceID, wi.AgentProfileID, run.AdapterID, wi.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeRun, afterRun) {
+		t.Fatalf("rejected regression mutated Run: before=%+v after=%+v", beforeRun, afterRun)
+	}
+	if !reflect.DeepEqual(beforeSession, afterSession) {
+		t.Fatalf("rejected regression mutated TaskSession: before=%+v after=%+v", beforeSession, afterSession)
+	}
+	afterEvents, err := store.Events().Since(ctx, wi.WorkspaceID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEvents) != len(beforeEvents) {
+		t.Fatalf("rejected regression must not emit usage.updated: before=%d after=%d", len(beforeEvents), len(afterEvents))
+	}
 }

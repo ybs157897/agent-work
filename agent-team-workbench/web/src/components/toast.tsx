@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { AlertCircle, Info, X } from 'lucide-react';
+import { AlertCircle, Info, TriangleAlert, X } from 'lucide-react';
 import { useEffect } from 'react';
 import { useToastStore, type Toast } from '../stores/toast.store';
 
@@ -40,6 +40,8 @@ function ToastCard({ toast }: { toast: Toast }) {
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border border-status-success/45 font-display text-caption text-status-success">
         成
       </span>
+    ) : toast.kind === 'warning' ? (
+      <TriangleAlert className="w-4 h-4 text-status-warning shrink-0" />
     ) : (
       <Info className="w-4 h-4 text-brand-primary shrink-0" />
     );

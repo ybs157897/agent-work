@@ -115,13 +115,22 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 		return
 	}
 	wctx := context.WithoutCancel(ctx)
+	if key, governed := runGovernanceTurnKey(r); governed {
+		goal, goalErr := s.store.Goals().Get(wctx, key.GoalID)
+		if goalErr != nil || goal.Status != domain.GoalActive {
+			return
+		}
+	}
 	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
 	if err != nil || !isTaskWorkItem(wi) {
 		return
 	}
-	if isSystemCoordinatorRun(r) {
+	if isGovernedCoordinatorRun(r) {
 		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
-		if stateErr != nil || state.CurrentRunID != r.ID {
+		if stateErr != nil || state.CurrentRunID != r.ID || coordinatorRunRelinquishedToHandoff(state, r) {
+			// An accepted Handoff fences every late control outcome from the
+			// relinquishing source, including evaluation verdicts. The immutable
+			// Run transcript remains evidence; it cannot advance Task/Goal state.
 			return
 		}
 	}
@@ -140,6 +149,24 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "verdict_parse_failed", err.Error())
 		return
+	}
+	if key, governed := runGovernanceTurnKey(r); governed {
+		status := domain.ValidationResultFailed
+		if pass {
+			status = domain.ValidationResultPassed
+		}
+		summary := "evaluation verdict recorded"
+		if len(reasons) > 0 {
+			summary = strings.Join(reasons, "; ")
+		}
+		if _, resultErr := s.RecordValidationResult(wctx, &domain.ValidationResult{
+			GoalID: key.GoalID, TodoID: key.TodoID, WorkItemID: r.WorkItemID,
+			SourceRunID: r.ID, Status: status, Summary: summary, ProducedBy: "control_plane",
+		}); resultErr != nil {
+			log.Printf("evaluation: run %s validation result 写入失败: %v", r.ID, resultErr)
+			s.blockForParseFailure(wctx, r, "validation_result_write_failed", "评估验证结果无法持久化："+resultErr.Error())
+			return
+		}
 	}
 	if pass {
 		s.applyVerdictPass(wctx, wi)

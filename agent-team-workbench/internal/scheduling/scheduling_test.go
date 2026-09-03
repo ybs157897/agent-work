@@ -629,6 +629,26 @@ func TestConsumeOneStaleSettlementRetries(t *testing.T) {
 	}
 }
 
+func TestConsumeOneStaleCoordinatorPlanAutomationRetries(t *testing.T) {
+	ctx := context.Background()
+	coordinator := testAgent(false, 0)
+	coordinator.Kind = domain.AgentProfileKindTaskCoordinator
+	store := newFakeStore(coordinator)
+	starter := &fakeRunStarter{err: ErrWakeupDeferred}
+	wake, err := EnqueueWakeup(ctx, store, domain.WakeupSourceAutomation,
+		"ws_t", coordinator.ID, "plan:plan_stale",
+		map[string]any{"plan_id": "plan_stale", "trigger": "defer_wake_at"},
+		testNow.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := newTestScheduler(store, starter).ConsumeOne(ctx, *wake, testNow)
+	if err != nil || outcome != OutcomeQueued || store.status(wake.ID) != domain.WakeupStatusQueued {
+		t.Fatalf("stale Coordinator plan wake must remain durable: outcome=%q status=%q err=%v",
+			outcome, store.status(wake.ID), err)
+	}
+}
+
 func TestConsumeOneMissingAgentRetriesThenExpires(t *testing.T) {
 	ctx := context.Background()
 	agent := testAgent(true, 0)

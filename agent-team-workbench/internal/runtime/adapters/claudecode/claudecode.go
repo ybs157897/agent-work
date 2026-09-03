@@ -179,7 +179,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 
 // finalize 汇总终态：result 帧权威，其次退出码，最后按 Ctx/终态意图。
 func (m *Module) finalize(ex *runtime.ExecContext, st *streamState, waitErr error) runtime.ExecResult {
-	result := runtime.ExecResult{Usage: st.usage, Session: st.session}
+	result := runtime.ExecResult{Usage: st.usageWithProviderReport(ex), Session: st.session}
 	switch {
 	case st.failCode != "":
 		f := classifyCLIError(st.failCode, st.failMsg)
@@ -188,7 +188,7 @@ func (m *Module) finalize(ex *runtime.ExecContext, st *streamState, waitErr erro
 		result.Outcome = runtime.OutcomeSucceeded
 	case ex.Ctx != nil && ex.Ctx.Err() != nil:
 		terminal := terminalByIntent(ex, "context cancelled")
-		terminal.Usage, terminal.Session = st.usage, st.session
+		terminal.Usage, terminal.Session = st.usageWithProviderReport(ex), st.session
 		return terminal
 	case st.streamErr != nil:
 		f := runtime.Failure{Family: runtime.FamilyIO, Code: "stream_failed",
@@ -209,6 +209,25 @@ func (m *Module) finalize(ex *runtime.ExecContext, st *streamState, waitErr erro
 	return result
 }
 
+func (s *streamState) usageWithProviderReport(ex *runtime.ExecContext) *runtime.Usage {
+	if !s.usageSeen || s.usage == nil {
+		return nil
+	}
+	usage := *s.usage
+	sessionRef := ""
+	if s.session != nil {
+		sessionRef = s.session.Ref
+	}
+	report, err := runtime.NewProviderUsageReport(ex, sessionRef,
+		"claude-code", "claude-cli-stream-json", "1", "result.usage",
+		"input_tokens/cache_creation_input_tokens/cache_read_input_tokens/output_tokens; input_total=sum(input buckets)",
+		runtime.UsagePerRun, s.usageCounters)
+	if err == nil {
+		usage = runtime.AttachProviderUsage(usage, report)
+	}
+	return &usage
+}
+
 // terminalByIntent Ctx 取消后的终态：有终态意图 → interrupted/cancelled，否则 failed。
 func terminalByIntent(ex *runtime.ExecContext, detail string) runtime.ExecResult {
 	if kind, ok := ex.TerminalIntent(); ok {
@@ -227,12 +246,14 @@ type streamState struct {
 	callbacks runtime.Callbacks
 	resumeID  string
 
-	session   *runtime.SessionUpdate
-	usage     *runtime.Usage
-	succeeded bool
-	failCode  string
-	failMsg   string
-	streamErr error
+	session       *runtime.SessionUpdate
+	usage         *runtime.Usage
+	usageCounters domain.UsageCountersV1
+	usageSeen     bool
+	succeeded     bool
+	failCode      string
+	failMsg       string
+	streamErr     error
 }
 
 // apply 把 stream-json 帧映射为 canonical 事件与会话/用量（映射逻辑与旧版逐字段一致）。
@@ -255,6 +276,8 @@ func (s *streamState) apply(frame *streamFrame) {
 	case "result":
 		if u := frame.usage(); u != nil {
 			s.usage = u
+			s.usageCounters = frame.usageCounters()
+			s.usageSeen = true
 		}
 		if frame.Subtype == "success" {
 			s.succeeded = true

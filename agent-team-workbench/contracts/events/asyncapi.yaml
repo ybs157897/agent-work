@@ -32,6 +32,107 @@ components:
       payload:
         $ref: "#/components/schemas/CanonicalEventEnvelope"
 
+    GovernanceQuotaReservationChanged:
+      x-lifecycle: live
+      x-event-name: quota.reservation_changed
+      x-aggregate-type: goal
+      x-producer-status: present
+      x-identity-required: [todo_id, turn_seq, quota_kind]
+      description: Reservation 生命周期通知；唯一键与 TurnReceipt turn_key 同源。
+      payload: { $ref: "#/components/schemas/QuotaReservationChangedData" }
+
+    GovernanceTurnReceiptAppended:
+      x-lifecycle: live
+      x-event-name: turn.receipt_appended
+      x-aggregate-type: todo
+      x-producer-status: present
+      x-identity-required: [goal_id, turn_seq, record_kind, digest]
+      description: |
+        Receipt append attempt 的结果；无 outcome 表示首次 canonical append，
+        replayed/conflict 表示幂等重放或身份冲突，不代表新增 receipt row。
+      payload: { $ref: "#/components/schemas/TurnReceiptAppendedData" }
+
+    GovernanceQuotaSpendRecorded:
+      x-lifecycle: live
+      x-event-name: quota.spend_recorded
+      x-aggregate-type: goal
+      x-producer-status: present
+      x-identity-required: [todo_id, turn_seq, quota_kind, run_id]
+      description: 记录按 per_run 口径幂等落账的 committed spend 或 unresolved 对账缺口。
+      payload: { $ref: "#/components/schemas/QuotaSpendRecordedData" }
+
+    GovernanceDeliveryBriefSnapshotCreated:
+      x-lifecycle: live
+      x-event-name: delivery_brief.snapshot_created
+      x-aggregate-type: delivery_brief_snapshot
+      x-producer-status: present
+      x-identity-required: [schema_version, goal_id, todo_id, work_item_id, canonical_digest]
+      description: 不可变 Delivery Brief evidence snapshot 已创建；事件不携带 snapshot_json。
+      payload: { $ref: "#/components/schemas/DeliveryBriefSnapshotCreatedData" }
+
+    GovernanceQuotaGapReconciled:
+      x-lifecycle: live
+      x-event-name: quota.gap_reconciled
+      x-aggregate-type: quota_gap_resolution
+      x-producer-status: present
+      x-identity-required: [schema_version, resolution_id, goal_id, todo_id, turn_seq, quota_kind, run_id, evidence_digest, canonical_digest]
+      description: 既有 unresolved quota spend 已由受保护人工证据完成 immutable 对账；原 spend 不被改写。
+      payload: { $ref: "#/components/schemas/QuotaGapReconciledData" }
+
+    GovernanceHandoffCreated:
+      x-lifecycle: live
+      x-event-name: handoff.created
+      x-aggregate-type: handoff
+      x-producer-status: present
+      x-identity-required: [goal_id, handoff_id]
+      description: 控制面发布 Handoff 创建事实；不复制 Provider session history。
+      payload: { $ref: "#/components/schemas/HandoffCreatedData" }
+
+    GovernanceHandoffStateChanged:
+      x-lifecycle: live
+      x-event-name: handoff.state_changed
+      x-aggregate-type: handoff
+      x-producer-status: present
+      x-identity-required: [goal_id, handoff_id]
+      description: target 接受并取得 claim 后才允许进入 transferred。
+      payload: { $ref: "#/components/schemas/HandoffStateChangedData" }
+
+    GovernanceGoalEvidenceAdded:
+      x-lifecycle: live
+      x-event-name: goal.evidence_added
+      x-aggregate-type: goal
+      x-producer-status: present
+      x-identity-required: [goal_id, source_kind, source_id, verification]
+      description: Goal 完成证据摘要新增；证据本身引用权威执行实体、validation result 或 immutable Delivery Brief snapshot。
+      payload: { $ref: "#/components/schemas/GoalEvidenceAddedData" }
+
+    GovernanceValidationRecorded:
+      x-lifecycle: live
+      x-event-name: validation.result_recorded
+      x-aggregate-type: validation_result
+      x-producer-status: present
+      x-identity-required: [goal_id, validation_result_id, source_run_id, status]
+      description: Control Plane 从终态 evaluation Run 的 verdict 记录验证结果。
+      payload: { $ref: "#/components/schemas/ValidationResultRecordedData" }
+
+    GovernanceProjectionUpdated:
+      x-lifecycle: live
+      x-event-name: projection.updated
+      x-aggregate-type: governance_projection
+      x-producer-status: present
+      x-identity-required: [goal_id, digest, version]
+      description: Goal governance 派生投影已由 canonical authority 重建并写入。
+      payload: { $ref: "#/components/schemas/ProjectionUpdatedData" }
+
+    GovernanceProjectionRepairStateChanged:
+      x-lifecycle: live
+      x-event-name: projection.repair_state_changed
+      x-aggregate-type: projection_repair
+      x-producer-status: present
+      x-identity-required: [goal_id, repair_id, from_state, to_state]
+      description: Projection repair durable checkpoint 状态变化。
+      payload: { $ref: "#/components/schemas/ProjectionRepairStateChangedData" }
+
   schemas:
     CanonicalEventEnvelope:
       type: object
@@ -45,7 +146,7 @@ components:
           type: object
           required: [type, id, version]
           properties:
-            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision, task_coordinator, execution_host, workspace_location, task_comment] }
+            type: { type: string, enum: [workspace, agent_profile, work_item, execution_run, approval, artifact, runtime_binding, runner, plan, dispatch, decision, task_coordinator, goal, todo, handoff, validation_result, governance_projection, projection_repair, delivery_brief_snapshot, quota_gap_resolution, execution_host, workspace_location, task_comment] }
             id: { type: string }
             version: { type: integer }
         run_seq: { type: integer, format: int64, description: "仅 Run 域事件携带" }
@@ -91,6 +192,23 @@ components:
             - coordinator.blocked
             - coordinator.completed
             - coordinator.state_changed
+            # Native governance（intent + canonical receipt；不推进 Run）
+            - goal.created
+            - goal.state_changed
+            - todo.created
+            - todo.state_changed
+            - todo.claim_changed
+            - turn.receipt_appended
+            - handoff.created
+            - handoff.state_changed
+            - goal.evidence_added
+            - validation.result_recorded
+            - projection.updated
+            - projection.repair_state_changed
+            - quota.reservation_changed
+            - quota.spend_recorded
+            - delivery_brief.snapshot_created
+            - quota.gap_reconciled
             # Run
             - run.created
             - run.started
@@ -167,3 +285,334 @@ components:
         kind: { type: string, enum: [note, requirement, review_feedback] }
         actionable: { type: boolean }
         coordinator_status: { type: string, description: 评论事务提交时根 Coordinator durable 状态；缺省表示无 Coordinator state }
+
+    GoalCreatedData:
+      x-lifecycle: live
+      x-event-name: goal.created
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [root_work_item_id, state, version]
+      properties:
+        root_work_item_id: { type: string, pattern: "^wi_" }
+        state: { type: string, enum: [draft, active, waiting, blocked, completed, cancelled] }
+        version: { type: integer, minimum: 1 }
+
+    GoalStateChangedData:
+      x-lifecycle: live
+      x-event-name: goal.state_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [from_state, to_state, version]
+      properties:
+        from_state: { type: string, enum: [draft, active, waiting, blocked, completed, cancelled] }
+        to_state: { type: string, enum: [draft, active, waiting, blocked, completed, cancelled] }
+        version: { type: integer, minimum: 1 }
+
+    TodoCreatedData:
+      x-lifecycle: live
+      x-event-name: todo.created
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, class, state, version]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        class: { type: string, enum: [advancement, monitor, user_gate, blocker, validation] }
+        state: { type: string, enum: [pending, claimed, running, waiting, completed, blocked, cancelled] }
+        version: { type: integer, minimum: 1 }
+
+    TodoStateChangedData:
+      x-lifecycle: live
+      x-event-name: todo.state_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, from_state, to_state, version]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        from_state: { type: string, enum: [pending, claimed, running, waiting, completed, blocked, cancelled] }
+        to_state: { type: string, enum: [pending, claimed, running, waiting, completed, blocked, cancelled] }
+        version: { type: integer, minimum: 1 }
+        completion_turn_key:
+          type: object
+          additionalProperties: false
+          required: [goal_id, todo_id, turn_seq]
+          properties:
+            goal_id: { type: string, pattern: "^goal_" }
+            todo_id: { type: string, pattern: "^todo_" }
+            turn_seq: { type: integer, minimum: 1 }
+        completion_evidence_id: { type: string, pattern: "^wi_" }
+      allOf:
+        - if:
+            properties: { to_state: { const: completed } }
+          then:
+            required: [completion_turn_key, completion_evidence_id]
+
+    TodoClaimChangedData:
+      x-lifecycle: live
+      x-event-name: todo.claim_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, claim_version, claim_state]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        claim_version: { type: integer, minimum: 1 }
+        claim_state: { type: string, enum: [claimed, renewed, released, expired] }
+        owner_agent_id: { type: string, pattern: "^agent_" }
+        expires_at: { type: string, format: date-time }
+      allOf:
+        - if:
+            properties: { claim_state: { type: string, enum: [claimed, renewed] } }
+          then:
+            required: [owner_agent_id, expires_at]
+
+    TurnReceiptAppendedData:
+      x-lifecycle: live
+      x-event-name: turn.receipt_appended
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      description: |
+        每次 receipt append attempt 的观测结果。没有 outcome 表示首次
+        append 已写入 canonical receipt；outcome=replayed/conflict 表示
+        幂等重放或身份冲突尝试，不代表新增 receipt row。
+      required: [goal_id, turn_seq, record_kind, digest]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        turn_seq: { type: integer, minimum: 1 }
+        record_kind: { type: string, enum: [header, phase] }
+        phase_seq: { type: integer, minimum: 1 }
+        phase: { type: string, enum: [decision_decode, validation, durable_writeback, plan_compile, dispatch, quota_spend, projection_outbox] }
+        schema_version: { type: string, minLength: 1, maxLength: 128 }
+        input_snapshot_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        outcome: { type: string, enum: [replayed, conflict] }
+        valid: { type: boolean }
+        error_code:
+          type: string
+          enum: [plan_json_syntax, plan_schema_validation, plan_semantic_validation, plan_authority_denied, plan_quota_denied, cost_price_unavailable, usage_unresolved]
+        path: { type: string, minLength: 1, maxLength: 1024 }
+      allOf:
+        - if:
+            properties: { record_kind: { const: header } }
+          then:
+            required: [schema_version, input_snapshot_digest]
+        - if:
+            properties: { record_kind: { const: phase } }
+          then:
+            required: [phase_seq, phase]
+        - if:
+            properties:
+              record_kind: { const: phase }
+              phase_seq: { const: 2 }
+          then:
+            required: [valid]
+        - if:
+            properties: { valid: { const: false } }
+          then:
+            required: [error_code, path]
+
+    QuotaReservationChangedData:
+      x-lifecycle: live
+      x-event-name: quota.reservation_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, todo_id, turn_seq, quota_kind, reservation_state, amount,
+        reserved_amount, committed_amount, released_amount, policy_limit,
+        policy_enforcement, policy_digest, reservation_version]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, minimum: 1 }
+        quota_kind:
+          type: string
+          enum: [turn_count, active_worker, input_tokens_total, input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_microusd]
+        reservation_state: { type: string, enum: [reserved, committed, released, expired] }
+        status: { type: string, enum: [reserved, committed, released, expired] }
+        amount: { type: integer, format: int64, minimum: 0 }
+        reserved_amount: { type: integer, format: int64, minimum: 0 }
+        committed_amount: { type: integer, format: int64, minimum: 0 }
+        released_amount: { type: integer, format: int64, minimum: 0 }
+        policy_limit: { type: integer, format: int64, minimum: 0 }
+        policy_enforcement: { type: string, enum: [audit, enforce] }
+        policy_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        reservation_version: { type: integer, minimum: 1 }
+        run_id: { type: string, maxLength: 256 }
+        usage_basis: { type: string, maxLength: 32 }
+        usage_digest: { type: string, maxLength: 128 }
+        price_digest: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 2000 }
+
+    QuotaSpendRecordedData:
+      x-lifecycle: live
+      x-event-name: quota.spend_recorded
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, todo_id, turn_seq, quota_kind, run_id, amount, usage_basis, usage_digest, status]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, minimum: 1 }
+        quota_kind:
+          type: string
+          enum: [turn_count, input_tokens_total, input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_microusd]
+        run_id: { type: string, pattern: "^run_" }
+        amount: { type: integer, format: int64, minimum: 0 }
+        usage_basis: { type: string, const: per_run }
+        usage_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        status: { type: string, enum: [committed, unresolved] }
+        reason: { type: string, maxLength: 2000 }
+        price_digest: { type: string, maxLength: 128 }
+      allOf:
+        - if:
+            properties: { quota_kind: { const: cost_microusd } }
+          then:
+            required: [price_digest]
+
+    DeliveryBriefSnapshotCreatedData:
+      x-lifecycle: live
+      x-event-name: delivery_brief.snapshot_created
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      description: Snapshot 创建通知只携带可审计身份和水位；完整 snapshot_json 只能经受保护 REST 读取。
+      required: [schema_version, goal_id, todo_id, work_item_id, canonical_digest, as_of_event_seq, source_versions, freshness_state]
+      properties:
+        schema_version: { type: string, const: delivery-brief-snapshot/v1 }
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        work_item_id: { type: string, pattern: "^wi_" }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        as_of_event_seq: { type: integer, format: int64, minimum: 0 }
+        source_versions: { type: object, additionalProperties: { type: integer, format: int64, minimum: 0 } }
+        freshness_state: { type: string, enum: [current, partial] }
+
+    QuotaGapReconciledData:
+      x-lifecycle: live
+      x-event-name: quota.gap_reconciled
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      description: 对账事件只携带目标身份、原始 digest、人工证据 digest 与 additive amount，不携带 provider 原始内容。
+      required: [schema_version, resolution_id, goal_id, todo_id, turn_seq, quota_kind, run_id,
+        original_usage_digest, original_policy_digest, status, amount, evidence_digest, canonical_digest,
+        actor_kind, actor_id, reason]
+      properties:
+        schema_version: { type: string, const: quota-gap-resolution/v1 }
+        resolution_id: { type: string, pattern: "^qgap_" }
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        turn_seq: { type: integer, format: int64, minimum: 1 }
+        quota_kind:
+          type: string
+          enum: [input_tokens_total, input_uncached_tokens, cache_read_tokens, cache_write_tokens, output_tokens, cost_microusd]
+        run_id: { type: string, pattern: "^run_" }
+        original_usage_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        original_policy_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        original_price_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        status: { type: string, const: reconciled }
+        amount: { type: integer, format: int64, minimum: 0 }
+        evidence_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        canonical_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        actor_kind: { type: string, const: user }
+        actor_id: { type: string, minLength: 1, maxLength: 256 }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+
+    HandoffCreatedData:
+      x-lifecycle: live
+      x-event-name: handoff.created
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, handoff_id, status]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        handoff_id: { type: string, pattern: "^handoff_" }
+        status: { type: string, const: pending }
+
+    HandoffStateChangedData:
+      x-lifecycle: live
+      x-event-name: handoff.state_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, handoff_id, from_state, to_state, status, claim_transfer_state]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        handoff_id: { type: string, pattern: "^handoff_" }
+        from_state: { type: string, enum: [pending, accepted, transferred, rejected, cancelled] }
+        to_state: { type: string, enum: [pending, accepted, transferred, rejected, cancelled] }
+        status: { type: string, enum: [pending, accepted, transferred, rejected, cancelled] }
+        claim_transfer_state: { type: string, enum: [retained_by_source, claimed_by_target, transferred] }
+
+    GoalEvidenceAddedData:
+      x-lifecycle: live
+      x-event-name: goal.evidence_added
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, source_kind, source_id, verification]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        source_kind: { type: string, enum: [work_item, plan, run, artifact, approval, delivery_brief, validation_result] }
+        source_id: { type: string, minLength: 1, maxLength: 256 }
+        verification: { type: string, enum: [observed, passed, failed, accepted] }
+        summary: { type: string, maxLength: 4000 }
+        recorded_at: { type: string, format: date-time }
+
+    ValidationResultRecordedData:
+      x-lifecycle: live
+      x-event-name: validation.result_recorded
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, todo_id, validation_result_id, source_run_id, status, produced_by]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        todo_id: { type: string, pattern: "^todo_" }
+        validation_result_id: { type: string, pattern: "^validation_" }
+        source_run_id: { type: string, pattern: "^run_" }
+        status: { type: string, enum: [pending, passed, failed] }
+        produced_by: { type: string, const: control_plane }
+        criteria_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        summary: { type: string, maxLength: 4000 }
+        recorded_at: { type: string, format: date-time }
+
+    ProjectionUpdatedData:
+      x-lifecycle: live
+      x-event-name: projection.updated
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, digest, version, event_stream_seq, through_turn_seq]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        version: { type: integer, minimum: 1 }
+        event_stream_seq: { type: integer, format: int64, minimum: 0 }
+        through_turn_seq: { type: integer, format: int64, minimum: 0 }
+        cause: { type: string, enum: [turn, repair] }
+
+    ProjectionRepairStateChangedData:
+      x-lifecycle: live
+      x-event-name: projection.repair_state_changed
+      x-producer-status: present
+      type: object
+      additionalProperties: false
+      required: [goal_id, repair_id, from_state, to_state, status]
+      properties:
+        goal_id: { type: string, pattern: "^goal_" }
+        repair_id: { type: string, pattern: "^projection_repair_" }
+        from_state: { type: string, enum: [pending, running, completed, failed] }
+        to_state: { type: string, enum: [pending, running, completed, failed] }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        event_stream_seq: { type: integer, format: int64, minimum: 0 }
+        through_turn_seq: { type: integer, format: int64, minimum: 0 }
+        replayed_event_count: { type: integer, minimum: 0 }
+        replayed_receipt_count: { type: integer, minimum: 0 }
+        error_code: { type: string, maxLength: 128 }

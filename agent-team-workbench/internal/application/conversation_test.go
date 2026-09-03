@@ -201,6 +201,24 @@ func TestValidateRequiredCapabilities(t *testing.T) {
 	if err := validateRequiredCapabilities(map[string]string{"approval": "required"}, binding); err == nil {
 		t.Fatal("unavailable capability 必须失败")
 	}
+	for _, capability := range []string{
+		"structured_transport", "schema_constrained_output", "control_tool_call",
+	} {
+		for _, level := range []string{"experimental", "adapter_translated", "unavailable", ""} {
+			t.Run(capability+"/"+level, func(t *testing.T) {
+				candidate := &domain.RuntimeBinding{Capabilities: map[string]string{capability: level}}
+				if err := validateRequiredCapabilities(map[string]string{capability: "required"}, candidate); err == nil {
+					t.Fatalf("planner control capability %s=%q must not satisfy a native requirement", capability, level)
+				}
+			})
+		}
+		t.Run(capability+"/supported", func(t *testing.T) {
+			candidate := &domain.RuntimeBinding{Capabilities: map[string]string{capability: "supported"}}
+			if err := validateRequiredCapabilities(map[string]string{capability: "required"}, candidate); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestCodexRuntimeRequiresResponsesForCustomProvider(t *testing.T) {
