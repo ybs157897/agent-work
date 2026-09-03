@@ -332,6 +332,13 @@ func (c *runnerCallbacks) markRunning() {
 }
 
 func (c *runnerCallbacks) OnEvent(eventType string, data map[string]any) {
+	if domain.IsInternalEventName(eventType) {
+		// Run Journal internal 事件（run.phase_* / run.log_chunk）是观测面：
+		// 只落 run_events，绝不触发 markRunning——否则 adapter 在 spawn/handshake
+		// 区间发的相位事件会把 starting→running 提前，run.started 语义被破坏。
+		_ = c.runner.engine.RecordRunEvent(context.Background(), c.runID, eventType, data)
+		return
+	}
 	c.markRunning()
 	_ = c.runner.engine.RecordRunEvent(context.Background(), c.runID, eventType, data)
 }
