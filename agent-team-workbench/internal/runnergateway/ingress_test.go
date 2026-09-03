@@ -35,6 +35,15 @@ type fakeEngine struct {
 	statuses []domain.RunStatus
 	runs     map[string]domain.RunStatus
 	onStatus func(runID string, to domain.RunStatus)
+	// events 记录 RecordRunEvent 调用（Run Journal phase 事件断言用）。
+	events []recordedRunEvent
+}
+
+// recordedRunEvent 是一次 RecordRunEvent 调用的实参快照。
+type recordedRunEvent struct {
+	RunID     string
+	EventType string
+	Data      map[string]any
 }
 
 func newFakeEngine() *fakeEngine {
@@ -89,6 +98,7 @@ func (f *fakeEngine) RecordRunProgress(ctx context.Context, runID string, progre
 }
 
 func (f *fakeEngine) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
+	f.events = append(f.events, recordedRunEvent{RunID: runID, EventType: evType, Data: data})
 	return nil
 }
 

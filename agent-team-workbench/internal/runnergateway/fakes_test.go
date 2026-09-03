@@ -76,6 +76,8 @@ type fakeRunnerRepo struct {
 	statuses [][2]string // runnerID, status
 	leases   []*application.RunLease
 	renews   []renewCall
+	// leaseErr 非空时 CreateLease 失败（dispatch 失败路径 / journal 断言用）。
+	leaseErr error
 }
 
 type renewCall struct {
@@ -116,6 +118,9 @@ func (f *fakeRunnerRepo) SetStatus(ctx context.Context, runnerID, status string,
 func (f *fakeRunnerRepo) CreateLease(ctx context.Context, l *application.RunLease) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.leaseErr != nil {
+		return f.leaseErr
+	}
 	if l.FencingToken == 0 {
 		l.FencingToken = int64(len(f.leases) + 1)
 	}
