@@ -17,6 +17,9 @@ type planSubmissionFailureClass string
 const (
 	planSubmissionFailureAuthority planSubmissionFailureClass = "authority"
 	planSubmissionFailureQuota     planSubmissionFailureClass = "quota"
+	// planSubmissionFailureExecution 标记计划提交事务内步骤执行期的基础设施/
+	// 配置错误（如评估 run 建失败）：与模型计划语义错误分流，禁止送进自动修复。
+	planSubmissionFailureExecution planSubmissionFailureClass = "execution"
 )
 
 type classifiedPlanSubmissionError struct {
@@ -154,6 +157,8 @@ func classifyPlanSubmissionError(err error) *PlanDecisionError {
 		code = domain.GovernanceErrorPlanAuthorityDenied
 	case errors.As(err, &classified) && classified.class == planSubmissionFailureQuota:
 		code = domain.GovernanceErrorPlanQuotaDenied
+	case errors.As(err, &classified) && classified.class == planSubmissionFailureExecution:
+		code = domain.GovernanceErrorPlanExecutionFailed
 	case errors.Is(err, domain.ErrCapabilityMissing), errors.Is(err, domain.ErrNotFound),
 		errors.Is(err, domain.ErrStateConflict), errors.Is(err, domain.ErrWorkspaceContextMismatch):
 		code = domain.GovernanceErrorPlanAuthorityDenied
@@ -202,6 +207,11 @@ func (s *Service) handleCoordinatorPlanDecisionFailure(ctx context.Context, run 
 			_ = s.blockCoordinatorPlanDecision(context.WithoutCancel(ctx), run,
 				"coordinator_plan_repair_failed", err.Error(), "检查 Coordinator Runtime/上下文后重试")
 		}
+	case domain.GovernanceErrorPlanExecutionFailed:
+		// 基础设施/配置缺陷模型修不了：人工阻塞，保留原始原因。
+		_ = s.blockCoordinatorPlanDecision(context.WithoutCancel(ctx), run,
+			string(decisionErr.Code), decisionErr.Error(),
+			"检查 Coordinator Runtime 配置与 RuntimeBinding 状态后解除阻塞")
 	case domain.GovernanceErrorPlanSemanticValidation,
 		domain.GovernanceErrorPlanAuthorityDenied,
 		domain.GovernanceErrorPlanQuotaDenied:

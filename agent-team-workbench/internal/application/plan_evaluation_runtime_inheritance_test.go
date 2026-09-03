@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,92 @@ func TestEvaluationRunFollowsCoordinatorFallbackPairing(t *testing.T) {
 	control, _ := evaluation.Input["task_coordinator"].(map[string]any)
 	if control["use_fallback"] != true {
 		t.Fatalf("评估 control context 必须携带 use_fallback=true: %#v", control)
+	}
+}
+
+// F2 防回归：主 binding 未就绪时评估 run 建失败属执行期基础设施错误，必须分流为
+// blocker code=plan_execution_failed 的人工阻塞（保留原始原因），不得伪装成
+// plan_semantic_validation。
+func TestEvaluationRunCreationFailureBlocksAsPlanExecutionFailedWhenBindingUnavailable(t *testing.T) {
+	ctx, svc, store, dispatcher, _, wsID, _ := seedEvaluationRuntimeEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "评估 run 主 binding 未就绪", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := store.Bindings().GetByLabel(ctx, wsID, "codex_local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.Status = domain.BindingUnavailable
+	if err := store.Bindings().Update(ctx, binding, binding.Version); err != nil {
+		t.Fatal(err)
+	}
+	decision := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"all evidence is complete",` +
+		`"next_action":"evaluate before user acceptance","steps":[{"verb":"finish","evaluation":true}]}`
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[0].ID, decision)
+	if len(dispatcher.runs) != 1 {
+		t.Fatalf("主 binding 未就绪时不得创建评估 run: runs=%d", len(dispatcher.runs))
+	}
+	requireNoPlanForWorkItem(t, ctx, store, root.ID)
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorBlocked || state.BlockerCode != string(domain.GovernanceErrorPlanExecutionFailed) {
+		t.Fatalf("执行期失败必须落 plan_execution_failed 人工阻塞: %+v", state)
+	}
+	if !strings.Contains(state.BlockerMessage, "尚未就绪") {
+		t.Fatalf("blocker 必须保留原始原因: %q", state.BlockerMessage)
+	}
+	root, err = store.WorkItems().Get(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != domain.WorkItemBlocked {
+		t.Fatalf("评估 run 建失败必须阻塞根任务: %+v", root)
+	}
+}
+
+// F2 防回归：Preferred binding 行消失时 fail-closed（F1），且 blocker 同样分流为
+// plan_execution_failed（消息含「未配置」），不进自动修复、不静默改选。
+func TestEvaluationRunCreationFailsClosedWhenPreferredBindingMissing(t *testing.T) {
+	ctx, svc, store, dispatcher, config, wsID, _ := seedEvaluationRuntimeEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "评估 run Preferred binding 缺失", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.RuntimeLabel = "kimi_local" // 本 workspace 无 kimi_local binding 行
+	if err := store.TaskCoordinators().UpdateConfig(ctx, config, config.Version); err != nil {
+		t.Fatal(err)
+	}
+	decision := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"all evidence is complete",` +
+		`"next_action":"evaluate before user acceptance","steps":[{"verb":"finish","evaluation":true}]}`
+	completeCoordinatorPlanDecision(t, ctx, svc, dispatcher.runs[0].ID, decision)
+	if len(dispatcher.runs) != 1 {
+		t.Fatalf("Preferred binding 缺失时不得创建评估 run: runs=%d", len(dispatcher.runs))
+	}
+	requireNoPlanForWorkItem(t, ctx, store, root.ID)
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorBlocked || state.BlockerCode != string(domain.GovernanceErrorPlanExecutionFailed) {
+		t.Fatalf("binding 缺失 fail-closed 必须落 plan_execution_failed 人工阻塞: %+v", state)
+	}
+	if !strings.Contains(state.BlockerMessage, "未配置") {
+		t.Fatalf("blocker 必须保留未配置原因: %q", state.BlockerMessage)
+	}
+	root, err = store.WorkItems().Get(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != domain.WorkItemBlocked {
+		t.Fatalf("评估 run fail-closed 必须阻塞根任务: %+v", root)
 	}
 }

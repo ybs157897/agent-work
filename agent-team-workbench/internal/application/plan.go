@@ -827,7 +827,8 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				if evalRuntimePreference != nil && evalRuntimePreference.Preferred != "" {
 					if _, err := s.store.Bindings().GetByLabel(ctx, wi.WorkspaceID, evalRuntimePreference.Preferred); err != nil {
 						if errors.Is(err, domain.ErrNotFound) {
-							return fmt.Errorf("%w: Coordinator Runtime %q 未配置", domain.ErrValidation, evalRuntimePreference.Preferred)
+							return markPlanSubmissionFailure(planSubmissionFailureExecution,
+								fmt.Errorf("%w: Coordinator Runtime %q 未配置", domain.ErrValidation, evalRuntimePreference.Preferred))
 						}
 						return err
 					}
@@ -843,7 +844,10 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 				ContextSourceSnapshotID: evalContextSnapshotID,
 			})
 			if err != nil {
-				return fmt.Errorf("创建评估 run: %w", err)
+				// 评估 run 建失败是执行期基础设施/配置错误，不是模型计划语义错误：
+				// 分流为 execution 类，blocker code=plan_execution_failed，走人工阻塞。
+				return markPlanSubmissionFailure(planSubmissionFailureExecution,
+					fmt.Errorf("创建评估 run: %w", err))
 			}
 			st.ResultRunID = evalRun.ID
 			if err := s.store.Plans().UpdateStep(ctx, st); err != nil {
