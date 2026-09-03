@@ -224,6 +224,10 @@ type TurnReceiptRepo interface {
 	GetPhase(ctx context.Context, key domain.TurnKey, phaseSeq int) (*domain.TurnReceiptPhase, error)
 	ListPhases(ctx context.Context, key domain.TurnKey) ([]*domain.TurnReceiptPhase, error)
 	AppendPhase(ctx context.Context, phase *domain.TurnReceiptPhase) (*domain.TurnReceiptPhase, error)
+	// LatestTurnHeaderByRunID 治理互链反查：任一 receipt phase 的 run_ids JSON
+	// 数组包含 runID 的最新 turn 的 immutable header；无治理引用返回 (nil, nil)。
+	// Run Journal 调试面专用（GET /runs/{run_id}/journal）。
+	LatestTurnHeaderByRunID(ctx context.Context, runID string) (*domain.TurnReceiptHeader, error)
 }
 
 // QuotaRepo persists the quota admission/settlement ledger.  Reservations are
