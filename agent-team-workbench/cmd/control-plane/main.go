@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -86,6 +87,11 @@ func main() {
 // run 承载全部启动与生命周期：资源清理走 defer，保证启动失败路径（返回 error）
 // 与信号退出路径都先释放 dsh 网关进程、DB 连接再退出。
 func run() error {
+	// D4（Run Journal M2）：结构化日志默认 handler——text 输出 stderr，level
+	// info。gateway 恢复路径与重启对账等「出了事才看得到」的关键环节经 slog
+	// 输出，字段带 run_id/code；其余 log.Printf 保持现状（只换关键环节）。
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	dsn := env("DATABASE_URL", sqlstore.DefaultDSN)
 	addr := env("LISTEN_ADDR", ":8080")
 
@@ -352,6 +358,17 @@ func run() error {
 		log.Printf("启动自愈 Run 恢复未完全成功: %v", err)
 	} else if recovered > 0 {
 		log.Printf("启动恢复：%d 个 queued session-heal run 已重新分派", recovered)
+	}
+	// 控制面重启对账 sweeper（Run Journal M2 §3.5）：进程死亡时 host_local 的
+	// 在飞 run 无主（leaseSweeper 只管远程 lease），在通用 orphan 对账之前带
+	// 证据合成收口——合成闭合未闭合相位 + recovery/decision 事件，失败码
+	// control_plane_restart，lost 恒 retryable 交 coordinator due-state 循环
+	// 重驱。queued 是合法待派发，本扫不动（留给下方 ReconcileOrphanRuns）。
+	// 失败只 slog，不阻断启动。
+	if swept, err := svc.ReconcileOrphanedLocalRuns(ctx); err != nil {
+		slog.Warn("控制面重启对账未完全成功", "error", err)
+	} else if swept > 0 {
+		slog.Info("控制面重启对账：无租约在飞 run 已带证据收敛", "count", swept)
 	}
 	// 清理上一进程遗留的「无 lease 且非终态」普通孤儿 run（进程内模块执行），
 	// 防止该 (agent, task) 的后续 wakeup 被永久 coalesce 进死 run；runner 路径有
