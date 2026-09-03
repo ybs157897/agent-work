@@ -28,6 +28,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -150,11 +151,14 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		defer func() { _ = os.RemoveAll(agentDir) }()
 	}
 
+	// Run Journal spawn 相位：进程拉起前进入，覆盖 TrustedCommand 解析、管道
+	// 建立与 Start 的全部 spawn_failed 出口；pid/pgid 在 OnSpawn 点已知后收口。
+	spawnAt := time.Now()
+	enterPhase(ex, observability.PhaseSpawn, 1, nil)
 	cmd, err := runtime.TrustedCommand(a.cfg.BinPath, args...)
 	if err != nil {
 		// CLI 缺失/不可执行属于环境配置问题。
-		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
-			Failure: configFailure("spawn_failed", err.Error())}
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	// 工作目录只来自 Host resolver 的进程内可信产物（RFC §5.1.9）；
 	// 无 Resolved（未注入 resolver 的测试装配）回退进程 cwd。
@@ -167,24 +171,32 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
-			Failure: configFailure("spawn_failed", err.Error())}
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
-			Failure: configFailure("spawn_failed", err.Error())}
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	if err := cmd.Start(); err != nil {
 		// CLI 缺失/不可执行属于环境配置问题。
-		return runtime.ExecResult{Outcome: runtime.OutcomeFailed,
-			Failure: configFailure("spawn_failed", err.Error())}
+		return spawnFailed(ex, spawnAt, configFailure("spawn_failed", err.Error()))
 	}
 	// pgid 必须在组长存活时采样缓存（对齐 claudecode/codexapp）：组长死亡
 	// （僵尸/已被收尸）后 Getpgid 失败，现场重查会让组级 SIGINT/SIGKILL 打不
 	// 出去——忽略 SIGINT 的孤儿成员持有 stdout/stderr 管道时 Execute 挂起。
 	pgid := processGroupID(cmd)
 	ex.Callbacks.OnSpawn(cmd.Process.Pid, pgid)
+	closePhase(ex, observability.PhaseSpawn, observability.PhaseOK, nil, spawnAt,
+		map[string]any{"pid": cmd.Process.Pid, "pgid": pgid})
+
+	// Run Journal handshake 相位：kimi CLI 无显式握手帧，会话建立=首个携带
+	// 会话句柄的 meta 帧（resume 经 -S 时首个 meta 即回填 resume id）。会话
+	// 始终未建立时按流终点收口（见循环后的收尾）——resume 死锚点的
+	// session_unknown 分类随 closed failure 可读。
+	hsAt := time.Now()
+	resumed := resumeSessionID != ""
+	enterPhase(ex, observability.PhaseHandshake, 1, map[string]any{"resume": resumed})
+	handshakeOpen := true
 
 	state := &streamState{}
 	stderrDone := make(chan struct{})
@@ -233,11 +245,22 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 		switch {
 		case frame.Role == "meta":
-			sessionID := firstNonEmpty(frame.SessionID, frame.SessionIDCamel)
+			// 帧内会话 id = CLI 对会话的确立确认；无 id 时回填 resume id 只是
+			// 乐观上报既有锚点（OnSession 语义不变），不构成握手成立的事实。
+			frameSessionID := firstNonEmpty(frame.SessionID, frame.SessionIDCamel)
+			sessionID := frameSessionID
 			if sessionID == "" {
 				sessionID = resumeSessionID
 			}
 			if sessionID != "" {
+				if handshakeOpen && frameSessionID != "" {
+					// 会话确立：握手 ok 收口并开启 first_event（OnSession 是
+					// 紧随其后的首个真实回调，由 ModuleRunner 回调面收口）。
+					handshakeOpen = false
+					closePhase(ex, observability.PhaseHandshake, observability.PhaseOK, nil, hsAt,
+						map[string]any{"resumed": resumed})
+					enterPhase(ex, observability.PhaseFirstEvent, 1, nil)
+				}
 				session = &runtime.SessionUpdate{Ref: "kimi://" + sessionID}
 				ex.Callbacks.OnSession(*session)
 			}
@@ -270,6 +293,25 @@ func (a *Adapter) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		waitErr = <-waitCh
 	}
 	<-stderrDone
+
+	if handshakeOpen {
+		// 会话句柄始终未确立：按流终点收口握手。Ctx 取消不是握手故障
+		// （skipped，不留假故障点）；成功 turn 只是缺会话句柄（ok）；其余按
+		// 既有分类 failed——resume 死锚点在此呈现 session_unknown。
+		handshakeOpen = false
+		switch {
+		case ex.Ctx.Err() != nil:
+			closePhase(ex, observability.PhaseHandshake, observability.PhaseSkipped, nil, hsAt,
+				map[string]any{"resume": resumed})
+		case finished && resultOK:
+			closePhase(ex, observability.PhaseHandshake, observability.PhaseOK, nil, hsAt,
+				map[string]any{"resumed": resumed})
+		default:
+			closePhase(ex, observability.PhaseHandshake, observability.PhaseFailed,
+				kimiHandshakeFailure(readErr, waitErr, state.stderrErr), hsAt,
+				map[string]any{"resume": resumed})
+		}
+	}
 
 	return terminalResult(ex, terminalInputs{
 		finished:      finished,
@@ -392,6 +434,35 @@ func configFailure(code, message string) *runtime.Failure {
 
 func ioFailure(code, message string, retryable bool) *runtime.Failure {
 	return &runtime.Failure{Family: runtime.FamilyIO, Code: code, Message: truncateMessage(message), Retryable: retryable}
+}
+
+// spawnFailed spawn 相位失败收口并返回失败结果（复用既有 spawn_failed 分类）。
+func spawnFailed(ex *runtime.ExecContext, started time.Time, f *runtime.Failure) runtime.ExecResult {
+	closePhase(ex, observability.PhaseSpawn, observability.PhaseFailed, f, started, nil)
+	return runtime.ExecResult{Outcome: runtime.OutcomeFailed, Failure: f}
+}
+
+// kimiHandshakeFailure 会话建立失败的分类：stderr provider 错误优先（resume
+// 死锚点经 isSessionLostMessage 呈现 session_unknown），其次流协议违约，
+// 最后按 IO 流中断。
+func kimiHandshakeFailure(readErr error, waitErr error, stderrErr string) *runtime.Failure {
+	if stderrErr != "" {
+		return turnFailure("provider_error", stderrErr)
+	}
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return &runtime.Failure{
+			Family: runtime.FamilyInternal, Code: "stream_failed",
+			Message: truncateMessage(readErr.Error()), Retryable: false,
+		}
+	}
+	detail := "stream ended before session established"
+	if readErr != nil {
+		detail = readErr.Error()
+	}
+	if waitErr != nil {
+		detail = fmt.Sprintf("%s; exit: %v", detail, waitErr)
+	}
+	return ioFailure("stream_failed", detail, true)
 }
 
 // truncateMessage 与旧 failRun 一致：trim + 200 字符截断。

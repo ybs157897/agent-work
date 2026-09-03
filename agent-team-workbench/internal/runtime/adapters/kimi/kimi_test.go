@@ -185,6 +185,20 @@ func runExecute(t *testing.T, a *Adapter, run *domain.ExecutionRun, session atwr
 	return a.Execute(ex), cb
 }
 
+// surfaceEvents 过滤掉 Run Journal internal 相位事件（run.phase_* / run.log_chunk）。
+func surfaceEvents(cb *recordCallbacks) []recordedEvent {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	var out []recordedEvent
+	for _, ev := range cb.events {
+		if domain.IsInternalEventName(ev.Type) {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out
+}
+
 func containsArg(argv []string, want string) bool {
 	for _, arg := range argv {
 		if arg == want {
@@ -273,10 +287,13 @@ func TestExecuteHappyPath(t *testing.T) {
 	if res.Failure != nil || res.Usage != nil {
 		t.Fatalf("成功不应带 failure/usage（旧实现无 token 解析）: %+v %+v", res.Failure, res.Usage)
 	}
-	if len(cb.events) != 1 || cb.events[0].Type != domain.EventMessageCompleted {
-		t.Fatalf("事件映射漂移: %+v", cb.events)
+	// surface 事件按既有契约断言；Run Journal internal 相位事件另行断言
+	// （journal_test.go），同一 OnEvent 通道但只落 run_events。
+	surface := surfaceEvents(cb)
+	if len(surface) != 1 || surface[0].Type != domain.EventMessageCompleted {
+		t.Fatalf("事件映射漂移: %+v", surface)
 	}
-	data := cb.events[0].Data
+	data := surface[0].Data
 	if len(data) != 1 || data["text"] != "fake kimi 输出" {
 		t.Fatalf("message.completed payload 应逐字段等于 {text}: %+v", data)
 	}
