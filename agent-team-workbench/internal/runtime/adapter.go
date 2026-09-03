@@ -16,6 +16,16 @@ const (
 	CapUnavailable       CapabilityLevel = "unavailable"
 )
 
+// Planner control capabilities separate framing from provider-enforced shape.
+// Adapters must report their observed level; callers must not infer one
+// capability from another, from the legacy structured_output key, or from an
+// adapter/provider name.
+const (
+	CapabilityStructuredTransport     = "structured_transport"
+	CapabilitySchemaConstrainedOutput = "schema_constrained_output"
+	CapabilityControlToolCall         = "control_tool_call"
+)
+
 type Protocol struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`

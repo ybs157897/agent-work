@@ -31,8 +31,19 @@ func Resolve(workbenchRoot string) Root {
 }
 
 func (r Root) CodexHome() string { return resolveSubHome("ATW_CODEX_HOME", r.Root, "codex") }
-func (r Root) KimiHome() string  { return resolveSubHome("ATW_KIMI_HOME", r.Root, "kimi") }
-func (r Root) DSHHome() string   { return resolveSubHome("ATW_DSH_HOME", r.Root, "dsh") }
+func (r Root) KimiHome() string {
+	// kimi CLI and kap-server must share one project-scoped config home. Keep
+	// the explicit CLI override as the canonical knob; the app-server override
+	// is accepted only when the former is absent for backwards compatibility.
+	if home := strings.TrimSpace(os.Getenv("ATW_KIMI_HOME")); home != "" {
+		return absolutePath(home)
+	}
+	if home := strings.TrimSpace(os.Getenv("ATW_KIMIAPP_HOME")); home != "" {
+		return absolutePath(home)
+	}
+	return filepath.Join(r.Root, "kimi")
+}
+func (r Root) DSHHome() string { return resolveSubHome("ATW_DSH_HOME", r.Root, "dsh") }
 func (r Root) CredentialsPath() string {
 	return filepath.Join(r.Root, "credentials.local.yaml")
 }
@@ -54,10 +65,14 @@ func (r Root) Ensure() error {
 
 func resolveSubHome(envKey, root, sub string) string {
 	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
-		if abs, err := filepath.Abs(v); err == nil {
-			return abs
-		}
-		return v
+		return absolutePath(v)
 	}
 	return filepath.Join(root, sub)
+}
+
+func absolutePath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }

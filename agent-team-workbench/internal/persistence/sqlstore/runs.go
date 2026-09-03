@@ -3,6 +3,8 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
@@ -13,12 +15,16 @@ const runCols = `id, workspace_id, work_item_id, agent_profile_id, status, runti
 	adapter_id, provider, capability_snapshot_id, session_ref, session_before, session_after,
 	usage_in, usage_out, usage_cached, usage_basis, error_family, client_key, progress, retry_of,
 	failure_code, failure_message, failure_retryable, input, version, created_at, updated_at, finished_at,
-	dispatch_id, context_snapshot_id`
+	dispatch_id, context_snapshot_id, canonical_usage, canonical_usage_digest,
+	provider_usage_report, provider_usage_report_digest, provider_usage_report_seq`
 
 func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.ExecutionRun) error {
 	var agentID, runtimeLabel, adapterID, provider, capsID, sessionRef, retryOf, fCode, fMsg *string
 	var sessionBefore, sessionAfter, usageBasis, errorFamily, clientKey *string
 	var dispatchID, ctxSnapID *string
+	var canonicalUsageJSON, canonicalUsageDigest *string
+	var providerUsageJSON, providerUsageDigest *string
+	var providerUsageSeq sql.NullInt64
 	var usageIn, usageOut, usageCached sql.NullInt64
 	var fRetry *bool
 	var input string
@@ -28,7 +34,9 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 		&sessionBefore, &sessionAfter,
 		&usageIn, &usageOut, &usageCached, &usageBasis, &errorFamily, &clientKey,
 		&run.Progress, &retryOf, &fCode, &fMsg, &fRetry, &input,
-		&run.Version, &created, &updated, &finished, &dispatchID, &ctxSnapID); err != nil {
+		&run.Version, &created, &updated, &finished, &dispatchID, &ctxSnapID,
+		&canonicalUsageJSON, &canonicalUsageDigest, &providerUsageJSON, &providerUsageDigest,
+		&providerUsageSeq); err != nil {
 		return err
 	}
 	setStr := func(dst *string, src *string) {
@@ -49,6 +57,9 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 	setStr(&run.ClientKey, clientKey)
 	setStr(&run.DispatchID, dispatchID)
 	setStr(&run.ContextSnapshotID, ctxSnapID)
+	setStr(&run.CanonicalUsageDigest, canonicalUsageDigest)
+	setStr(&run.ProviderUsageReportDigest, providerUsageDigest)
+	run.ProviderUsageReportSeq = providerUsageSeq.Int64
 	run.UsageIn, run.UsageOut, run.UsageCached = usageIn.Int64, usageOut.Int64, usageCached.Int64
 	if retryOf != nil {
 		run.RetryOf = *retryOf
@@ -64,12 +75,68 @@ func (r *RunRepo) scan(row interface{ Scan(...any) error }, run *domain.Executio
 		run.Failure = f
 	}
 	_ = jsonInto(input, &run.Input)
+	if canonicalUsageJSON != nil {
+		if err := jsonInto(*canonicalUsageJSON, &run.CanonicalUsage); err != nil {
+			return err
+		}
+	}
+	if providerUsageJSON != nil {
+		if err := jsonInto(*providerUsageJSON, &run.ProviderUsageReport); err != nil {
+			return err
+		}
+	}
 	run.CreatedAt, run.UpdatedAt = mustTime(created), mustTime(updated)
 	run.FinishedAt = optTime(finished)
+	if err := validateRunUsageSnapshots(run); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRunUsageSnapshots(run *domain.ExecutionRun) error {
+	if run == nil {
+		return fmt.Errorf("%w: run required", domain.ErrValidation)
+	}
+	if run.ProviderUsageReport == nil {
+		if run.ProviderUsageReportDigest != "" || run.ProviderUsageReportSeq != 0 {
+			return fmt.Errorf("%w: provider usage report requires paired digest and sequence", domain.ErrValidation)
+		}
+	} else {
+		if run.ProviderUsageReport.RunID != run.ID {
+			return fmt.Errorf("%w: provider usage report run_id differs from Run", domain.ErrValidation)
+		}
+		if run.ProviderUsageReportSeq < 1 || run.ProviderUsageReportDigest == "" {
+			return fmt.Errorf("%w: provider usage report requires digest and positive sequence", domain.ErrValidation)
+		}
+		if run.ProviderUsageReportDigest != run.ProviderUsageReport.Digest {
+			return fmt.Errorf("%w: provider usage report digest mismatch", domain.ErrValidation)
+		}
+		if err := run.ProviderUsageReport.VerifyDigest(); err != nil {
+			return err
+		}
+	}
+	if run.CanonicalUsage == nil {
+		if run.CanonicalUsageDigest != "" {
+			return fmt.Errorf("%w: canonical usage requires paired digest", domain.ErrValidation)
+		}
+	} else {
+		if run.CanonicalUsage.RunID != run.ID {
+			return fmt.Errorf("%w: canonical usage run_id differs from Run", domain.ErrValidation)
+		}
+		if run.CanonicalUsageDigest == "" || run.CanonicalUsageDigest != run.CanonicalUsage.Digest {
+			return fmt.Errorf("%w: canonical usage digest mismatch", domain.ErrValidation)
+		}
+		if err := run.CanonicalUsage.VerifyDigest(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
+	if err := validateRunUsageSnapshots(run); err != nil {
+		return err
+	}
 	var failureCode, failureMsg *string
 	var failureRetry *bool
 	if run.Failure != nil {
@@ -77,8 +144,17 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		failureMsg = &run.Failure.Message
 		failureRetry = &run.Failure.Retryable
 	}
+	var canonicalUsageJSON, canonicalUsageDigest, providerUsageJSON, providerUsageDigest any
+	if run.CanonicalUsage != nil {
+		canonicalUsageJSON = jsonText(run.CanonicalUsage)
+		canonicalUsageDigest = run.CanonicalUsageDigest
+	}
+	if run.ProviderUsageReport != nil {
+		providerUsageJSON = jsonText(run.ProviderUsageReport)
+		providerUsageDigest = run.ProviderUsageReportDigest
+	}
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO execution_runs(`+runCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkspaceID, run.WorkItemID, nullString(run.AgentProfileID), run.Status,
 		nullString(run.RuntimeLabel), nullString(run.AdapterID), nullString(run.Provider),
 		nullString(run.CapabilitySnapshotID), nullString(run.SessionRef),
@@ -87,7 +163,8 @@ func (r *RunRepo) Create(ctx context.Context, run *domain.ExecutionRun) error {
 		nullString(run.ClientKey), run.Progress, nullString(run.RetryOf),
 		failureCode, failureMsg, failureRetry, jsonText(run.Input), run.Version,
 		timeParam(run.CreatedAt), timeParam(run.UpdatedAt), nullTimeParam(run.FinishedAt),
-		nullString(run.DispatchID), nullString(run.ContextSnapshotID))
+		nullString(run.DispatchID), nullString(run.ContextSnapshotID), canonicalUsageJSON,
+		canonicalUsageDigest, providerUsageJSON, providerUsageDigest, run.ProviderUsageReportSeq)
 	return r.store.mapErr(err)
 }
 
@@ -131,6 +208,9 @@ func (r *RunRepo) SetContextSnapshot(ctx context.Context, runID, snapshotID stri
 
 // Update 乐观锁：终态 Run 不允许被覆盖（状态机在领域层先拦截）。
 func (r *RunRepo) Update(ctx context.Context, run *domain.ExecutionRun, expectedVersion int) error {
+	if err := validateRunUsageSnapshots(run); err != nil {
+		return err
+	}
 	var failureCode, failureMsg *string
 	var failureRetry *bool
 	if run.Failure != nil {
@@ -138,17 +218,30 @@ func (r *RunRepo) Update(ctx context.Context, run *domain.ExecutionRun, expected
 		failureMsg = &run.Failure.Message
 		failureRetry = &run.Failure.Retryable
 	}
+	var canonicalUsageJSON, canonicalUsageDigest, providerUsageJSON, providerUsageDigest any
+	if run.CanonicalUsage != nil {
+		canonicalUsageJSON = jsonText(run.CanonicalUsage)
+		canonicalUsageDigest = run.CanonicalUsageDigest
+	}
+	if run.ProviderUsageReport != nil {
+		providerUsageJSON = jsonText(run.ProviderUsageReport)
+		providerUsageDigest = run.ProviderUsageReportDigest
+	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE execution_runs SET status=?, progress=?, session_ref=?,
 			session_before=?, session_after=?,
 			usage_in=?, usage_out=?, usage_cached=?, usage_basis=?, error_family=?,
 			failure_code=?, failure_message=?, failure_retryable=?,
+			canonical_usage=?, canonical_usage_digest=?, provider_usage_report=?,
+			provider_usage_report_digest=?, provider_usage_report_seq=?,
 			version=version+1, updated_at=?, finished_at=?
 		 WHERE id=? AND version=?`,
 		run.Status, run.Progress, nullString(run.SessionRef),
 		nullString(run.SessionBefore), nullString(run.SessionAfter),
 		run.UsageIn, run.UsageOut, run.UsageCached, nullString(run.UsageBasis), nullString(run.ErrorFamily),
 		failureCode, failureMsg, failureRetry,
+		canonicalUsageJSON, canonicalUsageDigest, providerUsageJSON, providerUsageDigest,
+		run.ProviderUsageReportSeq,
 		timeParam(timeNow()), nullTimeParam(run.FinishedAt), run.ID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
@@ -184,6 +277,21 @@ func (r *RunRepo) ListByWorkItem(ctx context.Context, workItemID string) ([]*dom
 // ListByDispatch 按创建时间升序返回派发批次的成员 run（会话组 = WHERE dispatch_id）。
 func (r *RunRepo) ListByDispatch(ctx context.Context, dispatchID string) ([]*domain.ExecutionRun, error) {
 	return r.list(ctx, "dispatch_id=?", dispatchID)
+}
+
+// ListByGovernanceTurn 按 input.governance 的 (goal_id, todo_id, turn_seq) 三元组
+// 返回该治理 Turn 的受管 Run（plan 派发、evaluation、retry/heal 克隆），按
+// created_at 升序；workspaceID 参与过滤以防跨工作区串账。Coordinator source
+// Run 不携带 governance 身份（json_extract 为 SQL NULL），不在结果内。
+func (r *RunRepo) ListByGovernanceTurn(ctx context.Context, workspaceID, goalID, todoID string, turnSeq int64) ([]*domain.ExecutionRun, error) {
+	if strings.TrimSpace(workspaceID) == "" || strings.TrimSpace(goalID) == "" ||
+		strings.TrimSpace(todoID) == "" || turnSeq < 1 {
+		return nil, fmt.Errorf("%w: governance turn query requires workspace/goal/todo and turn_seq >= 1", domain.ErrValidation)
+	}
+	return r.list(ctx,
+		`workspace_id=? AND json_extract(input,'$.governance.goal_id')=?
+		 AND json_extract(input,'$.governance.todo_id')=? AND json_extract(input,'$.governance.turn_seq')=?`,
+		workspaceID, goalID, todoID, turnSeq)
 }
 
 // ActiveByAgent 返回未终态 Run（disable 策略处置活动 Run 时使用）。
@@ -288,6 +396,29 @@ func (r *RunRepo) ListApprovals(ctx context.Context, runID string) ([]*domain.Ap
 	return out, rows.Err()
 }
 
+// ListPendingPlanDispatchApprovals returns unbound plan dispatch gates for a
+// work item. A plan_dispatch approval intentionally has a NULL run_id and is
+// therefore not visible through ListApprovals.
+func (r *RunRepo) ListPendingPlanDispatchApprovals(ctx context.Context, workItemID string) ([]*domain.ApprovalRequest, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx),
+		`SELECT `+approvalCols+` FROM approvals
+		 WHERE work_item_id=? AND run_id IS NULL AND kind=? AND status=?
+		 ORDER BY created_at`, workItemID, domain.ApprovalKindPlanDispatch, domain.ApprovalPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.ApprovalRequest
+	for rows.Next() {
+		a := &domain.ApprovalRequest{}
+		if err := r.scanApproval(rows, a); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (r *RunRepo) UpdateApproval(ctx context.Context, a *domain.ApprovalRequest) error {
 	_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE approvals SET status=?, resolved_at=?, resolved_by=?, resolve_reason=? WHERE id=?`,
@@ -302,6 +433,39 @@ func (r *RunRepo) CreateArtifact(ctx context.Context, art *domain.Artifact) erro
 		art.ID, art.RunID, art.LogicalPath, art.Mime, art.Size, art.Sha256,
 		art.Classification, art.Status, nullString(art.StorageRef), timeParam(art.CreatedAt))
 	return r.store.mapErr(err)
+}
+
+func (r *RunRepo) GetArtifact(ctx context.Context, artifactID string) (*domain.Artifact, error) {
+	art := &domain.Artifact{}
+	var storageRef *string
+	var created scanTime
+	err := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT id, run_id, logical_path, mime, size, sha256, classification, status, storage_ref, created_at
+		 FROM artifacts WHERE id=?`, artifactID).Scan(&art.ID, &art.RunID, &art.LogicalPath, &art.Mime, &art.Size,
+		&art.Sha256, &art.Classification, &art.Status, &storageRef, &created)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	if storageRef != nil {
+		art.StorageRef = *storageRef
+	}
+	art.CreatedAt = mustTime(created)
+	return art, nil
+}
+
+func (r *RunRepo) UpdateArtifactStatus(ctx context.Context, artifactID string, status domain.ArtifactStatus) error {
+	if status != domain.ArtifactDraft && status != domain.ArtifactAccepted {
+		return fmt.Errorf("%w: invalid artifact status %q", domain.ErrValidation, status)
+	}
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE artifacts SET status=? WHERE id=?`, status, artifactID)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *RunRepo) ListArtifacts(ctx context.Context, runID string) ([]*domain.Artifact, error) {

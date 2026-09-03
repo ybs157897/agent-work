@@ -1,6 +1,110 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+const ProviderUsageAnchorSchemaVersionV1 = "provider-usage-anchor/v1"
+
+type ProviderUsageAnchorState string
+
+const (
+	ProviderUsageAnchorReady       ProviderUsageAnchorState = "ready"
+	ProviderUsageAnchorInvalidated ProviderUsageAnchorState = "invalidated"
+)
+
+// ProviderUsageAnchorV1 is the durable provider-cumulative baseline used to
+// derive per-run usage.  An invalidated marker deliberately carries unknown
+// counters so a new session cannot inherit the prior provider's baseline.
+type ProviderUsageAnchorV1 struct {
+	SchemaVersion      string                   `json:"schema_version"`
+	State              ProviderUsageAnchorState `json:"state"`
+	AdapterID          string                   `json:"adapter_id"`
+	SessionRef         string                   `json:"session_ref,omitempty"`
+	ContextGeneration  int                      `json:"context_generation"`
+	SegmentSeq         int                      `json:"segment_seq"`
+	Counters           UsageCountersV1          `json:"counters"`
+	SourceRunID        string                   `json:"source_run_id"`
+	ObservedAt         time.Time                `json:"observed_at"`
+	InvalidationReason string                   `json:"invalidation_reason,omitempty"`
+}
+
+func (a *ProviderUsageAnchorV1) Validate() error {
+	if a == nil {
+		return fmt.Errorf("%w: nil provider usage anchor", ErrValidation)
+	}
+	if a.SchemaVersion != ProviderUsageAnchorSchemaVersionV1 {
+		return fmt.Errorf("%w: provider usage anchor schema_version %q", ErrValidation, a.SchemaVersion)
+	}
+	if a.State != ProviderUsageAnchorReady && a.State != ProviderUsageAnchorInvalidated {
+		return fmt.Errorf("%w: provider usage anchor state %q", ErrValidation, a.State)
+	}
+	if err := validateText("provider usage anchor.adapter_id", a.AdapterID, 512); err != nil {
+		return err
+	}
+	if a.SessionRef != "" {
+		if err := validateText("provider usage anchor.session_ref", a.SessionRef, 1024); err != nil {
+			return err
+		}
+	}
+	if a.ContextGeneration < 0 {
+		return fmt.Errorf("%w: provider usage anchor.context_generation must be >= 0", ErrValidation)
+	}
+	if a.SegmentSeq < 1 {
+		return fmt.Errorf("%w: provider usage anchor.segment_seq must be >= 1", ErrValidation)
+	}
+	// An anchor is a per-kind watermark merge, not a copy of one provider
+	// observation. Its input dimensions may therefore come from different
+	// observations while a provider counter is recovering from a reset. Keep
+	// the strict decomposition rule on ProviderUsageReport and CanonicalUsage;
+	// anchor validation only needs the nullable non-negative counter shape.
+	if err := validateProviderUsageAnchorCounters(a.Counters); err != nil {
+		return fmt.Errorf("%w: provider usage anchor.counters: %v", ErrValidation, err)
+	}
+	if err := validateTypedID("provider usage anchor.source_run_id", a.SourceRunID, PrefixRun); err != nil {
+		return err
+	}
+	if a.ObservedAt.IsZero() {
+		return fmt.Errorf("%w: provider usage anchor.observed_at is required", ErrValidation)
+	}
+	knownCounter := a.Counters.InputTokensTotal != nil || a.Counters.InputUncachedTokens != nil ||
+		a.Counters.CacheReadTokens != nil || a.Counters.CacheWriteTokens != nil || a.Counters.OutputTokens != nil
+	if a.State == ProviderUsageAnchorReady {
+		if a.SessionRef == "" {
+			return fmt.Errorf("%w: ready provider usage anchor requires session_ref", ErrValidation)
+		}
+		if !knownCounter {
+			return fmt.Errorf("%w: ready provider usage anchor requires a known counter", ErrValidation)
+		}
+		if a.InvalidationReason != "" {
+			return fmt.Errorf("%w: ready provider usage anchor cannot carry invalidation_reason", ErrValidation)
+		}
+	} else {
+		if knownCounter {
+			return fmt.Errorf("%w: invalidated provider usage anchor counters must be unknown", ErrValidation)
+		}
+		if err := validateText("provider usage anchor.invalidation_reason", a.InvalidationReason, 2000); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProviderUsageAnchorCounters(c UsageCountersV1) error {
+	for name, value := range map[string]*int64{
+		"input_tokens_total":    c.InputTokensTotal,
+		"input_uncached_tokens": c.InputUncachedTokens,
+		"cache_read_tokens":     c.CacheReadTokens,
+		"cache_write_tokens":    c.CacheWriteTokens,
+		"output_tokens":         c.OutputTokens,
+	} {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("%w: usage counter %s must be >= 0", ErrValidation, name)
+		}
+	}
+	return nil
+}
 
 // TaskSession 是 (workspace, agent, adapter, task) 维度的长期会话锚点
 // （对齐 Paperclip agent_task_sessions）：跨 Run 续接、指纹校验与轮换都以此为准。
@@ -37,8 +141,12 @@ type TaskSession struct {
 	// owner、run sequence 不小于当前 anchor sequence（旧 Run 的墓碑不清新代际）。
 	LastRunID         string
 	AnchorRunSequence int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ProviderUsageAnchor is independent from InputTokensCum: it stores the
+	// provider's cumulative baseline and advances through its own sequence.
+	ProviderUsageAnchor    *ProviderUsageAnchorV1
+	ProviderUsageAnchorSeq int64
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // SessionRef 返回会话句柄（无则空串）。

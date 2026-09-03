@@ -59,6 +59,13 @@ type RunStarter interface {
 	CreateRunForWakeup(ctx context.Context, workspaceID, agentProfileID, taskKey, instruction string, wakeContext map[string]any) (runID string, err error)
 }
 
+// WakeupPreflight is an optional control-plane gate run before heartbeat
+// claims and active-run coalescing. It lets a durable Goal pause defer a wake
+// without forwarding its instruction to an already-running Run.
+type WakeupPreflight interface {
+	PreflightWakeup(ctx context.Context, workspaceID, agentProfileID, taskKey string) error
+}
+
 // Logger 最小日志接口（*log.Logger 满足）；nil 表示静默。
 type Logger interface {
 	Printf(format string, v ...any)
@@ -77,6 +84,11 @@ const (
 // without creating a Run because its target control line is already terminal.
 // It is distinct from a transient RunStarter error, which must be requeued.
 var ErrWakeupNoop = errors.New("wakeup: intentional no-op")
+
+// ErrWakeupDeferred tells the scheduler that the target is intentionally
+// paused but the wakeup remains required. Unlike a terminal no-op, deferred
+// requests must be requeued without applying the normal age-based coalescing.
+var ErrWakeupDeferred = errors.New("wakeup: deferred")
 
 const (
 	// DefaultTickInterval 调度循环缺省周期。
@@ -244,12 +256,31 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 	profile, err := s.Store.GetAgentProfile(ctx, w.AgentProfileID)
 	if err != nil {
 		s.logf("wakeup %s: 加载 agent %s 失败: %v", w.ID, w.AgentProfileID, err)
-		return s.retryOrExpire(ctx, w, now)
+		return s.retryOrExpire(ctx, w, now, false)
 	}
 
 	policy := profile.Heartbeat()
 	settlement := isSettlementWakeup(w)
 	coordinatorAutomation := isCoordinatorPlanAutomation(w, profile)
+	if preflight, ok := s.RunStarter.(WakeupPreflight); ok {
+		if err := preflight.PreflightWakeup(ctx, w.WorkspaceID, w.AgentProfileID, w.TaskKey); err != nil {
+			if errors.Is(err, ErrWakeupDeferred) {
+				// The request is intentionally left queued. No heartbeat claim or
+				// active-run steering has happened yet, so pause/resume preserves
+				// the original wake exactly.
+				return OutcomeQueued, nil
+			}
+			if errors.Is(err, ErrWakeupNoop) {
+				if markErr := s.Store.MarkWakeupStatus(ctx, w.ID, domain.WakeupStatusConsumed); markErr != nil &&
+					!errors.Is(markErr, domain.ErrWakeupNotQueued) {
+					return OutcomeQueued, markErr
+				}
+				return OutcomeConsumed, nil
+			}
+			s.logf("wakeup %s: control-plane preflight 失败: %v", w.ID, err)
+			return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
+		}
+	}
 	claimed := false
 	switch w.Source {
 	case domain.WakeupSourceTimer:
@@ -259,7 +290,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 		claimed, err = s.Store.ClaimHeartbeat(ctx, w.AgentProfileID, s.heartbeatInterval(policy.IntervalSec), now)
 		if err != nil {
 			s.logf("wakeup %s: ClaimHeartbeat 失败: %v", w.ID, err)
-			return s.retryOrExpire(ctx, w, now)
+			return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
 		}
 		if !claimed {
 			return s.coalesce(ctx, w, "距上次心跳不足间隔")
@@ -277,7 +308,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 		claimed, err = s.Store.ClaimHeartbeat(ctx, w.AgentProfileID, s.heartbeatInterval(policy.IntervalSec), now)
 		if err != nil {
 			s.logf("wakeup %s: ClaimHeartbeat 失败: %v", w.ID, err)
-			return s.retryOrExpire(ctx, w, now)
+			return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
 		}
 		if !claimed {
 			return s.coalesce(ctx, w, "距上次心跳不足间隔")
@@ -307,7 +338,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 	if err != nil {
 		s.logf("wakeup %s: 活跃 run 查询失败: %v", w.ID, err)
 		releaseClaim()
-		return s.retryOrExpire(ctx, w, now)
+		return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
 	}
 	if alive {
 		if settlement || coordinatorAutomation {
@@ -330,7 +361,7 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 		}
 		s.logf("wakeup %s: 占位失败: %v", w.ID, err)
 		releaseClaim()
-		return s.retryOrExpire(ctx, w, now)
+		return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
 	}
 
 	instruction := RenderPrompt(policy.PromptTemplate, profile, workItemTitle(w), w.Context)
@@ -339,13 +370,21 @@ func (s *Scheduler) ConsumeOne(ctx context.Context, w domain.WakeupRequest, now 
 			releaseClaim()
 			return OutcomeConsumed, nil
 		}
+		if errors.Is(err, ErrWakeupDeferred) {
+			if rerr := s.Store.RequeueWakeup(ctx, w.ID); rerr != nil {
+				s.logf("wakeup %s: paused target 回队失败: %v", w.ID, rerr)
+				return OutcomeQueued, rerr
+			}
+			releaseClaim()
+			return OutcomeQueued, nil
+		}
 		s.logf("wakeup %s: 创建 run 失败: %v", w.ID, err)
 		// 补偿：唤醒退回 queued（不烧掉）+ 回滚 claim，下一 tick 重新消费。
 		if rerr := s.Store.RequeueWakeup(ctx, w.ID); rerr != nil {
 			s.logf("wakeup %s: 回退 queued 失败: %v", w.ID, rerr)
 		}
 		releaseClaim()
-		return s.retryOrExpire(ctx, w, now)
+		return s.retryOrExpire(ctx, w, now, coordinatorAutomation)
 	}
 	return OutcomeConsumed, nil
 }
@@ -391,10 +430,10 @@ func (s *Scheduler) coalesce(ctx context.Context, w domain.WakeupRequest, reason
 }
 
 // retryOrExpire 失败兜底：保持 queued 下轮重试；超过 maxWakeupAge 标记 coalesced 防堆积。
-func (s *Scheduler) retryOrExpire(ctx context.Context, w domain.WakeupRequest, now time.Time) (Outcome, error) {
+func (s *Scheduler) retryOrExpire(ctx context.Context, w domain.WakeupRequest, now time.Time, coordinatorAutomation bool) (Outcome, error) {
 	// settlement 是控制平面的必达收口，不能因为暂时无法加载 agent 或创建
 	// run 而在超龄策略中标记 coalesced；保持 queued 交给后续 tick 重试。
-	if isSettlementWakeup(w) {
+	if isSettlementWakeup(w) || coordinatorAutomation {
 		return OutcomeQueued, nil
 	}
 	if w.WakeAt.Before(now.Add(-maxWakeupAge)) {

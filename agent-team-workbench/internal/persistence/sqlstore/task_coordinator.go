@@ -23,7 +23,9 @@ const coordinatorConfigCols = `id, workspace_id, agent_profile_id, prompt_versio
 const coordinatorStateCols = `id, workspace_id, root_work_item_id, coordinator_agent_id,
 	status, phase, summary, current_action, current_step, current_agent_id,
 	current_run_id, attempt, next_action_at, blocker_code, blocker_message,
-	last_error, data, consumed_comment_revision, version, created_at, updated_at`
+	last_error, data, consumed_comment_revision, repair_status, repair_attempt,
+	repair_source_run_id, repair_error_class, repair_error_code, repair_validation_errors,
+	version, created_at, updated_at`
 
 const coordinatorEventCols = `id, workspace_id, root_work_item_id, work_item_id,
 	kind, summary, run_id, agent_id, attempt, reason, next_action_at, data, occurred_at`
@@ -31,7 +33,9 @@ const coordinatorEventCols = `id, workspace_id, root_work_item_id, work_item_id,
 const coordinatorStateColsQualified = `s.id, s.workspace_id, s.root_work_item_id, s.coordinator_agent_id,
 	s.status, s.phase, s.summary, s.current_action, s.current_step, s.current_agent_id,
 	s.current_run_id, s.attempt, s.next_action_at, s.blocker_code, s.blocker_message,
-	s.last_error, s.data, s.consumed_comment_revision, s.version, s.created_at, s.updated_at`
+	s.last_error, s.data, s.consumed_comment_revision, s.repair_status, s.repair_attempt,
+	s.repair_source_run_id, s.repair_error_class, s.repair_error_code, s.repair_validation_errors,
+	s.version, s.created_at, s.updated_at`
 
 const coordinatorEventColsQualified = `e.id, e.workspace_id, e.root_work_item_id, e.work_item_id,
 	e.kind, e.summary, e.run_id, e.agent_id, e.attempt, e.reason, e.next_action_at, e.data, e.occurred_at`
@@ -93,15 +97,17 @@ func (r *TaskCoordinatorRepo) scanConfig(row interface{ Scan(...any) error }, c 
 }
 
 func (r *TaskCoordinatorRepo) scanState(row interface{ Scan(...any) error }, state *domain.TaskCoordinatorState, extra ...any) error {
-	var currentAgent, currentRun, blockerCode, blockerMessage, lastError *string
+	var currentAgent, currentRun, blockerCode, blockerMessage, lastError, repairSourceRun *string
 	var nextAction scanTime
-	var data string
+	var data, repairValidationErrors string
 	var created, updated scanTime
 	dest := []any{&state.ID, &state.WorkspaceID, &state.RootWorkItemID,
 		&state.CoordinatorAgentID, &state.Status, &state.Phase, &state.Summary,
 		&state.CurrentAction, &state.CurrentStep, &currentAgent, &currentRun,
 		&state.Attempt, &nextAction, &blockerCode, &blockerMessage, &lastError,
-		&data, &state.ConsumedCommentRevision, &state.Version, &created, &updated}
+		&data, &state.ConsumedCommentRevision, &state.RepairStatus, &state.RepairAttempt,
+		&repairSourceRun, &state.RepairErrorClass, &state.RepairErrorCode, &repairValidationErrors,
+		&state.Version, &created, &updated}
 	dest = append(dest, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return err
@@ -121,8 +127,17 @@ func (r *TaskCoordinatorRepo) scanState(row interface{ Scan(...any) error }, sta
 	if lastError != nil {
 		state.LastError = *lastError
 	}
+	if repairSourceRun != nil {
+		state.RepairSourceRunID = *repairSourceRun
+	}
 	if err := jsonInto(data, &state.Data); err != nil {
 		return err
+	}
+	if err := jsonInto(repairValidationErrors, &state.RepairValidationErrors); err != nil {
+		return err
+	}
+	if state.RepairValidationErrors == nil {
+		state.RepairValidationErrors = []domain.GovernanceValidationError{}
 	}
 	state.NextActionAt = optTime(nextAction)
 	state.CreatedAt, state.UpdatedAt = mustTime(created), mustTime(updated)
@@ -307,6 +322,9 @@ func (r *TaskCoordinatorRepo) CreateState(ctx context.Context, state *domain.Tas
 	if !state.Status.Valid() {
 		return fmt.Errorf("%w: invalid coordinator status", domain.ErrValidation)
 	}
+	if err := state.ValidateRepair(); err != nil {
+		return err
+	}
 	wi, err := r.validateRootTask(ctx, state.RootWorkItemID, state.CoordinatorAgentID)
 	if err != nil {
 		return err
@@ -327,13 +345,15 @@ func (r *TaskCoordinatorRepo) CreateState(ctx context.Context, state *domain.Tas
 		state.UpdatedAt = state.CreatedAt
 	}
 	_, err = r.store.execStmt(ctx, r.store.exec(ctx),
-		`INSERT INTO task_coordinator_states(`+coordinatorStateCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO task_coordinator_states(`+coordinatorStateCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		state.ID, state.WorkspaceID, state.RootWorkItemID, state.CoordinatorAgentID,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
 		nullString(state.CurrentAgentID), nullString(state.CurrentRunID), state.Attempt,
 		nullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
 		state.ConsumedCommentRevision,
+		state.RepairStatus, state.RepairAttempt, nullString(state.RepairSourceRunID),
+		state.RepairErrorClass, state.RepairErrorCode, jsonText(state.RepairValidationErrors),
 		state.Version, timeParam(state.CreatedAt), timeParam(state.UpdatedAt))
 	return r.store.mapErr(err)
 }
@@ -374,6 +394,9 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 	if state.Attempt < 0 {
 		return fmt.Errorf("%w: coordinator attempt must be non-negative", domain.ErrValidation)
 	}
+	if err := state.ValidateRepair(); err != nil {
+		return err
+	}
 	wi, err := r.validateRootTask(ctx, state.RootWorkItemID, state.CoordinatorAgentID)
 	if err != nil {
 		return err
@@ -395,6 +418,8 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 		`UPDATE task_coordinator_states SET status=?, phase=?, summary=?, current_action=?,
 			current_step=?, current_agent_id=?, current_run_id=?, attempt=?, next_action_at=?,
 			blocker_code=?, blocker_message=?, last_error=?, data=?, consumed_comment_revision=?,
+			repair_status=?, repair_attempt=?, repair_source_run_id=?, repair_error_class=?,
+			repair_error_code=?, repair_validation_errors=?,
 			version=version+1, updated_at=?
 		 WHERE root_work_item_id=? AND version=?`,
 		state.Status, state.Phase, state.Summary, state.CurrentAction, state.CurrentStep,
@@ -402,6 +427,8 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 		nullTimeParam(state.NextActionAt), state.BlockerCode,
 		state.BlockerMessage, state.LastError, jsonText(state.Data),
 		state.ConsumedCommentRevision,
+		state.RepairStatus, state.RepairAttempt, nullString(state.RepairSourceRunID),
+		state.RepairErrorClass, state.RepairErrorCode, jsonText(state.RepairValidationErrors),
 		timeParam(timeNow()), state.RootWorkItemID, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
@@ -419,7 +446,7 @@ func (r *TaskCoordinatorRepo) UpdateState(ctx context.Context, state *domain.Tas
 // ListDueStates 把「无 current Run 且有未消费 actionable comment」的 state 作
 // 为 durable due 候选，避免评论永久悬置)；otherwise it is an observation-only
 // checkpoint (for example, while a worker result is being settled).
-func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState, hasUnconsumedActionable bool) bool {
+func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState, hasRecoverySignal bool) bool {
 	if state == nil {
 		return false
 	}
@@ -438,12 +465,17 @@ func coordinatorStateNeedsResume(state *domain.TaskCoordinatorState, hasUnconsum
 		if state.CurrentRunID != "" || state.NextActionAt != nil {
 			return true
 		}
-		if hasUnconsumedActionable {
+		if hasRecoverySignal {
 			return true
 		}
 		if state.Data != nil {
 			action, _ := state.Data["control_action"].(string)
 			return strings.TrimSpace(action) != ""
+		}
+	case domain.CoordinatorCancelled:
+		if state.Data != nil {
+			action, _ := state.Data["control_action"].(string)
+			return action == "settle_cancelled_goal"
 		}
 	}
 	return false
@@ -463,20 +495,31 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 		WHERE tc.root_work_item_id = task_coordinator_states.root_work_item_id
 		  AND tc.revision > task_coordinator_states.consumed_comment_revision
 		  AND tc.kind IN ('requirement','review_feedback'))`
-	where := `((status=? OR (status=? AND
+	collectingDispatch := `EXISTS (SELECT 1 FROM dispatches d
+		WHERE d.work_item_id=task_coordinator_states.root_work_item_id
+		  AND d.status='collecting')`
+	recoverySignal := `(` + unconsumedActionable + ` OR ` + collectingDispatch + `)`
+	governanceRunnable := `(NOT EXISTS (SELECT 1 FROM goals g_missing
+		WHERE g_missing.root_work_item_id=task_coordinator_states.root_work_item_id)
+		OR EXISTS (SELECT 1 FROM goals g_active
+			WHERE g_active.root_work_item_id=task_coordinator_states.root_work_item_id
+			  AND g_active.status='active'))`
+	normalDue := `((status=? OR (status=? AND
 		(next_action_at IS NOT NULL OR ` + actionText + `)) OR (status=? AND
 		(current_run_id IS NOT NULL OR next_action_at IS NOT NULL OR ` + actionText + `)) OR
-		(status=? AND COALESCE(current_run_id,'')='' AND ` + unconsumedActionable + `))
-		AND (next_action_at IS NULL OR next_action_at <= ?))`
+		(status=? AND COALESCE(current_run_id,'')='' AND ` + recoverySignal + `))
+		AND (next_action_at IS NULL OR next_action_at <= ?) AND ` + governanceRunnable + `)`
+	cancelledSettlementDue := `(status=? AND json_extract(data, '$.control_action')='settle_cancelled_goal')`
+	where := `(` + normalDue + ` OR ` + cancelledSettlementDue + `)`
 	args := []any{domain.CoordinatorQueued, domain.CoordinatorWaitingRetry,
-		domain.CoordinatorRunning, domain.CoordinatorRunning, timeParam(now)}
+		domain.CoordinatorRunning, domain.CoordinatorRunning, timeParam(now), domain.CoordinatorCancelled}
 	if workspaceID != "" {
 		where += ` AND workspace_id=?`
 		args = append(args, workspaceID)
 	}
 	args = append(args, limit)
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT `+coordinatorStateCols+`, (`+unconsumedActionable+`) AS has_unconsumed FROM task_coordinator_states WHERE `+where+
+		`SELECT `+coordinatorStateCols+`, (`+recoverySignal+`) AS has_recovery_signal FROM task_coordinator_states WHERE `+where+
 			` ORDER BY COALESCE(next_action_at, updated_at), updated_at, id LIMIT ?`, args...)
 	if err != nil {
 		return nil, r.store.mapErr(err)
@@ -485,11 +528,11 @@ func (r *TaskCoordinatorRepo) ListDueStates(ctx context.Context, workspaceID str
 	var out []*domain.TaskCoordinatorState
 	for rows.Next() {
 		state := &domain.TaskCoordinatorState{}
-		var hasUnconsumed bool
-		if err := r.scanState(rows, state, &hasUnconsumed); err != nil {
+		var hasRecoverySignal bool
+		if err := r.scanState(rows, state, &hasRecoverySignal); err != nil {
 			return nil, err
 		}
-		if !coordinatorStateNeedsResume(state, hasUnconsumed) {
+		if !coordinatorStateNeedsResume(state, hasRecoverySignal) {
 			continue
 		}
 		out = append(out, state)

@@ -147,20 +147,20 @@ func TestUsageAnchorIdempotentAccumulation(t *testing.T) {
 	if got := cum(); got != 1500 {
 		t.Fatalf("增长上报只补差: %d", got)
 	}
-	// session_cumulative 口径不触碰锚点。
+	// 同一 Run 的 usage basis 一旦落笔即冻结；拒绝切换并保持既有投影/锚点。
 	if err := svc.RecordRunUsage(ctx, run.ID, atwruntime.Usage{
-		InputTokens: 99, OutputTokens: 1, Basis: atwruntime.UsageSessionCumulative}); err != nil {
-		t.Fatal(err)
+		InputTokens: 99, OutputTokens: 1, Basis: atwruntime.UsageSessionCumulative}); err == nil {
+		t.Fatal("同一 Run 不得从 per_run 切换到 session_cumulative")
 	}
 	if got := cum(); got != 1500 {
-		t.Fatalf("session_cumulative 不应累计锚点: %d", got)
+		t.Fatalf("拒绝 basis 切换不得改写锚点: %d", got)
 	}
 	after, err := store.Runs().Get(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.UsageIn != 99 || after.UsageBasis != "session_cumulative" {
-		t.Fatalf("run 用量覆盖异常: in=%d basis=%s", after.UsageIn, after.UsageBasis)
+	if after.UsageIn != 1500 || after.UsageOut != 10 || after.UsageBasis != string(atwruntime.UsagePerRun) {
+		t.Fatalf("拒绝 basis 切换不得改写 Run 用量: in=%d out=%d basis=%s", after.UsageIn, after.UsageOut, after.UsageBasis)
 	}
 
 	// 不同 run 各自从 0 水位起算，正常累加。

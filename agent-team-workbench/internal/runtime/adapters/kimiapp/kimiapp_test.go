@@ -438,13 +438,18 @@ func (c *recordCallbacks) count(kind string) int {
 func newTestExec(ctx context.Context, ref string, cb runtime.Callbacks, controls chan runtime.Control) *runtime.ExecContext {
 	return &runtime.ExecContext{
 		Ctx:         ctx,
-		Run:         &domain.ExecutionRun{ID: "run_test", AdapterID: "kimi-appserver"},
+		Run:         &domain.ExecutionRun{ID: "run_test", AgentProfileID: "agent_test", AdapterID: "kimi-appserver"},
 		Resolved:    domain.ResolvedExecutionContext{CWD: os.TempDir(), AuthorizedRoot: os.TempDir()},
 		Instruction: "本轮指令：记住 ALPHA",
 		Session:     runtime.SessionState{Ref: ref},
 		Callbacks:   cb,
 		Controls:    controls,
 	}
+}
+
+func sameLegacyUsage(left, right runtime.Usage) bool {
+	return left.InputTokens == right.InputTokens && left.OutputTokens == right.OutputTokens &&
+		left.CachedTokens == right.CachedTokens && left.Basis == right.Basis
 }
 
 func newTestModule(f *fakeKap) *Module {
@@ -497,6 +502,46 @@ func runKapExecute(t *testing.T, m *Module, ex *runtime.ExecContext, f *fakeKap,
 	}
 }
 
+func TestManifestCapabilities(t *testing.T) {
+	m, err := New(Config{}).Manifest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.AdapterID != "kimi-appserver" || m.AdapterVersion != "1.0.0" ||
+		m.Protocol.Name != "kimi-kap-server" || m.Protocol.Version != "2" ||
+		m.SchemaDigest != "sha256:kimi-kap-server-v2" {
+		t.Fatalf("manifest 标识漂移: %+v", m)
+	}
+	want := map[string]runtime.CapabilityLevel{
+		"streaming":                               runtime.CapSupported,
+		runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+		runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+		runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
+		"multi_turn":                              runtime.CapSupported,
+		"resume":                                  runtime.CapSupported,
+		"steering":                                runtime.CapSupported,
+		"approval":                                runtime.CapSupported,
+		"subagents":                               runtime.CapSupported,
+		"swarm":                                   runtime.CapSupported,
+		"interrupt":                               runtime.CapSupported,
+		"workspace_files":                         runtime.CapSupported,
+		"system_prompt":                           runtime.CapAdapterTranslated,
+		"modes":                                   runtime.CapAdapterTranslated,
+		"permissions":                             runtime.CapAdapterTranslated,
+		"multi_vendor":                            runtime.CapAdapterTranslated,
+		"structured_output":                       runtime.CapAdapterTranslated,
+		"terminal":                                runtime.CapUnavailable,
+	}
+	if len(m.Capabilities) != len(want) {
+		t.Fatalf("capabilities 键集漂移: %+v", m.Capabilities)
+	}
+	for key, level := range want {
+		if m.Capabilities[key] != level {
+			t.Errorf("capability %s = %s, want %s", key, m.Capabilities[key], level)
+		}
+	}
+}
+
 func TestFreshTurnHappyPath(t *testing.T) {
 	f := newFakeKap(t)
 	m := newTestModule(f)
@@ -536,6 +581,14 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	}
 	if _, ok := promptBody["swarm_mode"]; ok {
 		t.Fatalf("prompt.swarm_mode 在 KAP 中是 no-op，不应发送: %v", promptBody)
+	}
+	for _, key := range []string{
+		"schema", "output_schema", "outputSchema", "response_format",
+		"tools", "tool_definitions", "toolDefinitions",
+	} {
+		if _, ok := promptBody[key]; ok {
+			t.Fatalf("prompt.%s 当前 adapter 不应发送: %v", key, promptBody)
+		}
 	}
 	if res.Session == nil || res.Session.Ref != "kimiapp://s_1" || res.Session.Params["kap_session"] != "s_1" {
 		t.Fatalf("SessionUpdate 不符: %+v", res.Session)
@@ -593,6 +646,20 @@ func TestFreshTurnHappyPath(t *testing.T) {
 	if res.Usage.Basis != runtime.UsagePerRun {
 		t.Fatalf("usage basis 不符: %+v", res.Usage)
 	}
+	if res.Usage.ProviderReport == nil || res.Usage.Canonical == nil {
+		t.Fatalf("per_run provider usage 应同时带 report/canonical: %+v", res.Usage)
+	}
+	if res.Usage.ProviderReport.Provenance.AgentID != "agent_test" {
+		t.Fatalf("provider report 必须绑定控制面 Run agent，而非伪造 provider main: %+v", res.Usage.ProviderReport.Provenance)
+	}
+	got := res.Usage.ProviderReport.Counters
+	if got.InputTokensTotal == nil || *got.InputTokensTotal != 168 ||
+		got.InputUncachedTokens == nil || *got.InputUncachedTokens != 150 ||
+		got.CacheReadTokens == nil || *got.CacheReadTokens != 16 ||
+		got.CacheWriteTokens == nil || *got.CacheWriteTokens != 2 ||
+		got.OutputTokens == nil || *got.OutputTokens != 50 {
+		t.Fatalf("Kimi appserver 原生桶映射错误: %+v", got)
+	}
 	// OnUsage 过程观测：逐 step 上报累计值（终帧与 ExecResult.Usage 结算一致）。
 	frames := cb.usageFrames()
 	want := []runtime.Usage{
@@ -603,8 +670,11 @@ func TestFreshTurnHappyPath(t *testing.T) {
 		t.Fatalf("OnUsage 帧数不符（want %d）: %+v", len(want), frames)
 	}
 	for i, w := range want {
-		if frames[i] != w {
+		if !sameLegacyUsage(frames[i], w) {
 			t.Fatalf("OnUsage 第 %d 帧不符（累计值覆盖语义）: got %+v want %+v", i+1, frames[i], w)
+		}
+		if frames[i].ProviderReport == nil || frames[i].Canonical == nil {
+			t.Fatalf("OnUsage 第 %d 帧缺少 provider/canonical usage: %+v", i+1, frames[i])
 		}
 	}
 }
@@ -1320,6 +1390,9 @@ func TestChildEventsWithSameTurnIDCannotAffectMain(t *testing.T) {
 	}
 	if res.Usage == nil || res.Usage.InputTokens != 3 || res.Usage.OutputTokens != 2 {
 		t.Fatalf("子 agent usage 不应污染主 turn: %+v", res.Usage)
+	}
+	if res.Usage.ProviderReport == nil || res.Usage.ProviderReport.Provenance.AgentID != "agent_test" {
+		t.Fatalf("子 agent 用量不得伪装成主 agent report: %+v", res.Usage)
 	}
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -23,10 +24,10 @@ type streamFrame struct {
 
 // frameUsage 是 result 帧内 CLI 报告的本轮 token 用量。
 type frameUsage struct {
-	InputTokens              int64 `json:"input_tokens"`
-	OutputTokens             int64 `json:"output_tokens"`
-	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	InputTokens              *int64 `json:"input_tokens"`
+	OutputTokens             *int64 `json:"output_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
 }
 
 // usage 换算为统一口径：print mode 每次调用一份 result 帧，故为 per_run 增量。
@@ -34,12 +35,63 @@ func (f *streamFrame) usage() *runtime.Usage {
 	if f.Usage == nil {
 		return nil
 	}
-	return &runtime.Usage{
-		InputTokens:  f.Usage.InputTokens,
-		OutputTokens: f.Usage.OutputTokens,
-		CachedTokens: f.Usage.CacheReadInputTokens + f.Usage.CacheCreationInputTokens,
-		Basis:        runtime.UsagePerRun,
+	input, _ := claudeUsageValue(f.Usage.InputTokens)
+	out, _ := claudeUsageValue(f.Usage.OutputTokens)
+	read, readKnown := claudeUsageValue(f.Usage.CacheReadInputTokens)
+	write, writeKnown := claudeUsageValue(f.Usage.CacheCreationInputTokens)
+	cached := int64(0)
+	if readKnown && writeKnown {
+		if sum, err := domain.CheckedAddNonNegative(read, write); err == nil {
+			cached = sum
+		}
+	} else if readKnown {
+		cached = read
+	} else if writeKnown {
+		cached = write
 	}
+	return &runtime.Usage{
+		InputTokens: input, OutputTokens: out, CachedTokens: cached,
+		Basis: runtime.UsagePerRun,
+	}
+}
+
+func claudeUsageValue(value *int64) (int64, bool) {
+	if value == nil || *value < 0 {
+		return 0, false
+	}
+	return *value, true
+}
+
+func (f *streamFrame) usageCounters() domain.UsageCountersV1 {
+	if f.Usage == nil {
+		return domain.UsageCountersV1{}
+	}
+	input, inputKnown := claudeUsageValue(f.Usage.InputTokens)
+	out, outputKnown := claudeUsageValue(f.Usage.OutputTokens)
+	read, readKnown := claudeUsageValue(f.Usage.CacheReadInputTokens)
+	write, writeKnown := claudeUsageValue(f.Usage.CacheCreationInputTokens)
+	counters := domain.UsageCountersV1{
+		InputUncachedTokens: claudeUsageCounter(input, inputKnown),
+		CacheReadTokens:     claudeUsageCounter(read, readKnown),
+		CacheWriteTokens:    claudeUsageCounter(write, writeKnown),
+		OutputTokens:        claudeUsageCounter(out, outputKnown),
+	}
+	if counters.InputUncachedTokens != nil && counters.CacheReadTokens != nil && counters.CacheWriteTokens != nil {
+		if total, err := domain.CheckedAddNonNegative(*counters.InputUncachedTokens, *counters.CacheReadTokens); err == nil {
+			if total, err = domain.CheckedAddNonNegative(total, *counters.CacheWriteTokens); err == nil {
+				counters.InputTokensTotal = &total
+			}
+		}
+	}
+	return counters
+}
+
+func claudeUsageCounter(value int64, known bool) *int64 {
+	if !known {
+		return nil
+	}
+	copy := value
+	return &copy
 }
 
 // frameTooLargeError 超过 MaxFrameBytes 的帧（协议违例 → FamilyInternal）。

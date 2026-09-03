@@ -44,6 +44,8 @@ var historicalSQLiteMigrationVersions = []string{
 	"0021_execution_context",
 	"0022_task_comments",
 	"0023_runner_event_dedup_v2",
+	"0024_native_governance",
+	"0025_coordinator_plan_repair",
 }
 
 func TestNoDialectMigrationDirectory(t *testing.T) {

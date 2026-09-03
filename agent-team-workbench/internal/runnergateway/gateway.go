@@ -151,7 +151,12 @@ func New(store application.Store, engine Engine, notifier application.Notifier) 
 			},
 		},
 	}
-	go g.leaseSweeper()
+	// Pure transport/unit-test gateways may omit persistence.  Do not start a
+	// background sweeper that can dereference a nil Store; production gateways
+	// always have the SQLite-backed Runner repository.
+	if store != nil {
+		go g.leaseSweeper()
+	}
 	return g
 }
 
@@ -590,6 +595,9 @@ func (g *Gateway) markExpiredLeaseTerminal(ctx context.Context, runID string) {
 
 // leaseSweeper 定期释放过期租约，并把任何仍非终态的受影响 Run 收敛。
 func (g *Gateway) leaseSweeper() {
+	if g == nil || g.store == nil {
+		return
+	}
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {

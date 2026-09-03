@@ -1,18 +1,28 @@
 package kimiconfig
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
 var providerIDPattern = regexp.MustCompile(`[^a-z0-9-]+`)
+var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ErrStaticConfig identifies a model target that can never be applied until
+// its durable Agent target is changed (as opposed to a transient missing
+// credential or filesystem failure).
+var ErrStaticConfig = errors.New("static Kimi configuration invalid")
 
 // Apply 把编排层模型快照与进程环境中的 API Key 写入 KIMI_CODE_HOME/config.toml。
 // Kimi CLI 不读取 shell 环境变量中的凭据，必须落盘到 config.toml。
@@ -47,14 +57,11 @@ func applyIfChanged(home string, spec orchestrator.ModelSpec) (bool, error) {
 	if home == "" {
 		return false, fmt.Errorf("%w: KIMI_CODE_HOME 未配置", domain.ErrValidation)
 	}
+	if err := ValidateSpec(spec); err != nil {
+		return false, err
+	}
 	model := strings.TrimSpace(spec.Model)
-	if model == "" {
-		return false, fmt.Errorf("%w: Kimi 模型名不能为空", domain.ErrValidation)
-	}
 	envKey := strings.TrimSpace(spec.APIKeyEnv)
-	if envKey == "" {
-		return false, fmt.Errorf("%w: Kimi 使用注册表模型 %q 需要 api_key_env（请在模型页保存凭据）", domain.ErrValidation, spec.Ref)
-	}
 	apiKey := strings.TrimSpace(os.Getenv(envKey))
 	if apiKey == "" {
 		return false, fmt.Errorf("%w: Kimi 模型 %q 缺少 API Key（请在模型页保存凭据）", domain.ErrValidation, spec.Ref)
@@ -92,21 +99,59 @@ max_context_size = %d
 	if prev, err := os.ReadFile(path); err == nil && string(prev) == content {
 		return false, nil
 	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := agentwork.WriteAtomicDurable(path, []byte(content), 0o600); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
+// ValidateSpec checks static constraints before any home directory or config
+// file is touched. Credential presence remains a dynamic execution check.
+func ValidateSpec(spec orchestrator.ModelSpec) error {
+	if strings.TrimSpace(spec.Model) == "" {
+		return fmt.Errorf("%w: %w: Kimi 模型名不能为空", ErrStaticConfig, domain.ErrValidation)
+	}
+	if err := validateBaseURL(spec.BaseURL); err != nil {
+		return fmt.Errorf("%w: %w", ErrStaticConfig, err)
+	}
+	if strings.TrimSpace(spec.APIKeyEnv) == "" {
+		return fmt.Errorf("%w: %w: Kimi 使用注册表模型 %q 需要 api_key_env", ErrStaticConfig, domain.ErrValidation, spec.Ref)
+	}
+	if !envNamePattern.MatchString(strings.TrimSpace(spec.APIKeyEnv)) {
+		return fmt.Errorf("%w: %w: Kimi api_key_env 不是合法环境变量名", ErrStaticConfig, domain.ErrValidation)
+	}
+	if _, err := ResolveBaseURL(spec); err != nil {
+		return fmt.Errorf("%w: %w", ErrStaticConfig, err)
+	}
+	return nil
+}
+
 // ResolveBaseURL 返回 Kimi 可用的 OpenAI 兼容端点。
 func ResolveBaseURL(spec orchestrator.ModelSpec) (string, error) {
 	if base := strings.TrimSpace(spec.BaseURL); base != "" {
+		if err := validateBaseURL(base); err != nil {
+			return "", err
+		}
 		return strings.TrimRight(base, "/"), nil
 	}
 	if strings.EqualFold(spec.Provider, "moonshot") {
 		return "https://api.kimi.com/coding/v1", nil
 	}
 	return "", fmt.Errorf("%w: 模型 %q 缺少 base_url，无法在 Kimi 中路由", domain.ErrValidation, spec.Ref)
+}
+
+func validateBaseURL(base string) error {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return nil
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+		(!strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https")) ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("%w: Kimi base_url 必须是无凭据、无 query/fragment 的 http(s) URL", domain.ErrValidation)
+	}
+	return nil
 }
 
 // ProviderReady 判断 KIMI_CODE_HOME 是否已配置 provider 且含 api_key。
@@ -157,5 +202,5 @@ func ModelAlias(snap runtime.ModelSnapshot) string {
 }
 
 func modelsTableKey(alias string) string {
-	return `"` + strings.ReplaceAll(alias, `"`, `\"`) + `"`
+	return strconv.Quote(alias)
 }

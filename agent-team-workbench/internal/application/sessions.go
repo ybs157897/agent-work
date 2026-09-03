@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -324,6 +325,9 @@ func (s *Service) RecordRunUsage(ctx context.Context, runID string, usage runtim
 // recordRunUsageTx 是用量落账的事务内核心（RecordRunUsage 与 ApplyRunnerEvent 的
 // usage.updated 应用共用）：差值幂等累计口径保持一致。
 func (s *Service) recordRunUsageTx(ctx context.Context, runID string, usage runtime.Usage) (string, error) {
+	if err := validateRuntimeUsage(usage); err != nil {
+		return "", err
+	}
 	r, err := s.store.Runs().Get(ctx, runID)
 	if err != nil {
 		return "", err
@@ -343,9 +347,23 @@ func (s *Service) recordRunUsageTx(ctx context.Context, runID string, usage runt
 	//   - 不同 run 从各自 run 行取水位，互不干扰。
 	// 上次口径非 per_run（basis 切换）时水位视为 0，避免跨口径差值失真。
 	prevIn, prevBasis := r.UsageIn, r.UsageBasis
+	if prevBasis != "" && prevBasis != string(usage.Basis) {
+		return "", fmt.Errorf("%w: usage basis cannot change within run %s", domain.ErrValidation, runID)
+	}
+	if prevBasis == string(runtime.UsagePerRun) && (usage.InputTokens < r.UsageIn ||
+		usage.OutputTokens < r.UsageOut || usage.CachedTokens < r.UsageCached) {
+		return "", fmt.Errorf("%w: per-run usage counters cannot regress for run %s", domain.ErrValidation, runID)
+	}
 	// 用量列不属于状态机；迟到上报直接覆盖列值（不改 status/finished_at）。
 	r.UsageIn, r.UsageOut, r.UsageCached = usage.InputTokens, usage.OutputTokens, usage.CachedTokens
 	r.UsageBasis = string(usage.Basis)
+	// provider 原生报告与 legacy 投影同事务双写：身份/digest 校验失败是硬错误
+	//（不静默）；canonical 已冻结时应用层跳过改写（0028 trigger 兜底）。
+	if usage.ProviderReport != nil {
+		if err := bindProviderUsageReport(r, usage.ProviderReport); err != nil {
+			return "", err
+		}
+	}
 	if err := s.store.Runs().Update(ctx, r, r.Version); err != nil {
 		return "", err
 	}
@@ -365,11 +383,78 @@ func (s *Service) recordRunUsageTx(ctx context.Context, runID string, usage runt
 		if prevBasis == string(runtime.UsagePerRun) {
 			accounted = prevIn
 		}
-		if delta := usage.InputTokens - accounted; delta != 0 {
-			return r.WorkspaceID, s.store.TaskSessions().AddInputTokens(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, delta)
+		if delta := usage.InputTokens - accounted; delta > 0 {
+			if err := s.store.TaskSessions().AddInputTokens(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, delta); err != nil {
+				return "", err
+			}
+		}
+	}
+	// 终态随行 canonical 兜底（allowAbsentEvidence=false，复审裁决 #4）：
+	// terminal + 有 report → 正常首写真 canonical；无 report → 不在报告路径
+	// 合成 absent evidence（留给 sweep 的关闭时刻），保证关闭前迟到 report
+	// 永远能落真实用量。canonical 写入与 anchor 推进同在 canonicalize 内收尾——
+	// 若 anchor CAS 失败而 canonical 已在本事务落笔，吞错提交会留下
+	// 「按旧基线结算、基线未推进」的半态，下一个 Run 会从旧水位重复做差。
+	// 因此这里失败必须回滚整个 usage 事务（report/legacy 列一起回滚）：
+	// 宁可丢一次迟到上报（受管 Run 由 sweep 补 unresolved），不留错误账本。
+	if r.Status.IsTerminal() && r.CanonicalUsage == nil {
+		if _, err := s.canonicalizeRunUsageLocked(ctx, r.ID, false); err != nil {
+			return "", fmt.Errorf("terminal usage canonicalize run %s: %w", r.ID, err)
 		}
 	}
 	return r.WorkspaceID, nil
+}
+
+func validateRuntimeUsage(usage runtime.Usage) error {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CachedTokens < 0 {
+		return fmt.Errorf("%w: runtime usage counters must be non-negative", domain.ErrValidation)
+	}
+	if usage.Basis != runtime.UsagePerRun && usage.Basis != runtime.UsageSessionCumulative {
+		return fmt.Errorf("%w: runtime usage basis %q is invalid", domain.ErrValidation, usage.Basis)
+	}
+	if usage.ProviderReport != nil && string(usage.Basis) != usage.ProviderReport.Basis {
+		return fmt.Errorf("%w: runtime usage basis differs from provider report", domain.ErrValidation)
+	}
+	return nil
+}
+
+// bindProviderUsageReport 把 provider 原生用量报告绑定到 Run 行的 latest report
+// 槽：digest 与 run/agent/adapter 身份校验失败都是硬错误（防串账）；同一 digest
+// 重复上报幂等不动，不同 digest 递增 seq（0028 trigger 兜底）。canonical 已冻结
+// 后不再改写 latest report——只记日志跳过，legacy 投影列仍按既有覆盖语义更新。
+func bindProviderUsageReport(r *domain.ExecutionRun, report *domain.ProviderUsageReportV1) error {
+	if err := report.VerifyDigest(); err != nil {
+		return fmt.Errorf("%w: provider usage report digest: %v", domain.ErrValidation, err)
+	}
+	if report.RunID != r.ID {
+		return fmt.Errorf("%w: provider usage report run identity mismatch", domain.ErrValidation)
+	}
+	if r.AgentProfileID != "" && report.Provenance.AgentID != r.AgentProfileID {
+		return fmt.Errorf("%w: provider usage report agent identity mismatch", domain.ErrValidation)
+	}
+	if r.AdapterID != "" && report.Provenance.AdapterID != r.AdapterID {
+		return fmt.Errorf("%w: provider usage report adapter identity mismatch", domain.ErrValidation)
+	}
+	if r.CanonicalUsage != nil {
+		if r.ProviderUsageReport != nil && r.ProviderUsageReport.Digest == report.Digest {
+			return nil // 精确重放：既有 report 就是本报告
+		}
+		log.Printf("usage: run %s canonical 已落，拒绝改写 latest provider report（digest %s）", r.ID, report.Digest)
+		return nil
+	}
+	switch {
+	case r.ProviderUsageReport == nil:
+		r.ProviderUsageReport = report
+		r.ProviderUsageReportDigest = report.Digest
+		r.ProviderUsageReportSeq = 1
+	case r.ProviderUsageReport.Digest == report.Digest:
+		// 同一报告重复上报（Callbacks.OnUsage 与 ExecResult 双路径）：幂等不动。
+	default:
+		r.ProviderUsageReport = report
+		r.ProviderUsageReportDigest = report.Digest
+		r.ProviderUsageReportSeq++
+	}
+	return nil
 }
 
 // ResetTaskSession 手动清除会话锚点（设置页 / 自愈路径）；写入墓碑，下一轮 Run 开新会话
@@ -496,35 +581,291 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 		return
 	}
 	healCtx := context.WithoutCancel(ctx)
-	if err := s.store.InTx(healCtx, func(ctx context.Context) error {
-		return s.writeAnchorTombstoneForRun(ctx, r.WorkspaceID, r.AgentProfileID, r.AdapterID, r.WorkItemID, r.ID, "session_unknown_heal")
-	}); err != nil {
+	var retry *domain.ExecutionRun
+	created := false
+	err := s.store.InTx(healCtx, func(txctx context.Context) error {
+		source, getErr := s.store.Runs().Get(txctx, r.ID)
+		if getErr != nil {
+			return getErr
+		}
+		state, lifecycleErr := s.validateSelfHealLifecycleLocked(txctx, source)
+		if lifecycleErr != nil {
+			return lifecycleErr
+		}
+		p := selfHealRunParams(source, instruction)
+		if coordinator := p.CoordinatorContext; coordinator != nil &&
+			(stringValue(coordinator["role"]) == coordinatorRole || stringValue(coordinator["role"]) == coordinatorWorkerRole) {
+			if state == nil {
+				return fmt.Errorf("%w: coordinated self-heal has no protected state", domain.ErrStateConflict)
+			}
+			delegated, _ := coordinator["delegated"].(bool)
+			p.coordinatorAdmission = &coordinatorRunAdmission{
+				RootWorkItemID: state.RootWorkItemID, StateID: state.ID,
+				SourceRunID: source.ID, Action: stringValue(coordinator["action"]), Delegated: delegated,
+			}
+		}
+		if existing, lookupErr := s.store.Runs().GetByClientKey(txctx, source.WorkspaceID, p.ClientKey); lookupErr == nil {
+			retry = existing
+		} else if !errors.Is(lookupErr, domain.ErrNotFound) {
+			return lookupErr
+		} else {
+			if err := s.writeAnchorTombstoneForRun(txctx, source.WorkspaceID, source.AgentProfileID,
+				source.AdapterID, source.WorkItemID, source.ID, "session_unknown_heal"); err != nil {
+				return err
+			}
+			retry, getErr = s.createRunLocked(txctx, source.WorkItemID, p)
+			if getErr != nil {
+				return getErr
+			}
+			created = true
+		}
+		return s.claimSelfHealDispatchLocked(txctx, retry)
+	})
+	if err != nil {
+		log.Printf("session heal: atomic lifecycle/anchor/run recovery for source %s failed: %v", r.ID, err)
+		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_heal_failed",
+			fmt.Sprintf("session_unknown 自愈重试创建失败（源 run %s）：%v", r.ID, err))
 		return
 	}
-	p := CreateRunParams{AgentProfileID: r.AgentProfileID, Instruction: instruction, AutoHealOf: r.ID, DispatchID: r.DispatchID}
-	if coordinator, ok := r.Input["task_coordinator"].(map[string]any); ok {
+	if retry.ClientKey != "session-heal:"+r.ID {
+		log.Printf("session heal: replayed Run for source %s has unexpected identity %q", r.ID, retry.ClientKey)
+		return
+	}
+	if retry.Status != domain.RunStarting {
+		return // an earlier recovery attempt already progressed this deterministic Run
+	}
+	if err := s.dispatchCommittedRun(healCtx, retry); err != nil {
+		log.Printf("session heal: dispatch fresh run for source %s failed: %v", r.ID, err)
+		return
+	}
+	if created {
+		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_healed",
+			fmt.Sprintf("会话丢失（session_unknown）已自愈重试：%s → %s", r.ID, retry.ID))
+	}
+	s.recordCoordinatorSessionHeal(healCtx, r, retry)
+}
+
+func selfHealRunParams(source *domain.ExecutionRun, instruction string) CreateRunParams {
+	p := CreateRunParams{AgentProfileID: source.AgentProfileID, Instruction: instruction,
+		AutoHealOf: source.ID, DispatchID: source.DispatchID, ClientKey: "session-heal:" + source.ID}
+	if coordinator, ok := source.Input["task_coordinator"].(map[string]any); ok {
 		p.CoordinatorContext = mapsCloneAny(coordinator)
 		p.CoordinatorContext["attempt"] = coordinatorAttemptValue(p.CoordinatorContext["attempt"]) + 1
-		p.CoordinatorContext["retry_of"] = r.ID
+		p.CoordinatorContext["retry_of"] = source.ID
 	}
-	p.OutputContract, _ = r.Input["output_contract"].(string)
-	if raw, ok := r.Input["acceptance_criteria"].([]any); ok {
+	if wake, ok := source.Input["wakeup"].(map[string]any); ok {
+		p.WakeContext = mapsCloneAny(wake)
+	}
+	if evaluation, _ := source.Input["evaluation"].(bool); evaluation {
+		p.Evaluation = true
+	}
+	if governance, ok := source.Input["governance"].(map[string]any); ok {
+		p.governanceContext = mapsCloneAny(governance)
+	}
+	p.OutputContract, _ = source.Input["output_contract"].(string)
+	if raw, ok := source.Input["acceptance_criteria"].([]any); ok {
 		for _, item := range raw {
 			if text, ok := item.(string); ok {
 				p.AcceptanceCriteria = append(p.AcceptanceCriteria, text)
 			}
 		}
 	}
-	p.RuntimePreference = runtimePreferenceOf(r.Input["runtime_preference"])
-	retry, err := s.CreateRun(healCtx, r.WorkItemID, p)
-	if err != nil {
-		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_heal_failed",
-			fmt.Sprintf("session_unknown 自愈重试创建失败（源 run %s）：%v", r.ID, err))
-		return
+	p.RuntimePreference = runtimePreferenceOf(source.Input["runtime_preference"])
+	return p
+}
+
+func (s *Service) validateSelfHealLifecycleLocked(ctx context.Context,
+	source *domain.ExecutionRun) (*domain.TaskCoordinatorState, error) {
+	if err := validateCoordinatedRootHealSource(source); err != nil {
+		return nil, err
 	}
-	_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_healed",
-		fmt.Sprintf("会话丢失（session_unknown）已自愈重试：%s → %s", r.ID, retry.ID))
-	s.recordCoordinatorSessionHeal(healCtx, r, retry)
+	workItem, err := s.store.WorkItems().Get(ctx, source.WorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	if workItem.WorkspaceID != source.WorkspaceID || workItem.Status != domain.WorkItemInProgress {
+		return nil, fmt.Errorf("%w: session self-heal requires an active source WorkItem", domain.ErrStateConflict)
+	}
+	if !isTaskWorkItem(workItem) {
+		return nil, nil
+	}
+	if workItem.Phase != domain.PhaseExecution {
+		return nil, fmt.Errorf("%w: session self-heal requires an executing Task", domain.ErrStateConflict)
+	}
+	root, err := s.workItemRoot(ctx, workItem)
+	if err != nil {
+		return nil, err
+	}
+	if root.WorkspaceID != source.WorkspaceID || root.Status != domain.WorkItemInProgress ||
+		root.Phase != domain.PhaseExecution {
+		return nil, fmt.Errorf("%w: session self-heal root Task is not active", domain.ErrStateConflict)
+	}
+	goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, root.ID)
+	state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, root.ID)
+	if goalErr != nil && !errors.Is(goalErr, domain.ErrNotFound) {
+		return nil, goalErr
+	}
+	if stateErr != nil && !errors.Is(stateErr, domain.ErrNotFound) {
+		return nil, stateErr
+	}
+	if stateErr == nil && errors.Is(goalErr, domain.ErrNotFound) {
+		return nil, fmt.Errorf("%w: coordinated session self-heal has no Goal", domain.ErrStateConflict)
+	}
+	if goalErr == nil && goal.Status != domain.GoalActive {
+		return nil, fmt.Errorf("%w: Goal %s does not permit session self-heal", domain.ErrStateConflict, goal.Status)
+	}
+	if stateErr == nil && coordinatorStateExecutionStopped(state) {
+		return nil, fmt.Errorf("%w: Coordinator %s does not permit session self-heal", domain.ErrStateConflict, state.Status)
+	}
+	if stateErr == nil {
+		return state, nil
+	}
+	return nil, nil
+}
+
+func pendingSelfHealSourceID(run *domain.ExecutionRun) (string, bool) {
+	if run == nil || (run.Status != domain.RunQueued && run.Status != domain.RunStarting) {
+		return "", false
+	}
+	sourceID, _ := run.Input["auto_heal_of"].(string)
+	if sourceID == "" || run.ClientKey != "session-heal:"+sourceID || run.RetryOf != sourceID {
+		return "", false
+	}
+	return sourceID, true
+}
+
+func (s *Service) claimSelfHealDispatchLocked(ctx context.Context, run *domain.ExecutionRun) error {
+	if _, ok := pendingSelfHealSourceID(run); !ok {
+		return fmt.Errorf("%w: invalid pending session-heal Run", domain.ErrStateConflict)
+	}
+	if run.Status == domain.RunStarting {
+		return nil
+	}
+	return s.transitionRunLocked(ctx, run, domain.RunStarting, map[string]any{
+		"recovery": "session_heal_dispatch_claimed",
+	})
+}
+
+// RecoverPendingSelfHealRuns closes the commit-before-dispatch crash window for
+// deterministic session-heal Runs. It is called before generic orphan
+// reconciliation; an active Goal/Task is dispatched once, while a paused Goal
+// remains queued for ResumeGoal. Blocked/cancelled/corrupt rows fall through to
+// the ordinary orphan terminalizer instead of silently starting work.
+func (s *Service) RecoverPendingSelfHealRuns(ctx context.Context) (int, error) {
+	return s.recoverPendingSelfHealRuns(ctx, "")
+}
+
+func (s *Service) recoverPendingSelfHealRuns(ctx context.Context, rootFilter string) (int, error) {
+	if s.dispatcher == nil {
+		return 0, fmt.Errorf("%w: queued self-heal recovery requires a Dispatcher", domain.ErrCapabilityMissing)
+	}
+	runs, err := s.store.Runs().LeaselessActive(ctx)
+	if err != nil {
+		return 0, err
+	}
+	dispatched := 0
+	var firstErr error
+	for _, retry := range runs {
+		sourceID, ok := pendingSelfHealSourceID(retry)
+		if !ok {
+			continue
+		}
+		workItem, getErr := s.store.WorkItems().Get(ctx, retry.WorkItemID)
+		if getErr != nil {
+			if firstErr == nil {
+				firstErr = getErr
+			}
+			continue
+		}
+		root, rootErr := s.workItemRoot(ctx, workItem)
+		if rootErr != nil {
+			if firstErr == nil {
+				firstErr = rootErr
+			}
+			continue
+		}
+		if rootFilter != "" && root.ID != rootFilter {
+			continue
+		}
+		source, sourceErr := s.store.Runs().Get(ctx, sourceID)
+		if sourceErr != nil {
+			if firstErr == nil {
+				firstErr = sourceErr
+			}
+			continue
+		}
+		if source.WorkspaceID != retry.WorkspaceID || source.WorkItemID != retry.WorkItemID ||
+			source.AgentProfileID != retry.AgentProfileID {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%w: queued self-heal Run/source identity mismatch", domain.ErrWorkspaceContextMismatch)
+			}
+			continue
+		}
+		lifecycleErr := s.store.InTx(ctx, func(txctx context.Context) error {
+			freshSource, validateErr := s.store.Runs().Get(txctx, source.ID)
+			if validateErr != nil {
+				return validateErr
+			}
+			freshRetry, validateErr := s.store.Runs().Get(txctx, retry.ID)
+			if validateErr != nil {
+				return validateErr
+			}
+			if _, validateErr = s.validateSelfHealLifecycleLocked(txctx, freshSource); validateErr != nil {
+				return validateErr
+			}
+			if validateErr = s.claimSelfHealDispatchLocked(txctx, freshRetry); validateErr != nil {
+				return validateErr
+			}
+			retry = freshRetry
+			return nil
+		})
+		if lifecycleErr != nil {
+			if paused, pausedErr := s.selfHealPausedByGoal(ctx, retry); pausedErr == nil && paused {
+				continue
+			} else if pausedErr != nil && firstErr == nil {
+				firstErr = pausedErr
+			}
+			continue // generic orphan reconciliation owns non-paused stopped rows
+		}
+		if _, already := s.dispatchedRuns.Load(retry.ID); already {
+			continue
+		}
+		if dispatchErr := s.dispatchCommittedRun(context.WithoutCancel(ctx), retry); dispatchErr != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("dispatch queued self-heal %s: %w", retry.ID, dispatchErr)
+			}
+			continue
+		}
+		dispatched++
+	}
+	return dispatched, firstErr
+}
+
+func (s *Service) selfHealPausedByGoal(ctx context.Context, run *domain.ExecutionRun) (bool, error) {
+	if run == nil {
+		return false, nil
+	}
+	workItem, err := s.store.WorkItems().Get(ctx, run.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	if !isTaskWorkItem(workItem) {
+		return false, nil
+	}
+	root, err := s.workItemRoot(ctx, workItem)
+	if err != nil {
+		return false, err
+	}
+	goal, err := s.store.Goals().GetByRootWorkItem(ctx, root.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return goal.Status == domain.GoalWaiting && workItem.Status == domain.WorkItemInProgress &&
+		workItem.Phase == domain.PhaseExecution && root.Status == domain.WorkItemInProgress &&
+		root.Phase == domain.PhaseExecution, nil
 }
 
 // runtimePreferenceOf 从 run.Input 快照恢复 CreateRun 所需的显式偏好

@@ -56,10 +56,15 @@ func newRun(input map[string]any) *domain.ExecutionRun {
 		input["conversation"] = map[string]any{"history": []any{}}
 	}
 	return &domain.ExecutionRun{
-		ID: domain.NewID(domain.PrefixRun), AdapterID: "codex-appserver",
+		ID: domain.NewID(domain.PrefixRun), AgentProfileID: "agent_test", AdapterID: "codex-appserver",
 		Status: domain.RunQueued, Version: 1, Input: input,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
+}
+
+func sameLegacyUsage(left, right atwruntime.Usage) bool {
+	return left.InputTokens == right.InputTokens && left.OutputTokens == right.OutputTokens &&
+		left.CachedTokens == right.CachedTokens && left.Basis == right.Basis
 }
 
 // ── 测试桩：Callbacks（审批模式可配置）────────────────────────────────
@@ -293,7 +298,10 @@ func TestModuleManifest(t *testing.T) {
 	}
 	want := map[string]atwruntime.CapabilityLevel{
 		"streaming": atwruntime.CapSupported, "interrupt": atwruntime.CapSupported,
-		"resume": atwruntime.CapSupported, "multi_turn": atwruntime.CapSupported,
+		atwruntime.CapabilityStructuredTransport:     atwruntime.CapSupported,
+		atwruntime.CapabilitySchemaConstrainedOutput: atwruntime.CapUnavailable,
+		atwruntime.CapabilityControlToolCall:         atwruntime.CapUnavailable,
+		"resume":                                     atwruntime.CapSupported, "multi_turn": atwruntime.CapSupported,
 		"steering": atwruntime.CapSupported, "system_prompt": atwruntime.CapSupported,
 		"modes": atwruntime.CapSupported, "subagents": atwruntime.CapSupported,
 		"permissions": atwruntime.CapAdapterTranslated,
@@ -906,6 +914,14 @@ func TestPumpTurnStartUsesUltraEffortWithoutDeprecatedMode(t *testing.T) {
 		if _, ok := params["multiAgentMode"]; ok {
 			t.Fatal("turn/start must not send deprecated multiAgentMode")
 		}
+		for _, key := range []string{
+			"schema", "outputSchema", "output_schema", "response_format",
+			"dynamicTools", "dynamic_tools", "tools", "tool_definitions", "toolDefinitions",
+		} {
+			if _, ok := params[key]; ok {
+				t.Fatalf("turn/start.%s 当前 adapter 不应发送: %#v", key, params)
+			}
+		}
 	}
 	if !found {
 		t.Fatalf("turn/start request not recorded: %s", stdin.String())
@@ -993,14 +1009,26 @@ func TestPumpAccumulatesTokenUsage(t *testing.T) {
 		t.Fatalf("用量通知不得影响通知流收尾: %+v", res)
 	}
 	want := &atwruntime.Usage{InputTokens: 250, OutputTokens: 50, CachedTokens: 100, Basis: atwruntime.UsagePerRun}
-	if res.usage == nil || *res.usage != *want {
+	if res.usage == nil || !sameLegacyUsage(*res.usage, *want) {
 		t.Fatalf("pump 用量累计错误（期望 100+150/20+30/40+60 且只计 turn_1）: %+v", res.usage)
+	}
+	if res.usage.ProviderReport == nil || res.usage.Canonical == nil {
+		t.Fatalf("per_run provider usage 应同时带 report/canonical: %+v", res.usage)
+	}
+	if got := res.usage.ProviderReport.Counters; got.InputTokensTotal == nil || *got.InputTokensTotal != 250 ||
+		got.InputUncachedTokens != nil || got.CacheReadTokens == nil || *got.CacheReadTokens != 100 ||
+		got.CacheWriteTokens != nil || got.OutputTokens == nil || *got.OutputTokens != 50 {
+		t.Fatalf("Codex 原生桶映射错误（缺 cache-write 不得捏造）: %+v", got)
 	}
 	if final.Outcome != atwruntime.OutcomeSucceeded {
 		t.Fatalf("期望 succeeded，得到 %s (%+v)", final.Outcome, final.Failure)
 	}
-	if final.Usage == nil || *final.Usage != *want {
+	if final.Usage == nil || !sameLegacyUsage(*final.Usage, *want) {
 		t.Fatalf("ExecResult.Usage 映射错误: %+v", final.Usage)
+	}
+	if final.Usage.ProviderReport == nil || final.Usage.Canonical == nil ||
+		final.Usage.ProviderReport.Digest == "" || final.Usage.Canonical.Digest == "" {
+		t.Fatalf("ExecResult.Usage 必须携带 sealed report/canonical: %+v", final.Usage)
 	}
 	frames := cb.usageFrames()
 	wantFrames := []atwruntime.Usage{
@@ -1011,9 +1039,32 @@ func TestPumpAccumulatesTokenUsage(t *testing.T) {
 		t.Fatalf("OnUsage 帧数不符（turn_prev/turn_other 不得触发）: %+v", frames)
 	}
 	for i, w := range wantFrames {
-		if frames[i] != w {
+		if !sameLegacyUsage(frames[i], w) {
 			t.Fatalf("OnUsage 第 %d 帧不符（累计值覆盖语义）: got %+v want %+v", i+1, frames[i], w)
 		}
+		if frames[i].ProviderReport == nil || frames[i].Canonical == nil {
+			t.Fatalf("OnUsage 第 %d 帧缺少 provider/canonical usage: %+v", i+1, frames[i])
+		}
+	}
+}
+
+func TestParseTokenUsageEventPreservesCacheWritePresence(t *testing.T) {
+	withCacheWrite, ok := parseTokenUsageEvent(json.RawMessage(`{
+		"turnId":"turn_1",
+		"tokenUsage":{"last":{"inputTokens":100,"cachedInputTokens":40,"cacheWriteInputTokens":10,"outputTokens":20}}
+	}`))
+	if !ok || !withCacheWrite.InputKnown || !withCacheWrite.CachedKnown ||
+		!withCacheWrite.CacheWriteKnown || !withCacheWrite.OutputKnown ||
+		withCacheWrite.CacheWrite != 10 {
+		t.Fatalf("cache-write presence lost: %+v ok=%v", withCacheWrite, ok)
+	}
+	withoutCacheWrite, ok := parseTokenUsageEvent(json.RawMessage(`{
+		"turnId":"turn_1",
+		"tokenUsage":{"last":{"inputTokens":100,"cachedInputTokens":40,"outputTokens":20}}
+	}`))
+	if !ok || !withoutCacheWrite.InputKnown || !withoutCacheWrite.CachedKnown ||
+		withoutCacheWrite.CacheWriteKnown || !withoutCacheWrite.OutputKnown {
+		t.Fatalf("missing cache-write must remain unknown: %+v ok=%v", withoutCacheWrite, ok)
 	}
 }
 
@@ -1523,8 +1574,11 @@ func TestConformanceCodexApp(t *testing.T) {
 			t.Fatalf("用量上报帧数不符（turn_prev 不得触发 OnUsage）: %+v", usages)
 		}
 		for i, w := range wantUsageFrames {
-			if usages[i] != w {
+			if !sameLegacyUsage(usages[i], w) {
 				t.Fatalf("第 %d 条用量不符: got %+v want %+v", i+1, usages[i], w)
+			}
+			if usages[i].ProviderReport == nil || usages[i].Canonical == nil {
+				t.Fatalf("第 %d 条用量缺少 provider/canonical usage: %+v", i+1, usages[i])
 			}
 		}
 	})

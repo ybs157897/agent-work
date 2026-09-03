@@ -91,6 +91,38 @@ type fakeModule struct {
 	executeDone chan struct{}
 }
 
+type blockingModule struct {
+	mu      sync.Mutex
+	started chan struct{}
+	release chan struct{}
+	count   int
+}
+
+func (m *blockingModule) Manifest(context.Context) (AdapterManifest, error) {
+	return AdapterManifest{AdapterID: "fake"}, nil
+}
+
+func (m *blockingModule) Probe(context.Context, ProbeRequest) (ProbeResult, error) {
+	return ProbeResult{OK: true}, nil
+}
+
+func (m *blockingModule) Execute(*ExecContext) ExecResult {
+	m.mu.Lock()
+	m.count++
+	if m.count == 1 {
+		close(m.started)
+	}
+	m.mu.Unlock()
+	<-m.release
+	return ExecResult{Outcome: OutcomeSucceeded}
+}
+
+func (m *blockingModule) executions() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.count
+}
+
 func (m *fakeModule) Manifest(ctx context.Context) (AdapterManifest, error) {
 	return AdapterManifest{AdapterID: "fake", Capabilities: m.caps}, nil
 }
@@ -148,6 +180,31 @@ func TestModuleRunnerSilentRunSucceedsFromStarting(t *testing.T) {
 	}
 	if got := engine.waitTerminal(t); got != domain.RunSucceeded {
 		t.Fatalf("静默 run 应经 starting→succeeding 落 succeeded，实际 %s", got)
+	}
+}
+
+func TestModuleRunnerDuplicateDispatchUsesOneActiveExecution(t *testing.T) {
+	engine := &statefulEngine{run: dispatchedRun()}
+	runner := NewModuleRunner(engine)
+	module := &blockingModule{started: make(chan struct{}), release: make(chan struct{})}
+	runner.Register("fake", module)
+	if err := runner.Dispatch(context.Background(), engine.run); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-module.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first module execution did not start")
+	}
+	if err := runner.Dispatch(context.Background(), engine.run); err != nil {
+		t.Fatalf("duplicate active dispatch should be an idempotent no-op: %v", err)
+	}
+	if got := module.executions(); got != 1 {
+		t.Fatalf("duplicate dispatch started %d module executions", got)
+	}
+	close(module.release)
+	if got := engine.waitTerminal(t); got != domain.RunSucceeded {
+		t.Fatalf("deduplicated Run should still complete normally, got %s", got)
 	}
 }
 

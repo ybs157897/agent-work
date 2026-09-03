@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,28 +22,30 @@ const registryFileName = "registry.yaml"
 
 // Entry 是扁平化的模型注册表条目（API / 编排层使用）。
 type Entry struct {
-	ID            string `yaml:"-" json:"id"`
-	DisplayName   string `yaml:"display_name" json:"display_name"`
-	Category      string `yaml:"category,omitempty" json:"category,omitempty"`
-	ProviderID    string `yaml:"-" json:"provider_id"`
-	Provider      string `yaml:"provider" json:"provider"`
-	API           string `yaml:"api,omitempty" json:"api,omitempty"`
-	Model         string `yaml:"model" json:"model"`
-	APIKeyEnv     string `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
-	BaseURL       string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	ContextWindow int    `yaml:"context_window,omitempty" json:"context_window,omitempty"`
-	MaxTokens     int    `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
-	Notes         string `yaml:"notes,omitempty" json:"notes,omitempty"`
+	ID            string                   `yaml:"-" json:"id"`
+	DisplayName   string                   `yaml:"display_name" json:"display_name"`
+	Category      string                   `yaml:"category,omitempty" json:"category,omitempty"`
+	ProviderID    string                   `yaml:"-" json:"provider_id"`
+	Provider      string                   `yaml:"provider" json:"provider"`
+	API           string                   `yaml:"api,omitempty" json:"api,omitempty"`
+	Model         string                   `yaml:"model" json:"model"`
+	APIKeyEnv     string                   `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
+	BaseURL       string                   `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	ContextWindow int                      `yaml:"context_window,omitempty" json:"context_window,omitempty"`
+	MaxTokens     int                      `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	Notes         string                   `yaml:"notes,omitempty" json:"notes,omitempty"`
+	Price         *domain.PriceSnapshotRef `yaml:"price,omitempty" json:"price,omitempty"`
 }
 
 // ModelDef 是 registry.yaml 中供应商下的单个模型。
 type ModelDef struct {
-	ID            string `yaml:"id"`
-	DisplayName   string `yaml:"display_name"`
-	Model         string `yaml:"model"`
-	ContextWindow int    `yaml:"context_window,omitempty"`
-	MaxTokens     int    `yaml:"max_tokens,omitempty"`
-	Notes         string `yaml:"notes,omitempty"`
+	ID            string                   `yaml:"id"`
+	DisplayName   string                   `yaml:"display_name"`
+	Model         string                   `yaml:"model"`
+	ContextWindow int                      `yaml:"context_window,omitempty"`
+	MaxTokens     int                      `yaml:"max_tokens,omitempty"`
+	Notes         string                   `yaml:"notes,omitempty"`
+	Price         *domain.PriceSnapshotRef `yaml:"price,omitempty"`
 }
 
 // ProviderDef 是 registry.yaml 中的供应商连接 + 模型列表。
@@ -68,6 +71,9 @@ var (
 
 // Validate 校验条目；id 可空（Upsert 时由 display_name 生成）。
 func (e *Entry) Validate() error {
+	if e == nil {
+		return fmt.Errorf("%w: model entry required", domain.ErrValidation)
+	}
 	if e.ID != "" && !idPattern.MatchString(e.ID) {
 		return fmt.Errorf("%w: id 必须是小写 slug（字母/数字/连字符）", domain.ErrValidation)
 	}
@@ -77,11 +83,19 @@ func (e *Entry) Validate() error {
 	if e.APIKeyEnv != "" && !envPattern.MatchString(e.APIKeyEnv) {
 		return fmt.Errorf("%w: api_key_env 必须是合法环境变量名", domain.ErrValidation)
 	}
-	if e.BaseURL != "" && !strings.HasPrefix(e.BaseURL, "http://") && !strings.HasPrefix(e.BaseURL, "https://") {
-		return fmt.Errorf("%w: base_url 必须是 http(s) URL", domain.ErrValidation)
+	if err := validateBaseURL(e.BaseURL); err != nil {
+		return err
 	}
 	if e.ContextWindow < 0 || e.MaxTokens < 0 {
 		return fmt.Errorf("%w: context_window / max_tokens 必须为正数", domain.ErrValidation)
+	}
+	if e.Price != nil {
+		if e.ID != "" && e.Price.ModelRef != e.ID {
+			return fmt.Errorf("%w: price snapshot model_ref %q must match model entry id %q", domain.ErrValidation, e.Price.ModelRef, e.ID)
+		}
+		if err := e.Price.Normalize(); err != nil {
+			return fmt.Errorf("%w: price snapshot: %v", domain.ErrValidation, err)
+		}
 	}
 	return nil
 }
@@ -104,6 +118,7 @@ func (p *ProviderDef) toEntry(m ModelDef) *Entry {
 		ContextWindow: m.ContextWindow,
 		MaxTokens:     m.MaxTokens,
 		Notes:         m.Notes,
+		Price:         clonePriceSnapshot(m.Price),
 	}
 }
 
@@ -115,7 +130,16 @@ func (p *ProviderDef) fromEntry(e *Entry) ModelDef {
 		ContextWindow: e.ContextWindow,
 		MaxTokens:     e.MaxTokens,
 		Notes:         e.Notes,
+		Price:         clonePriceSnapshot(e.Price),
 	}
+}
+
+func clonePriceSnapshot(value *domain.PriceSnapshotRef) *domain.PriceSnapshotRef {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func (rf *RegistryFile) flatten() []*Entry {
@@ -152,6 +176,9 @@ func (rf *RegistryFile) validate() error {
 		if p.BaseURL != "" && strings.TrimSpace(p.API) == "" {
 			return fmt.Errorf("%w: 供应商 %s 配置了 base_url 时必须指定 api", domain.ErrValidation, p.ID)
 		}
+		if err := validateBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("%w: provider %s: %v", domain.ErrValidation, p.ID, err)
+		}
 		if strings.TrimSpace(p.APIKeyEnv) == "" {
 			return fmt.Errorf("%w: 供应商 %s 必须配置 api_key_env", domain.ErrValidation, p.ID)
 		}
@@ -159,6 +186,14 @@ func (rf *RegistryFile) validate() error {
 			return fmt.Errorf("%w: 供应商 %s 的 api_key_env 非法", domain.ErrValidation, p.ID)
 		}
 		for _, m := range p.Models {
+			if m.Price != nil && m.Price.ModelRef != m.ID {
+				return fmt.Errorf("%w: model %s price model_ref %q must match entry id", domain.ErrValidation, m.ID, m.Price.ModelRef)
+			}
+			if m.Price != nil {
+				if err := m.Price.Normalize(); err != nil {
+					return fmt.Errorf("%w: model %s price snapshot: %v", domain.ErrValidation, m.ID, err)
+				}
+			}
 			if m.ID == "" {
 				return fmt.Errorf("%w: 模型 id 必填", domain.ErrValidation)
 			}
@@ -170,6 +205,23 @@ func (rf *RegistryFile) validate() error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// validateBaseURL accepts only an ordinary HTTP(S) endpoint. Credentials and
+// query/fragment material are rejected because the URL is copied into runtime
+// config and durable Agent sync snapshots.
+func validateBaseURL(raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" ||
+		(!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) ||
+		u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%w: base_url 必须是无凭据、无 query/fragment 的 http(s) URL", domain.ErrValidation)
 	}
 	return nil
 }
@@ -283,6 +335,9 @@ func Slugify(name string) string {
 
 // Upsert 创建或更新模型条目。
 func (r *Registry) Upsert(e *Entry) error {
+	if e == nil {
+		return fmt.Errorf("%w: model entry required", domain.ErrValidation)
+	}
 	if e.ID == "" {
 		e.ID = Slugify(e.DisplayName)
 		for i := 2; ; i++ {

@@ -74,19 +74,22 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 		AdapterID: "codex-appserver", AdapterVersion: adapterVersion, ProviderVersion: providerVersion,
 		Protocol: runtime.Protocol{Name: "codex-app-server", Version: "v2"},
 		Capabilities: map[string]runtime.CapabilityLevel{
-			"streaming":         runtime.CapSupported,
-			"interrupt":         runtime.CapSupported, // turn/interrupt 原生支持
-			"resume":            runtime.CapSupported, // thread/resume
-			"multi_turn":        runtime.CapSupported,
-			"steering":          runtime.CapSupported, // turn/steer
-			"system_prompt":     runtime.CapSupported,
-			"modes":             runtime.CapSupported,
-			"subagents":         runtime.CapSupported,
-			"permissions":       runtime.CapAdapterTranslated,
-			"approval":          runtime.CapSupported, // item/*/requestApproval
-			"workspace_files":   runtime.CapSupported,
-			"terminal":          runtime.CapUnavailable,
-			"structured_output": runtime.CapAdapterTranslated,
+			"streaming":                               runtime.CapSupported,
+			runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+			runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+			runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
+			"interrupt":                               runtime.CapSupported, // turn/interrupt 原生支持
+			"resume":                                  runtime.CapSupported, // thread/resume
+			"multi_turn":                              runtime.CapSupported,
+			"steering":                                runtime.CapSupported, // turn/steer
+			"system_prompt":                           runtime.CapSupported,
+			"modes":                                   runtime.CapSupported,
+			"subagents":                               runtime.CapSupported,
+			"permissions":                             runtime.CapAdapterTranslated,
+			"approval":                                runtime.CapSupported, // item/*/requestApproval
+			"workspace_files":                         runtime.CapSupported,
+			"terminal":                                runtime.CapUnavailable,
+			"structured_output":                       runtime.CapAdapterTranslated,
 		},
 		SchemaDigest: "sha256:" + protocolSchemaSHA256,
 	}, nil
@@ -249,14 +252,19 @@ type execStream struct {
 
 	// 本轮 token 用量（thread/tokenUsage/updated 的 last 增量逐通知累计）；
 	// 过程经 OnUsage 流式观测（累计值逐帧覆盖），终态结算出口是 ExecResult.Usage。
-	usageIn       int64
-	usageOut      int64
-	usageCached   int64
-	usageSeen     bool
-	childIDs      map[string]struct{}
-	childEmitted  map[string]map[string]struct{}
-	childMeta     map[string]childMetadata
-	turnStartedAt time.Time
+	usageIn              int64
+	usageOut             int64
+	usageCached          int64
+	usageCacheWrite      int64
+	usageInputKnown      bool
+	usageCachedKnown     bool
+	usageCacheWriteKnown bool
+	usageOutputKnown     bool
+	usageSeen            bool
+	childIDs             map[string]struct{}
+	childEmitted         map[string]map[string]struct{}
+	childMeta            map[string]childMetadata
+	turnStartedAt        time.Time
 }
 
 type childMetadata struct {
@@ -349,37 +357,118 @@ func (s *execStream) resetAnswerState() {
 // accumulateUsage 累计一条归因到本 turn 的用量增量（调用方负责 turnId 过滤）。
 func (s *execStream) accumulateUsage(ev tokenUsageEvent) {
 	s.mu.Lock()
-	s.usageIn += ev.Input
-	s.usageOut += ev.Output
-	s.usageCached += ev.Cached
+	if ev.InputKnown {
+		if next, err := domain.CheckedAddNonNegative(s.usageIn, ev.Input); err != nil {
+			ev.InputKnown = false
+		} else {
+			s.usageIn = next
+		}
+	}
+	if ev.OutputKnown {
+		if next, err := domain.CheckedAddNonNegative(s.usageOut, ev.Output); err != nil {
+			ev.OutputKnown = false
+		} else {
+			s.usageOut = next
+		}
+	}
+	if ev.CachedKnown {
+		if next, err := domain.CheckedAddNonNegative(s.usageCached, ev.Cached); err != nil {
+			ev.CachedKnown = false
+		} else {
+			s.usageCached = next
+		}
+	}
+	if ev.CacheWriteKnown {
+		if next, err := domain.CheckedAddNonNegative(s.usageCacheWrite, ev.CacheWrite); err != nil {
+			ev.CacheWriteKnown = false
+		} else {
+			s.usageCacheWrite = next
+		}
+	}
+	if !s.usageSeen {
+		s.usageInputKnown = ev.InputKnown
+		s.usageCachedKnown = ev.CachedKnown
+		s.usageCacheWriteKnown = ev.CacheWriteKnown
+		s.usageOutputKnown = ev.OutputKnown
+	} else {
+		s.usageInputKnown = s.usageInputKnown && ev.InputKnown
+		s.usageCachedKnown = s.usageCachedKnown && ev.CachedKnown
+		s.usageCacheWriteKnown = s.usageCacheWriteKnown && ev.CacheWriteKnown
+		s.usageOutputKnown = s.usageOutputKnown && ev.OutputKnown
+	}
 	s.usageSeen = true
 	s.mu.Unlock()
 }
 
-// usageSnapshot 收尾用量（per_run 增量，与 kimiapp 同口径）；未见用量帧或全零
-// 返回 nil（不捏造上报）。
+// usageSnapshot 收尾用量（per_run 增量，与 kimiapp 同口径）。未见用量帧
+// 返回 nil；显式的全零 provider 快照仍然保留为 known zero。
 func (s *execStream) usageSnapshot() *runtime.Usage {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.usageSeen || (s.usageIn == 0 && s.usageOut == 0) {
+	if !s.usageSeen {
+		s.mu.Unlock()
 		return nil
 	}
-	return &runtime.Usage{
+	legacy := runtime.Usage{
 		InputTokens: s.usageIn, OutputTokens: s.usageOut,
 		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
 	}
+	counters := codexUsageCounters(s.usageIn, s.usageInputKnown, s.usageCached,
+		s.usageCachedKnown, s.usageCacheWrite, s.usageCacheWriteKnown,
+		s.usageOut, s.usageOutputKnown)
+	threadID := s.threadID
+	s.mu.Unlock()
+	legacy = attachCodexProviderUsage(s.ex, threadID, legacy, counters)
+	return &legacy
 }
 
 // emitUsageProgress 累计后即时过程观测：上报当前累计值（OnUsage 覆盖语义，
 // 终态结算仍以 ExecResult.Usage 为准）。
 func (s *execStream) emitUsageProgress() {
-	s.mu.Lock()
-	u := runtime.Usage{
-		InputTokens: s.usageIn, OutputTokens: s.usageOut,
-		CachedTokens: s.usageCached, Basis: runtime.UsagePerRun,
+	if usage := s.usageSnapshot(); usage != nil {
+		s.ex.Callbacks.OnUsage(*usage)
 	}
-	s.mu.Unlock()
-	s.ex.Callbacks.OnUsage(u)
+}
+
+func codexUsageCounters(input int64, inputKnown bool, cached int64, cachedKnown bool,
+	cacheWrite int64, cacheWriteKnown bool, output int64, outputKnown bool) domain.UsageCountersV1 {
+	counters := domain.UsageCountersV1{
+		InputTokensTotal: ptrUsageCounter(input, inputKnown),
+		CacheReadTokens:  ptrUsageCounter(cached, cachedKnown),
+		CacheWriteTokens: ptrUsageCounter(cacheWrite, cacheWriteKnown),
+		OutputTokens:     ptrUsageCounter(output, outputKnown),
+	}
+	if counters.InputTokensTotal != nil && counters.CacheReadTokens != nil && counters.CacheWriteTokens != nil {
+		if uncached, err := domain.CheckedSubNonNegative(*counters.InputTokensTotal, *counters.CacheReadTokens); err == nil {
+			if uncached, err = domain.CheckedSubNonNegative(uncached, *counters.CacheWriteTokens); err == nil {
+				counters.InputUncachedTokens = &uncached
+			}
+		}
+	}
+	return counters
+}
+
+func ptrUsageCounter(value int64, known bool) *int64 {
+	if !known {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func attachCodexProviderUsage(ex *runtime.ExecContext, threadID string, usage runtime.Usage, counters domain.UsageCountersV1) runtime.Usage {
+	sessionRef := ""
+	if threadID != "" {
+		sessionRef = "codex://" + threadID
+	}
+	report, err := runtime.NewProviderUsageReport(ex, sessionRef,
+		"codex-appserver", "codex-app-server", "v2",
+		"thread/tokenUsage/updated",
+		"last.inputTokens/cachedInputTokens/cacheWriteInputTokens/outputTokens; uncached=total-read-write",
+		runtime.UsagePerRun, counters)
+	if err == nil {
+		return runtime.AttachProviderUsage(usage, report)
+	}
+	return usage
 }
 
 // finalAnswer 权威答案只发一次（同一 agent 消息段内 item/completed 与 turn/completed 去重）。

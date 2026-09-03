@@ -18,8 +18,15 @@ const sigFallback sigFallbackT = 0
 
 func setProcGroup(cmd *exec.Cmd) {}
 
-func signalGroup(cmd *exec.Cmd, sig sigFallbackT) {
+func signalGroup(cmd *exec.Cmd, pgid int, sig sigFallbackT) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
+}
+
+func processGroupID(cmd *exec.Cmd) int {
+	if cmd.Process != nil {
+		return cmd.Process.Pid
+	}
+	return 0
 }

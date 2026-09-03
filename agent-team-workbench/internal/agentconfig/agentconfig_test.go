@@ -67,6 +67,48 @@ func TestLoadDirInvalid(t *testing.T) {
 	}
 }
 
+func TestLoadDirPropagatesUnreadablePrompt(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "forge")
+	if err := os.MkdirAll(filepath.Join(one, "prompt.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(one, "agent.yaml"), []byte("name: Forge\nrole: developer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDir(dir); err == nil {
+		t.Fatal("prompt directory must not be treated as an empty prompt")
+	}
+}
+
+func TestLoadDirRejectsUnsafeLegacySlug(t *testing.T) {
+	dir := t.TempDir()
+	one := filepath.Join(dir, "legacy:slug")
+	if err := os.MkdirAll(one, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(one, "agent.yaml"), []byte("name: Legacy\nrole: developer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDir(dir); err == nil {
+		t.Fatal("unsafe legacy slug must fail closed before DB import")
+	}
+}
+
+func TestWriteBackNormalizesUnsafeSlug(t *testing.T) {
+	dir := t.TempDir()
+	slug, err := WriteBack(dir, &domain.AgentProfile{Slug: "../escape", Name: "Forge", Role: "developer"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "forge" {
+		t.Fatalf("unsafe slug normalized to %q, want forge", slug)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "escape", "agent.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe slug escaped target directory: %v", err)
+	}
+}
+
 func TestWriteBackRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	a := &domain.AgentProfile{

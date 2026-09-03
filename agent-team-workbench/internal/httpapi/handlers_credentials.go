@@ -65,41 +65,30 @@ type putProviderCredentialRequest struct {
 }
 
 func (s *Server) handlePutProviderCredential(w http.ResponseWriter, r *http.Request) {
-	if s.credentials == nil {
-		writeProblem(w, r, Problem{
-			Type: "https://workbench.example/problems/not-found", Title: "Resource not found",
-			Status: http.StatusNotFound, Code: "credentials_disabled", Detail: modelRegistryDisabledDetail,
-		})
-		return
-	}
-	var req putProviderCredentialRequest
-	if err := decodeBody(r, &req); err != nil {
-		writeProblem(w, r, Problem{
-			Type: "https://workbench.example/problems/bad-request", Title: "Bad request",
-			Status: http.StatusBadRequest, Code: "bad_request", Detail: err.Error(),
-		})
-		return
-	}
-	if req.ProviderID == "" {
-		writeProblem(w, r, Problem{
-			Type: "https://workbench.example/problems/bad-request", Title: "Bad request",
-			Status: http.StatusBadRequest, Code: "bad_request", Detail: "provider_id 必填",
-		})
-		return
-	}
-	if err := s.credentials.Set(req.ProviderID, req.APIKey); err != nil {
-		fail(w, r, err)
-		return
-	}
-	if s.models != nil {
-		if providers, err := s.models.Providers(); err == nil {
-			for _, p := range providers {
-				if p.ID == req.ProviderID {
-					_ = s.credentials.HydrateEnv([]modelconfig.ProviderDef{p})
-					break
+	s.idempotent(w, r, "provider-credentials", func() (int, []byte) {
+		if s.credentials == nil {
+			return renderProblem(http.StatusNotFound, "credentials_disabled", "Resource not found", modelRegistryDisabledDetail)
+		}
+		var req putProviderCredentialRequest
+		if err := decodeBody(r, &req); err != nil {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Bad request", err.Error())
+		}
+		if req.ProviderID == "" {
+			return renderProblem(http.StatusBadRequest, "bad_request", "Bad request", "provider_id 必填")
+		}
+		if err := s.credentials.Set(req.ProviderID, req.APIKey); err != nil {
+			return problemBytes(err)
+		}
+		if s.models != nil {
+			if providers, err := s.models.Providers(); err == nil {
+				for _, p := range providers {
+					if p.ID == req.ProviderID {
+						_ = s.credentials.HydrateEnv([]modelconfig.ProviderDef{p})
+						break
+					}
 				}
 			}
 		}
-	}
-	w.WriteHeader(http.StatusNoContent)
+		return http.StatusNoContent, nil
+	})
 }

@@ -140,7 +140,7 @@ func (c *recCallbacks) event(typ string) (recEvent, bool) {
 
 func newRun(input map[string]any) *domain.ExecutionRun {
 	return &domain.ExecutionRun{
-		ID: domain.NewID(domain.PrefixRun), Status: domain.RunQueued, Version: 1,
+		ID: domain.NewID(domain.PrefixRun), AgentProfileID: "agent_test", Status: domain.RunQueued, Version: 1,
 		AdapterID: "claude-code", Input: input,
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
@@ -343,6 +343,23 @@ func TestExecuteHappyPath(t *testing.T) {
 	if res.Usage == nil || res.Usage.Basis != runtime.UsagePerRun ||
 		res.Usage.InputTokens != 25 || res.Usage.OutputTokens != 82 || res.Usage.CachedTokens != 1000 {
 		t.Fatalf("用量解析错误: %+v", res.Usage)
+	}
+	if res.Usage.ProviderReport == nil || res.Usage.Canonical == nil {
+		t.Fatalf("Claude per_run usage 应同时带 report/canonical: %+v", res.Usage)
+	}
+	if err := res.Usage.ProviderReport.VerifyDigest(); err != nil {
+		t.Fatalf("Claude provider report digest 无法验证: %v", err)
+	}
+	if err := res.Usage.Canonical.VerifyDigest(); err != nil {
+		t.Fatalf("Claude canonical usage digest 无法验证: %v", err)
+	}
+	got := res.Usage.ProviderReport.Counters
+	if got.InputTokensTotal == nil || *got.InputTokensTotal != 1025 ||
+		got.InputUncachedTokens == nil || *got.InputUncachedTokens != 25 ||
+		got.CacheReadTokens == nil || *got.CacheReadTokens != 900 ||
+		got.CacheWriteTokens == nil || *got.CacheWriteTokens != 100 ||
+		got.OutputTokens == nil || *got.OutputTokens != 82 {
+		t.Fatalf("Claude 原生 usage 四桶拆分错误: %+v", got)
 	}
 	// 进程上报
 	if !cb.spawned || cb.pid <= 0 || cb.pgid <= 0 {

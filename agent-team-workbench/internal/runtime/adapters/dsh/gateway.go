@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,7 +86,10 @@ func (g *Gateway) Manifest(ctx context.Context) (runtime.AdapterManifest, error)
 		AdapterID: "dsh", AdapterVersion: "2.0.0",
 		Protocol: runtime.Protocol{Name: "dsh-web-gateway", Version: "1"},
 		Capabilities: map[string]runtime.CapabilityLevel{
-			"streaming": runtime.CapSupported,
+			"streaming":                               runtime.CapSupported,
+			runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+			runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+			runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
 			// session.cancel 原生精确取消（turn 级，非进程级）。
 			"interrupt":         runtime.CapSupported,
 			"resume":            runtime.CapSupported, // harness 原生 session 持久化
@@ -134,29 +138,233 @@ type turnRun struct {
 	// assistant/message 都可能携带 usage，且同一 turn 两类帧的数值指向同一批
 	// token 消耗。口径：assistant/message.usage 为 turn 内权威值（多条则累加），
 	// chunk.usage 仅作累计兜底——turn 结束仍无任何 message.usage 时才采纳。
-	usageMsgInput, usageMsgOutput, usageMsgCached       int64
-	usageChunkInput, usageChunkOutput, usageChunkCached int64
-	usageMsgSeen                                        bool
+	usageMsgSeen      bool
+	usageMsgBuckets   dshUsageBuckets
+	usageChunkBuckets dshUsageBuckets
+	usageMsgLegacy    dshLegacyUsage
+	usageChunkLegacy  dshLegacyUsage
 
 	failure       *runtime.Failure // turn/end error 的权威失败
 	sessionUpdate *runtime.SessionUpdate
 }
 
+// dshUsageBuckets preserves the provider's nullable usage fields while the
+// legacy projections above keep their historical best-effort shape. DSH
+// currently exposes uncached input, cache-read input, and output; cache-write
+// is intentionally unknown unless a future protocol frame reports it.
+type dshUsageBuckets struct {
+	uncached, cacheRead, cacheWrite, output int64
+	uncachedKnown, cacheReadKnown           bool
+	cacheWriteKnown, outputKnown            bool
+	seen                                    bool
+}
+
+// dshLegacyUsage keeps the historical non-nullable projection without sharing
+// its unsafe arithmetic. Invalid individual values are skipped; any aggregate
+// overflow invalidates that projection dimension and pins it to zero.
+type dshLegacyUsage struct {
+	input, output, cached                         int64
+	inputOverflow, outputOverflow, cachedOverflow bool
+}
+
+func dshUsageNumber(data map[string]any, key string) (int64, bool) {
+	value, ok := data[key]
+	if !ok || value == nil {
+		return 0, false
+	}
+	return dshUsageValue(value)
+}
+
+// dshUsageValue 是唯一的严格数值口径：只接受非负整数（float64/int64/int），
+// 其余一律 unknown——负数/NaN/Inf/非整数/越界/非数值都不伪造。
+func dshUsageValue(value any) (int64, bool) {
+	switch value := value.(type) {
+	case float64:
+		if math.IsNaN(value) || math.IsInf(value, 0) || math.Trunc(value) != value ||
+			value < 0 || value >= float64(math.MaxInt64) {
+			return 0, false
+		}
+		return int64(value), true
+	case int64:
+		if value < 0 {
+			return 0, false
+		}
+		return value, true
+	case int:
+		if value < 0 {
+			return 0, false
+		}
+		return int64(value), true
+	default:
+		return 0, false
+	}
+}
+
+func (u *dshUsageBuckets) add(data map[string]any) {
+	uncached, uncachedKnown := dshUsageNumber(data, "inputTokens")
+	read, readKnown := dshUsageNumber(data, "cacheReadTokens")
+	write, writeKnown := dshUsageNumber(data, "cacheWriteTokens")
+	output, outputKnown := dshUsageNumber(data, "outputTokens")
+	if uncachedKnown {
+		if next, ok := domain.CheckedAddNonNegative(u.uncached, uncached); ok == nil {
+			u.uncached = next
+		} else {
+			uncachedKnown = false
+		}
+	}
+	if readKnown {
+		if next, ok := domain.CheckedAddNonNegative(u.cacheRead, read); ok == nil {
+			u.cacheRead = next
+		} else {
+			readKnown = false
+		}
+	}
+	if writeKnown {
+		if next, ok := domain.CheckedAddNonNegative(u.cacheWrite, write); ok == nil {
+			u.cacheWrite = next
+		} else {
+			writeKnown = false
+		}
+	}
+	if outputKnown {
+		if next, ok := domain.CheckedAddNonNegative(u.output, output); ok == nil {
+			u.output = next
+		} else {
+			outputKnown = false
+		}
+	}
+	if !u.seen {
+		u.uncachedKnown, u.cacheReadKnown = uncachedKnown, readKnown
+		u.cacheWriteKnown, u.outputKnown = writeKnown, outputKnown
+	} else {
+		u.uncachedKnown = u.uncachedKnown && uncachedKnown
+		u.cacheReadKnown = u.cacheReadKnown && readKnown
+		u.cacheWriteKnown = u.cacheWriteKnown && writeKnown
+		u.outputKnown = u.outputKnown && outputKnown
+	}
+	u.seen = true
+}
+
+func (u *dshLegacyUsage) add(data map[string]any) {
+	uncached, uncachedKnown := dshUsageNumber(data, "inputTokens")
+	read, readKnown := dshUsageNumber(data, "cacheReadTokens")
+	output, outputKnown := dshUsageNumber(data, "outputTokens")
+	if !u.inputOverflow {
+		frameInput := int64(0)
+		var err error
+		if uncachedKnown {
+			frameInput, err = domain.CheckedAddNonNegative(frameInput, uncached)
+		}
+		if err == nil && readKnown {
+			frameInput, err = domain.CheckedAddNonNegative(frameInput, read)
+		}
+		if err == nil {
+			u.input, err = domain.CheckedAddNonNegative(u.input, frameInput)
+		}
+		if err != nil {
+			u.input, u.inputOverflow = 0, true
+		}
+	}
+	if outputKnown && !u.outputOverflow {
+		if next, err := domain.CheckedAddNonNegative(u.output, output); err == nil {
+			u.output = next
+		} else {
+			u.output, u.outputOverflow = 0, true
+		}
+	}
+	if readKnown && !u.cachedOverflow {
+		if next, err := domain.CheckedAddNonNegative(u.cached, read); err == nil {
+			u.cached = next
+		} else {
+			u.cached, u.cachedOverflow = 0, true
+		}
+	}
+}
+
+func (u dshLegacyUsage) totals() (in, out, cached int64) {
+	if !u.inputOverflow {
+		in = u.input
+	}
+	if !u.outputOverflow {
+		out = u.output
+	}
+	if !u.cachedOverflow {
+		cached = u.cached
+	}
+	return in, out, cached
+}
+
+func dshUsageCounter(value int64, known bool) *int64 {
+	if !known {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func (u dshUsageBuckets) counters() domain.UsageCountersV1 {
+	counters := domain.UsageCountersV1{
+		InputUncachedTokens: dshUsageCounter(u.uncached, u.uncachedKnown),
+		CacheReadTokens:     dshUsageCounter(u.cacheRead, u.cacheReadKnown),
+		CacheWriteTokens:    dshUsageCounter(u.cacheWrite, u.cacheWriteKnown),
+		OutputTokens:        dshUsageCounter(u.output, u.outputKnown),
+	}
+	// input_total 只在三个输入分量全知时派生：任一分量未知就隐式当 0 会低估
+	// total-token quota；求和溢出同样保持未知（nil 即 unknown，不伪造）。
+	if counters.InputUncachedTokens != nil && counters.CacheReadTokens != nil &&
+		counters.CacheWriteTokens != nil {
+		total, err := domain.CheckedAddNonNegative(*counters.InputUncachedTokens, *counters.CacheReadTokens)
+		if err == nil {
+			total, err = domain.CheckedAddNonNegative(total, *counters.CacheWriteTokens)
+		}
+		if err == nil {
+			counters.InputTokensTotal = &total
+		}
+	}
+	return counters
+}
+
+func (t *turnRun) usageBuckets() (dshUsageBuckets, string, bool) {
+	if t.usageMsgSeen {
+		return t.usageMsgBuckets, "assistant/message", true
+	}
+	if t.usageChunkBuckets.seen {
+		return t.usageChunkBuckets, "assistant/chunk", true
+	}
+	return dshUsageBuckets{}, "", false
+}
+
 // usageTotals 按「message.usage 权威、chunk 累计兜底」口径结算本轮用量。
 func (t *turnRun) usageTotals() (in, out, cached int64) {
 	if t.usageMsgSeen {
-		return t.usageMsgInput, t.usageMsgOutput, t.usageMsgCached
+		return t.usageMsgLegacy.totals()
 	}
-	return t.usageChunkInput, t.usageChunkOutput, t.usageChunkCached
+	return t.usageChunkLegacy.totals()
 }
 
 // emitUsageProgress 累计后即时过程观测：按结算同源口径（usageTotals）上报
 // 当前累计值；OnUsage 是覆盖语义，终态结算仍走 turnEndResult 的 ExecResult.Usage。
 func emitUsageProgress(ex *runtime.ExecContext, state *turnRun) {
 	in, out, cached := state.usageTotals()
-	ex.Callbacks.OnUsage(runtime.Usage{
+	usage := runtime.Usage{
 		InputTokens: in, OutputTokens: out, CachedTokens: cached, Basis: runtime.UsagePerRun,
-	})
+	}
+	if buckets, source, ok := state.usageBuckets(); ok {
+		if report, err := runtime.NewProviderUsageReport(ex, sessionRef(state.sessionUpdate),
+			"dsh", "dsh-web-gateway", "1", source,
+			"inputTokens/cacheReadTokens/outputTokens; input_total=sum(input+cache_read), cache_write=unknown",
+			runtime.UsagePerRun, buckets.counters()); err == nil {
+			usage = runtime.AttachProviderUsage(usage, report)
+		}
+	}
+	ex.Callbacks.OnUsage(usage)
+}
+
+func sessionRef(update *runtime.SessionUpdate) string {
+	if update == nil {
+		return ""
+	}
+	return update.Ref
 }
 
 // Execute 阻塞执行一轮：建订阅 → 解析/创建会话 → prompt → 消费 mux 流到
@@ -472,18 +680,12 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 		// usage 仅作兜底累计：同一 turn 的权威值来自 assistant/message.usage
 		// （见 turnRun 注释；两类帧同时携带 usage 时若都累加会双计）。
 		var chunk struct {
-			Type  string `json:"type"`
-			Usage *struct {
-				InputTokens     int64 `json:"inputTokens"`
-				OutputTokens    int64 `json:"outputTokens"`
-				CacheReadTokens int64 `json:"cacheReadTokens"`
-				ReasoningTokens int64 `json:"reasoningTokens"`
-			} `json:"usage"`
+			Type  string         `json:"type"`
+			Usage map[string]any `json:"usage"`
 		}
 		if json.Unmarshal(ev.Data, &chunk) == nil && chunk.Usage != nil {
-			state.usageChunkInput += chunk.Usage.InputTokens + chunk.Usage.CacheReadTokens
-			state.usageChunkOutput += chunk.Usage.OutputTokens
-			state.usageChunkCached += chunk.Usage.CacheReadTokens
+			state.usageChunkLegacy.add(chunk.Usage)
+			state.usageChunkBuckets.add(chunk.Usage)
 			emitUsageProgress(ex, state)
 		}
 	case "assistant/message":
@@ -492,9 +694,8 @@ func (g *Gateway) handleSessionEvent(ex *runtime.ExecContext, ev *sessionEvent, 
 		})
 		if u, ok := data["usage"].(map[string]any); ok {
 			state.usageMsgSeen = true
-			state.usageMsgInput += num(u["inputTokens"]) + num(u["cacheReadTokens"])
-			state.usageMsgOutput += num(u["outputTokens"])
-			state.usageMsgCached += num(u["cacheReadTokens"])
+			state.usageMsgLegacy.add(u)
+			state.usageMsgBuckets.add(u)
 			emitUsageProgress(ex, state)
 		}
 	case "tool/call":
@@ -601,11 +802,20 @@ func ptrResult(r runtime.ExecResult) *runtime.ExecResult { return &r }
 func turnEndResult(ex *runtime.ExecContext, state *turnRun) runtime.ExecResult {
 	result := runtime.ExecResult{Session: state.sessionUpdate}
 	in, out, cached := state.usageTotals()
-	if in > 0 || out > 0 {
-		result.Usage = &runtime.Usage{
+	if _, _, seen := state.usageBuckets(); seen {
+		usage := runtime.Usage{
 			InputTokens: in, OutputTokens: out,
 			CachedTokens: cached, Basis: runtime.UsagePerRun,
 		}
+		if buckets, source, ok := state.usageBuckets(); ok {
+			if report, err := runtime.NewProviderUsageReport(ex, sessionRef(state.sessionUpdate),
+				"dsh", "dsh-web-gateway", "1", source,
+				"inputTokens/cacheReadTokens/outputTokens; input_total=sum(input+cache_read+cache_write) only when all three known",
+				runtime.UsagePerRun, buckets.counters()); err == nil {
+				usage = runtime.AttachProviderUsage(usage, report)
+			}
+		}
+		result.Usage = &usage
 	}
 	switch {
 	case ex.Ctx.Err() != nil:
@@ -625,7 +835,19 @@ func intentResult(ex *runtime.ExecContext, state *turnRun) runtime.ExecResult {
 	if kind, ok := ex.TerminalIntent(); ok && kind == runtime.ControlCancel {
 		outcome = runtime.OutcomeCancelled
 	}
-	return runtime.ExecResult{Outcome: outcome, Session: state.sessionUpdate}
+	result := runtime.ExecResult{Outcome: outcome, Session: state.sessionUpdate}
+	in, out, cached := state.usageTotals()
+	if buckets, source, ok := state.usageBuckets(); ok {
+		usage := runtime.Usage{InputTokens: in, OutputTokens: out, CachedTokens: cached, Basis: runtime.UsagePerRun}
+		if report, err := runtime.NewProviderUsageReport(ex, sessionRef(state.sessionUpdate),
+			"dsh", "dsh-web-gateway", "1", source,
+			"inputTokens/cacheReadTokens/outputTokens; input_total=sum(input+cache_read), cache_write=unknown",
+			runtime.UsagePerRun, buckets.counters()); err == nil {
+			usage = runtime.AttachProviderUsage(usage, report)
+		}
+		result.Usage = &usage
+	}
+	return result
 }
 
 // ── 错误分类 ──────────────────────────────────────────────────────────
@@ -781,14 +1003,6 @@ func dshToolResult(data map[string]any) (callID, output string, isError bool) {
 		callID, _ = src["callId"].(string)
 	}
 	return callID, truncate(sb.String(), maxToolOutput), isError
-}
-
-func num(v any) int64 {
-	f, ok := v.(float64)
-	if !ok {
-		return 0
-	}
-	return int64(f)
 }
 
 func truncate(s string, n int) string {

@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/migtest"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
@@ -167,6 +170,255 @@ func TestIdempotentDifferentBodyConflicts(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("exec 次数 = %d, 期望 1", calls.Load())
+	}
+}
+
+func TestIdempotentProblemContentTypeIsStableOnClaimReplay(t *testing.T) {
+	store := openIdempotencyTestDB(t)
+	s := &Server{store: store, demoRole: domain.RoleOwner}
+	handler := newIdempotentHandler(s, "ws_problem", func() (int, []byte) {
+		return renderProblem(http.StatusUnprocessableEntity, "validation_failed", "Validation failed", "bad input")
+	})
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, postWithKey(`{"value":1}`, "problem-key"))
+	if first.Code != http.StatusUnprocessableEntity || first.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("首次 4xx 必须标记 problem+json: status=%d headers=%v body=%s", first.Code, first.Header(), first.Body.String())
+	}
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, postWithKey(`{"value":1}`, "problem-key"))
+	if replay.Code != first.Code || replay.Header().Get("Content-Type") != "application/problem+json" || replay.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("claim-first 重放必须保留 problem+json: status=%d headers=%v body=%s", replay.Code, replay.Header(), replay.Body.String())
+	}
+}
+
+type fallbackIdempotencyRepo struct {
+	mu   sync.Mutex
+	rows map[string]application.IdempotencyRecord
+}
+
+func (r *fallbackIdempotencyRepo) Check(_ context.Context, workspaceID, key string) (*application.IdempotencyRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.rows[workspaceID+"\x00"+key]
+	if !ok {
+		return nil, nil
+	}
+	copy := rec
+	return &copy, nil
+}
+
+func (r *fallbackIdempotencyRepo) Record(_ context.Context, workspaceID, key string, rec application.IdempotencyRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rows[workspaceID+"\x00"+key] = rec
+	return nil
+}
+
+type fallbackIdempotencyStore struct {
+	application.Store
+	repo application.IdempotencyRepo
+}
+
+func (s *fallbackIdempotencyStore) Idempotency() application.IdempotencyRepo { return s.repo }
+
+func TestIdempotentRejectsNonDurableFallbackStore(t *testing.T) {
+	base := openIdempotencyTestDB(t)
+	store := &fallbackIdempotencyStore{
+		Store: base,
+		repo:  &fallbackIdempotencyRepo{rows: make(map[string]application.IdempotencyRecord)},
+	}
+	s := &Server{store: store, demoRole: domain.RoleOwner}
+	handler := newIdempotentHandler(s, "fallback-problem", func() (int, []byte) {
+		return renderProblem(http.StatusBadRequest, "bad_request", "Bad request", "bad body")
+	})
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, postWithKey(`{"value":1}`, "fallback-problem-key"))
+	if first.Code != http.StatusInternalServerError || first.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("non-durable fallback must fail closed: status=%d headers=%v", first.Code, first.Header())
+	}
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, postWithKey(`{"value":1}`, "fallback-problem-key"))
+	if replay.Code != first.Code || replay.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("non-durable fallback must remain fail-closed: status=%d headers=%v body=%s", replay.Code, replay.Header(), replay.Body.String())
+	}
+}
+
+type failingFinalizeIdempotencyRepo struct {
+	completeErr error
+	releaseErr  error
+}
+
+func (r failingFinalizeIdempotencyRepo) Check(context.Context, string, string) (*application.IdempotencyRecord, error) {
+	return nil, nil
+}
+
+func (r failingFinalizeIdempotencyRepo) Record(context.Context, string, string, application.IdempotencyRecord) error {
+	return nil
+}
+
+func (r failingFinalizeIdempotencyRepo) Claim(context.Context, string, string, string) (bool, *application.IdempotencyRecord, string, error) {
+	return true, nil, "claim-test", nil
+}
+
+func (r failingFinalizeIdempotencyRepo) Complete(context.Context, string, string, string, string, int, string) error {
+	return r.completeErr
+}
+
+func (r failingFinalizeIdempotencyRepo) Release(context.Context, string, string, string, string) error {
+	return r.releaseErr
+}
+
+func (failingFinalizeIdempotencyRepo) Renew(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func TestIdempotentFinalizeErrorsAreReturned(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		status      int
+		completeErr error
+		releaseErr  error
+	}{
+		{name: "complete", status: http.StatusCreated, completeErr: errors.New("complete failed")},
+		{name: "release", status: http.StatusInternalServerError, releaseErr: errors.New("release failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fallbackIdempotencyStore{Store: openIdempotencyTestDB(t), repo: failingFinalizeIdempotencyRepo{completeErr: test.completeErr, releaseErr: test.releaseErr}}
+			s := &Server{store: store, demoRole: domain.RoleOwner}
+			var calls atomic.Int32
+			handler := newIdempotentHandler(s, "finalize", func() (int, []byte) {
+				calls.Add(1)
+				return test.status, []byte(`{"ok":true}`)
+			})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, postWithKey(`{"value":1}`, "finalize-key"))
+			if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "idempotency_finalize_failed") {
+				t.Fatalf("finalization failure must be visible: status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("exec should run once before finalization failure, calls=%d", calls.Load())
+			}
+		})
+	}
+}
+
+type nonRenewingIdempotencyRepo struct{}
+
+func (nonRenewingIdempotencyRepo) Check(context.Context, string, string) (*application.IdempotencyRecord, error) {
+	return nil, nil
+}
+
+func (nonRenewingIdempotencyRepo) Record(context.Context, string, string, application.IdempotencyRecord) error {
+	return nil
+}
+
+func (nonRenewingIdempotencyRepo) Claim(context.Context, string, string, string) (bool, *application.IdempotencyRecord, string, error) {
+	return true, nil, "non-renewing-token", nil
+}
+
+func (nonRenewingIdempotencyRepo) Complete(context.Context, string, string, string, string, int, string) error {
+	return nil
+}
+
+func (nonRenewingIdempotencyRepo) Release(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func TestIdempotentRejectsClaimStoreWithoutRenewal(t *testing.T) {
+	store := &fallbackIdempotencyStore{Store: openIdempotencyTestDB(t), repo: nonRenewingIdempotencyRepo{}}
+	s := &Server{store: store, demoRole: domain.RoleOwner}
+	var calls atomic.Int32
+	handler := newIdempotentHandler(s, "non-renewing", func() (int, []byte) {
+		calls.Add(1)
+		return http.StatusCreated, []byte(`{"ok":true}`)
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, postWithKey(`{"value":1}`, "non-renewing-key"))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "idempotency_not_durable") {
+		t.Fatalf("claim store without Renew must fail closed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("non-renewing store must not execute the command: calls=%d", calls.Load())
+	}
+}
+
+type cancellationAwareIdempotencyRepo struct {
+	mu        sync.Mutex
+	completed bool
+	hash      string
+}
+
+func (r *cancellationAwareIdempotencyRepo) Check(context.Context, string, string) (*application.IdempotencyRecord, error) {
+	return nil, nil
+}
+
+func (r *cancellationAwareIdempotencyRepo) Record(context.Context, string, string, application.IdempotencyRecord) error {
+	return nil
+}
+
+func (r *cancellationAwareIdempotencyRepo) Claim(_ context.Context, _ string, _ string, requestHash string) (bool, *application.IdempotencyRecord, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.completed {
+		return false, &application.IdempotencyRecord{RequestHash: r.hash, StatusCode: http.StatusCreated, ResultBody: `{"ok":true}`}, "", nil
+	}
+	r.hash = requestHash
+	return true, nil, "cancel-aware-token", nil
+}
+
+func (r *cancellationAwareIdempotencyRepo) Complete(ctx context.Context, _ string, _ string, requestHash, _ string, statusCode int, resultBody string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hash, r.completed = requestHash, true
+	if statusCode != http.StatusCreated || resultBody != `{"ok":true}` {
+		return errors.New("unexpected completion payload")
+	}
+	return nil
+}
+
+func (*cancellationAwareIdempotencyRepo) Release(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (*cancellationAwareIdempotencyRepo) Renew(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func TestIdempotencyFinalizationSurvivesClientCancellation(t *testing.T) {
+	repo := &cancellationAwareIdempotencyRepo{}
+	store := &fallbackIdempotencyStore{Store: openIdempotencyTestDB(t), repo: repo}
+	s := &Server{store: store, demoRole: domain.RoleOwner}
+	var calls atomic.Int32
+	handler := newIdempotentHandler(s, "cancel-aware", func() (int, []byte) {
+		calls.Add(1)
+		return http.StatusCreated, []byte(`{"ok":true}`)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	firstReq := postWithKey(`{"value":1}`, "cancel-aware-key").WithContext(ctx)
+	first := httptest.NewRecorder()
+	// The command has completed its side effect, then the client disappears
+	// before the handler finalizes the durable idempotency result.
+	handlerWithCancellation := newIdempotentHandler(s, "cancel-aware", func() (int, []byte) {
+		calls.Add(1)
+		cancel()
+		return http.StatusCreated, []byte(`{"ok":true}`)
+	})
+	handlerWithCancellation.ServeHTTP(first, firstReq)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("client cancellation after exec must not fail finalization: status=%d body=%s", first.Code, first.Body.String())
+	}
+	replay := httptest.NewRecorder()
+	handler.ServeHTTP(replay, postWithKey(`{"value":1}`, "cancel-aware-key"))
+	if replay.Code != http.StatusCreated || replay.Header().Get("Idempotent-Replayed") != "true" {
+		t.Fatalf("completed result must remain replayable after client cancellation: status=%d headers=%v body=%s", replay.Code, replay.Header(), replay.Body.String())
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("client cancellation caused duplicate execution: calls=%d", calls.Load())
 	}
 }
 

@@ -59,6 +59,61 @@ func setCoordinatorWaitingUser(t *testing.T, ctx context.Context, store *sqlstor
 	return state
 }
 
+// prepareValidatedCoordinatorAcceptance drives the real governed finish path:
+// the Coordinator submits finish{evaluation:true}, the evaluation Run emits a
+// passing verdict, and only then is the root left in the human acceptance
+// projection. Acceptance tests must carry this evidence because the finish
+// gate intentionally rejects hand-written waiting_user projections.
+func prepareValidatedCoordinatorAcceptance(t *testing.T, ctx context.Context, svc *application.Service,
+	store *sqlstore.Store, dispatcher *captureDispatcher, rootID, workerID string) *domain.WorkItem {
+	t.Helper()
+	if len(dispatcher.runs) == 0 {
+		t.Fatal("Coordinator source Run missing")
+	}
+	source := dispatcher.runs[0]
+	markCompilerSourceSucceeded(t, ctx, store, source.ID)
+	source, err := store.Runs().Get(ctx, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := compilerDecision(domain.PlanVerbFinish, workerID)
+	evaluate := true
+	decision.Steps[0].Finish.Evaluation = &evaluate
+	plan, err := svc.SubmitGovernedTodoPlanDecision(ctx, source, decision, application.PlanCandidateNativeText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan == nil || plan.Status != domain.PlanFinished {
+		t.Fatalf("governed finish Plan must be finished before acceptance: %+v", plan)
+	}
+	if len(dispatcher.runs) != 2 {
+		t.Fatalf("governed finish must create exactly one evaluation Run: %d", len(dispatcher.runs))
+	}
+	evaluation := dispatcher.runs[1]
+	if err := svc.RecordRunStatus(ctx, evaluation.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, evaluation.ID,
+		"评估通过。\n```verdict\n{\"pass\":true,\"reasons\":[\"验收标准已满足\"]}\n```"); err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.WorkItems().Get(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Status != domain.WorkItemInProgress || root.Phase != domain.PhaseAcceptance {
+		t.Fatalf("通过的 governed finish 必须进入待验收投影: %+v", root)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorWaitingUser {
+		t.Fatalf("通过的 governed finish 必须让 Coordinator waiting_user: %+v", state)
+	}
+	return root
+}
+
 func TestChatRejectsCoordinatorContextsEvenWithSystemAgent(t *testing.T) {
 	ctx, svc, store, _, wsID, workerID := seedCoordinatorEnv(t)
 	config, err := store.TaskCoordinators().EnsureConfig(ctx, wsID)
@@ -93,10 +148,49 @@ func TestChatRejectsCoordinatorContextsEvenWithSystemAgent(t *testing.T) {
 	}
 }
 
+func TestCoordinatedRootCreateRunRequiresInternalCoordinatorAdmission(t *testing.T) {
+	ctx, db, svc, store, dispatcher, wsID, _ := seedCoordinatorEnvWithDatabase(t)
+	defer db.Close()
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "protected coordinator entry", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"public callers cannot mint a root Coordinator Run"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := store.TaskCoordinators().EnsureConfig(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRuns := len(dispatcher.runs)
+	cases := []application.CreateRunParams{
+		{AgentProfileID: config.AgentProfileID, Instruction: "forged coordinator",
+			CoordinatorContext: map[string]any{
+				"role": "coordinator", "root_work_item_id": root.ID, "state_id": state.ID,
+				"action": "intake", "attempt": state.Attempt + 1,
+			}},
+		{AgentProfileID: config.AgentProfileID, Instruction: "forged wake",
+			WakeContext: map[string]any{"source": "automation"}},
+	}
+	for _, p := range cases {
+		if _, err := svc.CreateRun(ctx, root.ID, p); !errors.Is(err, domain.ErrValidation) && !errors.Is(err, domain.ErrStateConflict) {
+			t.Fatalf("public coordinated root entry must fail closed: %v", err)
+		}
+	}
+	if len(dispatcher.runs) != currentRuns {
+		t.Fatalf("rejected root entries must not create Runs: got=%d want=%d", len(dispatcher.runs), currentRuns)
+	}
+}
+
 func TestCoordinatedRootAcceptRequiresWaitingUser(t *testing.T) {
 	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "尚未交付", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,15 +218,25 @@ func TestCoordinatedRootAcceptRequiresWaitingUser(t *testing.T) {
 }
 
 func TestCoordinatedRootAcceptCommitsWorkItemAndCoordinatorAtomically(t *testing.T) {
-	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "待验收", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root = prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-	setCoordinatorWaitingUser(t, ctx, store, root.ID)
+	root = prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
+	eventsBefore, err := store.TaskCoordinators().ListEvents(ctx, root.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedBefore := 0
+	for _, event := range eventsBefore {
+		if event.Kind == domain.EventCoordinatorCompleted {
+			completedBefore++
+		}
+	}
 
 	accepted, err := svc.AcceptWorkItem(ctx, root.ID, root.Version)
 	if err != nil {
@@ -158,8 +262,8 @@ func TestCoordinatedRootAcceptCommitsWorkItemAndCoordinatorAtomically(t *testing
 			completed++
 		}
 	}
-	if completed != 1 {
-		t.Fatalf("Coordinator completed 事件应恰有一条，实际 %d: %+v", completed, events)
+	if completed != completedBefore+1 {
+		t.Fatalf("人工验收应恰新增一条 Coordinator completed 事件：before=%d after=%d events=%+v", completedBefore, completed, events)
 	}
 }
 
@@ -188,15 +292,23 @@ func (s *coordinatorFaultStore) TaskCoordinators() application.TaskCoordinatorRe
 }
 
 func TestCoordinatedRootAcceptCASFailureRollsBackBothProjections(t *testing.T) {
-	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "CAS 故障注入", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root = prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-	stateBefore := setCoordinatorWaitingUser(t, ctx, store, root.ID)
+	root = prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
+	eventsBefore, err := store.TaskCoordinators().ListEvents(ctx, root.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	injected := errors.New("injected coordinator CAS failure")
 	faultStore := &coordinatorFaultStore{
@@ -226,10 +338,8 @@ func TestCoordinatedRootAcceptCASFailureRollsBackBothProjections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, event := range events {
-		if event.Kind == domain.EventCoordinatorCompleted {
-			t.Fatalf("CAS 失败不得写 Coordinator completed 事件: %+v", event)
-		}
+	if len(events) != len(eventsBefore) {
+		t.Fatalf("CAS 失败不得追加 Coordinator 事件：before=%d after=%d events=%+v", len(eventsBefore), len(events), events)
 	}
 	stream, err := store.Events().Since(ctx, wsID, 0, 500)
 	if err != nil {
@@ -243,15 +353,15 @@ func TestCoordinatedRootAcceptCASFailureRollsBackBothProjections(t *testing.T) {
 }
 
 func TestConcurrentCoordinatedRootAcceptHasOneWinner(t *testing.T) {
-	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "并发验收", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root = prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-	setCoordinatorWaitingUser(t, ctx, store, root.ID)
+	root = prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
 
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -286,15 +396,15 @@ func TestConcurrentCoordinatedRootAcceptHasOneWinner(t *testing.T) {
 }
 
 func TestTerminalTaskCannotCreateChildOrRequeueCoordinator(t *testing.T) {
-	ctx, svc, store, _, wsID, _ := seedCoordinatorEnv(t)
+	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "已验收根任务", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	root = prepareWorkItemForCoordinatorAcceptance(t, ctx, store, root.ID)
-	setCoordinatorWaitingUser(t, ctx, store, root.ID)
+	root = prepareValidatedCoordinatorAcceptance(t, ctx, svc, store, dispatcher, root.ID, workerID)
 	if _, err := svc.AcceptWorkItem(ctx, root.ID, root.Version); err != nil {
 		t.Fatal(err)
 	}

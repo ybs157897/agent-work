@@ -5,6 +5,7 @@ package runnergateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -357,6 +358,123 @@ func TestReconnectRestoresActiveLeaseAndLeavesNewEpochOnline(t *testing.T) {
 	}
 }
 
+// Gateway 终态释放 activeRuns 后，合法的迟到 usage.updated 仍须到达
+// Application；lease/run/runner/fencing/terminal 的最终裁决不在 Gateway 重复。
+func TestTerminalUsageEventReachesEngineAfterGatewayRelease(t *testing.T) {
+	engine := newFakeEngine()
+	g, rc := newEventGateway(t, engine)
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_terminal", 1,
+		"run.status_changed", map[string]any{"status": "succeeded"}))
+	readAck(t, rc)
+	rc.mu.Lock()
+	_, active := rc.activeRuns["run_1"]
+	rc.mu.Unlock()
+	if active {
+		t.Fatal("终态 status ACK 后 Gateway 必须清理 activeRuns")
+	}
+
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_late_usage", 2,
+		domain.EventUsageUpdated, map[string]any{
+			"input_tokens": 3, "output_tokens": 2, "cached_tokens": 0, "basis": "per_run",
+		}))
+	ack := readAck(t, rc)
+	if len(engine.inputs) != 2 || engine.inputs[1].Kind != domain.EventUsageUpdated {
+		t.Fatalf("终态后迟到 usage.updated 应到达 Application: inputs=%+v", engine.inputs)
+	}
+	if ack.EventID != "revt_late_usage" || ack.AckedProducerSeq != 2 || ack.LeaseID != "lease_1" {
+		t.Fatalf("迟到 usage ACK 身份错误: %+v", ack)
+	}
+}
+
+// 终态后例外仍绑定当前连接身份；错误 Runner/epoch 不得进入 Application。
+func TestTerminalUsageWrongConnectionIdentityRemainsStale(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		runner string
+		epoch  string
+	}{
+		{name: "runner", runner: "runner_other", epoch: "epoch_1"},
+		{name: "epoch", runner: "runner_1", epoch: "epoch_old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := newFakeEngine()
+			g, rc := newEventGateway(t, engine)
+			g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_terminal_"+tc.name, 1,
+				"run.status_changed", map[string]any{"status": "succeeded"}))
+			readAck(t, rc)
+
+			payload, _ := json.Marshal(eventPayload{
+				RunID: "run_1", LeaseID: "lease_1", RunnerID: tc.runner, ConnectionEpoch: tc.epoch,
+				FencingToken: 7, EventID: "revt_wrong_" + tc.name, ProducerSeq: 2,
+				Event: runnerEvent{Kind: domain.EventUsageUpdated, Data: map[string]any{
+					"input_tokens": 3, "output_tokens": 2, "cached_tokens": 0, "basis": "per_run",
+				}},
+			})
+			g.handleMessage(rc, Envelope{
+				V: ProtocolVersion, MessageID: "msg_wrong_" + tc.name, Kind: "event", Method: "run.event",
+				RunnerID: "runner_1", RunID: "run_1", Payload: payload,
+			})
+			if len(engine.inputs) != 1 {
+				t.Fatalf("错误 %s 身份的迟到 usage 不得进入 Application: %+v", tc.name, engine.inputs)
+			}
+			ack := readAck(t, rc)
+			if ack.EventID != "revt_wrong_"+tc.name || ack.AckedProducerSeq != 2 {
+				t.Fatalf("错误身份 stale ACK 失真: %+v", ack)
+			}
+		})
+	}
+}
+
+// activeRuns 已清理时，终态观测例外只覆盖 usage.updated；status/session/message
+// 等其他事件仍必须由 Gateway 直接 stale ACK。
+func TestTerminalNonUsageEventRemainsStale(t *testing.T) {
+	for _, kind := range []string{"run.status_changed", "run.session", domain.EventMessageDelta} {
+		t.Run(kind, func(t *testing.T) {
+			engine := newFakeEngine()
+			g, rc := newEventGateway(t, engine)
+			g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_terminal_"+kind, 1,
+				"run.status_changed", map[string]any{"status": "succeeded"}))
+			readAck(t, rc)
+
+			data := map[string]any{}
+			if kind == "run.status_changed" {
+				data["status"] = "running"
+			}
+			g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_nonusage_"+kind, 2, kind, data))
+			if len(engine.inputs) != 1 {
+				t.Fatalf("非 usage %s 不得进入 Application: %+v", kind, engine.inputs)
+			}
+			ack := readAck(t, rc)
+			if ack.EventID != "revt_nonusage_"+kind || ack.AckedProducerSeq != 2 {
+				t.Fatalf("非 usage stale ACK 失真: %+v", ack)
+			}
+		})
+	}
+}
+
+// 迟到 usage 重放仍由 Application dedup；Gateway 对 duplicate ACK，不重复应用。
+func TestTerminalUsageDuplicateStillAcks(t *testing.T) {
+	engine := newFakeEngine()
+	g, rc := newEventGateway(t, engine)
+	g.handleMessage(rc, eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_terminal_dup", 1,
+		"run.status_changed", map[string]any{"status": "succeeded"}))
+	readAck(t, rc)
+	usage := eventEnvelope("run_1", "lease_1", "epoch_1", 7, "revt_usage_dup", 2,
+		domain.EventUsageUpdated, map[string]any{"input_tokens": 3, "output_tokens": 2, "cached_tokens": 0, "basis": "per_run"})
+	g.handleMessage(rc, usage)
+	g.handleMessage(rc, usage)
+	first := readAck(t, rc)
+	second := readAck(t, rc)
+	if len(engine.inputs) != 3 || engine.applied != 2 {
+		t.Fatalf("迟到 usage 重放应两次进 Application 但只应用一次: inputs=%d applied=%d", len(engine.inputs), engine.applied)
+	}
+	if first.EventID != "revt_usage_dup" || second.EventID != "revt_usage_dup" ||
+		first.AckedProducerSeq != 2 || second.AckedProducerSeq != 2 {
+		t.Fatalf("duplicate ACK 应回显同一事件身份: first=%+v second=%+v", first, second)
+	}
+}
+
 // Enrollment credential rotation must revoke the old connection before a new
 // offer can create a lease or reach the remote Host.
 func TestCredentialRotationRevokesCurrentConnectionBeforeDispatch(t *testing.T) {
@@ -371,7 +489,7 @@ func TestCredentialRotationRevokesCurrentConnectionBeforeDispatch(t *testing.T) 
 	store.hosts.hosts[testHostID].EnrollmentRef = enrollmentDigest("rotated_secret")
 	store.hosts.mu.Unlock()
 
-	err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_revoked"}, rootSnapshotFor(testHostID), "mock")
+	err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_revoked", AgentProfileID: "agent_revoked"}, rootSnapshotFor(testHostID), "mock")
 	if err == nil {
 		t.Fatal("credential 已轮换的连接不得继续 dispatch")
 	}
@@ -522,7 +640,7 @@ func TestRestartRecoveryQueuesWelcomeBeforeRetryOffer(t *testing.T) {
 	g := New(store, engine, nil)
 	engine.onStatus = func(_ string, to domain.RunStatus) {
 		if to == domain.RunLost {
-			if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_retry", Input: map[string]any{}}, rootSnapshotFor(testHostID), "mock"); err != nil {
+			if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_retry", AgentProfileID: "agent_retry", Input: map[string]any{}}, rootSnapshotFor(testHostID), "mock"); err != nil {
 				t.Errorf("restart recovery retry dispatch: %v", err)
 			}
 		}
@@ -683,7 +801,7 @@ func readOffer(t *testing.T, rc *runnerConn) offerPayload {
 // 两 Host 同 adapter：快照绑定哪个 Host 就只投哪个 Host 的 runner。
 func TestDispatchRoutesToExactHost(t *testing.T) {
 	g, rcA, rcB := newDispatchGateway(t)
-	run := &domain.ExecutionRun{ID: "run_1", Input: map[string]any{"instruction": "hi"}}
+	run := &domain.ExecutionRun{ID: "run_1", AgentProfileID: "agent_dispatch", Input: map[string]any{"instruction": "hi"}}
 
 	if err := g.Dispatch(context.Background(), run, rootSnapshotFor("host_b"), "mock"); err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -697,6 +815,11 @@ func TestDispatchRoutesToExactHost(t *testing.T) {
 	p := readOffer(t, rcB)
 	if p.RunSpec.RunID != "run_1" || p.RunSpec.AdapterID != "mock" {
 		t.Fatalf("offer 内容错误: %+v", p.RunSpec)
+	}
+	// agent_profile_id 随 run_spec 下发：远程 adapter 绑定 provider usage
+	// report provenance.agent_id 的身份来源（缺失则 report 造不出来）。
+	if p.RunSpec.AgentProfileID != "agent_dispatch" {
+		t.Fatalf("run_spec.agent_profile_id 丢失: %+v", p.RunSpec)
 	}
 	// offer 携带完整 context_snapshot 且不含宿主路径字段。
 	ws := p.RunSpec.ContextSnapshot
@@ -714,7 +837,7 @@ func TestDispatchNoMatchDoesNotFallback(t *testing.T) {
 	g, _, _ := newDispatchGateway(t)
 	store := g.store.(*fakeStore)
 
-	err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x"}, rootSnapshotFor("host_nobody"), "mock")
+	err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x", AgentProfileID: "agent_dispatch"}, rootSnapshotFor("host_nobody"), "mock")
 	if err == nil {
 		t.Fatal("无匹配 host 必须报错")
 	}
@@ -726,10 +849,24 @@ func TestDispatchNoMatchDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestDispatchRequiresRunAndAgentIdentity(t *testing.T) {
+	g, _, _ := newDispatchGateway(t)
+	snapshot := rootSnapshotFor("host_a")
+	for _, run := range []*domain.ExecutionRun{
+		nil,
+		{ID: "run_missing_agent"},
+		{AgentProfileID: "agent_dispatch"},
+	} {
+		if err := g.Dispatch(context.Background(), run, snapshot, "mock"); !errors.Is(err, domain.ErrValidation) {
+			t.Fatalf("missing Run/agent identity must fail closed: run=%+v err=%v", run, err)
+		}
+	}
+}
+
 // adapter 不匹配同样不回退。
 func TestDispatchAdapterMismatchDoesNotFallback(t *testing.T) {
 	g, _, _ := newDispatchGateway(t)
-	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x"}, rootSnapshotFor("host_a"), "codex-appserver"); err == nil {
+	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x", AgentProfileID: "agent_dispatch"}, rootSnapshotFor("host_a"), "codex-appserver"); err == nil {
 		t.Fatal("无 runner 广告该 adapter 必须报错")
 	}
 }
@@ -742,7 +879,7 @@ func TestDispatchRespectsCapacity(t *testing.T) {
 	rcA.activeRuns["run_full"] = &activeRun{LeaseID: "lease_0", FencingToken: 1}
 	rcA.mu.Unlock()
 
-	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_new"}, rootSnapshotFor("host_a"), "mock"); err == nil {
+	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_new", AgentProfileID: "agent_dispatch"}, rootSnapshotFor("host_a"), "mock"); err == nil {
 		t.Fatal("容量满必须报错")
 	}
 	select {
@@ -766,7 +903,7 @@ func TestDispatchOfferEnqueueFailureReleasesLeaseAndDropsDeadConnection(t *testi
 				}
 			}
 
-			err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_enqueue_" + mode}, rootSnapshotFor("host_a"), "mock")
+			err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_enqueue_" + mode, AgentProfileID: "agent_dispatch"}, rootSnapshotFor("host_a"), "mock")
 			if err == nil {
 				t.Fatal("offer enqueue 失败必须返回错误")
 			}
@@ -793,7 +930,7 @@ func TestDispatchOfferEnqueueFailureReleasesLeaseAndDropsDeadConnection(t *testi
 // snapshot 缺失：拒绝分派。
 func TestDispatchRequiresSnapshot(t *testing.T) {
 	g, _, _ := newDispatchGateway(t)
-	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x"}, nil, "mock"); err == nil {
+	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_x", AgentProfileID: "agent_dispatch"}, nil, "mock"); err == nil {
 		t.Fatal("无 snapshot 不得分派")
 	}
 }
@@ -801,7 +938,7 @@ func TestDispatchRequiresSnapshot(t *testing.T) {
 // Dispatch 落内存 activeRuns：run.command 的 v2 framing 从这里来。
 func TestForwardControlCarriesLeaseFraming(t *testing.T) {
 	g, rcA, _ := newDispatchGateway(t)
-	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_1"}, rootSnapshotFor("host_a"), "mock"); err != nil {
+	if err := g.Dispatch(context.Background(), &domain.ExecutionRun{ID: "run_1", AgentProfileID: "agent_dispatch"}, rootSnapshotFor("host_a"), "mock"); err != nil {
 		t.Fatal(err)
 	}
 	readOffer(t, rcA) // 清掉 offer 帧

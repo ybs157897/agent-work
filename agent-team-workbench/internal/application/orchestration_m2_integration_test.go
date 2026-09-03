@@ -63,8 +63,8 @@ func startRun(t *testing.T, ctx context.Context, svc *application.Service, run *
 	return run
 }
 
-// TestExtractPlanFromLeadRun 验收 1：role=lead 的 run succeeded 且最终文本含
-// ```plan 围栏块 → 子任务+run 落库、plan.source_run_id=该 run；同 run 二次
+// TestExtractPlanFromLeadRun 验收 1：role=lead 的 run succeeded 且最终文本是
+// raw PlanDecisionV2 → 子任务+run 落库、plan.source_run_id=该 run；同 run 二次
 // 终态事件不重复提取（终态不可逆 + source_run_id 唯一索引双兜底）。
 func TestExtractPlanFromLeadRun(t *testing.T) {
 	ctx := context.Background()
@@ -84,9 +84,7 @@ func TestExtractPlanFromLeadRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	startRun(t, ctx, svc, run)
-	text := "我来规划，先派一个子任务。\n```plan\n" +
-		`[{"verb":"dispatch","agent_id":"` + workerID + `","title":"子任务A","instruction":"实现 A","acceptance":["完成"]}]` +
-		"\n```"
+	text := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"dispatch a child","next_action":"wait for the child","steps":[{"verb":"dispatch","agent_id":"` + workerID + `","title":"子任务A","instruction":"实现 A","acceptance":["完成"]},{"verb":"join","children":"all"}]}`
 	if err := finishRun(ctx, svc, run.ID, text); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +110,9 @@ func TestExtractPlanFromLeadRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Steps) != 1 || stored.Steps[0].ResultRunID == "" || stored.Steps[0].ResultWorkItemID != children[0].ID {
+	if len(stored.Steps) != 2 || stored.Steps[0].Verb != domain.PlanVerbDispatch ||
+		stored.Steps[0].ResultRunID == "" || stored.Steps[0].ResultWorkItemID != children[0].ID ||
+		stored.Steps[1].Verb != domain.PlanVerbJoin || stored.Steps[1].Status != domain.PlanStepExecuted {
 		t.Fatalf("plan_steps 审计行异常: %#v", stored.Steps)
 	}
 	if _, err := store.Runs().Get(ctx, stored.Steps[0].ResultRunID); err != nil {
@@ -147,7 +147,7 @@ func TestExtractPlanInvalidJSONBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	startRun(t, ctx, svc, run)
-	if err := finishRun(ctx, svc, run.ID, "坏计划。\n```plan\n{\"steps\": 不是JSON\n```"); err != nil {
+	if err := finishRun(ctx, svc, run.ID, `{"schema_version":"plan-decision/v2","kind":"plan","reason":`); err != nil {
 		t.Fatal(err)
 	}
 	wi, err := store.WorkItems().Get(ctx, main.ID)
@@ -200,7 +200,7 @@ func TestExtractPlanIgnoresNonLead(t *testing.T) {
 		t.Fatal(err)
 	}
 	startRun(t, ctx, svc, run)
-	text := "```plan\n" + `[{"verb":"finish","summary":"x"}]` + "\n```"
+	text := `{"schema_version":"plan-decision/v2","kind":"plan","reason":"legacy summary","next_action":"wait","steps":[{"verb":"finish","summary":"x"}]}`
 	if err := finishRun(ctx, svc, run.ID, text); err != nil {
 		t.Fatal(err)
 	}

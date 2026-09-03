@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -272,10 +273,15 @@ func isApprovalMethod(method string) bool {
 
 // tokenUsageEvent 用量通知中构成本轮增量的 last 快照（input/cached/output 三计数）。
 type tokenUsageEvent struct {
-	TurnID string
-	Input  int64
-	Cached int64
-	Output int64
+	TurnID          string
+	Input           int64
+	InputKnown      bool
+	Cached          int64
+	CachedKnown     bool
+	CacheWrite      int64
+	CacheWriteKnown bool
+	Output          int64
+	OutputKnown     bool
 }
 
 // parseTokenUsageEvent 容错解析 token 用量通知 params：app-server v2 权威形状为
@@ -298,9 +304,11 @@ func parseTokenUsageEvent(raw json.RawMessage) (tokenUsageEvent, bool) {
 	if last == nil {
 		return ev, false
 	}
-	ev.Input = firstInt(last, "inputTokens", "input_tokens")
-	ev.Cached = firstInt(last, "cachedInputTokens", "cached_input_tokens")
-	ev.Output = firstInt(last, "outputTokens", "output_tokens")
+	ev.Input, ev.InputKnown = firstIntValue(last, "inputTokens", "input_tokens")
+	ev.Cached, ev.CachedKnown = firstIntValue(last, "cachedInputTokens", "cached_input_tokens")
+	ev.CacheWrite, ev.CacheWriteKnown = firstIntValue(last,
+		"cacheWriteInputTokens", "cache_write_input_tokens", "cacheWriteTokens", "cache_write_tokens")
+	ev.Output, ev.OutputKnown = firstIntValue(last, "outputTokens", "output_tokens")
 	return ev, true
 }
 
@@ -363,16 +371,27 @@ func firstMap(m map[string]any, keys ...string) map[string]any {
 	return nil
 }
 
-func firstInt(m map[string]any, keys ...string) int64 {
+func firstIntValue(m map[string]any, keys ...string) (int64, bool) {
 	for _, k := range keys {
-		switch v := m[k].(type) {
+		v, ok := m[k]
+		if !ok || v == nil {
+			continue
+		}
+		switch v := v.(type) {
 		case float64:
-			return int64(v)
+			if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v ||
+				v < 0 || v > float64(math.MaxInt64) {
+				return 0, false
+			}
+			return int64(v), true
 		case int64:
-			return v
+			if v < 0 {
+				return 0, false
+			}
+			return v, true
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // ── JSONL 帧（Codex 省略 jsonrpc 字段；响应/请求/通知统一解析）────────

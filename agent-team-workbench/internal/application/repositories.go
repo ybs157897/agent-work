@@ -16,6 +16,7 @@ type Store interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error) error
 	Workspaces() WorkspaceRepo
 	Agents() AgentRepo
+	AgentConfigSyncIntents() AgentConfigSyncIntentRepo
 	WorkItems() WorkItemRepo
 	Plans() PlanRepo
 	Runs() RunRepo
@@ -38,6 +39,26 @@ type Store interface {
 	Wakeups() scheduling.Store
 	// TaskCoordinators 持久化系统级 Task Coordinator 配置、根任务控制线与追加事件。
 	TaskCoordinators() TaskCoordinatorRepo
+	// Goals 持久化跨 bounded turn 的长期治理意图（不拥有 Run/Lease）。
+	Goals() GoalRepo
+	// Todos 持久化 Goal 的 bounded intent 与治理 claim（不拥有 Run/Lease）。
+	Todos() TodoRepo
+	// TurnReceipts 持久化 admission header 与 append-only settlement phases。
+	TurnReceipts() TurnReceiptRepo
+	// Quotas 持久化 admitted Turn 的冻结预算与 per-Run spend ledger。
+	Quotas() QuotaRepo
+	// Handoffs 持久化 Goal/Todo 治理所有权交接记录；不拥有 Runner lease。
+	Handoffs() HandoffRepo
+	// GovernanceProjections 持久化可重建 Goal read model 与 repair checkpoint。
+	GovernanceProjections() GovernanceProjectionRepo
+	// ValidationResults 持久化由控制面/runtime 证明的 validation result；不接受模型文本冒充。
+	ValidationResults() ValidationResultRepo
+	// DeliveryBriefSnapshots 持久化确定性 Delivery Brief 的 immutable evidence
+	// capture；它不拥有任何 Goal/Todo/WorkItem 状态。
+	DeliveryBriefSnapshots() DeliveryBriefSnapshotRepo
+	// QuotaGapResolutions 持久化对既有 unresolved spend 的 immutable 人工对账
+	// 裁决；不修改原 spend/canonical usage/reservation。
+	QuotaGapResolutions() QuotaGapResolutionRepo
 	// ── Execution Context（任务控制面 RFC §4；接口由主智能体冻结，W2-CORE 实现）──
 	ExecutionHosts() ExecutionHostRepo
 	WorkspaceLocations() WorkspaceLocationRepo
@@ -133,6 +154,167 @@ type AgentRepo interface {
 	ListHeartbeatEnabled(ctx context.Context) ([]*domain.AgentProfile, error)
 }
 
+// AgentConfigSyncIntentRepo is the durable bridge between an Agent CAS/event
+// transaction and external configuration files. The target is immutable for
+// one intent; only recovery metadata and the terminal applied state may move.
+// Implementations must reuse the transaction carried by ctx.
+type AgentConfigSyncIntentRepo interface {
+	// Create records one pending target. A partial unique index guarantees at
+	// most one non-applied intent per Agent.
+	Create(ctx context.Context, intent *domain.AgentConfigSyncIntent) error
+	Get(ctx context.Context, id string) (*domain.AgentConfigSyncIntent, error)
+	GetActiveByAgent(ctx context.Context, agentID string) (*domain.AgentConfigSyncIntent, error)
+	ListActive(ctx context.Context) ([]*domain.AgentConfigSyncIntent, error)
+	// MarkFailed retains the intent and records a retryable external failure.
+	MarkFailed(ctx context.Context, id string, expectedVersion int, message string) error
+	// MarkConflict retains the intent but prevents automatic application after
+	// target/current-agent identity drift.
+	MarkConflict(ctx context.Context, id string, expectedVersion int, message string) error
+	// MarkApplied seals a successful full external bundle.
+	MarkApplied(ctx context.Context, id string, expectedVersion int, appliedAt time.Time) error
+}
+
+// GoalRepo persists the long-running governance intent above the existing
+// WorkItem/Plan/Run execution plane. RootWorkItemID is unique and belongs to
+// the same workspace; GetByRootWorkItem supports idempotent Goal creation.
+type GoalRepo interface {
+	Create(ctx context.Context, goal *domain.Goal) error
+	Get(ctx context.Context, id string) (*domain.Goal, error)
+	GetByRootWorkItem(ctx context.Context, rootWorkItemID string) (*domain.Goal, error)
+	List(ctx context.Context, workspaceID string) ([]*domain.Goal, error)
+	Update(ctx context.Context, goal *domain.Goal, expectedVersion int) error
+}
+
+// TodoRepo persists bounded governance intent. Claim/Release are the only
+// ownership write points; they CAS the Todo version and retain a monotonic
+// claim generation across release/reclaim (separate from Runner leases).
+type TodoRepo interface {
+	Create(ctx context.Context, todo *domain.Todo) error
+	Get(ctx context.Context, id string) (*domain.Todo, error)
+	ListByGoal(ctx context.Context, goalID string) ([]*domain.Todo, error)
+	Update(ctx context.Context, todo *domain.Todo, expectedVersion int) error
+	Claim(ctx context.Context, todoID, ownerAgentID string, claimedAt, expiresAt time.Time, expectedVersion int) (*domain.Todo, error)
+	// TransferClaim atomically replaces one active governance owner with another;
+	// it never touches a Runner lease and advances claim_version to fence ABA.
+	TransferClaim(ctx context.Context, todoID, sourceAgentID, targetAgentID string, claimedAt, expiresAt time.Time, expectedVersion, sourceClaimVersion int) (*domain.Todo, error)
+	// RenewClaim extends the current owner's expiry without advancing
+	// claim_version; an owner/generation mismatch is a hard conflict.
+	RenewClaim(ctx context.Context, todoID, ownerAgentID string, claimVersion int, renewedAt, expiresAt time.Time, expectedVersion int) (*domain.Todo, error)
+	// ResumeAdmitted resumes one already-allocated receipt turn after Goal
+	// pause/resume. It never increments last_turn_seq or creates a Header.
+	ResumeAdmitted(ctx context.Context, todoID, ownerAgentID string, turnSeq int64, resumedAt time.Time, expectedVersion int) (*domain.Todo, error)
+	// Complete closes the current Todo only with an already-admitted TurnKey and
+	// accepted evidence identity; replaying the exact identity is idempotent.
+	Complete(ctx context.Context, todoID string, key domain.TurnKey, evidenceID string, completedAt time.Time, expectedVersion int) (*domain.Todo, error)
+	Release(ctx context.Context, todoID, ownerAgentID string, releasedAt time.Time, expectedVersion int) (*domain.Todo, error)
+	Cancel(ctx context.Context, todoID string, cancelledAt time.Time, expectedVersion int) (*domain.Todo, error)
+}
+
+// TurnReceiptRepo is the canonical bounded-turn persistence port. Admit
+// allocates the next Todo turn sequence and must atomically update Todo plus
+// insert the immutable Header. AppendPhase is append-only and idempotent by
+// (turn key, phase sequence, digest).
+type TurnReceiptRepo interface {
+	Admit(ctx context.Context, header *domain.TurnReceiptHeader, ownerAgentID string, expectedTodoVersion int) (*domain.TurnReceiptHeader, error)
+	GetHeaderByClientKey(ctx context.Context, goalID, todoID, clientKey string) (*domain.TurnReceiptHeader, error)
+	GetHeaderBySourceRun(ctx context.Context, sourceRunID string) (*domain.TurnReceiptHeader, error)
+	GetHeader(ctx context.Context, key domain.TurnKey) (*domain.TurnReceiptHeader, error)
+	// ListHeadersByGoal enumerates canonical turn identities for projection replay.
+	ListHeadersByGoal(ctx context.Context, goalID string) ([]*domain.TurnReceiptHeader, error)
+	GetPhase(ctx context.Context, key domain.TurnKey, phaseSeq int) (*domain.TurnReceiptPhase, error)
+	ListPhases(ctx context.Context, key domain.TurnKey) ([]*domain.TurnReceiptPhase, error)
+	AppendPhase(ctx context.Context, phase *domain.TurnReceiptPhase) (*domain.TurnReceiptPhase, error)
+}
+
+// QuotaRepo persists the quota admission/settlement ledger.  Reservations are
+// keyed by an admitted Turn plus QuotaKind; spend entries are keyed by that
+// identity plus RunID and are append-only.  All methods reuse the transaction
+// carried by ctx, so callers can atomically reserve with Plan/Run creation.
+type QuotaRepo interface {
+	Get(ctx context.Context, key domain.QuotaReservationKey) (*domain.QuotaReservation, error)
+	ListByGoal(ctx context.Context, goalID string) ([]*domain.QuotaReservation, error)
+	// Reserve returns created=false for an exact replay of the frozen
+	// reservation intent.  A different policy/price/amount for the same key is
+	// ErrIdempotencyConflict.
+	Reserve(ctx context.Context, reservation *domain.QuotaReservation) (created bool, err error)
+	// Commit/Release/Expire expect the candidate's next version and status;
+	// identity, requested amount, policy and price remain immutable.
+	Commit(ctx context.Context, reservation *domain.QuotaReservation, expectedVersion int) error
+	Release(ctx context.Context, reservation *domain.QuotaReservation, expectedVersion int) error
+	Expire(ctx context.Context, reservation *domain.QuotaReservation, expectedVersion int) error
+	GetSpend(ctx context.Context, key domain.QuotaSpendKey) (*domain.QuotaSpendEntry, error)
+	// AppendSpend returns created=false for an exact semantic replay and
+	// ErrIdempotencyConflict when an append-only identity is reused differently.
+	AppendSpend(ctx context.Context, entry *domain.QuotaSpendEntry) (created bool, err error)
+	// ListSpendByTurn returns every spend entry of one governance Turn ordered by
+	// (quota_kind, run_id) so settlement can compute per-kind committed totals and
+	// deterministic receipt payloads.
+	ListSpendByTurn(ctx context.Context, key domain.TurnKey) ([]*domain.QuotaSpendEntry, error)
+	ListUnresolved(ctx context.Context, goalID string, kinds ...domain.QuotaKind) ([]*domain.QuotaSpendEntry, error)
+	SumCommitted(ctx context.Context, goalID string, kinds ...domain.QuotaKind) (int64, error)
+	// SumActiveReserved returns the total reserved_amount of one kind still in
+	// reserved status for the Goal: budget frozen by in-flight Turns. Admission
+	// preflight adds it to committed spend so concurrent Turns cannot oversubscribe.
+	SumActiveReserved(ctx context.Context, goalID string, kind domain.QuotaKind) (int64, error)
+	ActiveWorkerCount(ctx context.Context, goalID string) (int, error)
+}
+
+// HandoffRepo persists one immutable-identity governance handoff and its CAS
+// state. Claim transfer remains an application transaction because TodoRepo is
+// the sole ownership write point.
+type HandoffRepo interface {
+	Create(ctx context.Context, handoff *domain.Handoff) error
+	Get(ctx context.Context, id string) (*domain.Handoff, error)
+	GetByClientKey(ctx context.Context, goalID, todoID, clientKey string) (*domain.Handoff, error)
+	ListByTodo(ctx context.Context, todoID string) ([]*domain.Handoff, error)
+	ListByGoal(ctx context.Context, goalID string) ([]*domain.Handoff, error)
+	Update(ctx context.Context, handoff *domain.Handoff, expectedVersion int) error
+}
+
+// GovernanceProjectionRepo stores only derived read models and repair records;
+// it must never expose a write that mutates Goal/Todo/Receipt/Run authority.
+type GovernanceProjectionRepo interface {
+	Get(ctx context.Context, goalID string) (*domain.GovernanceGoalProjection, error)
+	Upsert(ctx context.Context, projection *domain.GovernanceGoalProjection) error
+	CreateRepair(ctx context.Context, repair *domain.ProjectionRepair) error
+	GetRepair(ctx context.Context, id string) (*domain.ProjectionRepair, error)
+	GetRepairByClientKey(ctx context.Context, goalID, clientKey string) (*domain.ProjectionRepair, error)
+	ListRepairsByGoal(ctx context.Context, goalID string) ([]*domain.ProjectionRepair, error)
+	UpdateRepair(ctx context.Context, repair *domain.ProjectionRepair, expectedVersion int) error
+}
+
+// ValidationResultRepo is the canonical source behind
+// EvidenceSourceValidationResult. It intentionally has no generic update or
+// delete operation: a changed validation is a new result identity.
+type ValidationResultRepo interface {
+	Create(ctx context.Context, result *domain.ValidationResult) error
+	Get(ctx context.Context, id string) (*domain.ValidationResult, error)
+	GetBySourceRun(ctx context.Context, runID string) (*domain.ValidationResult, error)
+	ListByGoal(ctx context.Context, goalID string) ([]*domain.ValidationResult, error)
+}
+
+// DeliveryBriefSnapshotRepo stores sealed deterministic Delivery Brief
+// captures. There is no Update/Delete operation: append-only and identity /
+// content immutability are enforced by the SQLite schema as well as domain
+// validation. client_key replay is scoped to (Goal, Todo).
+type DeliveryBriefSnapshotRepo interface {
+	Create(ctx context.Context, snapshot *domain.DeliveryBriefSnapshot) error
+	Get(ctx context.Context, id string) (*domain.DeliveryBriefSnapshot, error)
+	GetByClientKey(ctx context.Context, goalID, todoID, clientKey string) (*domain.DeliveryBriefSnapshot, error)
+}
+
+// QuotaGapResolutionRepo stores one immutable reconciled adjustment per
+// unresolved spend identity. The original quota spend remains append-only and
+// unresolved for audit; this repo only records the separately adjudicated
+// additive amount.
+type QuotaGapResolutionRepo interface {
+	Create(ctx context.Context, resolution *domain.QuotaGapResolution) (bool, error)
+	Get(ctx context.Context, id string) (*domain.QuotaGapResolution, error)
+	GetByTarget(ctx context.Context, key domain.QuotaSpendKey) (*domain.QuotaGapResolution, error)
+	GetByClientKey(ctx context.Context, goalID, todoID, clientKey string) (*domain.QuotaGapResolution, error)
+	ListByGoal(ctx context.Context, goalID string) ([]*domain.QuotaGapResolution, error)
+}
+
 // TaskCoordinatorRepo is the persistence port for the system Task Coordinator.
 // A workspace has one protected config/profile; a root Task has one state and
 // children resolve that state through GetStateForWorkItem. State updates use
@@ -210,6 +392,13 @@ type WorkItemRepo interface {
 type PlanRepo interface {
 	Create(ctx context.Context, p *domain.Plan) error
 	Get(ctx context.Context, id string) (*domain.Plan, error)
+	// GetByClientKey 按 (workspace, client_key) 查回治理编译产生的既有 Plan；
+	// 不存在时返回 (nil, nil)，供同一治理 turn 的幂等重放使用。
+	GetByClientKey(ctx context.Context, workspaceID, clientKey string) (*domain.Plan, error)
+	// GetBySourceRun resolves the immutable Planner decision identity. A
+	// terminal-hook replay must observe the existing Plan before active/waiting
+	// supersession logic can reinterpret the same source Run.
+	GetBySourceRun(ctx context.Context, sourceRunID string) (*domain.Plan, error)
 	Update(ctx context.Context, p *domain.Plan, expectedVersion int) error
 	UpdateStep(ctx context.Context, st *domain.PlanStep) error
 	// ActiveByWorkItem 返回 active/waiting plan（至多一个；无则 nil）。
@@ -231,14 +420,25 @@ type RunRepo interface {
 	ListByWorkItem(ctx context.Context, workItemID string) ([]*domain.ExecutionRun, error)
 	// ListByDispatch 按创建时间升序返回派发批次的成员 run（会话组查询键）。
 	ListByDispatch(ctx context.Context, dispatchID string) ([]*domain.ExecutionRun, error)
+	// ListByGovernanceTurn 按 input.governance 的 (goal_id,todo_id,turn_seq) 三元组
+	// 返回该治理 Turn 的受管 Run（含 plan 派发、evaluation、retry/heal 克隆），
+	// 按 created_at 升序。workspaceID 参与过滤以防跨工作区串账；Coordinator source
+	// Run 不携带 governance 身份，不在本查询结果内（由 receipt phase1 引用）。
+	ListByGovernanceTurn(ctx context.Context, workspaceID, goalID, todoID string, turnSeq int64) ([]*domain.ExecutionRun, error)
 	ActiveByAgent(ctx context.Context, agentProfileID string) ([]*domain.ExecutionRun, error)
 	// LeaselessActive 无任何 lease 行且非终态的 run（进程内执行孤儿，启动对账用）。
 	LeaselessActive(ctx context.Context) ([]*domain.ExecutionRun, error)
 	CreateApproval(ctx context.Context, a *domain.ApprovalRequest) error
 	GetApproval(ctx context.Context, id string) (*domain.ApprovalRequest, error)
 	ListApprovals(ctx context.Context, runID string) ([]*domain.ApprovalRequest, error)
+	// ListPendingPlanDispatchApprovals returns unbound manual dispatch gates for
+	// one work item. Plan dispatch approvals have no run_id, so the run-scoped
+	// ListApprovals query cannot discover them for supersede cleanup.
+	ListPendingPlanDispatchApprovals(ctx context.Context, workItemID string) ([]*domain.ApprovalRequest, error)
 	UpdateApproval(ctx context.Context, a *domain.ApprovalRequest) error
 	CreateArtifact(ctx context.Context, art *domain.Artifact) error
+	GetArtifact(ctx context.Context, artifactID string) (*domain.Artifact, error)
+	UpdateArtifactStatus(ctx context.Context, artifactID string, status domain.ArtifactStatus) error
 	ListArtifacts(ctx context.Context, runID string) ([]*domain.Artifact, error)
 	ActiveCount(ctx context.Context, workspaceID string) (int, error)
 }
@@ -364,6 +564,9 @@ type RunnerRepo interface {
 	// CreateLease 分配递增 fencing_token；旧连接恢复不能继续写入。
 	CreateLease(ctx context.Context, l *RunLease) error
 	ActiveLease(ctx context.Context, runID string) (*RunLease, error)
+	// GetLease 按 lease_id 读租约（含已释放）：终态后补发的 usage 事件用它做
+	// 「该 Run 已释放租约」的身份比对，而不是被活动租约检查一律打成 stale。
+	GetLease(ctx context.Context, leaseID string) (*RunLease, error)
 	ReleaseLease(ctx context.Context, leaseID string, at time.Time) error
 	// ReleaseActiveLeasesByRunner 在 runner boot_id 变化时撤销该旧进程持有的
 	// 全部 active lease，并返回受影响 Run；不能只释放最高 fence 留低 fence 续租。
@@ -423,12 +626,18 @@ type TaskSessionRepo interface {
 	// still the claimed owner at the supplied sequence. It never changes anchor
 	// ownership and reports false for a late callback.
 	UpdateIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error)
-	// AddInputTokens 累加会话输入 token（行不存在时静默跳过，锚点由 Upsert 创建）。
+	// AddInputTokens 以 checked non-negative delta 累加会话输入 token；缺行或
+	// overflow 必须返回错误，不能静默污染/丢失 rotation watermark。
 	AddInputTokens(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string, tokens int64) error
 	// StartGeneration 轮换换代：params 整体替换、计数覆盖重起、created_at 重置。
 	StartGeneration(ctx context.Context, t *domain.TaskSession) error
 	// StartGenerationIfAnchorOwner is the rotation variant of UpdateIfAnchorOwner.
 	StartGenerationIfAnchorOwner(ctx context.Context, t *domain.TaskSession, runID string, sequence int64) (bool, error)
+	// UpdateProviderUsageAnchorCAS advances the provider cumulative baseline only
+	// when both provider_usage_anchor_seq and the Run anchor owner identity still
+	// match. It never changes anchor ownership or session material and reports
+	// false on a CAS miss so a stale Run cannot clobber a newer owner.
+	UpdateProviderUsageAnchorCAS(ctx context.Context, workspaceID, agentProfileID, adapterID, taskKey string, anchor *domain.ProviderUsageAnchorV1, expectedSeq int64, ownerRunID string, ownerRunSequence int64) (bool, error)
 	ListByAgent(ctx context.Context, workspaceID, agentProfileID string) ([]*domain.TaskSession, error)
 }
 

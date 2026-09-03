@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -30,6 +31,16 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	wsID := r.PathValue("workspace_id")
 	s.idempotent(w, r, wsID, func() (int, []byte) {
+		var durable AgentConfigIntentSync
+		if s.agentCfg != nil {
+			var ok bool
+			durable, ok = s.agentCfg.(AgentConfigIntentSync)
+			if !ok {
+				return renderProblem(http.StatusInternalServerError, "agent_config_sync_not_durable",
+					"Agent configuration sync unavailable",
+					"configured Agent file synchronizer does not support durable recovery")
+			}
+		}
 		var req createAgentRequest
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
@@ -48,6 +59,21 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		a, err := s.svc.CreateAgent(r.Context(), wsID, params)
 		if err != nil {
 			return problemBytes(err)
+		}
+		if durable != nil {
+			if syncErr := durable.ReconcileAgent(r.Context(), a.ID); syncErr != nil {
+				if errors.Is(syncErr, domain.ErrAgentConfigSyncConflict) {
+					return s.agentConfigIntentFailure(syncErr)
+				}
+				// The DB Agent and its intent are already durable. Keep this
+				// response below 500 so idempotency stores it and a retry with
+				// the same key cannot create a second Agent; startup/reload can
+				// replay the pending external bundle later.
+				return renderJSON(w, r, http.StatusAccepted, struct {
+					agentDTO
+					ConfigSyncPending bool `json:"config_sync_pending"`
+				}{agentDTO: toAgentDTO(a), ConfigSyncPending: true})
+			}
 		}
 		return renderJSON(w, r, http.StatusCreated, toAgentDTO(a))
 	})
@@ -135,6 +161,24 @@ func normalizedWorkItemRecordKind(w *domain.WorkItem) domain.WorkItemRecordKind 
 		return domain.RecordKindTask
 	}
 	return w.RecordKind
+}
+
+func validatePublicRootAcceptanceCriteria(criteria []string) error {
+	if len(criteria) == 0 {
+		return fmt.Errorf("%w: 根 Task 至少需要一条验收标准", domain.ErrValidation)
+	}
+	if len(criteria) > 64 {
+		return fmt.Errorf("%w: 根 Task 验收标准最多 64 条", domain.ErrValidation)
+	}
+	for i, criterion := range criteria {
+		if strings.TrimSpace(criterion) == "" {
+			return fmt.Errorf("%w: 根 Task 验收标准第 %d 条不能为空", domain.ErrValidation, i+1)
+		}
+		if !utf8.ValidString(criterion) || utf8.RuneCountInString(strings.TrimSpace(criterion)) > 2000 {
+			return fmt.Errorf("%w: 根 Task 验收标准第 %d 条超过 2000 个字符或不是有效 UTF-8", domain.ErrValidation, i+1)
+		}
+	}
+	return nil
 }
 
 func requireTaskWorkItemHTTP(w *domain.WorkItem) error {
@@ -234,6 +278,11 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		if recordKind == domain.RecordKindTask && req.ParentID == "" && req.Status != "" &&
 			domain.WorkItemStatus(req.Status) != domain.WorkItemTodo {
 			return renderProblem(http.StatusUnprocessableEntity, "validation_failed", "Invalid initial Task status", "根 Task 创建时 status 必须为 todo，由系统 Coordinator 推进任务状态")
+		}
+		if recordKind == domain.RecordKindTask && req.ParentID == "" {
+			if err := validatePublicRootAcceptanceCriteria(req.AcceptanceCriteria); err != nil {
+				return problemBytes(err)
+			}
 		}
 		p := application.CreateWorkItemParams{
 			Title: req.Title, Description: req.Description,
@@ -607,6 +656,25 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 		items = append(items, toArtifactDTO(a))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleAcceptArtifact(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run_id")
+	artifactID := r.PathValue("artifact_id")
+	s.idempotent(w, r, runID+":"+artifactID, func() (int, []byte) {
+		artifact, err := s.svc.Artifact(r.Context(), artifactID)
+		if err != nil {
+			return problemBytes(err)
+		}
+		if artifact.RunID != runID {
+			return problemBytes(domain.ErrNotFound)
+		}
+		accepted, err := s.svc.AcceptArtifact(r.Context(), artifactID)
+		if err != nil {
+			return problemBytes(err)
+		}
+		return renderJSON(w, r, http.StatusOK, toArtifactDTO(accepted))
+	})
 }
 
 // ── 错误序列化辅助 ───────────────────────────────────────────────────

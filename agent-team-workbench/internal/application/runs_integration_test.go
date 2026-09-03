@@ -528,7 +528,7 @@ func TestSessionUnknownSelfHeal(t *testing.T) {
 			healed = r
 		}
 	}
-	if healed == nil || healed.Input["auto_heal_of"] != second.ID {
+	if healed == nil || healed.Input["auto_heal_of"] != second.ID || healed.ClientKey != "session-heal:"+second.ID {
 		t.Fatalf("自愈 run 标记异常: %#v", healed)
 	}
 	healConv, _ := healed.Input["conversation"].(map[string]any)

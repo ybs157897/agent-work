@@ -13,11 +13,22 @@ import (
 )
 
 const (
-	coordinatorRole              = "coordinator"
-	coordinatorWorkerRole        = "worker"
-	coordinatorMaxWorkerAttempts = 3 // initial attempt + two automatic retries
-	coordinatorMaxOwnFailures    = 2
-	coordinatorSettlementAction  = "settle_dispatch"
+	coordinatorRole       = "coordinator"
+	coordinatorWorkerRole = "worker"
+	// coordinatorHandoffAction is a durable control-line action. It is not a
+	// public Run entry point: AcceptHandoff records the checkpoint and the
+	// Coordinator recovery path consumes it exactly once to create the
+	// delegated Coordinator Run.
+	coordinatorHandoffAction                   = "handoff_continuation"
+	coordinatorHandoffIDKey                    = "handoff_id"
+	coordinatorHandoffTargetAgentIDKey         = "handoff_target_agent_id"
+	coordinatorHandoffTargetClaimVersionKey    = "handoff_target_claim_version"
+	coordinatorHandoffSourceRunIDKey           = "handoff_source_run_id"
+	coordinatorMaxWorkerAttempts               = 3 // initial attempt + two automatic retries
+	coordinatorMaxOwnFailures                  = 2
+	coordinatorSettlementAction                = "settle_dispatch"
+	coordinatorCancelSettlementAction          = "settle_cancelled_goal"
+	coordinatorCancelSettlementTurnKeysDataKey = "settle_cancelled_goal_turn_keys"
 )
 
 func mapsCloneAny(in map[string]any) map[string]any {
@@ -89,11 +100,108 @@ func coordinatorStateExecutionStopped(state *domain.TaskCoordinatorState) bool {
 func isSystemCoordinatorRun(run *domain.ExecutionRun) bool {
 	context := coordinatorContextOf(run)
 	role, _ := context["role"].(string)
-	return role == coordinatorRole
+	delegated, _ := context["delegated"].(bool)
+	return role == coordinatorRole && !delegated && run != nil && run.AgentProfileID != ""
+}
+
+// isDelegatedCoordinatorRun identifies the only ordinary-Agent path that may
+// act as a Planner on a coordinated root: a durable, accepted Handoff has
+// delegated that bounded continuation to the target.  The proof fields are
+// intentionally required here as well as in the transaction-side authority
+// checks; an arbitrary CoordinatorContext must not make an ordinary Run look
+// like a control-plane Run after it is persisted.
+func isDelegatedCoordinatorRun(run *domain.ExecutionRun) bool {
+	context := coordinatorContextOf(run)
+	role, _ := context["role"].(string)
+	delegated, _ := context["delegated"].(bool)
+	handoffID, _ := context[coordinatorHandoffIDKey].(string)
+	targetAgentID, _ := context[coordinatorHandoffTargetAgentIDKey].(string)
+	return role == coordinatorRole && delegated && strings.TrimSpace(handoffID) != "" &&
+		run != nil && run.AgentProfileID != "" && targetAgentID == run.AgentProfileID
+}
+
+// isGovernedCoordinatorRun is the common Planner/terminal-hook predicate.
+// System Coordinator Runs and proven delegated Handoff Runs share the same
+// PlanDecision/receipt pipeline; ordinary Worker Runs do not.
+func isGovernedCoordinatorRun(run *domain.ExecutionRun) bool {
+	return isSystemCoordinatorRun(run) || isDelegatedCoordinatorRun(run)
+}
+
+func delegatedCoordinatorContext(contextData map[string]any) bool {
+	if contextData == nil {
+		return false
+	}
+	delegated, _ := contextData["delegated"].(bool)
+	handoffID, _ := contextData[coordinatorHandoffIDKey].(string)
+	targetAgentID, _ := contextData[coordinatorHandoffTargetAgentIDKey].(string)
+	return delegated && strings.TrimSpace(handoffID) != "" && strings.TrimSpace(targetAgentID) != ""
+}
+
+func handoffContinuationPending(state *domain.TaskCoordinatorState) bool {
+	return state != nil && coordinatorControlAction(state) == coordinatorHandoffAction &&
+		state.Data != nil && strings.TrimSpace(stringValue(state.Data[coordinatorHandoffIDKey])) != ""
+}
+
+func coordinatorRunRelinquishedToHandoff(state *domain.TaskCoordinatorState, run *domain.ExecutionRun) bool {
+	return state != nil && run != nil && handoffContinuationPending(state) &&
+		state.CurrentRunID == run.ID && stringValue(state.Data[coordinatorHandoffSourceRunIDKey]) == run.ID
+}
+
+// clearCoordinatorHandoffCheckpoint ends the active delegated-control
+// projection when a Coordinator is blocked. The transferred Handoff remains
+// immutable history, but its stale checkpoint must not survive into Unblock:
+// otherwise handoffForCoordinatorStart treats the claim-less Todo as a
+// delegated continuation and can never return to the system Coordinator.
+// Callers persist the returned mutation in the same Coordinator state CAS and
+// include the result in the blocker event for an explainable recovery path.
+func clearCoordinatorHandoffCheckpoint(state *domain.TaskCoordinatorState) bool {
+	if state == nil || state.Data == nil {
+		return false
+	}
+	changed := false
+	for _, key := range []string{
+		coordinatorHandoffIDKey,
+		coordinatorHandoffTargetAgentIDKey,
+		coordinatorHandoffTargetClaimVersionKey,
+		coordinatorHandoffSourceRunIDKey,
+		"handoff_source_agent_id",
+	} {
+		if _, ok := state.Data[key]; ok {
+			delete(state.Data, key)
+			changed = true
+		}
+	}
+	if changed {
+		delete(state.Data, "handoff_target_runtime")
+		if coordinatorControlAction(state) == coordinatorHandoffAction {
+			delete(state.Data, "control_action")
+		}
+		if state.CurrentAgentID != state.CoordinatorAgentID {
+			state.CurrentAgentID = state.CoordinatorAgentID
+		}
+	}
+	return changed
+}
+
+func handoffCoordinatorContext(state *domain.TaskCoordinatorState, handoff *domain.Handoff,
+	targetAgentID, action string) map[string]any {
+	return map[string]any{
+		"role": coordinatorRole, "delegated": true, "action": action,
+		"root_work_item_id": state.RootWorkItemID, "state_id": state.ID,
+		coordinatorHandoffIDKey: handoff.ID, coordinatorHandoffTargetAgentIDKey: targetAgentID,
+		coordinatorHandoffTargetClaimVersionKey: handoff.TargetClaimVersion,
+		coordinatorHandoffSourceRunIDKey:        stringValue(state.Data[coordinatorHandoffSourceRunIDKey]),
+		"attempt":                               state.Attempt + 1,
+	}
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func coordinatorRunDefersReview(run *domain.ExecutionRun) bool {
-	if !isSystemCoordinatorRun(run) {
+	if !isGovernedCoordinatorRun(run) {
 		return false
 	}
 	action, _ := coordinatorContextOf(run)["action"].(string)
@@ -167,10 +275,45 @@ func (s *Service) appendCoordinatorEvent(ctx context.Context, state *domain.Task
 // Runtime side effect; a crash after commit is recovered by the due-state loop.
 func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error {
 	if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, workItemID); stateErr == nil {
-		if (state.Status == domain.CoordinatorWaitingRetry ||
-			(state.Status == domain.CoordinatorRunning && state.CurrentRunID == "")) &&
-			coordinatorControlAction(state) == "retry_worker" {
-			return s.startScheduledWorkerRetry(ctx, state)
+		// 恢复面重放当前 Turn 的 quota sweep：Worker 终态 commit 与 post-commit
+		// sweep 之间崩溃时，这里是唯一补跑路径（phase6 已存在/无 usage
+		// reservation/关闭条件未齐都会立即短路）。StartCoordinator 是关闭性
+		// 触发源（allowAbsentClose=true，复审裁决 #4）：其余关闭条件齐备时为
+		// 缺证据 Run 合成 absent evidence 后收口。失败只记日志，绝不阻塞启动。
+		if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, state.RootWorkItemID); goalErr == nil {
+			var fallback *domain.TurnKey
+			if goal.CurrentTodoID != "" {
+				if todo, todoErr := s.store.Todos().Get(ctx, goal.CurrentTodoID); todoErr == nil && todo.LastTurnSeq >= 1 {
+					key := domain.TurnKey{GoalID: goal.ID, TodoID: todo.ID, TurnSeq: todo.LastTurnSeq}
+					fallback = &key
+				}
+			}
+			turnKeys := []domain.TurnKey{}
+			var keyErr error
+			if state.Status == domain.CoordinatorCancelled &&
+				coordinatorControlAction(state) == coordinatorCancelSettlementAction {
+				turnKeys, keyErr = decodeGoalSettlementTurnKeys(state, goal.ID, fallback)
+			} else if fallback != nil {
+				turnKeys = []domain.TurnKey{*fallback}
+			}
+			if keyErr != nil {
+				log.Printf("quota: cancelled Goal %s settlement checkpoint 解析失败: %v", goal.ID, keyErr)
+			} else {
+				sweepFailed := false
+				for _, turnKey := range turnKeys {
+					if sweepErr := s.settleGovernanceTurnQuota(context.WithoutCancel(ctx), turnKey, true); sweepErr != nil {
+						sweepFailed = true
+						log.Printf("quota: turn %s:%s:%d recovery sweep 失败（不阻塞 Coordinator）: %v",
+							turnKey.GoalID, turnKey.TodoID, turnKey.TurnSeq, sweepErr)
+					}
+				}
+				if !sweepFailed && state.Status == domain.CoordinatorCancelled &&
+					coordinatorControlAction(state) == coordinatorCancelSettlementAction {
+					if clearErr := s.clearCancelledGoalSettlementCheckpoint(context.WithoutCancel(ctx), state.RootWorkItemID); clearErr != nil {
+						log.Printf("quota: cancelled Goal %s settlement checkpoint 清理失败: %v", goal.ID, clearErr)
+					}
+				}
+			}
 		}
 		if coordinatorSettlementPending(state) {
 			return s.retryPendingSettlement(ctx, state)
@@ -178,6 +321,34 @@ func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error
 		if state.Status == domain.CoordinatorCompleted || state.Status == domain.CoordinatorCancelled ||
 			state.Status == domain.CoordinatorBlocked || state.Status == domain.CoordinatorWaitingUser {
 			return nil
+		}
+		goal, governanceErr := s.ensureCoordinatorGovernanceReady(context.WithoutCancel(ctx), state.RootWorkItemID)
+		if governanceErr != nil {
+			var active *domain.ExecutionRun
+			if state.CurrentRunID != "" {
+				active, _ = s.store.Runs().Get(context.WithoutCancel(ctx), state.CurrentRunID)
+			}
+			blockErr := s.blockCoordinator(context.WithoutCancel(ctx), state, active,
+				"governance_state_unavailable", governanceErr.Error(),
+				"修复根任务验收合同或治理状态后解除阻塞")
+			if blockErr == nil && active != nil && !active.Status.IsTerminal() {
+				_, _ = s.ControlRun(context.WithoutCancel(ctx), active.ID, "cancel")
+			}
+			if blockErr != nil {
+				return errors.Join(governanceErr, blockErr)
+			}
+			return governanceErr
+		}
+		if goal.Status != domain.GoalActive {
+			return nil
+		}
+		if _, err := s.ensureCollectingDispatchWakeups(context.WithoutCancel(ctx), state.RootWorkItemID); err != nil {
+			return err
+		}
+		if (state.Status == domain.CoordinatorWaitingRetry ||
+			(state.Status == domain.CoordinatorRunning && state.CurrentRunID == "")) &&
+			coordinatorControlAction(state) == "retry_worker" {
+			return s.startScheduledWorkerRetry(ctx, state)
 		}
 		if state.Status == domain.CoordinatorRunning && state.CurrentRunID == "" &&
 			state.NextActionAt == nil && coordinatorControlAction(state) == "" {
@@ -250,6 +421,43 @@ func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error
 	return nil
 }
 
+func (s *Service) clearCancelledGoalSettlementCheckpoint(ctx context.Context, rootWorkItemID string) error {
+	goal, err := s.store.Goals().GetByRootWorkItem(ctx, rootWorkItemID)
+	if err != nil {
+		return err
+	}
+	reservations, err := s.store.Quotas().ListByGoal(ctx, goal.ID)
+	if err != nil {
+		return err
+	}
+	for _, reservation := range reservations {
+		if reservation != nil && reservation.Status == domain.QuotaReservationReserved {
+			return nil
+		}
+	}
+	return s.store.InTx(ctx, func(ctx context.Context) error {
+		state, err := s.store.TaskCoordinators().GetState(ctx, rootWorkItemID)
+		if err != nil {
+			return err
+		}
+		if state.Status != domain.CoordinatorCancelled ||
+			coordinatorControlAction(state) != coordinatorCancelSettlementAction {
+			return nil
+		}
+		expected := state.Version
+		delete(state.Data, "control_action")
+		delete(state.Data, coordinatorCancelSettlementTurnKeysDataKey)
+		if err := s.store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
+			return err
+		}
+		state.Version = expected + 1
+		return s.appendCoordinatorEvent(ctx, state, rootWorkItemID,
+			domain.EventCoordinatorStateChanged, "取消 Goal 的配额已收口",
+			"", state.CoordinatorAgentID, state.Attempt, "quota_settled", nil,
+			map[string]any{"stage": "cancelled", "settlement": "closed"})
+	})
+}
+
 func (s *Service) replayCoordinatorTerminalHooks(ctx context.Context, run *domain.ExecutionRun) {
 	if run == nil || !run.Status.IsTerminal() {
 		return
@@ -259,13 +467,19 @@ func (s *Service) replayCoordinatorTerminalHooks(ctx context.Context, run *domai
 		return
 	}
 	// Keep this order aligned with RecordRunStatus: plan/verdict projections
-	// must run before the Coordinator terminal decision, and dispatch settlement
-	// must remain last so a retry/replan can keep ownership of the batch.
+	// must run before the Coordinator terminal decision, canonical usage must
+	// freeze before that decision (it may commit a governance Plan whose
+	// admission settlement sweeps quota), the quota sweep must follow the
+	// Coordinator advance so a pending retry checkpoint keeps its budget, and
+	// dispatch settlement must remain last so a retry/replan can keep ownership
+	// of the batch.
 	s.maybeAdvancePlans(ctx, run)
 	s.maybeProcessVerdict(ctx, run)
 	s.maybeExtractPlan(ctx, run)
 	s.maybeSummarizeSegment(ctx, run)
+	s.maybeCanonicalizeRunUsage(ctx, run)
 	s.maybeAdvanceTaskCoordinator(ctx, run)
+	s.maybeSettleGovernanceTurnQuota(ctx, run)
 	s.maybeSettleDispatch(ctx, run)
 }
 
@@ -427,6 +641,26 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 		if err != nil {
 			return err
 		}
+		goal, err := s.store.Goals().GetByRootWorkItem(ctx, root.ID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		var currentTodo *domain.Todo
+		var delegatedHandoff *domain.Handoff
+		delegatedAgentID := config.AgentProfileID
+		if goal != nil && goal.CurrentTodoID != "" {
+			currentTodo, err = s.store.Todos().Get(ctx, goal.CurrentTodoID)
+			if err != nil {
+				return err
+			}
+			delegatedHandoff, _, currentTodo, delegatedAgentID, err = s.handoffForCoordinatorStart(ctx, state)
+			if err != nil {
+				return err
+			}
+			if delegatedHandoff == nil {
+				delegatedAgentID = config.AgentProfileID
+			}
+		}
 		workers, err := s.coordinatorWorkerRoster(ctx, root.WorkspaceID, config.AgentProfileID)
 		if err != nil {
 			return err
@@ -437,6 +671,9 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 		action := strings.TrimSpace(state.CurrentAction)
 		if controlAction := coordinatorControlAction(state); controlAction != "" {
 			action = controlAction
+		}
+		if delegatedHandoff != nil && coordinatorControlAction(state) == "" {
+			action = coordinatorHandoffAction
 		}
 		if action == "" || action == "queued" {
 			action = "intake"
@@ -481,6 +718,35 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 				action = "recover"
 			}
 		}
+		var repairSourceRun *domain.ExecutionRun
+		if action == "repair_plan" {
+			if state.RepairStatus != domain.CoordinatorRepairPending || state.RepairAttempt < 1 {
+				return fmt.Errorf("%w: repair_plan requires a durable pending checkpoint", domain.ErrStateConflict)
+			}
+			repairOfRunID, _ := state.Data["repair_of_run_id"].(string)
+			if repairOfRunID == "" {
+				repairOfRunID = state.RepairSourceRunID
+			}
+			repairSourceRun, err = s.store.Runs().Get(ctx, repairOfRunID)
+			if err != nil {
+				return err
+			}
+			if err := s.validateGovernedRepairSource(ctx, state, repairSourceRun); err != nil {
+				return err
+			}
+			if state.RepairSourceRunID != repairSourceRun.ID {
+				origin, err := s.store.Runs().Get(ctx, state.RepairSourceRunID)
+				if err != nil {
+					return err
+				}
+				if err := s.validateGovernedRepairSource(ctx, state, origin); err != nil {
+					return err
+				}
+			}
+			if repairSourceRun.ContextSnapshotID == "" || repairSourceRun.RuntimeLabel == "" {
+				return fmt.Errorf("%w: repair source Run lacks runtime/context snapshot", domain.ErrValidation)
+			}
+		}
 		// RFC §7.8：Run 创建事务内读取未消费评论、快照进 TASK_DATA_JSON_V1 与
 		// Run input，并同事务推进 consumed_comment_revision——失败整体回滚。
 		commentSnapshot, revFrom, revTo, err := s.coordinatorCommentSnapshot(ctx, state.RootWorkItemID, state.ConsumedCommentRevision)
@@ -488,12 +754,27 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 			return err
 		}
 		useFallback, _ := state.Data["use_fallback"].(bool)
-		instruction := BuildCoordinatorInstruction(CoordinatorPromptInput{
+		promptInput := CoordinatorPromptInput{
 			RootWorkItemID: root.ID, Title: root.Title, Description: root.Description,
 			Acceptance: acceptanceCriteriaFromWorkItem(root), Workers: workers,
 			Phase: state.Phase, CurrentStep: state.CurrentStep, CurrentAction: action,
 			Attempt: state.Attempt + 1, Failure: state.LastError, Comments: commentSnapshot,
-		})
+		}
+		if delegatedHandoff != nil {
+			sourceRunID := stringValue(state.Data[coordinatorHandoffSourceRunIDKey])
+			promptInput.Handoff = &CoordinatorHandoff{
+				ID: delegatedHandoff.ID, SourceAgentID: stringValue(state.Data["handoff_source_agent_id"]),
+				TargetAgentID: delegatedAgentID, SourceRunID: sourceRunID,
+				TargetClaimVersion: delegatedHandoff.TargetClaimVersion,
+				Reason:             delegatedHandoff.Reason, ContextSummary: delegatedHandoff.ContextSummary,
+				Acceptance: delegatedHandoff.Acceptance,
+				OpenRisks:  append([]string(nil), delegatedHandoff.OpenRisks...),
+			}
+		}
+		if action == "repair_plan" {
+			promptInput.NextAction = "Return one complete corrected PlanDecisionV2 envelope using the validation error path"
+		}
+		instruction := BuildCoordinatorInstruction(promptInput)
 		contextData := map[string]any{
 			"role": coordinatorRole, "root_work_item_id": root.ID,
 			"state_id": state.ID, "action": action, "attempt": state.Attempt + 1,
@@ -505,14 +786,126 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 			// Run input 保存评论快照（§4.9：重启后可审计重建）。
 			contextData["comments"] = commentSnapshot
 		}
-		run, err := s.createRunLocked(ctx, root.ID, CreateRunParams{
-			AgentProfileID: config.AgentProfileID, Instruction: instruction,
+		var turnQuotaAdmission map[string]any
+		var usageQuotaAdmission map[string]any
+		goalID, err := rootGovernanceGoalID(ctx, s.store, root.ID)
+		if err != nil {
+			return err
+		}
+		if goalID != "" {
+			turnQuotaDecision, err := s.ShouldRunLocked(ctx, ShouldRunRequest{
+				GoalID: goalID, Kind: domain.QuotaTurnCount, Amount: 1,
+			})
+			if err != nil {
+				return err
+			}
+			if turnQuotaDecision.Enabled {
+				turnQuotaAdmission = quotaDecisionPayload(turnQuotaDecision)
+				if !turnQuotaDecision.Allowed {
+					return quotaDeniedError(turnQuotaDecision)
+				}
+			}
+			// usage kind 预检：used = committed + active reserved，剩余不足即
+			// enforce deny（不创建 Run，Coordinator 走 blockCoordinatorForStartFailure）。
+			goal, err := s.store.Goals().Get(ctx, goalID)
+			if err != nil {
+				return err
+			}
+			usageQuotaAdmission = map[string]any{}
+			for _, policy := range goal.QuotaPolicies {
+				if !usageQuotaKind(policy.Kind) {
+					continue
+				}
+				decision, err := s.ShouldRunLocked(ctx, ShouldRunRequest{
+					GoalID: goalID, Kind: policy.Kind, Amount: 1,
+				})
+				if err != nil {
+					return err
+				}
+				if decision.Enabled && !decision.Allowed {
+					return quotaDeniedError(decision)
+				}
+				usageQuotaAdmission[string(policy.Kind)] = quotaDecisionPayload(decision)
+			}
+		}
+		runParams := CreateRunParams{
+			AgentProfileID: delegatedAgentID, Instruction: instruction,
 			AcceptanceCriteria: acceptanceCriteriaFromWorkItem(root),
 			RuntimePreference:  coordinatorRuntimePreference(config, useFallback),
 			DispatchTrigger:    domain.DispatchTriggerUserMessage,
 			ClientKey:          fmt.Sprintf("coordinator:%s:%d:%s", state.ID, state.Attempt+1, action),
 			CoordinatorContext: contextData,
-		})
+			coordinatorAdmission: &coordinatorRunAdmission{
+				RootWorkItemID: state.RootWorkItemID, StateID: state.ID,
+				SourceRunID: state.CurrentRunID, Action: action,
+				Delegated: delegatedHandoff != nil,
+			},
+			quotaAdmission:      turnQuotaAdmission,
+			usageQuotaAdmission: usageQuotaAdmission,
+		}
+		if delegatedHandoff != nil {
+			// A delegated continuation uses the target Agent's configured Runtime
+			// and the normal session resolver. The first continuation clones the
+			// source snapshot; later turns resume/fresh from the target anchor.
+			targetAgent, agentErr := s.store.Agents().Get(ctx, delegatedAgentID)
+			if agentErr != nil {
+				return agentErr
+			}
+			currentTodo, err = s.renewHandoffTodoClaimLocked(ctx, goal, currentTodo,
+				delegatedHandoff, delegatedAgentID)
+			if err != nil {
+				return err
+			}
+			preference := targetAgent.RuntimePreference
+			if delegatedHandoff.Target.Kind == domain.GovernanceActorRuntime {
+				// A runtime-kind Handoff is an explicit target, not a hint. Pin
+				// the candidate and remove Agent fallbacks so a missing binding
+				// fails closed instead of silently moving the continuation.
+				preference = domain.RuntimePreference{Mode: "plan", Preferred: delegatedHandoff.Target.ID}
+			}
+			runParams.RuntimePreference = &preference
+			contextData["role"] = coordinatorRole
+			contextData["delegated"] = true
+			contextData["state_id"] = state.ID
+			contextData[coordinatorHandoffIDKey] = delegatedHandoff.ID
+			contextData[coordinatorHandoffTargetAgentIDKey] = delegatedAgentID
+			contextData[coordinatorHandoffTargetClaimVersionKey] = delegatedHandoff.TargetClaimVersion
+			contextData[coordinatorHandoffSourceRunIDKey] = stringValue(state.Data[coordinatorHandoffSourceRunIDKey])
+			runParams.CoordinatorContext = contextData
+			if delegatedHandoff.Target.Kind == domain.GovernanceActorRuntime {
+				runParams.CoordinatorContext["handoff_target_runtime"] = delegatedHandoff.Target.ID
+			}
+			if sourceRunID := stringValue(state.Data[coordinatorHandoffSourceRunIDKey]); sourceRunID != "" {
+				sourceRun, sourceErr := s.store.Runs().Get(ctx, sourceRunID)
+				if sourceErr != nil {
+					return sourceErr
+				}
+				if sourceRun.ContextSnapshotID == "" {
+					return fmt.Errorf("%w: Handoff source Run lacks ContextSnapshot", domain.ErrWorkspaceContextMismatch)
+				}
+				runParams.ContextSource = domain.SnapshotSourceRecovery
+				runParams.ContextSourceSnapshotID = sourceRun.ContextSnapshotID
+			}
+			runParams.ClientKey = fmt.Sprintf("coordinator:handoff:%s:%d:%d:%s",
+				delegatedHandoff.ID, delegatedHandoff.TargetClaimVersion, state.Attempt+1, action)
+		}
+		if action == "repair_plan" {
+			preference := runtimePreferenceOf(repairSourceRun.Input["runtime_preference"])
+			if preference == nil {
+				preference = &domain.RuntimePreference{Mode: "default"}
+			}
+			preference.Preferred = repairSourceRun.RuntimeLabel
+			preference.Fallbacks = nil
+			runParams.RuntimePreference = preference
+			runParams.ContextSource = domain.SnapshotSourceRecovery
+			runParams.ContextSourceSnapshotID = repairSourceRun.ContextSnapshotID
+			runParams.ClientKey = fmt.Sprintf("coordinator:repair:%s:%s:%d:%d",
+				state.ID, state.RepairSourceRunID, state.RepairAttempt, state.Attempt+1)
+			contextData["repair"] = repairRunContext(state)
+			contextData["repair_of_run_id"] = repairSourceRun.ID
+			contextData["use_fallback"] = false
+		}
+		run, err := s.createRunLocked(ctx, root.ID, runParams)
 		if err != nil {
 			return err
 		}
@@ -520,7 +913,10 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 		state.Status = domain.CoordinatorRunning
 		state.Phase = action
 		state.CurrentAction = "观察 Coordinator 输出并执行下一步"
-		state.CurrentAgentID = config.AgentProfileID
+		if action == "repair_plan" {
+			state.CurrentAction = "观察修复后的 PlanDecisionV2"
+		}
+		state.CurrentAgentID = delegatedAgentID
 		state.CurrentRunID = run.ID
 		state.Attempt++
 		state.NextActionAt = nil
@@ -536,9 +932,14 @@ func (s *Service) startCoordinatorTurn(ctx context.Context, workItemID string) (
 			return err
 		}
 		state.Version = expected + 1
+		stage := "plan"
+		if action == "repair_plan" {
+			stage = "repair"
+		}
 		if err := s.appendCoordinatorEvent(ctx, state, root.ID, domain.EventCoordinatorStarted,
-			"Coordinator 已接取并开始", run.ID, config.AgentProfileID, state.Attempt, action, nil,
-			map[string]any{"stage": "plan", "runtime": run.RuntimeLabel, "next_action": state.CurrentAction}); err != nil {
+			"Coordinator 已接取并开始", run.ID, delegatedAgentID, state.Attempt, action, nil,
+			map[string]any{"stage": stage, "runtime": run.RuntimeLabel, "next_action": state.CurrentAction,
+				"delegated": delegatedHandoff != nil}); err != nil {
 			return err
 		}
 		created = run
@@ -551,6 +952,11 @@ func (s *Service) blockCoordinatorForStartFailure(ctx context.Context, workItemI
 	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, workItemID)
 	if err != nil {
 		return err
+	}
+	var decisionErr *PlanDecisionError
+	if errors.As(cause, &decisionErr) && decisionErr.Code == domain.GovernanceErrorPlanQuotaDenied {
+		return s.blockCoordinator(ctx, state, nil, string(decisionErr.Code), decisionErr.Message,
+			"调整 Goal 配额策略后解除阻塞")
 	}
 	return s.blockCoordinator(ctx, state, nil, "coordinator_start_failed", cause.Error(), "检查 Coordinator Runtime、模型和可用 Agent 后解除阻塞")
 }
@@ -565,24 +971,34 @@ func (s *Service) blockCoordinator(ctx context.Context, state *domain.TaskCoordi
 		if coordinatorWorkerRunSuperseded(fresh, failedRun) {
 			return nil
 		}
-		if failedRun != nil && isSystemCoordinatorRun(failedRun) && fresh.CurrentRunID != failedRun.ID {
+		if failedRun != nil && isGovernedCoordinatorRun(failedRun) && fresh.CurrentRunID != failedRun.ID {
 			return nil
 		}
 		if fresh.Status == domain.CoordinatorCompleted || fresh.Status == domain.CoordinatorCancelled {
 			return nil
 		}
-		expected := fresh.Version
-		fresh.Status = domain.CoordinatorBlocked
-		fresh.Phase = "blocked"
-		fresh.BlockerCode, fresh.BlockerMessage = code, message
-		fresh.LastError = message
-		fresh.CurrentAction = nextAction
-		fresh.CurrentRunID = ""
-		fresh.NextActionAt = nil
-		if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
-			return err
+		alreadyBlocked := fresh.Status == domain.CoordinatorBlocked
+		handoffCleared := clearCoordinatorHandoffCheckpoint(fresh)
+		if !alreadyBlocked {
+			expected := fresh.Version
+			fresh.Status = domain.CoordinatorBlocked
+			fresh.Phase = "blocked"
+			fresh.BlockerCode, fresh.BlockerMessage = code, message
+			fresh.LastError = message
+			fresh.CurrentAction = nextAction
+			fresh.CurrentRunID = ""
+			fresh.NextActionAt = nil
+			if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+				return err
+			}
+			fresh.Version = expected + 1
+		} else if handoffCleared {
+			expected := fresh.Version
+			if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+				return err
+			}
+			fresh.Version = expected + 1
 		}
-		fresh.Version = expected + 1
 		root, err := s.store.WorkItems().Get(ctx, fresh.RootWorkItemID)
 		if err != nil {
 			return err
@@ -592,24 +1008,27 @@ func (s *Service) blockCoordinator(ctx context.Context, state *domain.TaskCoordi
 				return err
 			}
 		}
-		if failedRun != nil && failedRun.DispatchID != "" {
-			dispatch, dispatchErr := s.store.Dispatches().Get(ctx, failedRun.DispatchID)
-			if dispatchErr != nil && !errors.Is(dispatchErr, domain.ErrNotFound) {
-				return dispatchErr
+		if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+			return err
+		}
+		// A root Coordinator blocker terminates the whole root control line. A
+		// plan may have multiple Worker members (and a root may have more than
+		// one historical dispatch), so closing only failedRun.DispatchID can
+		// leave a sibling batch running forever. Dispatches are keyed by the
+		// canonical root WorkItem; the helper's exact ListByWorkItem lookup and
+		// root workspace emission keep this sweep inside this root's scope.
+		if err := s.closeOpenDispatchesForBlockLocked(ctx, root); err != nil {
+			return err
+		}
+		if alreadyBlocked {
+			if handoffCleared {
+				return s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID,
+					domain.EventCoordinatorStateChanged, "阻塞已撤销过期 Handoff continuation",
+					"", fresh.CoordinatorAgentID, fresh.Attempt, "handoff_checkpoint_cleared", nil,
+					map[string]any{"stage": "failure", "handoff_cleared": true,
+						"next_action": nextAction})
 			}
-			if dispatch != nil && !dispatch.Status.IsTerminal() {
-				closedAt := time.Now().UTC()
-				closed, closeErr := s.store.Dispatches().CloseStatus(ctx, dispatch.ID, domain.DispatchDegraded, closedAt)
-				if closeErr != nil {
-					return closeErr
-				}
-				if closed {
-					dispatch.Status, dispatch.ClosedAt = domain.DispatchDegraded, &closedAt
-					if err := s.emitDispatchUpdated(ctx, fresh.WorkspaceID, dispatch); err != nil {
-						return err
-					}
-				}
-			}
+			return nil
 		}
 		runID, agentID, attempt := "", fresh.CoordinatorAgentID, fresh.Attempt
 		if failedRun != nil {
@@ -619,7 +1038,7 @@ func (s *Service) blockCoordinator(ctx context.Context, state *domain.TaskCoordi
 		return s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID, domain.EventCoordinatorBlocked,
 			"Coordinator 需要用户介入", runID, agentID, attempt, message, nil,
 			map[string]any{"stage": "failure", "failure_code": code, "failure_message": message,
-				"retryable": false, "next_action": nextAction})
+				"retryable": false, "next_action": nextAction, "handoff_cleared": handoffCleared})
 	})
 }
 
@@ -635,15 +1054,51 @@ func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.E
 	if err != nil {
 		return // legacy Task without a Coordinator
 	}
+	if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, state.RootWorkItemID); goalErr == nil {
+		if goal.Status != domain.GoalActive {
+			return
+		}
+	} else if !errors.Is(goalErr, domain.ErrNotFound) {
+		return
+	}
 	if state.Status == domain.CoordinatorBlocked || state.Status == domain.CoordinatorWaitingUser ||
 		state.Status == domain.CoordinatorCompleted || state.Status == domain.CoordinatorCancelled {
+		return
+	}
+	// An accepted Handoff supersedes the source Coordinator outcome. Once the
+	// source reaches a terminal state, move only the durable checkpoint here;
+	// the recovery call below creates the target delegated Run through the same
+	// ContextSnapshot/TaskSession path as every other Coordinator turn.
+	if handoffContinuationPending(state) && state.CurrentRunID == run.ID &&
+		stringValue(state.Data[coordinatorHandoffSourceRunIDKey]) == run.ID {
+		activated, activateErr := s.activateHandoffContinuationAfterSourceTerminal(
+			context.WithoutCancel(ctx), state, run)
+		if activateErr != nil {
+			log.Printf("coordinator: handoff %s continuation checkpoint failed: %v",
+				stringValue(state.Data[coordinatorHandoffIDKey]), activateErr)
+			return
+		}
+		if activated {
+			if startErr := s.StartCoordinator(context.WithoutCancel(ctx), state.RootWorkItemID); startErr != nil {
+				log.Printf("coordinator: handoff %s delegated continuation start failed: %v",
+					stringValue(state.Data[coordinatorHandoffIDKey]), startErr)
+			}
+		}
 		return
 	}
 	// A system Run is the exact terminal checkpoint that owns the projection.
 	// Once its hook has advanced the state (or another turn owns it), a due-scan
 	// replay of the same terminal Run must be a no-op rather than append another
 	// plan/completed event or reset progress.
-	if isSystemCoordinatorRun(run) && state.CurrentRunID != run.ID {
+	if isGovernedCoordinatorRun(run) && state.CurrentRunID != run.ID {
+		return
+	}
+	// A validated governed decision may have committed its admission/validation
+	// prefix while the Plan transaction was temporarily unavailable. The Plan
+	// submission path records the terminal source Run as a durable retry owner;
+	// do not let this terminal hook mistake the missing Plan for delivery before
+	// the next replay completes the same Turn.
+	if isGovernedCoordinatorRun(run) && governancePlanSubmissionRetryPending(state, run.ID) {
 		return
 	}
 	// A settlement wake can race a scheduled Worker retry. It belongs to the
@@ -653,7 +1108,7 @@ func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.E
 	if settlementRunID(run) != "" && coordinatorRetryPending(state) {
 		return
 	}
-	if isSystemCoordinatorRun(run) {
+	if isGovernedCoordinatorRun(run) {
 		s.handleCoordinatorTerminal(context.WithoutCancel(ctx), state, run)
 		return
 	}
@@ -699,6 +1154,9 @@ func (s *Service) handleCoordinatorTerminal(ctx context.Context, state *domain.T
 	}
 	retryable := coordinatorRunRetryable(run)
 	failures := coordinatorAttemptValue(state.Data["coordinator_failures"]) + 1
+	runAction, _ := coordinatorContextOf(run)["action"].(string)
+	repairRuntimeFailure := state.RepairStatus == domain.CoordinatorRepairPending &&
+		runAction == "repair_plan"
 	if retryable && failures < coordinatorMaxOwnFailures {
 		nextActionAt := time.Now().UTC().Add(coordinatorRetryDelay(failures + 1))
 		err := s.store.InTx(ctx, func(ctx context.Context) error {
@@ -716,9 +1174,17 @@ func (s *Service) handleCoordinatorTerminal(ctx context.Context, state *domain.T
 			fresh.Data["coordinator_failures"] = failures
 			fresh.Data["use_fallback"] = failures > 0
 			fresh.Data["control_action"] = "recover"
+			if repairRuntimeFailure {
+				fresh.Data["use_fallback"] = false
+				fresh.Data["control_action"] = "repair_plan"
+			}
 			fresh.Status = domain.CoordinatorWaitingRetry
 			fresh.Phase = "recovering"
 			fresh.CurrentAction = "等待退避后恢复 Coordinator"
+			if repairRuntimeFailure {
+				fresh.Phase = "repair"
+				fresh.CurrentAction = "等待退避后重试 PlanDecision 修复"
+			}
 			fresh.CurrentRunID = ""
 			fresh.LastError = coordinatorFailureText(run)
 			fresh.NextActionAt = &nextActionAt
@@ -744,6 +1210,8 @@ func (s *Service) handleCoordinatorTerminal(ctx context.Context, state *domain.T
 
 func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.TaskCoordinatorState, run *domain.ExecutionRun) error {
 	startNext := false
+	var controlReceipt *domain.TurnReceiptHeader
+	handoffCleared := false
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		fresh, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
 		if err != nil {
@@ -757,20 +1225,8 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			return err
 		}
 		if root.Status == domain.WorkItemBlocked {
-			expected := fresh.Version
-			fresh.Status = domain.CoordinatorBlocked
-			fresh.BlockerCode = "coordinator_plan_failed"
-			fresh.BlockerMessage = "Coordinator 输出无法形成有效计划"
-			fresh.CurrentAction = "修正任务信息或 Coordinator 输出后解除阻塞"
-			if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
-				return err
-			}
-			fresh.Version = expected + 1
-			return s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID, domain.EventCoordinatorBlocked,
-				"Coordinator 计划无法执行", run.ID, run.AgentProfileID, fresh.Attempt,
-				fresh.BlockerMessage, nil, map[string]any{"stage": "failure",
-					"failure_code": fresh.BlockerCode, "failure_message": fresh.BlockerMessage,
-					"retryable": false, "next_action": fresh.CurrentAction})
+			return s.blockCoordinator(ctx, fresh, run, "coordinator_plan_failed",
+				"Coordinator 输出无法形成有效计划", "修正任务信息或 Coordinator 输出后解除阻塞")
 		}
 		plan, planErr := s.store.Plans().LatestByWorkItem(ctx, fresh.RootWorkItemID)
 		var evaluationRun *domain.ExecutionRun
@@ -786,6 +1242,11 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 		if fresh.Data == nil {
 			fresh.Data = map[string]any{}
 		}
+		runAction, _ := coordinatorContextOf(run)["action"].(string)
+		if runAction == "repair_plan" && fresh.RepairStatus == domain.CoordinatorRepairPending &&
+			planErr == nil && plan != nil && plan.SourceRunID == run.ID {
+			clearCoordinatorRepairCheckpoint(fresh)
+		}
 		delete(fresh.Data, "coordinator_failures")
 		delete(fresh.Data, "use_fallback")
 		if evaluationRun != nil {
@@ -797,11 +1258,10 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			fresh.Summary = "Coordinator 正在评估任务结果"
 		} else if action, _ := coordinatorContextOf(run)["action"].(string); action != "" &&
 			action != "evaluation" && !(action == "intake" && run.RuntimeLabel == "mock") &&
-			(planErr != nil || plan == nil || plan.SourceRunID != run.ID ||
-				(plan.Status != domain.PlanActive && plan.Status != domain.PlanWaiting)) {
+			(planErr != nil || plan == nil || plan.SourceRunID != run.ID || plan.Status == domain.PlanFailed) {
 			// Recovery/message/wakeup turns must produce a new actionable plan.
-			// Otherwise a stale waiting Plan could be mistaken for a delivered
-			// result and move the Task to user acceptance without new work.
+			// A finished Plan from this Run is a valid finish decision; a missing,
+			// stale, or failed Plan must not be mistaken for user delivery.
 			fresh.Status = domain.CoordinatorBlocked
 			fresh.Phase = "blocked"
 			fresh.BlockerCode = "coordinator_plan_missing"
@@ -810,11 +1270,15 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			fresh.CurrentRunID = ""
 			fresh.NextActionAt = nil
 			fresh.LastError = fresh.BlockerMessage
+			handoffCleared = clearCoordinatorHandoffCheckpoint(fresh)
 			if root.Status == domain.WorkItemInProgress {
 				if err := s.blockLocked(ctx, root, BlockParams{Code: fresh.BlockerCode,
 					Message: fresh.BlockerMessage, Source: "coordinator"}); err != nil {
 					return err
 				}
+			}
+			if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+				return err
 			}
 		} else if action, _ := coordinatorContextOf(run)["action"].(string); action == "evaluation" &&
 			root.Phase == domain.PhaseExecution {
@@ -822,6 +1286,25 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			// hook moves the root back to execution before this projection runs;
 			// do not misread the finished Plan as final delivery and wait for user
 			// acceptance. Queue a bounded Coordinator replan instead.
+			goalForReplan, goalErr := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID)
+			if goalErr != nil {
+				return goalErr
+			}
+			todoForReplan, todoErr := s.store.Todos().Get(ctx, goalForReplan.CurrentTodoID)
+			if todoErr != nil {
+				return todoErr
+			}
+			var replanErr error
+			controlReceipt, replanErr = s.admitGovernanceControlDecisionLocked(ctx, governanceControlReceiptParams{
+				Goal: goalForReplan, Todo: todoForReplan, OwnerAgentID: run.AgentProfileID,
+				Kind: domain.TurnDecisionReplan, Reason: "评估未通过，重新规划当前 Todo",
+				NextAction: "Coordinator 重新提交完整 PlanDecisionV2", SourceRunID: run.ID,
+				AdmissionKey: fmt.Sprintf("control:replan:%s", run.ID), KeepClaim: isDelegatedCoordinatorRun(run),
+			})
+			if replanErr != nil {
+				log.Printf("coordinator: Worker retry exhaustion source settlement/admission failed for run %s: %v", run.ID, replanErr)
+				return replanErr
+			}
 			fresh.Status = domain.CoordinatorQueued
 			fresh.Phase = "recovering"
 			fresh.CurrentAction = "recover"
@@ -851,24 +1334,65 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 				fresh.CurrentAction = "message"
 				fresh.Summary = "存在未消费任务反馈，Coordinator 继续处理"
 			} else {
-				fresh.Status = domain.CoordinatorWaitingUser
-				fresh.Phase = "acceptance"
-				fresh.CurrentAction = "等待用户验收"
-				fresh.Summary = "Coordinator 已完成本轮任务"
-				if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
-					fresh.Data["completed_steps"] = total
-					fresh.Data["progress"] = float64(1)
+				// A governed Plan finish must have a canonical passed evaluation
+				// before the control line can expose user acceptance. A plain model
+				// finish (or a verdict that was never durably recorded) is a blocker,
+				// not an implicit completion path.
+				finishEvidenceReady := true
+				finishEvidenceReason := ""
+				if plan != nil && plan.Status == domain.PlanFinished {
+					if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID); goalErr == nil {
+						ready, reason, gateErr := s.CoordinatorFinishEvidenceReady(ctx, goal.ID, goal.CurrentTodoID, plan, run)
+						if gateErr != nil {
+							return gateErr
+						}
+						finishEvidenceReady, finishEvidenceReason = ready, reason
+					} else if !errors.Is(goalErr, domain.ErrNotFound) {
+						return goalErr
+					}
 				}
-				if root.Status == domain.WorkItemInProgress && root.Phase != domain.PhaseReview {
-					rootExpected := root.Version
-					if err := root.EnterReview(time.Now().UTC()); err == nil {
-						if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
+				if !finishEvidenceReady {
+					fresh.Status = domain.CoordinatorBlocked
+					fresh.Phase = "validation"
+					fresh.BlockerCode = "governance_evidence_insufficient"
+					fresh.BlockerMessage = finishEvidenceReason
+					fresh.CurrentAction = "补齐 validation/evidence 后解除阻塞"
+					fresh.Summary = "完成决策缺少可验证证据"
+					fresh.LastError = finishEvidenceReason
+					handoffCleared = clearCoordinatorHandoffCheckpoint(fresh)
+					if root.Status == domain.WorkItemInProgress {
+						if err := s.blockLocked(ctx, root, BlockParams{Code: fresh.BlockerCode,
+							Message: fresh.BlockerMessage, Source: "governance_finish_gate"}); err != nil {
 							return err
 						}
-						if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
-							domain.AggregateWorkItem, root.ID, root.Version, nil,
-							map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
-							return err
+					}
+					if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+						return err
+					}
+				} else {
+					fresh.Status = domain.CoordinatorWaitingUser
+					fresh.Phase = "acceptance"
+					fresh.CurrentAction = "等待用户验收"
+					fresh.Summary = "Coordinator 已完成本轮任务"
+					if total := coordinatorAttemptValue(fresh.Data["total_steps"]); total > 0 {
+						fresh.Data["completed_steps"] = total
+						fresh.Data["progress"] = float64(1)
+					}
+					// An evaluation pass has already moved the root review → acceptance
+					// before this Coordinator projection runs. Only the plain finish
+					// path starts at execution and needs the review transition here;
+					// never regress an existing acceptance projection back to review.
+					if root.Status == domain.WorkItemInProgress && root.Phase == domain.PhaseExecution {
+						rootExpected := root.Version
+						if err := root.EnterReview(time.Now().UTC()); err == nil {
+							if err := s.store.WorkItems().Update(ctx, root, rootExpected); err != nil {
+								return err
+							}
+							if err := s.emit(ctx, root.WorkspaceID, domain.EventWorkItemUpdated,
+								domain.AggregateWorkItem, root.ID, root.Version, nil,
+								map[string]any{"phase": string(root.Phase), "record_kind": string(domain.RecordKindTask)}); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -878,6 +1402,11 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 			return err
 		}
 		fresh.Version = expected + 1
+		if controlReceipt != nil {
+			if err := s.appendGovernanceProjectionPhaseLocked(ctx, controlReceipt.TurnKey); err != nil {
+				return err
+			}
+		}
 		kind, summary, stage := domain.EventCoordinatorPlanUpdated, "Coordinator 已更新任务计划", "plan"
 		if fresh.Status == domain.CoordinatorQueued && fresh.Phase == "recovering" {
 			kind, summary, stage = domain.EventCoordinatorRecoveryStarted, "评估未通过，Coordinator 重新规划", "recovery"
@@ -893,7 +1422,8 @@ func (s *Service) handleCoordinatorSuccess(ctx context.Context, state *domain.Ta
 		}
 		if err := s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID, kind, summary,
 			run.ID, run.AgentProfileID, fresh.Attempt, "", nil,
-			map[string]any{"stage": stage, "next_action": fresh.CurrentAction}); err != nil {
+			map[string]any{"stage": stage, "next_action": fresh.CurrentAction,
+				"handoff_cleared": handoffCleared}); err != nil {
 			return err
 		}
 		if fresh.Status == domain.CoordinatorQueued {
@@ -1083,16 +1613,57 @@ func (s *Service) handleCoordinatorWorkerTerminal(ctx context.Context, state *do
 			delete(fresh.Data, "control_action")
 			fresh.Data["failed_worker_run_id"] = run.ID
 			fresh.Data["recovery_rounds"] = coordinatorAttemptValue(fresh.Data["recovery_rounds"]) + 1
+			goalForReplan, goalErr := s.store.Goals().GetByRootWorkItem(ctx, fresh.RootWorkItemID)
+			if goalErr != nil {
+				return goalErr
+			}
+			todoForReplan, todoErr := s.store.Todos().Get(ctx, goalForReplan.CurrentTodoID)
+			if todoErr != nil {
+				return todoErr
+			}
+			controlOwnerID := fresh.CoordinatorAgentID
+			keepClaim := false
+			if handoff, _, _, targetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, fresh); handoffErr != nil {
+				return handoffErr
+			} else if handoff != nil {
+				controlOwnerID = targetAgentID
+				keepClaim = true
+			}
+			// Clear the exhausted retry checkpoint before settling the source Turn.
+			// The settlement guard deliberately keeps reservations open while a
+			// retry_worker checkpoint exists; persisting this replan transition first
+			// proves that no third retry will be scheduled, so the old Turn can close
+			// in the same transaction as the new control receipt.
 			if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
 				return err
 			}
 			fresh.Version = expected + 1
+			var controlReceipt *domain.TurnReceiptHeader
+			var replanErr error
+			controlReceipt, replanErr = s.admitGovernanceControlDecisionLocked(ctx, governanceControlReceiptParams{
+				Goal: goalForReplan, Todo: todoForReplan, OwnerAgentID: controlOwnerID,
+				Kind: domain.TurnDecisionReplan, Reason: "Worker 重试预算用尽，重新规划当前 Todo",
+				NextAction: "Coordinator 选择新方案或 Agent", SourceRunID: run.ID,
+				AdmissionKey: fmt.Sprintf("control:replan:worker:%s", run.ID), KeepClaim: keepClaim,
+			})
+			if replanErr != nil {
+				return replanErr
+			}
+			if controlReceipt != nil {
+				if err := s.appendGovernanceProjectionPhaseLocked(ctx, controlReceipt.TurnKey); err != nil {
+					log.Printf("coordinator: Worker retry exhaustion new control Turn projection failed for run %s: %v", run.ID, err)
+					return err
+				}
+			}
 			return s.appendCoordinatorEvent(ctx, fresh, run.WorkItemID, domain.EventCoordinatorRecoveryStarted,
 				"Worker 重试预算用尽，Coordinator 重新规划", run.ID, run.AgentProfileID,
 				attempt, failure, nil, map[string]any{"stage": "reassign", "status": "retrying",
 					"failure_code": coordinatorFailureCode(run), "failure_message": failure,
 					"retryable": true, "next_action": "调整指令或选择其他 Agent"})
 		})
+		if err != nil {
+			log.Printf("coordinator: Worker retry exhaustion replan for run %s failed: %v", run.ID, err)
+		}
 		if err == nil {
 			_ = s.StartCoordinator(ctx, state.RootWorkItemID)
 		}
@@ -1102,7 +1673,7 @@ func (s *Service) handleCoordinatorWorkerTerminal(ctx context.Context, state *do
 }
 
 func coordinatorWorkerRunSuperseded(state *domain.TaskCoordinatorState, run *domain.ExecutionRun) bool {
-	return state != nil && run != nil && !isSystemCoordinatorRun(run) &&
+	return state != nil && run != nil && !isGovernedCoordinatorRun(run) &&
 		state.CurrentRunID != "" && state.CurrentRunID != run.ID
 }
 
@@ -1188,7 +1759,7 @@ func coordinatorRunRetryable(run *domain.ExecutionRun) bool {
 	case runtime.FamilyTransientUpstream, runtime.FamilyIO, runtime.FamilyTimeout:
 		return true
 	case runtime.FamilySessionUnknown:
-		return isSystemCoordinatorRun(run)
+		return isGovernedCoordinatorRun(run)
 	}
 	text := strings.ToLower(coordinatorFailureText(run))
 	// Some transports fail before an adapter can classify the error. Treat the
@@ -1239,16 +1810,83 @@ func (s *Service) planWorkerCoordinatorContext(ctx context.Context, rootID strin
 	}
 }
 
-func (s *Service) planEvaluationCoordinatorContext(ctx context.Context, plan *domain.Plan) map[string]any {
+func (s *Service) planEvaluationCoordinatorContext(ctx context.Context, plan *domain.Plan) (map[string]any, *coordinatorRunAdmission, error) {
+	if plan == nil {
+		return nil, nil, fmt.Errorf("%w: evaluation Plan is required", domain.ErrValidation)
+	}
 	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, plan.WorkItemID)
 	if err != nil {
-		return nil
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
 	}
-	return map[string]any{
+	if plan.SourceRunID == "" {
+		return nil, nil, fmt.Errorf("%w: governed evaluation requires a source Coordinator Run", domain.ErrValidation)
+	}
+	source, err := s.store.Runs().Get(ctx, plan.SourceRunID)
+	if err != nil {
+		return nil, nil, err
+	}
+	contextData := map[string]any{
 		"role": coordinatorRole, "root_work_item_id": state.RootWorkItemID,
 		"state_id": state.ID, "action": "evaluation", "plan_id": plan.ID,
-		"attempt": state.Attempt + 1,
+		"attempt": state.Attempt + 1, "source_run_id": plan.SourceRunID,
 	}
+	admission := &coordinatorRunAdmission{
+		RootWorkItemID: state.RootWorkItemID, StateID: state.ID,
+		SourceRunID: plan.SourceRunID, Action: "evaluation",
+	}
+	if isDelegatedCoordinatorRun(source) {
+		handoff, goal, todo, targetAgentID, handoffErr := s.handoffForCoordinatorStart(ctx, state)
+		if handoffErr != nil {
+			return nil, nil, handoffErr
+		}
+		if handoff == nil || goal == nil || todo == nil || targetAgentID != plan.AgentProfileID {
+			return nil, nil, fmt.Errorf("%w: delegated evaluation source has no current Handoff checkpoint", domain.ErrStateConflict)
+		}
+		contextData = handoffCoordinatorContext(state, handoff, targetAgentID, "evaluation")
+		contextData["plan_id"] = plan.ID
+		contextData["source_run_id"] = plan.SourceRunID
+		if handoff.Target.Kind == domain.GovernanceActorRuntime {
+			contextData["handoff_target_runtime"] = handoff.Target.ID
+		}
+		admission.Delegated = true
+	}
+	return contextData, admission, nil
+}
+
+func (s *Service) recordCoordinatorEvaluationDispatch(ctx context.Context, plan *domain.Plan, run *domain.ExecutionRun) error {
+	if plan == nil || run == nil || plan.SourceRunID == "" {
+		return nil
+	}
+	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, plan.WorkItemID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if state.CurrentRunID != plan.SourceRunID {
+		return fmt.Errorf("%w: evaluation source Run no longer owns the Coordinator control line", domain.ErrStateConflict)
+	}
+	expected := state.Version
+	state.Status = domain.CoordinatorRunning
+	state.Phase = "evaluation"
+	state.CurrentRunID = run.ID
+	state.CurrentAgentID = run.AgentProfileID
+	state.CurrentAction = "等待评估 Run 完成"
+	state.Summary = "Coordinator 正在评估任务结果"
+	state.NextActionAt = nil
+	if err := s.store.TaskCoordinators().UpdateState(ctx, state, expected); err != nil {
+		return err
+	}
+	state.Version = expected + 1
+	return s.appendCoordinatorEvent(ctx, state, state.RootWorkItemID,
+		domain.EventCoordinatorAttemptUpdated, "Coordinator 已创建评估 Run",
+		run.ID, run.AgentProfileID, state.Attempt, "evaluation", nil,
+		map[string]any{"stage": "evaluation", "status": "queued", "plan_id": plan.ID,
+			"next_action": state.CurrentAction})
 }
 
 func (s *Service) recordCoordinatorWorkerDispatch(ctx context.Context, root, child *domain.WorkItem,
@@ -1358,35 +1996,71 @@ func (s *Service) resumeCoordinatorAfterUserAction(ctx context.Context, workItem
 	}
 }
 
-func (s *Service) markCoordinatorUserBlocked(ctx context.Context, workItemID string, params BlockParams) {
+// markCoordinatorUserBlockedLocked projects an explicit WorkItem blocker into
+// the owning Coordinator and native governance state. The caller owns the
+// transaction; the returned active Run is cancelled only after commit.
+func (s *Service) markCoordinatorUserBlockedLocked(ctx context.Context, workItemID string, params BlockParams) (string, error) {
 	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, workItemID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", nil
+	}
 	if err != nil {
-		return
+		return "", err
 	}
 	activeRunID := state.CurrentRunID
-	_ = s.store.InTx(ctx, func(ctx context.Context) error {
-		fresh, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
-		if err != nil {
-			return err
-		}
-		expected := fresh.Version
-		fresh.Status = domain.CoordinatorBlocked
-		fresh.Phase = "blocked"
-		fresh.BlockerCode = params.Code
-		fresh.BlockerMessage = params.Message
-		fresh.CurrentAction = "等待用户解除阻塞"
-		fresh.NextActionAt = nil
-		if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
-			return err
-		}
-		fresh.Version = expected + 1
-		return s.appendCoordinatorEvent(ctx, fresh, workItemID, domain.EventCoordinatorBlocked,
-			"用户暂停并阻塞任务", activeRunID, fresh.CoordinatorAgentID, fresh.Attempt,
-			params.Message, nil, map[string]any{"stage": "failure", "failure_code": params.Code,
-				"failure_message": params.Message, "retryable": false,
-				"next_action": "解除阻塞后 Coordinator 自动继续"})
-	})
-	if activeRunID != "" {
-		_, _ = s.ControlRun(context.WithoutCancel(ctx), activeRunID, "cancel")
+	fresh, err := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
+	if err != nil {
+		return "", err
 	}
+	if fresh.Status == domain.CoordinatorCompleted || fresh.Status == domain.CoordinatorCancelled {
+		return "", nil
+	}
+	if fresh.Status == domain.CoordinatorBlocked {
+		handoffCleared := clearCoordinatorHandoffCheckpoint(fresh)
+		if handoffCleared {
+			expected := fresh.Version
+			if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+				return "", err
+			}
+			fresh.Version = expected + 1
+		}
+		if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+			return "", err
+		}
+		if handoffCleared {
+			if err := s.appendCoordinatorEvent(ctx, fresh, fresh.RootWorkItemID,
+				domain.EventCoordinatorStateChanged, "阻塞已撤销过期 Handoff continuation",
+				"", fresh.CoordinatorAgentID, fresh.Attempt, "handoff_checkpoint_cleared", nil,
+				map[string]any{"stage": "failure", "handoff_cleared": true,
+					"next_action": "解除阻塞后 Coordinator 自动继续"}); err != nil {
+				return "", err
+			}
+		}
+		return activeRunID, nil
+	}
+	expected := fresh.Version
+	fresh.Status = domain.CoordinatorBlocked
+	fresh.Phase = "blocked"
+	fresh.BlockerCode = params.Code
+	fresh.BlockerMessage = params.Message
+	fresh.LastError = params.Message
+	fresh.CurrentAction = "等待用户解除阻塞"
+	fresh.CurrentRunID = ""
+	fresh.NextActionAt = nil
+	handoffCleared := clearCoordinatorHandoffCheckpoint(fresh)
+	if err := s.store.TaskCoordinators().UpdateState(ctx, fresh, expected); err != nil {
+		return "", err
+	}
+	fresh.Version = expected + 1
+	if err := s.blockCurrentGovernanceLocked(ctx, fresh.RootWorkItemID, time.Now().UTC()); err != nil {
+		return "", err
+	}
+	if err := s.appendCoordinatorEvent(ctx, fresh, workItemID, domain.EventCoordinatorBlocked,
+		"用户暂停并阻塞任务", activeRunID, fresh.CoordinatorAgentID, fresh.Attempt,
+		params.Message, nil, map[string]any{"stage": "failure", "failure_code": params.Code,
+			"failure_message": params.Message, "retryable": false,
+			"next_action": "解除阻塞后 Coordinator 自动继续", "handoff_cleared": handoffCleared}); err != nil {
+		return "", err
+	}
+	return activeRunID, nil
 }

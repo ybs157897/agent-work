@@ -48,6 +48,7 @@ func TestCoordinatorRuntimeBindingMustBeReadyAndMatchItsLabel(t *testing.T) {
 			}
 			root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 				Title: "Runtime 边界", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+				AcceptanceCriteria: []string{"test task acceptance"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -70,6 +71,7 @@ func TestCoordinatedPlanRequiresWaitBarrierAfterDispatch(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "等待 Worker 的计划", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +97,7 @@ func TestCoordinatedPlanRejectsFinishBeforeWaitBarrier(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, workerID := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "finish 不得插队", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,6 +127,7 @@ func TestCoordinatedPlanRejectsStoppedOrStaleCoordinatorState(t *testing.T) {
 	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "过期 Plan", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,6 +207,7 @@ func TestCoordinatorLazilyProbesBuiltinRuntimeBeforeFirstRun(t *testing.T) {
 	}
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "创建即自动探测", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)

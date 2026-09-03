@@ -98,16 +98,14 @@ func (s *Server) handleUpsertModel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
-	if s.models == nil {
-		writeProblem(w, r, Problem{
-			Type: "https://workbench.example/problems/not-found", Title: "Resource not found",
-			Status: http.StatusNotFound, Code: "model_registry_disabled", Detail: modelRegistryDisabledDetail,
-		})
-		return
-	}
-	if err := s.models.Delete(r.PathValue("model_id")); err != nil {
-		fail(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	modelID := r.PathValue("model_id")
+	s.idempotent(w, r, "model:"+modelID, func() (int, []byte) {
+		if s.models == nil {
+			return renderProblem(http.StatusNotFound, "model_registry_disabled", "Resource not found", modelRegistryDisabledDetail)
+		}
+		if err := s.models.Delete(modelID); err != nil {
+			return problemBytes(err)
+		}
+		return http.StatusNoContent, nil
+	})
 }

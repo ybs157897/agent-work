@@ -63,18 +63,23 @@ func (a *Adapter) Manifest(ctx context.Context) (runtime.AdapterManifest, error)
 		AdapterID: "kimi", AdapterVersion: "1.0.0",
 		Protocol: runtime.Protocol{Name: "kimi-cli-stream-json", Version: "1"},
 		Capabilities: map[string]runtime.CapabilityLevel{
-			"streaming":     runtime.CapSupported,
-			"resume":        runtime.CapSupported, // -S <session id>
-			"multi_turn":    runtime.CapSupported,
-			"system_prompt": runtime.CapSupported,         // --agent-file 在首轮绑定
-			"modes":         runtime.CapSupported,         // --plan
-			"permissions":   runtime.CapAdapterTranslated, // --auto/--yolo/--plan + agent toolset
+			"streaming":                               runtime.CapSupported,
+			runtime.CapabilityStructuredTransport:     runtime.CapSupported,
+			runtime.CapabilitySchemaConstrainedOutput: runtime.CapUnavailable,
+			runtime.CapabilityControlToolCall:         runtime.CapUnavailable,
+			"resume":                                  runtime.CapSupported, // -S <session id>
+			"multi_turn":                              runtime.CapSupported,
+			"system_prompt":                           runtime.CapSupported,         // --agent-file 在首轮绑定
+			"modes":                                   runtime.CapSupported,         // --plan
+			"permissions":                             runtime.CapAdapterTranslated, // --auto/--yolo/--plan + agent toolset
 			// print mode 无精确取消：进程组终止（process_scoped）。
-			"interrupt":         runtime.CapAdapterTranslated,
-			"approval":          runtime.CapUnavailable, // M4 接 ACP permission
-			"workspace_files":   runtime.CapSupported,
-			"terminal":          runtime.CapUnavailable,
-			"structured_output": runtime.CapSupported,
+			"interrupt":       runtime.CapAdapterTranslated,
+			"approval":        runtime.CapUnavailable, // M4 接 ACP permission
+			"workspace_files": runtime.CapSupported,
+			"terminal":        runtime.CapUnavailable,
+			// stream-json is a transport framing mode, not provider-enforced
+			// structured output.
+			"structured_output": runtime.CapAdapterTranslated,
 		},
 		SchemaDigest: "sha256:kimi-cli-stream-json-v1",
 	}, nil

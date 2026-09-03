@@ -58,6 +58,7 @@ func TestTaskCommentEndpointsContract(t *testing.T) {
 
 	root, err := s.svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "评论任务", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"评论路径可回放"},
 	})
 	if err != nil {
 		t.Fatal(err)

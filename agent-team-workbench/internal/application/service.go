@@ -9,7 +9,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
+	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
@@ -19,12 +22,20 @@ import (
 // Service 编排用例与事务边界。命令流程：
 // 校验 → 领域状态机 → 同事务写状态 + 事件 + outbox → 提交后通知 SSE / 分派 Runtime。
 type Service struct {
-	changesMu       sync.Mutex
-	revertedChanges map[string]string
-	store           Store
-	dispatcher      Dispatcher
-	notifier        Notifier
-	adapters        *runtime.Registry
+	changesMu           sync.Mutex
+	revertedChanges     map[string]string
+	dispatchedRuns      sync.Map
+	governancePlanLocks [64]sync.Mutex
+	// governanceQuotaLocks 与 governancePlanLocks 必须分属两个数组：提交路径
+	// （SubmitGovernedTodoPlanDecision 持 run.ID 锁）会嵌套调用 quota sweep
+	// （按 TurnKey 加锁）；同一数组的 FNV 桶碰撞会让同一 goroutine 重入
+	// 非重入互斥量永久自锁。锁序单向（run.ID → turn key），跨数组无环。
+	governanceQuotaLocks      [64]sync.Mutex
+	governanceProjectionLocks [64]sync.Mutex
+	store                     Store
+	dispatcher                Dispatcher
+	notifier                  Notifier
+	adapters                  *runtime.Registry
 	// ApprovalForwarder / ControlForwarder 把决定转发到 Runner WSS（M2）；
 	// 无 Runner 的内置 Mock 路径不需要。
 	ApprovalForwarder func(ctx context.Context, runID, approvalID string, approved bool)
@@ -37,11 +48,20 @@ type Service struct {
 	// 与 ModelResolver 同风格）；nil 时该步骤响亮失败（error=no_retriever），
 	// 绝不静默降级。
 	Knowledge knowledge.Retriever
+	// agentConfigSyncIntentsEnabled gates the external-config bridge. Tests and
+	// embedders that do not mount an agents/ synchronizer keep the historical
+	// DB-only Agent update path; the control-plane enables this before serving.
+	agentConfigSyncIntentsEnabled bool
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {
 	return &Service{store: store, dispatcher: dispatcher, notifier: notifier, adapters: adapters, revertedChanges: make(map[string]string)}
 }
+
+// EnableAgentConfigSyncIntents makes Agent updates create a durable external
+// configuration intent in the same transaction as the Agent CAS and event.
+// The external effect is applied by agentconfig.Importer after that commit.
+func (s *Service) EnableAgentConfigSyncIntents() { s.agentConfigSyncIntentsEnabled = true }
 
 // SetDispatcher 用于打破 Service ↔ Gateway/Adapter 的构造环（启动时一次性注入）。
 func (s *Service) SetDispatcher(d Dispatcher) { s.dispatcher = d }
@@ -152,12 +172,33 @@ func (s *Service) CreateAgent(ctx context.Context, workspaceID string, p CreateA
 	// M4 唤醒缺省与迁移列缺省一致：指派/手动唤醒默认开，心跳自主唤醒 opt-in。
 	a.WakeOnAssignment, a.WakeOnDemand = true, true
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		var eventData = map[string]any{"name": a.Name, "role": a.Role}
+		var intents AgentConfigSyncIntentRepo
+		if s.agentConfigSyncIntentsEnabled {
+			if repo := s.store.AgentConfigSyncIntents(); repo != nil {
+				intents = repo
+			} else {
+				return fmt.Errorf("%w: Agent 配置 durable intent repository unavailable", domain.ErrCapabilityMissing)
+			}
+			a.Slug = durableAgentConfigSlug(a.ID)
+		}
 		if err := s.store.Agents().Create(ctx, a); err != nil {
 			return err
 		}
+		if intents != nil {
+			intent, err := s.newAgentConfigSyncIntent(a)
+			if err != nil {
+				return err
+			}
+			if err := intents.Create(ctx, intent); err != nil {
+				return err
+			}
+			eventData["config_sync_intent_id"] = intent.ID
+			eventData["config_sync_target_digest"] = intent.TargetDigest
+		}
 		if err := s.emit(ctx, workspaceID, domain.EventAgentProfileCreated,
 			domain.AggregateAgentProfile, a.ID, a.Version, nil,
-			map[string]any{"name": a.Name, "role": a.Role}); err != nil {
+			eventData); err != nil {
 			return err
 		}
 		return s.activity(ctx, workspaceID, "agent.created", "添加智能体 "+a.Name)
@@ -180,6 +221,9 @@ func (s *Service) SetAgentAvailability(ctx context.Context, agentID string, enab
 		a, err := s.store.Agents().Get(ctx, agentID)
 		if err != nil {
 			return err
+		}
+		if a.Kind.IsSystem() {
+			return fmt.Errorf("%w: system Task Coordinator profile is configured through the Coordinator API", domain.ErrStateConflict)
 		}
 		if a.Availability == target {
 			agent = a
@@ -309,39 +353,115 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, patch AgentPa
 		if err != nil {
 			return err
 		}
+		if a.Kind.IsSystem() {
+			return fmt.Errorf("%w: system Task Coordinator profile is configured through the Coordinator API", domain.ErrStateConflict)
+		}
+		var intents AgentConfigSyncIntentRepo
+		if s.agentConfigSyncIntentsEnabled {
+			if repo := s.store.AgentConfigSyncIntents(); repo != nil {
+				intents = repo
+			} else {
+				return fmt.Errorf("%w: Agent 配置 durable intent repository unavailable", domain.ErrCapabilityMissing)
+			}
+		}
+		var active *domain.AgentConfigSyncIntent
+		if intents != nil {
+			active, err = intents.GetActiveByAgent(ctx, agentID)
+			if err != nil && !errors.Is(err, domain.ErrNotFound) {
+				return err
+			}
+			if errors.Is(err, domain.ErrNotFound) {
+				active = nil
+			}
+		}
+		// A retry of a request whose external write failed must be able to
+		// replay the sole active intent even when its original expected_version
+		// is now stale. A different target is fail-closed until recovery, so a
+		// partially applied bundle can never be silently superseded.
+		if active != nil {
+			activeTarget, decodeErr := active.DecodeTarget()
+			if decodeErr != nil {
+				return fmt.Errorf("%w: %w (intent %s target invalid)", domain.ErrStateConflict,
+					domain.ErrAgentConfigSyncConflict, active.ID)
+			}
+			currentTarget, targetErr := domain.AgentConfigTargetFromProfile(a)
+			if targetErr != nil {
+				return targetErr
+			}
+			currentTarget.ResolvedModel = activeTarget.ResolvedModel
+			currentDigest, targetErr := domain.ComputeAgentConfigTargetDigest(currentTarget)
+			if targetErr != nil {
+				return targetErr
+			}
+			if a.Version != active.TargetVersion || currentDigest != active.TargetDigest {
+				return fmt.Errorf("%w: %w (intent %s no longer matches Agent projection)", domain.ErrStateConflict,
+					domain.ErrAgentConfigSyncConflict, active.ID)
+			}
+			candidate := *a
+			applyAgentPatch(&candidate, patch)
+			candidateTarget, targetErr := domain.AgentConfigTargetFromProfile(&candidate)
+			if targetErr != nil {
+				return targetErr
+			}
+			// Replays must use the intent's frozen registry resolution. If the
+			// caller changed the model ref, enrichment below intentionally uses
+			// the current registry and the digest will not match the active
+			// target, keeping the update fail-closed.
+			if candidateTarget.ModelOverride == activeTarget.ModelOverride {
+				candidateTarget.ResolvedModel = activeTarget.ResolvedModel
+			} else {
+				s.enrichAgentConfigTarget(candidateTarget)
+			}
+			candidateDigest, targetErr := domain.ComputeAgentConfigTargetDigest(candidateTarget)
+			if targetErr != nil {
+				return targetErr
+			}
+			if candidate.Version == active.TargetVersion && candidateDigest == active.TargetDigest {
+				updated = a
+				return nil
+			}
+			return fmt.Errorf("%w: %w (intent %s)", domain.ErrStateConflict,
+				domain.ErrAgentConfigSyncPending, active.ID)
+		}
+		// A patch that already describes the current durable Agent projection is
+		// a semantic no-op. This also makes a crash-retried request with an
+		// omitted expected_version safe after its first intent was applied.
+		candidate := *a
+		applyAgentPatch(&candidate, patch)
+		candidateDigest, candidateErr := agentConfigDigest(&candidate)
+		currentDigest, currentErr := agentConfigDigest(a)
+		if candidateErr == nil && currentErr == nil && candidateDigest == currentDigest {
+			updated = a
+			return nil
+		}
 		if err := checkVersion(patch.ExpectedVersion, a.Version); err != nil {
 			return err
 		}
 		expected := a.Version
-		if patch.Name != nil {
-			a.Name = *patch.Name
-		}
-		if patch.Role != nil {
-			a.Role = *patch.Role
-		}
-		if patch.Skills != nil {
-			a.Skills = patch.Skills
-		}
-		if patch.Instructions != nil {
-			a.Instructions = *patch.Instructions
-		}
-		if patch.RuntimePreference != nil {
-			a.RuntimePreference = *patch.RuntimePreference
-		}
-		if patch.ModelOverride != nil {
-			a.ModelOverride = *patch.ModelOverride
-		}
-		if patch.Policy != nil {
-			a.Policy = *patch.Policy
+		applyAgentPatch(a, patch)
+		if intents != nil && strings.TrimSpace(a.Slug) == "" {
+			a.Slug = durableAgentConfigSlug(a.ID)
 		}
 		a.UpdatedAt = time.Now().UTC()
 		if err := s.store.Agents().Update(ctx, a, expected); err != nil {
 			return err
 		}
 		a.Version++
+		eventData := map[string]any{"name": a.Name, "role": a.Role}
+		if intents != nil {
+			intent, err := s.newAgentConfigSyncIntent(a)
+			if err != nil {
+				return err
+			}
+			if err := intents.Create(ctx, intent); err != nil {
+				return err
+			}
+			eventData["config_sync_intent_id"] = intent.ID
+			eventData["config_sync_target_digest"] = intent.TargetDigest
+		}
 		if err := s.emit(ctx, a.WorkspaceID, domain.EventAgentProfileUpdated,
 			domain.AggregateAgentProfile, a.ID, a.Version, nil,
-			map[string]any{"name": a.Name, "role": a.Role}); err != nil {
+			eventData); err != nil {
 			return err
 		}
 		updated = a
@@ -352,6 +472,148 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, patch AgentPa
 	}
 	s.notifier.Notify(updated.WorkspaceID)
 	return updated, nil
+}
+
+func durableAgentConfigSlug(agentID string) string {
+	value := strings.ToLower(strings.TrimSpace(agentID))
+	var out strings.Builder
+	dash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			out.WriteRune(r)
+			dash = false
+			continue
+		}
+		if out.Len() > 0 && !dash {
+			out.WriteByte('-')
+			dash = true
+		}
+	}
+	slug := strings.Trim(out.String(), "-")
+	if slug == "" {
+		return "agent"
+	}
+	return slug
+}
+
+func (s *Service) newAgentConfigSyncIntent(a *domain.AgentProfile) (*domain.AgentConfigSyncIntent, error) {
+	target, err := domain.AgentConfigTargetFromProfile(a)
+	if err != nil {
+		return nil, err
+	}
+	s.enrichAgentConfigTarget(target)
+	preferred := strings.TrimSpace(target.RuntimePreference.Preferred)
+	if (preferred == "codex_local" || preferred == "kimi_local") &&
+		(target.ResolvedModel == nil || strings.TrimSpace(target.ResolvedModel.Model) == "") {
+		return nil, fmt.Errorf("%w: %s Agent config target has no resolvable model", domain.ErrCapabilityMissing, preferred)
+	}
+	if err := validateAgentConfigRuntimeTarget(target); err != nil {
+		return nil, err
+	}
+	return domain.NewAgentConfigSyncIntentForTarget(target, a.UpdatedAt)
+}
+
+func agentConfigTargetModelSpec(target *domain.AgentConfigTarget) orchestrator.ModelSpec {
+	if target == nil || target.ResolvedModel == nil {
+		return orchestrator.ModelSpec{}
+	}
+	m := target.ResolvedModel
+	return orchestrator.ModelSpec{
+		Ref: m.Ref, ProviderID: m.ProviderID, ProviderLabel: m.ProviderLabel,
+		Provider: m.Provider, API: m.API, Model: m.Model, BaseURL: m.BaseURL,
+		APIKeyEnv: m.APIKeyEnv, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens,
+		ReasoningEffort: m.ReasoningEffort,
+	}
+}
+
+// validateAgentConfigRuntimeTarget rejects permanently invalid runtime/model
+// combinations before the Agent CAS commits an intent. Dynamic credentials
+// are deliberately left to the external reconciler, because they can become
+// available without changing the desired target.
+func validateAgentConfigRuntimeTarget(target *domain.AgentConfigTarget) error {
+	if target == nil {
+		return fmt.Errorf("%w: nil Agent config target", domain.ErrValidation)
+	}
+	spec := agentConfigTargetModelSpec(target)
+	switch strings.TrimSpace(target.RuntimePreference.Preferred) {
+	case "codex_local":
+		return codexconfig.ValidateSpec(spec)
+	case "kimi_local":
+		return kimiconfig.ValidateSpec(spec)
+	default:
+		return nil
+	}
+}
+
+// enrichAgentConfigTarget freezes the non-secret model registry fields needed
+// by Codex/Kimi. A later registry edit cannot change the effect of an already
+// durable intent; APIKeyEnv remains only an environment-variable reference.
+func (s *Service) enrichAgentConfigTarget(target *domain.AgentConfigTarget) {
+	if target == nil {
+		return
+	}
+	override := target.ModelOverride
+	if override.Ref == "" && override.Provider == "" && override.Model == "" && override.ReasoningEffort == "" {
+		return
+	}
+	model := &domain.AgentConfigModelTarget{
+		Ref: override.Ref, Provider: override.Provider, Model: override.Model,
+		ReasoningEffort: override.ReasoningEffort,
+	}
+	if s.ModelResolver != nil && override.Ref != "" {
+		if resolved, ok := s.ModelResolver(override.Ref); ok {
+			model.Ref = resolved.Ref
+			if model.Ref == "" {
+				model.Ref = override.Ref
+			}
+			model.ProviderID, model.ProviderLabel = resolved.ProviderID, resolved.ProviderLabel
+			model.Provider, model.API, model.Model = resolved.Provider, resolved.API, resolved.Model
+			model.BaseURL, model.APIKeyEnv = resolved.BaseURL, resolved.APIKeyEnv
+			model.ContextWindow, model.MaxTokens = resolved.ContextWindow, resolved.MaxTokens
+			if model.ReasoningEffort == "" {
+				model.ReasoningEffort = resolved.ReasoningEffort
+			}
+		}
+	}
+	if override.Provider != "" {
+		model.Provider = override.Provider
+	}
+	if override.Model != "" {
+		model.Model = override.Model
+	}
+	target.ResolvedModel = model
+}
+
+func agentConfigDigest(a *domain.AgentProfile) (string, error) {
+	target, err := domain.AgentConfigTargetFromProfile(a)
+	if err != nil {
+		return "", err
+	}
+	return domain.ComputeAgentConfigTargetDigest(target)
+}
+
+func applyAgentPatch(a *domain.AgentProfile, patch AgentPatch) {
+	if patch.Name != nil {
+		a.Name = *patch.Name
+	}
+	if patch.Role != nil {
+		a.Role = *patch.Role
+	}
+	if patch.Skills != nil {
+		a.Skills = append([]string(nil), patch.Skills...)
+	}
+	if patch.Instructions != nil {
+		a.Instructions = *patch.Instructions
+	}
+	if patch.RuntimePreference != nil {
+		a.RuntimePreference = *patch.RuntimePreference
+	}
+	if patch.ModelOverride != nil {
+		a.ModelOverride = *patch.ModelOverride
+	}
+	if patch.Policy != nil {
+		a.Policy = *patch.Policy
+	}
 }
 
 // ── WorkItem ─────────────────────────────────────────────────────────
@@ -452,6 +714,30 @@ func normalizeAcceptanceCriteria(in []string) []string {
 	return out
 }
 
+const (
+	coordinatorAcceptanceCriteriaMaxItems = 64
+	coordinatorAcceptanceCriteriaMaxRunes = 2000
+)
+
+// normalizeCoordinatorAcceptanceCriteria is the stricter public root-task
+// boundary. A Coordinator without a durable acceptance contract cannot be
+// evaluated or completed safely, so empty/oversized criteria fail before any
+// WorkItem, Coordinator state, event or runtime side effect is created.
+func normalizeCoordinatorAcceptanceCriteria(in []string) ([]string, error) {
+	out := normalizeAcceptanceCriteria(in)
+	if len(out) == 0 || len(out) > coordinatorAcceptanceCriteriaMaxItems {
+		return nil, fmt.Errorf("%w: auto-coordinated root Task acceptance criteria must contain 1..%d items",
+			domain.ErrValidation, coordinatorAcceptanceCriteriaMaxItems)
+	}
+	for index, criterion := range out {
+		if utf8.RuneCountInString(criterion) > coordinatorAcceptanceCriteriaMaxRunes {
+			return nil, fmt.Errorf("%w: acceptance criteria[%d] exceeds %d characters",
+				domain.ErrValidation, index, coordinatorAcceptanceCriteriaMaxRunes)
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p CreateWorkItemParams) (*domain.WorkItem, error) {
 	if p.Title == "" {
 		return nil, fmt.Errorf("%w: title required", domain.ErrValidation)
@@ -459,6 +745,14 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 	recordKind, err := defaultWorkItemRecordKind(p.RecordKind)
 	if err != nil {
 		return nil, err
+	}
+	autoCoordinate := p.AutoCoordinate && recordKind == domain.RecordKindTask && p.ParentID == ""
+	acceptanceCriteria := normalizeAcceptanceCriteria(p.AcceptanceCriteria)
+	if autoCoordinate {
+		acceptanceCriteria, err = normalizeCoordinatorAcceptanceCriteria(p.AcceptanceCriteria)
+		if err != nil {
+			return nil, err
+		}
 	}
 	status := p.Status
 	if status == "" {
@@ -512,9 +806,8 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 	// RFC §4.10：根/子 Task 创建即持久化 canonical 验收标准（不再只放
 	// Coordinator state/Run input）；Chat 记录没有验收读模型，criteria 只属于 Task。
 	if recordKind == domain.RecordKindTask {
-		wi.AcceptanceCriteria = normalizeAcceptanceCriteria(p.AcceptanceCriteria)
+		wi.AcceptanceCriteria = acceptanceCriteria
 	}
-	autoCoordinate := p.AutoCoordinate && recordKind == domain.RecordKindTask && p.ParentID == ""
 	var coordinatorRootID string
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		var config *domain.TaskCoordinatorConfig
@@ -543,7 +836,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 				CoordinatorAgentID: config.AgentProfileID,
 				Status:             domain.CoordinatorQueued,
 				CurrentAction:      "queued",
-				Data:               map[string]any{"acceptance_criteria": append([]string(nil), p.AcceptanceCriteria...)},
+				Data:               map[string]any{"acceptance_criteria": append([]string(nil), wi.AcceptanceCriteria...)},
 				Version:            1,
 				CreatedAt:          now,
 				UpdatedAt:          now,
@@ -607,6 +900,17 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 		return nil, err
 	}
 	s.notifier.Notify(workspaceID)
+	if recordKind == domain.RecordKindTask && p.ParentID == "" {
+		result, stateErr := s.EnsureGovernanceState(context.WithoutCancel(ctx), wi.ID)
+		if stateErr != nil {
+			log.Printf("governance state: root Task %s ensure 失败: %v", wi.ID, stateErr)
+		} else {
+			for _, issue := range result.Issues {
+				log.Printf("governance consistency issue: root=%s goal=%s code=%s message=%s",
+					issue.RootWorkItemID, issue.GoalID, issue.Code, issue.Message)
+			}
+		}
+	}
 	if coordinatorRootID != "" {
 		// The row/state/event transaction is the durable hand-off. Starting after
 		// commit prevents a runtime side effect from observing a rolled-back task;
@@ -770,6 +1074,7 @@ type BlockParams struct {
 
 func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockParams, expectedVersion int) (*domain.WorkItem, error) {
 	var wi *domain.WorkItem
+	var activeCoordinatorRunID string
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
 		w, err := s.store.WorkItems().Get(ctx, workItemID)
 		if err != nil {
@@ -787,6 +1092,16 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		if err := s.closeOpenDispatchesForBlockLocked(ctx, w); err != nil {
 			return err
 		}
+		activeCoordinatorRunID, err = s.markCoordinatorUserBlockedLocked(ctx, w.ID, p)
+		if err != nil {
+			return err
+		}
+		// A manually governed root may have Goal/Todo state without a system
+		// Coordinator. Keep that native intent aligned as well; for coordinated
+		// roots this is an idempotent no-op after the helper above.
+		if err := s.blockCurrentGovernanceLocked(ctx, w.ID, time.Now().UTC()); err != nil {
+			return err
+		}
 		wi = w
 		return nil
 	})
@@ -794,7 +1109,9 @@ func (s *Service) BlockWorkItem(ctx context.Context, workItemID string, p BlockP
 		return nil, err
 	}
 	s.notifier.Notify(wi.WorkspaceID)
-	s.markCoordinatorUserBlocked(context.WithoutCancel(ctx), wi.ID, p)
+	if activeCoordinatorRunID != "" {
+		_, _ = s.ControlRun(context.WithoutCancel(ctx), activeCoordinatorRunID, "cancel")
+	}
 	return wi, nil
 }
 
@@ -816,6 +1133,35 @@ func (s *Service) closeOpenDispatchesForBlockLocked(ctx context.Context, workIte
 			continue
 		}
 		dispatch.Status, dispatch.ClosedAt = domain.DispatchDegraded, &closedAt
+		if err := s.emitDispatchUpdated(ctx, workItem.WorkspaceID, dispatch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cancelOpenDispatchesLocked is the Goal-cancellation counterpart to the
+// blocker sweep above. Cancellation is an explicit user terminal outcome and
+// must remain distinguishable from a degraded execution caused by failure or
+// a blocker; both paths still use the same CAS/event surface.
+func (s *Service) cancelOpenDispatchesLocked(ctx context.Context, workItem *domain.WorkItem) error {
+	dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, workItem.ID)
+	if err != nil {
+		return err
+	}
+	for _, dispatch := range dispatches {
+		if dispatch == nil || dispatch.Status.IsTerminal() {
+			continue
+		}
+		closedAt := time.Now().UTC()
+		closed, err := s.store.Dispatches().CloseStatus(ctx, dispatch.ID, domain.DispatchCancelled, closedAt)
+		if err != nil {
+			return err
+		}
+		if !closed {
+			continue
+		}
+		dispatch.Status, dispatch.ClosedAt = domain.DispatchCancelled, &closedAt
 		if err := s.emitDispatchUpdated(ctx, workItem.WorkspaceID, dispatch); err != nil {
 			return err
 		}
@@ -889,6 +1235,13 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 			map[string]any{"record_kind": string(workItemRecordKind(w))}); err != nil {
 			return err
 		}
+		governanceRootID := w.ID
+		if coordinatorState != nil {
+			governanceRootID = coordinatorState.RootWorkItemID
+		}
+		if err := s.resumeCurrentGovernanceLocked(ctx, governanceRootID, time.Now().UTC()); err != nil {
+			return err
+		}
 		if coordinatorState != nil && coordinatorState.Status != domain.CoordinatorCompleted &&
 			coordinatorState.Status != domain.CoordinatorCancelled {
 			// RFC §7.7 删除清单：Unblock 同事务追加 system requirement comment 并
@@ -915,6 +1268,9 @@ func (s *Service) UnblockWorkItem(ctx context.Context, workItemID string, expect
 			}
 			if fresh.Status == domain.CoordinatorBlocked {
 				expected := fresh.Version
+				// Explicit user intervention starts a new bounded repair cycle;
+				// exhausted is a per-cycle budget, not a permanent planner ban.
+				clearCoordinatorRepairCheckpoint(fresh)
 				fresh.Status = domain.CoordinatorQueued
 				fresh.Phase = "recovering"
 				fresh.CurrentAction = "用户解除阻塞后继续"
@@ -980,6 +1336,17 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 		} else if !errors.Is(stateErr, domain.ErrNotFound) {
 			return stateErr
 		}
+		// Exact acceptance replay is a no-op once both visible control lines are
+		// terminal. Do this before the mutable-state gate so an HTTP/MCP retry does
+		// not emit a second completion/evidence event.
+		if w.Status == domain.WorkItemCompleted &&
+			(coordinatorState == nil || coordinatorState.Status == domain.CoordinatorCompleted) {
+			if err := w.CheckVersion(expectedVersion); err != nil && expectedVersion != 0 {
+				return err
+			}
+			wi = w
+			return nil
+		}
 		if err := w.CheckVersion(expectedVersion); err != nil {
 			return err
 		}
@@ -1018,8 +1385,130 @@ func (s *Service) AcceptWorkItem(ctx context.Context, workItemID string, expecte
 				return err
 			}
 		}
+		if err := s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.completed", "任务「"+w.Title+"」验收通过"); err != nil {
+			return err
+		}
+		// A human Accept is the only source allowed to create the root accepted
+		// evidence used by Goal completion. Keep the evidence summary on the
+		// Goal row, then run the same finish gate before transitioning Goal.
+		if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, w.ID); goalErr == nil {
+			evidenceAt := time.Now().UTC()
+			accepted := false
+			for _, evidence := range goal.CompletionEvidenceSummary {
+				if evidence.SourceKind == domain.EvidenceSourceWorkItem &&
+					evidence.SourceID == w.ID && evidence.Verification == domain.EvidenceVerificationAccepted {
+					accepted = true
+					break
+				}
+			}
+			if !accepted {
+				goal.CompletionEvidenceSummary = append(goal.CompletionEvidenceSummary, domain.GovernanceEvidenceItem{
+					SourceKind: domain.EvidenceSourceWorkItem, SourceID: w.ID,
+					Verification: domain.EvidenceVerificationAccepted,
+					Summary:      "root Task accepted by user", RecordedAt: evidenceAt,
+				})
+				expectedGoal := goal.Version
+				goal.Version++
+				goal.UpdatedAt = evidenceAt
+				if err := s.store.Goals().Update(ctx, goal, expectedGoal); err != nil {
+					return err
+				}
+				if err := s.emitGoalEvidenceAdded(ctx, goal, goal.CompletionEvidenceSummary[len(goal.CompletionEvidenceSummary)-1]); err != nil {
+					return err
+				}
+			}
+			todo, todoErr := s.store.Todos().Get(ctx, goal.CurrentTodoID)
+			if todoErr != nil {
+				return todoErr
+			}
+			plan, planErr := s.store.Plans().LatestByWorkItem(ctx, goal.RootWorkItemID)
+			if planErr != nil && !errors.Is(planErr, domain.ErrNotFound) {
+				return planErr
+			}
+			if validation, ok, validationErr := s.latestPassedValidationEvidence(ctx, goal, todo, plan); validationErr != nil {
+				return validationErr
+			} else if ok {
+				seenValidation := false
+				for _, evidence := range goal.CompletionEvidenceSummary {
+					if evidence.SourceKind == domain.EvidenceSourceValidationResult && evidence.SourceID == validation.ID {
+						seenValidation = true
+						break
+					}
+				}
+				if !seenValidation {
+					goal.CompletionEvidenceSummary = append(goal.CompletionEvidenceSummary, domain.GovernanceEvidenceItem{
+						SourceKind: domain.EvidenceSourceValidationResult, SourceID: validation.ID,
+						Verification: domain.EvidenceVerificationPassed, Summary: validation.Summary,
+						RecordedAt: validation.RecordedAt,
+					})
+					expectedGoal := goal.Version
+					goal.Version++
+					goal.UpdatedAt = evidenceAt
+					if err := s.store.Goals().Update(ctx, goal, expectedGoal); err != nil {
+						return err
+					}
+					if err := s.emitGoalEvidenceAdded(ctx, goal, goal.CompletionEvidenceSummary[len(goal.CompletionEvidenceSummary)-1]); err != nil {
+						return err
+					}
+				}
+			}
+			gate, gateErr := s.evaluateGoalFinishLocked(ctx, goal)
+			if gateErr != nil {
+				return gateErr
+			}
+			if !gate.Allowed {
+				return &FinishGateError{GoalID: goal.ID, Reasons: gate.Reasons}
+			}
+			// The current Todo is the bounded governance action being accepted.
+			// Close it in the same transaction as root WorkItem, Coordinator and
+			// Goal, binding the terminal projection to the last admitted Turn and
+			// the human acceptance evidence identity.
+			if todo.LastTurnSeq < 1 {
+				return fmt.Errorf("%w: accepted Goal current Todo has no admitted Turn", domain.ErrStateConflict)
+			}
+			completionKey := domain.TurnKey{GoalID: goal.ID, TodoID: todo.ID, TurnSeq: todo.LastTurnSeq}
+			beforeTodoStatus := todo.Status
+			completedTodo, completeErr := s.store.Todos().Complete(ctx, todo.ID, completionKey, w.ID, evidenceAt, todo.Version)
+			if completeErr != nil {
+				return completeErr
+			}
+			todo = completedTodo
+			if beforeTodoStatus != todo.Status {
+				if err := s.emitTodoStateChanged(ctx, goal.WorkspaceID, todo, beforeTodoStatus); err != nil {
+					return err
+				}
+			}
+			if gate.Allowed && !goal.Status.IsTerminal() {
+				fromGoal := goal.Status
+				goalVersion := goal.Version
+				if err := goal.Complete(evidenceAt); err != nil {
+					return err
+				}
+				if err := s.store.Goals().Update(ctx, goal, goalVersion); err != nil {
+					return err
+				}
+				if err := s.emitGoalStateChanged(ctx, goal, fromGoal); err != nil {
+					return err
+				}
+			}
+			// Acceptance changes both the root evidence and Goal lifecycle in this
+			// transaction. Refresh the derived projection before commit so an
+			// immediate read cannot observe a valid-but-stale Goal snapshot.
+			projection, _, _, projectionErr := s.buildGovernanceProjectionLocked(ctx, goal.ID)
+			if projectionErr != nil {
+				return projectionErr
+			}
+			if err := s.store.GovernanceProjections().Upsert(ctx, projection); err != nil {
+				return err
+			}
+			if err := s.emitProjectionUpdated(ctx, projection, "acceptance"); err != nil {
+				return err
+			}
+		} else if !errors.Is(goalErr, domain.ErrNotFound) {
+			return goalErr
+		}
 		wi = w
-		return s.activityFor(ctx, w.WorkspaceID, w.ID, "work_item.completed", "任务「"+w.Title+"」验收通过")
+		return nil
 	})
 	if err != nil {
 		return nil, err

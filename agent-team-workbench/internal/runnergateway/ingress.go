@@ -36,6 +36,9 @@ func (g *Gateway) Available(adapterID string) bool {
 // 无匹配返回错误——禁止跨 Host/本机回退；同 Host 重试由 Coordinator durable
 // retry 创建新 Run。
 func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapshot *domain.ExecutionContextSnapshot, adapterID string) error {
+	if run == nil || run.ID == "" || run.AgentProfileID == "" {
+		return fmt.Errorf("%w: remote dispatch requires Run and agent_profile_id identity", domain.ErrValidation)
+	}
 	if snapshot == nil {
 		return errors.New("dispatch 需要 context snapshot（无快照不分派）")
 	}
@@ -87,10 +90,13 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 		}
 	}
 	// offer 只带 opaque 身份（契约 §8.2）：宿主绝对路径永不进下行帧。
+	// AgentProfileID 随 run_spec 下发：远程 adapter 需要它把 provider usage
+	// report 绑定到 agent 身份（provenance.agent_id），否则远程 Run 只能落
+	// absent/unresolved usage 证据。
 	payload := marshalPayload(offerPayload{
 		LeaseID: lease.LeaseID, FencingToken: lease.FencingToken,
 		RunSpec: offerRunSpec{
-			RunID: run.ID, AdapterID: adapterID,
+			RunID: run.ID, AdapterID: adapterID, AgentProfileID: run.AgentProfileID,
 			ContextSnapshot: wireSnapshot(snapshot),
 			Input:           run.Input,
 			Policy:          policy,
@@ -303,14 +309,40 @@ func (g *Gateway) handleReject(rc *runnerConn, env Envelope) {
 	log.Printf("runnergateway: run %s 被 %s 拒绝（reason=%s detail=%s）", p.RunID, rc.runnerID, p.Reason, p.Detail)
 }
 
+// eventConnectionValid 校验帧是否来自当前、未被顶替的连接，以及帧内的
+// runner/epoch 是否与该连接完全一致。租约校验单独留给 eventTransportValid，
+// 这样终态后仅 usage.updated 才能在活动租约镜像被摘除时进入 Application，
+// 由 Application 读取已释放租约做最终 fencing/terminal 裁决。
+func (g *Gateway) eventConnectionValid(rc *runnerConn, runnerID, epoch string) bool {
+	if runnerID != rc.runnerID || epoch != rc.epoch || rc.superseded || !g.isCurrent(rc) {
+		return false
+	}
+	return true
+}
+
 // eventTransportValid 是 run.accept/reject/event 共用的 transport 校验：
 // 当前连接（未被顶替）+ 帧 epoch 与连接一致 + 活动 lease/fencing 完全匹配。
 func (g *Gateway) eventTransportValid(rc *runnerConn, runID, leaseID, runnerID, epoch string, fencing int64) bool {
-	if runnerID != rc.runnerID || epoch != rc.epoch || rc.superseded || !g.isCurrent(rc) {
+	if !g.eventConnectionValid(rc, runnerID, epoch) {
 		return false
 	}
 	_, ok := transportLease(rc, runID, leaseID, fencing)
 	return ok
+}
+
+// lateUsageTransportValid 是终态 usage.updated 的唯一 Gateway 例外。它只
+// 放行当前连接上已不在 activeRuns 镜像中的 Run；lease/fencing、Run 是否终态
+// 以及 lease 是否确实已释放，全部交由 Application 的原子命令最终校验。
+// 若内存中仍有该 Run（包括 lease/fencing 错配），继续走严格活动租约路径，
+// 防止活动 Run 的错误帧借此例外越过 transport fence。
+func (g *Gateway) lateUsageTransportValid(rc *runnerConn, runID, runnerID, epoch string) bool {
+	if !g.eventConnectionValid(rc, runnerID, epoch) {
+		return false
+	}
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	_, active := rc.activeRuns[runID]
+	return !active
 }
 
 // handleRunEvent：transport 校验 → application.ApplyRunnerEvent 原子应用 →
@@ -328,11 +360,18 @@ func (g *Gateway) handleRunEvent(rc *runnerConn, env Envelope) {
 		log.Printf("runnergateway: 丢弃缺事件身份的 run.event（run=%s conn=%s）", p.RunID, rc.runnerID)
 		return
 	}
-	// 与活动租约不匹配（旧 epoch / 旧 lease / 未知 run）：ACK 但不应用。
+	// 与活动租约不匹配（旧 epoch / 旧 lease / 未知 run）：通常 ACK 但不应用。
+	// 终态后 activeRuns 已由网关清理时，仅 usage.updated 可继续进入
+	// Application；它会按已释放 lease、Run terminal、runner/fencing 做最终裁决。
 	if !g.eventTransportValid(rc, p.RunID, p.LeaseID, p.RunnerID, p.ConnectionEpoch, p.FencingToken) {
-		log.Printf("runnergateway: 旧帧 ACK 不应用（run=%s lease=%s conn=%s）", p.RunID, p.LeaseID, rc.runnerID)
-		g.ackStale(rc, p)
-		return
+		if p.Event.Kind == domain.EventUsageUpdated &&
+			g.lateUsageTransportValid(rc, p.RunID, p.RunnerID, p.ConnectionEpoch) {
+			// Continue to Application for the released-lease terminal observation.
+		} else {
+			log.Printf("runnergateway: 旧帧 ACK 不应用（run=%s lease=%s conn=%s）", p.RunID, p.LeaseID, rc.runnerID)
+			g.ackStale(rc, p)
+			return
+		}
 	}
 
 	ack, err := g.engine.ApplyRunnerEvent(context.Background(), application.RunnerEventInput{

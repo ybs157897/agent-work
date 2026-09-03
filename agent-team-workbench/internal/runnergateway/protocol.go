@@ -5,11 +5,9 @@ package runnergateway
 // run.reject / run.command / run.event / ack / heartbeat，全部 v=2；
 // v1 帧在握手与读循环两处拒绝，不留兼容分支。
 //
-// 已知偏差（待契约修订，见实施台账）：ContextSnapshot 契约 properties 未含
-// branch_name/base_revision/location_version，但 snapshot_digest 的身份字段
-// 闭集（internal/domain execution_context.go）覆盖这三者——缺了它们 Runner
-// 无法重算 digest（branch_name 还是 branch 解析的匹配键）。本实现的 wire
-// 形态带全身份字段；契约侧应补齐同名 optional properties。
+// ContextSnapshot 的 branch_name/base_revision/location_version 与本实现
+// 同名字段保持一致，Runner 可以按完整身份闭集重算 snapshot_digest；契约
+// 守卫测试禁止 wire struct 与 schema 再次漂移。
 
 import (
 	"crypto/sha256"
@@ -176,10 +174,13 @@ type offerPayload struct {
 	RunSpec      offerRunSpec `json:"run_spec"`
 }
 
-// offerRunSpec 对应 RunOfferPayload.run_spec。
+// offerRunSpec 对应 RunOfferPayload.run_spec。AgentProfileID 是 adapter 侧
+// 绑定 provider usage report provenance.agent_id 的身份来源（缺失则远程
+// adapter 造不出 sealed report）。
 type offerRunSpec struct {
 	RunID           string              `json:"run_id"`
 	AdapterID       string              `json:"adapter_id"`
+	AgentProfileID  string              `json:"agent_profile_id"`
 	ContextSnapshot wireContextSnapshot `json:"context_snapshot"`
 	Input           map[string]any      `json:"input"`
 	Policy          map[string]any      `json:"policy"`

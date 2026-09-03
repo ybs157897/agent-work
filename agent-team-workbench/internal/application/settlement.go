@@ -357,7 +357,11 @@ func (s *Service) wakeSettlementLead(ctx context.Context, d *domain.Dispatch, wo
 	if leadRun.AgentProfileID == "" {
 		return fmt.Errorf("%w: 批次 %s 的 lead run %s 无 agent 归属", domain.ErrValidation, d.ID, d.LeadRunID)
 	}
-	lead, err := s.store.Agents().Get(ctx, leadRun.AgentProfileID)
+	leadAgentID, err := s.settlementWakeAgent(ctx, d, wi, leadRun.AgentProfileID)
+	if err != nil {
+		return err
+	}
+	lead, err := s.store.Agents().Get(ctx, leadAgentID)
 	if err != nil {
 		return err
 	}
@@ -382,6 +386,107 @@ func (s *Service) wakeSettlementLead(ctx context.Context, d *domain.Dispatch, wo
 	return err
 }
 
+// settlementWakeAgent follows the active governance Handoff when the Plan
+// owner is a delegated Coordinator. A dispatch's historical lead Run may
+// still point at the system Coordinator; the current Handoff claim is the
+// authority for who must consume the settlement material.
+func (s *Service) settlementWakeAgent(ctx context.Context, d *domain.Dispatch, wi *domain.WorkItem, fallback string) (string, error) {
+	if d == nil || wi == nil {
+		return "", fmt.Errorf("%w: settlement wake requires Dispatch and WorkItem", domain.ErrValidation)
+	}
+	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, wi.ID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return fallback, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	handoff, _, _, targetAgentID, err := s.handoffForCoordinatorStart(ctx, state)
+	if err != nil {
+		return "", err
+	}
+	if handoff != nil {
+		return targetAgentID, nil
+	}
+	return fallback, nil
+}
+
+// ensureCollectingDispatchWakeups repairs the scheduler crash window between
+// marking a settlement wake consumed and committing its summary Run. A
+// collecting Dispatch with neither a queued wake nor any settlement Run gets
+// one replacement wake; existing Run/wake identities are never duplicated.
+func (s *Service) ensureCollectingDispatchWakeups(ctx context.Context, rootWorkItemID string) (bool, error) {
+	repaired := false
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		root, err := s.store.WorkItems().Get(ctx, rootWorkItemID)
+		if err != nil {
+			return err
+		}
+		state, err := s.store.TaskCoordinators().GetState(ctx, rootWorkItemID)
+		if err != nil {
+			return err
+		}
+		dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, rootWorkItemID)
+		if err != nil {
+			return err
+		}
+		for _, dispatch := range dispatches {
+			if dispatch == nil || dispatch.Status != domain.DispatchCollecting {
+				continue
+			}
+			members, err := s.store.Runs().ListByDispatch(ctx, dispatch.ID)
+			if err != nil {
+				return err
+			}
+			settlementRunExists := false
+			workers := make([]*domain.ExecutionRun, 0, len(members))
+			for _, member := range members {
+				if settlementRunID(member) == dispatch.ID {
+					settlementRunExists = true
+					break
+				}
+				if dispatch.LeadRunID == "" || member.ID != dispatch.LeadRunID {
+					workers = append(workers, member)
+				}
+			}
+			if settlementRunExists {
+				continue
+			}
+			wakeAgentID, err := s.settlementWakeAgent(ctx, dispatch, root, state.CoordinatorAgentID)
+			if err != nil {
+				return err
+			}
+			recent, err := s.store.Wakeups().RecentByAgentTask(ctx,
+				wakeAgentID, rootWorkItemID, dispatch.CreatedAt.Add(-time.Second))
+			if err != nil {
+				return err
+			}
+			queued := false
+			for _, wake := range recent {
+				settleID, _ := wake.Context[settleDispatchContextKey].(string)
+				if settleID == dispatch.ID && wake.Status == domain.WakeupStatusQueued {
+					queued = true
+					break
+				}
+			}
+			if queued {
+				continue
+			}
+			for _, worker := range workers {
+				if worker == nil || !worker.Status.IsTerminal() {
+					return fmt.Errorf("%w: collecting dispatch %s still has a live worker", domain.ErrStateConflict, dispatch.ID)
+				}
+			}
+			if err := s.wakeSettlementLead(ctx, dispatch, workers, root); err != nil {
+				return err
+			}
+			repaired = true
+		}
+		return nil
+	})
+	return repaired, err
+}
+
 func renderSettlementInstruction(workItemTitle, dispatchID, lines string) string {
 	payload, err := json.Marshal(map[string]any{
 		"work_item_title":    workItemTitle,
@@ -397,7 +502,7 @@ func renderSettlementInstruction(workItemTitle, dispatchID, lines string) string
 	fmt.Fprintf(&b, "TASK_DATA_JSON_V1_LENGTH:%d\n", len(payload))
 	b.Write(payload)
 	b.WriteString("\nEND_TASK_DATA_JSON_V1\n\n")
-	b.WriteString("Review the worker results under your protected Coordinator system instruction. Return the next control decision in the required fenced plan format; never accept the task for the user.")
+	b.WriteString("Review the worker results under your protected Coordinator system instruction. Return only the next raw PlanDecisionV2 JSON object; never accept the task for the user.")
 	return b.String()
 }
 

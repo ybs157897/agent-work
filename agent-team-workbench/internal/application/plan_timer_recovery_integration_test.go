@@ -13,6 +13,7 @@ func TestCoordinatorPlanTimerEnqueueFailurePersistsDueRecovery(t *testing.T) {
 	ctx, db, svc, store, dispatcher, wsID, _ := seedCoordinatorEnvWithDatabase(t)
 	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
 		Title: "定时 Plan 恢复", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"test task acceptance"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +31,7 @@ BEGIN SELECT RAISE(ABORT, 'injected plan timer enqueue failure'); END`); err != 
 		t.Fatal(err)
 	}
 	wakeAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
-	planText := fmt.Sprintf("```plan\n[{\"verb\":\"defer\",\"wake_at\":%q}]\n```", wakeAt)
+	planText := fmt.Sprintf(`{"schema_version":"plan-decision/v2","kind":"plan","reason":"wait until timer","next_action":"resume at the wake time","steps":[{"verb":"defer","wake_at":%q}]}`, wakeAt)
 	if err := svc.RecordRunEvent(ctx, coordinatorRun.ID, domain.EventMessageCompleted,
 		map[string]any{"role": "assistant", "text": planText}); err != nil {
 		t.Fatal(err)

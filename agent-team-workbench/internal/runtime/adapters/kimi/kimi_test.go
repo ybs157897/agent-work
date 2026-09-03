@@ -216,17 +216,20 @@ func TestManifestCapabilities(t *testing.T) {
 		t.Fatalf("manifest 标识漂移: %+v", m)
 	}
 	want := map[string]atwruntime.CapabilityLevel{
-		"streaming":         atwruntime.CapSupported,
-		"resume":            atwruntime.CapSupported,
-		"multi_turn":        atwruntime.CapSupported,
-		"system_prompt":     atwruntime.CapSupported,
-		"modes":             atwruntime.CapSupported,
-		"permissions":       atwruntime.CapAdapterTranslated,
-		"interrupt":         atwruntime.CapAdapterTranslated,
-		"approval":          atwruntime.CapUnavailable,
-		"workspace_files":   atwruntime.CapSupported,
-		"terminal":          atwruntime.CapUnavailable,
-		"structured_output": atwruntime.CapSupported,
+		"streaming":                                  atwruntime.CapSupported,
+		atwruntime.CapabilityStructuredTransport:     atwruntime.CapSupported,
+		atwruntime.CapabilitySchemaConstrainedOutput: atwruntime.CapUnavailable,
+		atwruntime.CapabilityControlToolCall:         atwruntime.CapUnavailable,
+		"resume":                                     atwruntime.CapSupported,
+		"multi_turn":                                 atwruntime.CapSupported,
+		"system_prompt":                              atwruntime.CapSupported,
+		"modes":                                      atwruntime.CapSupported,
+		"permissions":                                atwruntime.CapAdapterTranslated,
+		"interrupt":                                  atwruntime.CapAdapterTranslated,
+		"approval":                                   atwruntime.CapUnavailable,
+		"workspace_files":                            atwruntime.CapSupported,
+		"terminal":                                   atwruntime.CapUnavailable,
+		"structured_output":                          atwruntime.CapAdapterTranslated,
 	}
 	if len(m.Capabilities) != len(want) {
 		t.Fatalf("capabilities 键集漂移: %+v", m.Capabilities)
@@ -287,8 +290,16 @@ func TestExecuteHappyPath(t *testing.T) {
 		t.Fatalf("OnSpawn 未上报 pid/pgid: spawned=%v pid=%d pgid=%d", cb.spawned, cb.pid, cb.pgid)
 	}
 	want := []string{"-p", "kimi fake run", "--output-format", "stream-json"}
-	if got := f.argvLines(t); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	got := f.argvLines(t)
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for _, arg := range got {
+		switch arg {
+		case "--schema", "--output-schema", "--json-schema", "--response-format",
+			"--tools", "--tool", "--tool-definition", "--tool-definitions":
+			t.Fatalf("Kimi CLI 当前 adapter 不应发送 schema/tool 参数: %v", got)
+		}
 	}
 }
 
