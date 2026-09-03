@@ -203,6 +203,65 @@ func TestPlanDispatchChildrenInheritDispatch(t *testing.T) {
 	}
 }
 
+// TestPlanDispatchFromCollectingBatchStartsNewDispatch 防回归：dispatch 一旦
+// running→collecting 就冻结成员集合。settlement/recovery Coordinator 的后续
+// Plan 不得把新 Worker 塞回旧批，否则旧 summary Run 与新 Worker 会互相等待，
+// Worker 终态也无法再次取得 MarkCollecting 资格。
+func TestPlanDispatchFromCollectingBatchStartsNewDispatch(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+	wsID, aliceID, leadID, wiID := seedDispatchSvcEnv(t, ctx, svc, store)
+
+	leadRun, err := svc.CreateRun(ctx, wiID, application.CreateRunParams{
+		AgentProfileID: leadID, Instruction: "首批汇总后继续派发",
+		DispatchTrigger: domain.DispatchTriggerUserMessage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatches := dispatchesOf(t, ctx, store, wiID)
+	if len(dispatches) != 1 {
+		t.Fatalf("前置应只有接诊批，实际 %d", len(dispatches))
+	}
+	oldDispatch := dispatches[0]
+	if ok, err := store.Dispatches().MarkCollecting(ctx, oldDispatch.ID); err != nil || !ok {
+		t.Fatalf("前置批次进入 collecting 失败: ok=%v err=%v", ok, err)
+	}
+
+	plan, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: wiID, AgentProfileID: leadID, SourceRunID: leadRun.ID,
+		Steps: []application.PlanStepInput{{
+			Verb: "dispatch",
+			Payload: map[string]any{
+				"agent_id": aliceID, "title": "修复任务", "instruction": "修复并复核",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := store.Runs().ListByWorkItem(ctx, plan.Steps[0].ResultWorkItemID)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("修复 Worker Run 缺失: err=%v runs=%+v", err, children)
+	}
+	dispatches = dispatchesOf(t, ctx, store, wiID)
+	if len(dispatches) != 2 {
+		t.Fatalf("collecting 批后的新派发必须新建批次，实际 %d", len(dispatches))
+	}
+	newDispatch := dispatches[1]
+	if children[0].DispatchID != newDispatch.ID || children[0].DispatchID == oldDispatch.ID {
+		t.Fatalf("修复 Worker 错误复用旧批: run=%s old=%s new=%s",
+			children[0].DispatchID, oldDispatch.ID, newDispatch.ID)
+	}
+	if newDispatch.Trigger != domain.DispatchTriggerLeadPlan || newDispatch.LeadRunID != leadRun.ID ||
+		newDispatch.Status != domain.DispatchRunning {
+		t.Fatalf("新 lead_plan 批次形状异常: %+v", newDispatch)
+	}
+}
+
 // TestPlanDispatchLeadPlanFallback 防回归：无 source run 的手动 plan 落
 // trigger=lead_plan 兜底批次，子 run 挂批；后续手动 plan 独立成批（不共享）。
 func TestPlanDispatchLeadPlanFallback(t *testing.T) {

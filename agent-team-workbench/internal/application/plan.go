@@ -1462,6 +1462,18 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 		return false, nil // pending_approval 挂起：续跑由审批回调驱动，与静默无关
 	}
 	if _, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, parent.ID); stateErr == nil {
+		if r.DispatchID != "" {
+			dispatch, dispatchErr := s.store.Dispatches().Get(ctx, r.DispatchID)
+			if dispatchErr != nil {
+				return false, dispatchErr
+			}
+			if !dispatch.Status.IsTerminal() {
+				// 当前 waiting Plan 可能只是后续 observation 的 join/defer，
+				// 本身不再包含 dispatch step；终态 Worker 的原批仍拥有唯一的
+				// settlement 续点，不能并发生成 children_quiet 抢占 Coordinator。
+				return false, nil
+			}
+		}
 		for _, step := range plan.Steps {
 			if step.Verb == domain.PlanVerbDispatch && step.ResultRunID != "" {
 				// Coordinated dispatches have a richer settlement path that waits for

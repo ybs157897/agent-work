@@ -28,6 +28,11 @@ const settleDispatchContextKey = domain.WakeupContextSettlementDispatchID
 // settlementDigestRunes 汇总材料单成员一行摘要的截断宽度（与派发卡片同源）。
 const settlementDigestRunes = 120
 
+// settlementWakeClaimGrace 覆盖调度器 queued→consumed 到 summary Run 提交之间
+// 的正常创建窗口。恢复循环每 2 秒扫描一次；短宽限避免把正在消费的 wake 误判为
+// 崩溃并复制，超时后仍允许 ensureCollectingDispatchWakeups 恢复真实进程中断。
+const settlementWakeClaimGrace = 30 * time.Second
+
 // settlementRunID 非空表示 r 是 S3 汇总 run（收口唤醒产生、挂回该批）。
 func settlementRunID(r *domain.ExecutionRun) string {
 	if r == nil {
@@ -36,6 +41,55 @@ func settlementRunID(r *domain.ExecutionRun) string {
 	wake, _ := r.Input["wakeup"].(map[string]any)
 	id, _ := wake[settleDispatchContextKey].(string)
 	return id
+}
+
+func (s *Service) openDispatchIDs(ctx context.Context, rootWorkItemID string) ([]string, error) {
+	dispatches, err := s.store.Dispatches().ListByWorkItem(ctx, rootWorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	for _, dispatch := range dispatches {
+		if dispatch == nil || dispatch.Status.IsTerminal() {
+			continue
+		}
+		members, membersErr := s.store.Runs().ListByDispatch(ctx, dispatch.ID)
+		if membersErr != nil {
+			return nil, membersErr
+		}
+		var terminalCandidate *domain.ExecutionRun
+		for _, member := range members {
+			if member == nil || !member.Status.IsTerminal() {
+				continue
+			}
+			if settlementRunID(member) == dispatch.ID {
+				terminalCandidate = member
+				break
+			}
+			if terminalCandidate == nil || member.ID == dispatch.LeadRunID {
+				terminalCandidate = member
+			}
+		}
+		if terminalCandidate != nil {
+			// Completion is also a recovery boundary: replay a missed terminal
+			// hook before declaring the batch open. This closes a terminal
+			// lead-only batch or a collecting batch with a terminal summary;
+			// a Worker batch without its summary remains collecting and fenced.
+			if err := s.settleDispatchTx(ctx, terminalCandidate); err != nil {
+				return nil, err
+			}
+		}
+	}
+	dispatches, err = s.store.Dispatches().ListByWorkItem(ctx, rootWorkItemID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(dispatches))
+	for _, dispatch := range dispatches {
+		if dispatch != nil && !dispatch.Status.IsTerminal() {
+			ids = append(ids, dispatch.ID)
+		}
+	}
+	return ids, nil
 }
 
 // maybeSettleDispatch 派发收口钩子（RecordRunStatus 终态提交后、事务外调用；
@@ -423,6 +477,7 @@ func (s *Service) settlementWakeAgent(ctx context.Context, d *domain.Dispatch, w
 func (s *Service) ensureCollectingDispatchWakeups(ctx context.Context, rootWorkItemID string) (bool, error) {
 	repaired := false
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		now := time.Now().UTC()
 		root, err := s.store.WorkItems().Get(ctx, rootWorkItemID)
 		if err != nil {
 			return err
@@ -466,15 +521,14 @@ func (s *Service) ensureCollectingDispatchWakeups(ctx context.Context, rootWorkI
 			if err != nil {
 				return err
 			}
-			queued := false
+			continuationExists := false
 			for _, wake := range recent {
-				settleID, _ := wake.Context[settleDispatchContextKey].(string)
-				if settleID == dispatch.ID && wake.Status == domain.WakeupStatusQueued {
-					queued = true
+				if settlementWakeBlocksReplacement(wake, dispatch.ID, now) {
+					continuationExists = true
 					break
 				}
 			}
-			if queued {
+			if continuationExists {
 				continue
 			}
 			for _, worker := range workers {
@@ -490,6 +544,21 @@ func (s *Service) ensureCollectingDispatchWakeups(ctx context.Context, rootWorkI
 		return nil
 	})
 	return repaired, err
+}
+
+func settlementWakeBlocksReplacement(wake domain.WakeupRequest, dispatchID string, now time.Time) bool {
+	settleID, _ := wake.Context[settleDispatchContextKey].(string)
+	if settleID == "" || settleID != dispatchID {
+		return false
+	}
+	switch wake.Status {
+	case domain.WakeupStatusQueued:
+		return true
+	case domain.WakeupStatusConsumed:
+		return !wake.UpdatedAt.Before(now.Add(-settlementWakeClaimGrace))
+	default:
+		return false
+	}
 }
 
 func renderSettlementInstruction(workItemTitle, dispatchID, lines string) string {

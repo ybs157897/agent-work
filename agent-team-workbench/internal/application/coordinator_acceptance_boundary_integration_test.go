@@ -566,6 +566,54 @@ func driveGovernedFinishEvaluationForAcceptance(t *testing.T, ctx context.Contex
 	return root
 }
 
+// TestPassedEvaluationWaitsForEveryDispatchSettlement 防回归：评估通过不能覆盖
+// 仍为 running/collecting 的保险批。waiting_user 会让 settlement wake 在 preflight
+// 被当作停止态 no-op，故 Coordinator 必须保持 running/settling 等待真正收口。
+func TestPassedEvaluationWaitsForEveryDispatchSettlement(t *testing.T) {
+	ctx, svc, store, dispatcher, wsID, _ := seedCoordinatorEnv(t)
+	root, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{
+		Title: "评估等待全部派发", RecordKind: domain.RecordKindTask, AutoCoordinate: true,
+		AcceptanceCriteria: []string{"所有 dispatch 已结算"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := dispatcher.runs[0]
+	completeCoordinatorPlanDecision(t, ctx, svc, source.ID,
+		`{"schema_version":"plan-decision/v2","kind":"plan","reason":"evidence ready","next_action":"evaluate","steps":[{"verb":"finish","evaluation":true}]}`)
+	if len(dispatcher.runs) != 2 {
+		t.Fatalf("finish{evaluation:true} 应创建评估 Run: %+v", dispatcher.runs)
+	}
+	openDispatch := &domain.Dispatch{
+		ID: domain.NewID(domain.PrefixDispatch), WorkItemID: root.ID,
+		Trigger: domain.DispatchTriggerLeadPlan, LeadRunID: source.ID,
+		Status: domain.DispatchCollecting, CreatedAt: time.Now().UTC(),
+	}
+	if err := store.Dispatches().Create(ctx, openDispatch); err != nil {
+		t.Fatal(err)
+	}
+	evaluation := dispatcher.runs[1]
+	if err := svc.RecordRunStatus(ctx, evaluation.ID, domain.RunStarting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := finishRun(ctx, svc, evaluation.ID,
+		"评估通过。\n```verdict\n{\"pass\":true,\"reasons\":[\"证据满足\"]}\n```"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.TaskCoordinators().GetState(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != domain.CoordinatorRunning || state.Phase != "settling" ||
+		state.CurrentAction != "等待派发批次收口" {
+		t.Fatalf("未收口 dispatch 必须阻止 waiting_user: %+v", state)
+	}
+	openIDs, ok := state.Data["open_dispatch_ids"].([]any)
+	if !ok || len(openIDs) != 1 || openIDs[0] != openDispatch.ID {
+		t.Fatalf("Coordinator 必须固化未收口批次证据: %#v", state.Data["open_dispatch_ids"])
+	}
+}
+
 // F4 防回归：dispatch 子任务 worker run succeeded 停在 review 投影后没有任何独立
 // 完工路径（coordinated child 不能单独验收），根任务 AcceptWorkItem 必须在同一
 // 事务内级联验收直系子任务，消除滞留 in_progress/review 的僵尸子任务。
