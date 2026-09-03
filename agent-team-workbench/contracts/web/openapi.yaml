@@ -492,6 +492,16 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunEventList" } } } }
 
+  /runs/{run_id}/journal:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRunJournal
+      summary: Run Journal 调试投影（环节时间线 + 原始输出统计 + 治理 receipt 互链；internal 事件投影，不进对话回放/SSE；只读）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunJournal" } } } }
+        "404": { description: Run 不存在, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
   /runs/{run_id}/commands/input:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     post:
@@ -2388,6 +2398,71 @@ components:
         event_type: { type: string, description: "run.created/message.delta/message.completed/tool.*/approval.*/run.status_changed 等" }
         payload: { type: object, additionalProperties: true, nullable: true }
         occurred_at: { type: string, format: date-time }
+
+    RunJournal:
+      type: object
+      description: 环节日志调试投影（internal 事件投影）。未闭合 phase（closed_at/outcome/duration_ms 均为 null）即崩溃/卡死故障点。
+      required: [run_id, generated_at, phases, log, governance, decisions]
+      properties:
+        run_id: { type: string }
+        generated_at: { type: string, format: date-time }
+        phases: { type: array, items: { $ref: "#/components/schemas/RunJournalPhase" } }
+        log: { $ref: "#/components/schemas/RunJournalLog" }
+        governance: { $ref: "#/components/schemas/RunJournalGovernance" }
+        decisions: { type: array, items: { $ref: "#/components/schemas/RunJournalDecision" } }
+
+    RunJournalPhase:
+      type: object
+      description: 一对 phase_entered/phase_closed 的配对投影（按 phase+attempt 依 run_seq 配对）。
+      required: [phase, attempt, entered_at, closed_at, outcome, duration_ms, failure, detail]
+      properties:
+        phase: { type: string, description: "dispatch/spawn/handshake/first_event/streaming/settle/post" }
+        attempt: { type: integer, description: 从 1 起；自愈/重跑同一环节时递增 }
+        entered_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time, nullable: true, description: null=未闭合（故障点） }
+        outcome: { type: string, nullable: true, description: "ok|failed|skipped；null=未闭合" }
+        duration_ms: { type: integer, nullable: true }
+        failure: { $ref: "#/components/schemas/RunJournalPhaseFailure" }
+        detail: { type: object, additionalProperties: true, nullable: true, description: 闭合取 closed 载荷、未闭合取 entered 载荷中除保留键外的证据键；无证据为 null }
+
+    RunJournalPhaseFailure:
+      type: object
+      description: 与 run 终态 failure 家族对齐（同一套分类码读两条链）。
+      required: [code, message, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        family: { type: string }
+        retryable: { type: boolean }
+
+    RunJournalLog:
+      type: object
+      description: run.log_chunk 统计（64KB 环形截断的可见性）。
+      required: [chunks, truncated]
+      properties:
+        chunks: { type: integer }
+        truncated: { type: boolean }
+
+    RunJournalGovernance:
+      type: object
+      description: run 所属治理回合（turn_receipt_phases.run_ids[] 含本 run 的最新 turn 的 receipt header 摘要）；无治理引用为 null。
+      required: [goal_id, todo_id, turn_seq, digest]
+      properties:
+        goal_id: { type: string }
+        todo_id: { type: string }
+        turn_seq: { type: integer }
+        digest: { type: string, description: receipt header canonical_digest }
+
+    RunJournalDecision:
+      type: object
+      description: run.decision 决策因果链投影（非治理域决策；治理决策由 receipt phase1 承担）。
+      required: [kind, reason, occurred_at, inputs]
+      properties:
+        kind: { type: string }
+        reason: { type: string }
+        occurred_at: { type: string, format: date-time }
+        link_run_id: { type: string, description: 跨 run 因果（原 run → 新 run）；无则省略 }
+        inputs: { type: object, additionalProperties: true, nullable: true, description: 决策载荷除 kind/reason/link_run_id 外的关键输入证据；无输入为 null }
 
     AgentConfigReloadResult:
       type: object

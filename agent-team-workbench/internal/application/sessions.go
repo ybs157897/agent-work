@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -565,20 +566,24 @@ func (s *Service) TaskSessionsByAgent(ctx context.Context, workspaceID, agentPro
 // 终态自愈——清锚点后自动发起一次 fresh 重试，用户无需手动 reset+retry。
 // 双重防护：仅当本轮确实携带 resume 且非自愈产物（input.auto_heal_of 为空）；
 // 自愈 run 再次 session_unknown 失败时到此为止，失败链不会无限递归。
-func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（healRunID, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// healRunID 非空 = 本轮创建并派发了 fresh 重试；err = 自愈链路失败。控制流
+// 不变：失败依旧只记日志/活动，绝不上抛打断业务路径。
+func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) (string, error) {
 	if r == nil || r.Status != domain.RunFailed || r.AdapterID == "" || r.ErrorFamily != string(runtime.FamilySessionUnknown) {
-		return
+		return "", nil
 	}
 	conversation, _ := r.Input["conversation"].(map[string]any)
-	if resume, _ := conversation["resume_session_ref"].(string); resume == "" {
-		return
+	resume, _ := conversation["resume_session_ref"].(string)
+	if resume == "" {
+		return "", nil
 	}
 	if heal, _ := r.Input["auto_heal_of"].(string); heal != "" {
-		return
+		return "", nil
 	}
 	instruction, _ := r.Input["instruction"].(string)
 	if strings.TrimSpace(instruction) == "" {
-		return
+		return "", nil
 	}
 	healCtx := context.WithoutCancel(ctx)
 	var retry *domain.ExecutionRun
@@ -625,24 +630,47 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) {
 		log.Printf("session heal: atomic lifecycle/anchor/run recovery for source %s failed: %v", r.ID, err)
 		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_heal_failed",
 			fmt.Sprintf("session_unknown 自愈重试创建失败（源 run %s）：%v", r.ID, err))
-		return
+		return "", err
 	}
 	if retry.ClientKey != "session-heal:"+r.ID {
 		log.Printf("session heal: replayed Run for source %s has unexpected identity %q", r.ID, retry.ClientKey)
-		return
+		return "", fmt.Errorf("session heal: replayed Run for source %s has unexpected identity %q", r.ID, retry.ClientKey)
 	}
 	if retry.Status != domain.RunStarting {
-		return // an earlier recovery attempt already progressed this deterministic Run
+		return "", nil // an earlier recovery attempt already progressed this deterministic Run
 	}
 	if err := s.dispatchCommittedRun(healCtx, retry); err != nil {
 		log.Printf("session heal: dispatch fresh run for source %s failed: %v", r.ID, err)
-		return
+		return "", err
 	}
 	if created {
 		_ = s.activityFor(healCtx, r.WorkspaceID, r.WorkItemID, "run.self_healed",
 			fmt.Sprintf("会话丢失（session_unknown）已自愈重试：%s → %s", r.ID, retry.ID))
 	}
 	s.recordCoordinatorSessionHeal(healCtx, r, retry)
+	if created {
+		// Run Journal：自愈决策锚点落在失败的旧 run 上，link_run_id 指向新 run
+		// （跨 run 因果靠 link 字段单查询展开，新 run 不写任何东西）；被抑制的
+		// 自愈（重放 run / 更早恢复已推进）走到不了这里，保持沉默的大多数。
+		// 发射失败只记日志，绝不改变自愈结果。
+		inputs := map[string]any{"failure_family": r.ErrorFamily}
+		if r.Failure != nil && r.Failure.Code != "" {
+			inputs["failure_code"] = r.Failure.Code
+		}
+		if resume != "" {
+			inputs["session_anchor_ref"] = resume
+		}
+		reason := "provider 会话丢失（session_unknown），发起 fresh 自愈重试"
+		if r.Failure != nil && r.Failure.Message != "" {
+			reason = fmt.Sprintf("provider 会话丢失（session_unknown）：%s", r.Failure.Message)
+		}
+		j := observability.NewJournal(s.RecordRunEvent)
+		if err := j.Decision(healCtx, r.ID, observability.DecisionSelfHealRetry, reason, inputs, retry.ID); err != nil {
+			log.Printf("journal: run %s 记录 self_heal_retry decision 失败: %v", r.ID, err)
+		}
+		return retry.ID, nil
+	}
+	return "", nil
 }
 
 func selfHealRunParams(source *domain.ExecutionRun, instruction string) CreateRunParams {

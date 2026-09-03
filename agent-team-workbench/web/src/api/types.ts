@@ -892,6 +892,52 @@ export interface ExecutionRun {
   usage_basis?: string;
 }
 
+// ── Run Journal（运行环节时间线；只读投影，排障视图）────────────────
+
+/** 七段相位标识：dispatch → spawn → handshake → first_event → streaming → settle → post。 */
+export type RunJournalPhaseName =
+  | 'dispatch'
+  | 'spawn'
+  | 'handshake'
+  | 'first_event'
+  | 'streaming'
+  | 'settle'
+  | 'post';
+
+/** 相位结果：ok=正常、failed=失败、skipped=跳过；null=未闭合（进行中或中断）。 */
+export type RunJournalOutcome = 'ok' | 'failed' | 'skipped';
+
+/** 相位失败证据（journal 专属：比 RunFailure 多 family 归因族）。 */
+export interface RunJournalFailure {
+  code: string;
+  message: string;
+  family: string;
+  retryable: boolean;
+}
+
+/** 单个相位区段（post 相位每个钩子各一对，detail.hook 携带钩子名）。 */
+export interface RunJournalPhase {
+  phase: RunJournalPhaseName;
+  attempt: number;
+  entered_at: string;
+  /** null = 未闭合：run 仍在该相位（进行中），或进程中断未落到终态。 */
+  closed_at: string | null;
+  outcome: RunJournalOutcome | null;
+  duration_ms: number | null;
+  failure: RunJournalFailure | null;
+  detail: Record<string, unknown> | null;
+}
+
+export interface RunJournal {
+  run_id: string;
+  generated_at: string;
+  phases: RunJournalPhase[];
+  /** 进程输出摘要：chunks 条、truncated 表示服务端只保留了尾部。 */
+  log: { chunks: number; truncated: boolean };
+  /** 治理回合归属；chat run 等无治理归属时为 null。 */
+  governance: { goal_id: string; todo_id: string; turn_seq: number; digest: string } | null;
+}
+
 export interface ApprovalRequest {
   id: string;
   run_id: string;
@@ -1143,6 +1189,19 @@ export const EVENT_NAMES = [
   'workspace_location.unavailable',
   'work_item.development_context_updated',
   'task_comment.created',
+] as const;
+
+/**
+ * internal 事件名单（Run Journal，与 domain/events.go internalEventNames 一致）。
+ * 这些事件只落 run_events、从不经 SSE 推送，因此不注册 EventSource listener；
+ * 读取走 /runs/{id}/journal 调试 API。事件契约测试按
+ * EVENT_NAMES ∪ INTERNAL_EVENT_NAMES == AsyncAPI enum 双向对账。
+ */
+export const INTERNAL_EVENT_NAMES = [
+  'run.phase_entered',
+  'run.phase_closed',
+  'run.log_chunk',
+  'run.decision',
 ] as const;
 
 /** 模型注册表条目（models/ 目录为真相源；词汇对齐 pi-ai provider profile）。 */

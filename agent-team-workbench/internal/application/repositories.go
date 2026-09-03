@@ -224,6 +224,10 @@ type TurnReceiptRepo interface {
 	GetPhase(ctx context.Context, key domain.TurnKey, phaseSeq int) (*domain.TurnReceiptPhase, error)
 	ListPhases(ctx context.Context, key domain.TurnKey) ([]*domain.TurnReceiptPhase, error)
 	AppendPhase(ctx context.Context, phase *domain.TurnReceiptPhase) (*domain.TurnReceiptPhase, error)
+	// LatestTurnHeaderByRunID 治理互链反查：任一 receipt phase 的 run_ids JSON
+	// 数组包含 runID 的最新 turn 的 immutable header；无治理引用返回 (nil, nil)。
+	// Run Journal 调试面专用（GET /runs/{run_id}/journal）。
+	LatestTurnHeaderByRunID(ctx context.Context, runID string) (*domain.TurnReceiptHeader, error)
 }
 
 // QuotaRepo persists the quota admission/settlement ledger.  Reservations are
@@ -465,8 +469,12 @@ type EventRepo interface {
 	// 事件需回溯到任务）；workItemID 空串落 NULL（无归因）。
 	AppendActivityFor(ctx context.Context, workspaceID, workItemID, kind, message string) error
 	ListActivities(ctx context.Context, workspaceID string, limit int) ([]Activity, error)
-	// ListRunEvents 按 run_seq 回放单个 Run 的事件（对话历史用）。
+	// ListRunEvents 按 run_seq 回放单个 Run 的 surface 事件（对话历史用）；
+	// internal 类事件（Run Journal，domain.IsInternalEventName）被过滤。
 	ListRunEvents(ctx context.Context, runID string) ([]RunEvent, error)
+	// ListRunEventsIncludeInternal 回放含 internal 类的全部事件；调试/日志面
+	// 专用，对话回放与模型上下文重建不得使用。
+	ListRunEventsIncludeInternal(ctx context.Context, runID string) ([]RunEvent, error)
 }
 
 // RunEventRecord 可选：Run 域事件追加进 run_events（同事务）。

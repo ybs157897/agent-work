@@ -17,6 +17,7 @@ const ChatPage = lazy(() => import('./pages/chat.page'));
 const LanguageGuiDemoPage = lazy(() => import('./pages/languagegui-demo.page'));
 const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
+const RunJournalPage = lazy(() => import('./pages/run-journal.page'));
 const SettingsPage = lazy(() => import('./pages/settings.page'));
 const TasksPage = lazy(() => import('./pages/tasks.page'));
 const TaskWorkspacePage = lazy(() => import('./pages/task-workspace.page'));
@@ -84,6 +85,7 @@ function AnimatedRoutes() {
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/tasks/:taskId" element={<TaskWorkspacePage />} />
             <Route path="/chat" element={<ChatPage />} />
+            <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
             <Route path="/models" element={<ModelsPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/settings" element={<SettingsPage />} />

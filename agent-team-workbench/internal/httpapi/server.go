@@ -195,6 +195,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/decisions", s.guard(security.PermWorkItemWrite, s.handleRecordDecision))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}", s.guard(security.PermRead, s.handleGetRun))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/events", s.guard(security.PermRead, s.handleListRunEvents))
+	mux.HandleFunc("GET /api/v1/runs/{run_id}/journal", s.guard(security.PermRead, s.handleGetRunJournal))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/input", s.guard(security.PermRunControl, s.handleRunInput))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/interrupt", s.guard(security.PermRunControl, s.handleInterruptRun))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/cancel", s.guard(security.PermRunControl, s.handleCancelRun))

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 )
 
 // ── 分派：host-aware run.offer（RFC §7.5）────────────────────────────
@@ -35,11 +36,19 @@ func (g *Gateway) Available(adapterID string) bool {
 //
 // 无匹配返回错误——禁止跨 Host/本机回退；同 Host 重试由 Coordinator durable
 // retry 创建新 Run。
+//
+// Run Journal dispatch 相位：entered 由调用方（chainDispatcher）在路由决策点
+// 发出，这里在 lease 授予 + offer 成功入队后补 closed{ok}（detail 带 route/
+// runner_id/lease_id/fencing_token），其余每条失败路径补 closed{failed}——
+// 保证每个 remote dispatch 恰好一对事件。internal 事件只落 run_events。
 func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapshot *domain.ExecutionContextSnapshot, adapterID string) error {
+	started := time.Now()
 	if run == nil || run.ID == "" || run.AgentProfileID == "" {
 		return fmt.Errorf("%w: remote dispatch requires Run and agent_profile_id identity", domain.ErrValidation)
 	}
 	if snapshot == nil {
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed,
+			remoteDispatchFailure("dispatch 需要 context snapshot（无快照不分派）"), nil)
 		return errors.New("dispatch 需要 context snapshot（无快照不分派）")
 	}
 	g.mu.Lock()
@@ -52,11 +61,15 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 	}
 	g.mu.Unlock()
 	if target == nil {
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed, remoteDispatchFailure(
+			fmt.Sprintf("host %s 无在线 %s runner 且有容量（不跨 Host/本机回退）", snapshot.ExecutionHostID, adapterID)), nil)
 		return fmt.Errorf("%w: host %s 无在线 %s runner 且有容量（不跨 Host/本机回退）",
 			domain.ErrNotFound, snapshot.ExecutionHostID, adapterID)
 	}
 	if !g.connectionCredentialCurrent(ctx, target) {
 		g.handleDisconnect(target)
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed, remoteDispatchFailure(
+			fmt.Sprintf("host %s 的 runner enrollment credential 已撤销", snapshot.ExecutionHostID)), nil)
 		return fmt.Errorf("%w: host %s 的 runner enrollment credential 已撤销", domain.ErrNotFound, snapshot.ExecutionHostID)
 	}
 
@@ -67,6 +80,9 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 	if err := g.store.InTx(ctx, func(txCtx context.Context) error {
 		return g.store.Runners().CreateLease(txCtx, lease)
 	}); err != nil {
+		// lease 创建失败：failure.message 必须携带原因。
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed,
+			remoteDispatchFailure(fmt.Sprintf("创建 lease 失败: %v", err)), nil)
 		return err
 	}
 	// 先把 lease 放入当前连接的内存 fence，再 enqueue offer：并发 disconnect
@@ -76,6 +92,9 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 	if g.conns[target.runnerID] != target {
 		g.mu.Unlock()
 		_ = g.store.Runners().ReleaseLease(ctx, lease.LeaseID, time.Now().UTC())
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed, remoteDispatchFailure(
+			fmt.Sprintf("runner %s 在 lease 创建后已换代", target.runnerID)),
+			map[string]any{"route": "remote", "runner_id": target.runnerID, "lease_id": lease.LeaseID})
 		return fmt.Errorf("%w: runner %s 在 lease 创建后已换代", domain.ErrNotFound, target.runnerID)
 	}
 	target.mu.Lock()
@@ -106,6 +125,11 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 		V: ProtocolVersion, MessageID: domain.NewID("msg_"), Kind: "request", Method: "run.offer",
 		RunnerID: target.runnerID, RunID: run.ID, SentAt: time.Now().UTC(), Payload: payload,
 	}) {
+		// lease 已授予且 offer 已入队：dispatch 相位的成功交接点。
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseOK, nil, map[string]any{
+			"route": "remote", "runner_id": target.runnerID,
+			"lease_id": lease.LeaseID, "fencing_token": lease.FencingToken,
+		})
 		return nil
 	}
 	g.forgetLease(run.ID, lease.LeaseID)
@@ -114,9 +138,44 @@ func (g *Gateway) Dispatch(ctx context.Context, run *domain.ExecutionRun, snapsh
 	// reconnecting 后悬置。
 	g.handleDisconnect(target)
 	if err := g.store.Runners().ReleaseLease(ctx, lease.LeaseID, time.Now().UTC()); err != nil {
+		g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed,
+			remoteDispatchFailure(fmt.Sprintf("offer 入队失败且 lease 释放失败: %v", err)),
+			map[string]any{"route": "remote", "runner_id": target.runnerID, "lease_id": lease.LeaseID})
 		return fmt.Errorf("offer enqueue failed and lease release failed: %w", err)
 	}
+	g.closeDispatchPhase(ctx, run.ID, started, observability.PhaseFailed, remoteDispatchFailure(
+		fmt.Sprintf("runner %s 无法接收 run.offer", target.runnerID)),
+		map[string]any{"route": "remote", "runner_id": target.runnerID, "lease_id": lease.LeaseID})
 	return fmt.Errorf("%w: runner %s 无法接收 run.offer", domain.ErrNotFound, target.runnerID)
+}
+
+// remoteDispatchFailure 构造与既有 dispatch 终态语义对齐的 failure：调用方
+// （chainDispatcher）把 Dispatch 的全部错误落 failed(execution_host_unavailable,
+// retryable, family=workspace)，phase_closed.failure 沿用同一分类码，journal
+// 链与终态失败码可互相印证。
+func remoteDispatchFailure(message string) *observability.PhaseFailure {
+	return &observability.PhaseFailure{
+		Code: "execution_host_unavailable", Message: message, Family: "workspace", Retryable: true,
+	}
+}
+
+// closeDispatchPhase 发 run.phase_closed{dispatch}（internal 事件，只落
+// run_events）。engine 缺失（纯传输测试装配）或 run 无身份时静默跳过；落库
+// 失败只记日志——观测绝不打断业务路径。
+func (g *Gateway) closeDispatchPhase(ctx context.Context, runID string, started time.Time,
+	outcome observability.PhaseOutcome, failure *observability.PhaseFailure, detail map[string]any,
+) {
+	if g == nil || g.engine == nil || runID == "" {
+		return
+	}
+	data := observability.PhaseClosedPayload(observability.PhaseDispatch, outcome, failure,
+		time.Since(started).Milliseconds(), detail)
+	if data == nil {
+		return
+	}
+	if err := g.engine.RecordRunEvent(ctx, runID, domain.EventRunPhaseClosed, data); err != nil {
+		log.Printf("runnergateway: run %s dispatch phase_closed 落库失败: %v", runID, err)
+	}
 }
 
 // ForwardApproval 把审批决定作为 run.command 下发（协议 §7.1）。
@@ -330,12 +389,16 @@ func (g *Gateway) eventTransportValid(rc *runnerConn, runID, leaseID, runnerID, 
 	return ok
 }
 
-// lateUsageTransportValid 是终态 usage.updated 的唯一 Gateway 例外。它只
-// 放行当前连接上已不在 activeRuns 镜像中的 Run；lease/fencing、Run 是否终态
-// 以及 lease 是否确实已释放，全部交由 Application 的原子命令最终校验。
-// 若内存中仍有该 Run（包括 lease/fencing 错配），继续走严格活动租约路径，
-// 防止活动 Run 的错误帧借此例外越过 transport fence。
-func (g *Gateway) lateUsageTransportValid(rc *runnerConn, runID, runnerID, epoch string) bool {
+// lateObservationTransportValid 是终态观测帧（usage.updated 与 Run Journal
+// 相位帧 run.phase_entered/closed，闭集见 application.LateTerminalObservationKind）
+// 的唯一 Gateway 例外。它只放行当前连接上已不在 activeRuns 镜像中的 Run；
+// lease/fencing、Run 是否终态以及 lease 是否确实已释放，全部交由 Application
+// 的原子命令最终校验。若内存中仍有该 Run（包括 lease/fencing 错配），继续走
+// 严格活动租约路径，防止活动 Run 的错误帧借此例外越过 transport fence。
+// 相位帧需要这条例外的理由：settle 闭包在终态 status 帧之后发出，而终态
+// 应用时 activeRuns 已被清理——不打这个洞，远程 run 的 journal 全部以
+// 未闭合 settle 收尾。
+func (g *Gateway) lateObservationTransportValid(rc *runnerConn, runID, runnerID, epoch string) bool {
 	if !g.eventConnectionValid(rc, runnerID, epoch) {
 		return false
 	}
@@ -361,11 +424,12 @@ func (g *Gateway) handleRunEvent(rc *runnerConn, env Envelope) {
 		return
 	}
 	// 与活动租约不匹配（旧 epoch / 旧 lease / 未知 run）：通常 ACK 但不应用。
-	// 终态后 activeRuns 已由网关清理时，仅 usage.updated 可继续进入
-	// Application；它会按已释放 lease、Run terminal、runner/fencing 做最终裁决。
+	// 终态后 activeRuns 已由网关清理时，终态观测帧（usage.updated / 相位闭包，
+	// 闭集见 application.LateTerminalObservationKind）可继续进入 Application；
+	// 它们按已释放 lease、Run terminal、runner/fencing 做最终裁决。
 	if !g.eventTransportValid(rc, p.RunID, p.LeaseID, p.RunnerID, p.ConnectionEpoch, p.FencingToken) {
-		if p.Event.Kind == domain.EventUsageUpdated &&
-			g.lateUsageTransportValid(rc, p.RunID, p.RunnerID, p.ConnectionEpoch) {
+		if application.LateTerminalObservationKind(p.Event.Kind) &&
+			g.lateObservationTransportValid(rc, p.RunID, p.RunnerID, p.ConnectionEpoch) {
 			// Continue to Application for the released-lease terminal observation.
 		} else {
 			log.Printf("runnergateway: 旧帧 ACK 不应用（run=%s lease=%s conn=%s）", p.RunID, p.LeaseID, rc.runnerID)

@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"maps"
+	"slices"
+	"time"
+)
 
 // 事件名白名单（contracts/events/asyncapi.yaml）；SSE 只允许这些 event name。
 const (
@@ -116,6 +120,16 @@ const (
 	EventRunRecoveryCompleted = "run.recovery_completed"
 	EventRunRecoveryFailed    = "run.recovery_failed"
 
+	// Run Journal（全环节日志，设计 notes/proposed/architecture/2026-09-02-run-journal-lifecycle-logging.md）。
+	// 四个事件均为 internal 类（见 internalEventNames）：只落 run_events，
+	// 不进 stream_events/outbox——SSE 与对话回放都看不到它们。
+	EventRunPhaseEntered = "run.phase_entered"
+	EventRunPhaseClosed  = "run.phase_closed"
+	EventRunLogChunk     = "run.log_chunk"
+	// EventRunDecision 记录非治理域的"为什么"（自愈重试/取消前转/普通重驱）；
+	// 治理域决策由 turn_receipt phase1 承担，不重复进这里。
+	EventRunDecision = "run.decision"
+
 	// 任务控制面补全（task-control-surface RFC §10）：执行上下文与任务反馈事件。
 	// 发布点随 I1（Execution Context）/I2（TaskComment）接线；接线时同步加入
 	// eventNameWhitelist。task_comment.created 的 SSE data 不含 body，前端按
@@ -165,6 +179,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
 	EventRuntimeHealthChanged: {},
 	EventRunRecoveryStarted:   {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},
+	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {}, EventRunDecision: {},
 	// 任务控制面补全（task-control-surface RFC §10）：执行上下文发布点（I1）。
 	EventExecutionHostUpdated:              {},
 	EventWorkspaceLocationCreated:          {},
@@ -180,6 +195,23 @@ func IsKnownEventName(name string) bool {
 	_, ok := eventNameWhitelist[name]
 	return ok
 }
+
+// internalEventNames 是 internal 类事件集合：持久化只落 run_events，不写
+// stream_events/outbox（不触发 SSE、不进对话回放投影）。读取侧的 surface
+// 查询（EventRepo.ListRunEvents）按此集合过滤，调试面用
+// ListRunEventsIncludeInternal 拿全量。
+var internalEventNames = map[string]struct{}{
+	EventRunPhaseEntered: {}, EventRunPhaseClosed: {}, EventRunLogChunk: {}, EventRunDecision: {},
+}
+
+// IsInternalEventName 报告事件名是否 internal 类。
+func IsInternalEventName(name string) bool {
+	_, ok := internalEventNames[name]
+	return ok
+}
+
+// InternalEventNames 返回 internal 事件名清单（排序稳定，供 SQL 过滤用）。
+func InternalEventNames() []string { return slices.Sorted(maps.Keys(internalEventNames)) }
 
 // 聚合类型。
 const (

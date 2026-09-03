@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -590,6 +591,21 @@ func (s *Service) startScheduledWorkerRetry(ctx context.Context, state *domain.T
 	if retry == nil {
 		return nil
 	}
+	// Run Journal：非受管 Worker 线的 due-state 重驱决策，落在被重驱的源 run 上，
+	// link_run_id 指向重试 run。治理/非治理分界：retry_worker checkpoint 只由
+	// handleCoordinatorWorkerTerminal（普通 Worker 终态）写入，治理 Coordinator
+	// 的失败恢复走 recover/repair_plan 并由 turn_receipt 承担决策留痕，到不了
+	// 这里——所以本点恒为非治理决策。发射失败只记日志，不回流重驱路径。
+	dueState := fmt.Sprintf("%s:%s", state.Status, coordinatorControlAction(state))
+	j := observability.NewJournal(s.RecordRunEvent)
+	if err := j.Decision(ctx, parent.ID, observability.DecisionCoordinatorRedrive,
+		fmt.Sprintf("Worker 失败退避到期，自动重试（第 %d/%d 次尝试）",
+			coordinatorRunAttempt(ctx, s.store.Runs(), retry), coordinatorMaxWorkerAttempts),
+		map[string]any{
+			"coordinator_id": state.ID, "due_state": dueState,
+		}, retry.ID); err != nil {
+		log.Printf("journal: run %s 记录 coordinator_redrive decision 失败: %v", parent.ID, err)
+	}
 	s.notifier.Notify(retry.WorkspaceID)
 	latestState, stateErr := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
 	latestRun, runErr := s.store.Runs().Get(ctx, retry.ID)
@@ -1046,24 +1062,27 @@ func (s *Service) blockCoordinator(ctx context.Context, state *domain.TaskCoordi
 // AppendTaskComment（requirement 评论，见 task_comments.go），不再保留
 // pending_instruction 单槽双轨。
 
-func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.ExecutionRun) {
+// maybeAdvanceTaskCoordinator 返回值（acted, err）只是给 run journal 埋点的
+// 信号（runs.go post 相位）：acted=推进到主处理路径；err=handoff 续跑 checkpoint
+// 或 delegated continuation 启动失败。控制流不变：失败依旧只记日志。
+func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.ExecutionRun) (bool, error) {
 	if run == nil || !run.Status.IsTerminal() {
-		return
+		return false, nil
 	}
 	state, err := s.store.TaskCoordinators().GetStateForWorkItem(ctx, run.WorkItemID)
 	if err != nil {
-		return // legacy Task without a Coordinator
+		return false, nil // legacy Task without a Coordinator
 	}
 	if goal, goalErr := s.store.Goals().GetByRootWorkItem(ctx, state.RootWorkItemID); goalErr == nil {
 		if goal.Status != domain.GoalActive {
-			return
+			return false, nil
 		}
 	} else if !errors.Is(goalErr, domain.ErrNotFound) {
-		return
+		return false, nil
 	}
 	if state.Status == domain.CoordinatorBlocked || state.Status == domain.CoordinatorWaitingUser ||
 		state.Status == domain.CoordinatorCompleted || state.Status == domain.CoordinatorCancelled {
-		return
+		return false, nil
 	}
 	// An accepted Handoff supersedes the source Coordinator outcome. Once the
 	// source reaches a terminal state, move only the durable checkpoint here;
@@ -1076,22 +1095,24 @@ func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.E
 		if activateErr != nil {
 			log.Printf("coordinator: handoff %s continuation checkpoint failed: %v",
 				stringValue(state.Data[coordinatorHandoffIDKey]), activateErr)
-			return
+			return false, activateErr
 		}
 		if activated {
 			if startErr := s.StartCoordinator(context.WithoutCancel(ctx), state.RootWorkItemID); startErr != nil {
 				log.Printf("coordinator: handoff %s delegated continuation start failed: %v",
 					stringValue(state.Data[coordinatorHandoffIDKey]), startErr)
+				return true, startErr
 			}
+			return true, nil
 		}
-		return
+		return false, nil
 	}
 	// A system Run is the exact terminal checkpoint that owns the projection.
 	// Once its hook has advanced the state (or another turn owns it), a due-scan
 	// replay of the same terminal Run must be a no-op rather than append another
 	// plan/completed event or reset progress.
 	if isGovernedCoordinatorRun(run) && state.CurrentRunID != run.ID {
-		return
+		return false, nil
 	}
 	// A validated governed decision may have committed its admission/validation
 	// prefix while the Plan transaction was temporarily unavailable. The Plan
@@ -1099,20 +1120,21 @@ func (s *Service) maybeAdvanceTaskCoordinator(ctx context.Context, run *domain.E
 	// do not let this terminal hook mistake the missing Plan for delivery before
 	// the next replay completes the same Turn.
 	if isGovernedCoordinatorRun(run) && governancePlanSubmissionRetryPending(state, run.ID) {
-		return
+		return false, nil
 	}
 	// A settlement wake can race a scheduled Worker retry. It belongs to the
 	// same dispatch, but it must not advance the Coordinator control line while
 	// the retry action owns recovery. The queued wake remains retryable and is
 	// consumed after the Worker retry settles.
 	if settlementRunID(run) != "" && coordinatorRetryPending(state) {
-		return
+		return false, nil
 	}
 	if isGovernedCoordinatorRun(run) {
 		s.handleCoordinatorTerminal(context.WithoutCancel(ctx), state, run)
-		return
+		return true, nil
 	}
 	s.handleCoordinatorWorkerTerminal(context.WithoutCancel(ctx), state, run)
+	return true, nil
 }
 
 func (s *Service) recordCoordinatorSessionHeal(ctx context.Context, parent, retry *domain.ExecutionRun) {

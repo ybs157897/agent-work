@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -417,15 +418,33 @@ func (g *Gateway) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 	}
 	defer sub.close()
 
+	// Run Journal handshake 相位：会话解析/恢复探测整段（resume 存在性探测与
+	// fresh 创建）。dsh 无 per-run spawn 边界（网关进程由 Supervisor 跨 run
+	// 长驻管理）。resume 命中与否随 detail 可读；恢复目标丢失的 session_unknown
+	// 分类随 closed failure 可读——自愈判定证据不换词表。
+	hsAt := time.Now()
+	resumed := runtime.SessionIDFromRef(ex.Session.Ref, "dsh") != ""
+	enterPhase(ex, observability.PhaseHandshake, 1, map[string]any{"resume": resumed})
 	sessionID, res := g.resolveSession(ex, client, state)
 	if res != nil {
-		// 同上：会话解析期被取消按终态意图返回（session.create/history 因 Ctx
-		// 取消而失败是取消的结果，不是 io 故障）。
-		if ex.Ctx.Err() != nil {
+		// 会话解析期被取消（session.create/history 因 Ctx 取消而失败）不是
+		// 握手故障：skipped 收口，不留假故障点。
+		cancelled := ex.Ctx.Err() != nil
+		outcome, failure := observability.PhaseFailed, res.Failure
+		if cancelled {
+			outcome, failure = observability.PhaseSkipped, nil
+		}
+		closePhase(ex, observability.PhaseHandshake, outcome, failure, hsAt,
+			map[string]any{"resume": resumed})
+		if cancelled {
 			return intentResult(ex, state)
 		}
 		return *res
 	}
+	closePhase(ex, observability.PhaseHandshake, observability.PhaseOK, nil, hsAt,
+		map[string]any{"resumed": resumed})
+	// 握手完成后等待本轮首个真实回调（module.go 回调面收口 first_event）。
+	enterPhase(ex, observability.PhaseFirstEvent, 1, nil)
 
 	if err := g.promptTurn(ex.Ctx, client, sessionID, ex.Instruction); err != nil {
 		if ex.Ctx.Err() != nil {

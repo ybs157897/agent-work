@@ -1409,25 +1409,27 @@ func (s *Service) failPlanForBudget(ctx context.Context, plan *domain.Plan, used
 // 主任务 blocker），未超限入 automation wakeup 唤醒 plan owner（source=automation、
 // task_key="plan:"+planID、context={plan_id, trigger:"children_quiet"}）。
 // 唤醒 ≠ plan 继续：owner 观察全局后提交新 plan（旧 waiting plan 由 supersede 收口）。
-func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// acted=实际动作（入队唤醒或预算收口）；err=内部失败。控制流不变：失败依旧只记日志。
+func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun) (bool, error) {
 	if r == nil || !r.Status.IsTerminal() {
-		return
+		return false, nil
 	}
 	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
 	if err != nil || !isTaskWorkItem(wi) || wi.ParentID == "" {
-		return
+		return false, nil
 	}
 	parent, err := s.store.WorkItems().Get(ctx, wi.ParentID)
 	if err != nil || !isTaskWorkItem(parent) {
-		return
+		return false, nil
 	}
 	plan, err := s.store.Plans().ActiveByWorkItem(ctx, parent.ID)
 	if err != nil || plan == nil || plan.Status != domain.PlanWaiting {
-		return
+		return false, nil
 	}
 	joinStep := waitingPlanJoinStep(plan)
 	if joinStep == nil {
-		return // pending_approval 挂起：续跑由审批回调驱动，与静默无关
+		return false, nil // pending_approval 挂起：续跑由审批回调驱动，与静默无关
 	}
 	if _, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, parent.ID); stateErr == nil {
 		for _, step := range plan.Steps {
@@ -1436,26 +1438,26 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 				// the complete batch, includes the latest retry result, and wakes the
 				// system Coordinator exactly once. A parallel children_quiet wake would
 				// create a second control turn for the same terminal edge.
-				return
+				return false, nil
 			}
 		}
 	} else if !errors.Is(stateErr, domain.ErrNotFound) {
-		return
+		return false, nil
 	}
 	quiet, err := s.targetsQuiet(ctx, parent.ID, joinChildrenOf(joinStep))
 	if err != nil || !quiet {
-		return
+		return false, nil
 	}
 	// M4 预算护栏：静默唤醒点核算，超限即收口不唤醒。
 	if plan.Guardrails.MaxTokens != nil {
 		used, err := s.treeTokenUsage(ctx, parent.ID)
 		if err != nil {
 			log.Printf("plan: token 用量核算失败（plan %s）: %v", plan.ID, err)
-			return
+			return false, err
 		}
 		if used > *plan.Guardrails.MaxTokens {
 			s.failPlanForBudget(ctx, plan, used, *plan.Guardrails.MaxTokens)
-			return
+			return true, nil
 		}
 	}
 	wctx := context.WithoutCancel(ctx)
@@ -1463,10 +1465,11 @@ func (s *Service) maybeAdvancePlans(ctx context.Context, r *domain.ExecutionRun)
 		plan.WorkspaceID, plan.AgentProfileID, planTaskKey(plan.ID),
 		map[string]any{"plan_id": plan.ID, "trigger": "children_quiet"}, time.Time{}); err != nil {
 		log.Printf("plan: children_quiet 唤醒入队失败（plan %s）: %v", plan.ID, err)
-		return
+		return false, err
 	}
 	_ = s.activityFor(wctx, plan.WorkspaceID, parent.ID, "plan.children_quiet",
 		fmt.Sprintf("等待集子任务全部静默，唤醒 plan owner（plan %s / agent %s）", plan.ID, plan.AgentProfileID))
+	return true, nil
 }
 
 // parsePlanSteps 逐动词校验步骤载荷；任何失败让整份提交落 ErrValidation。

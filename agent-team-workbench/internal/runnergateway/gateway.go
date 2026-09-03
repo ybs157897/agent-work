@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -218,7 +220,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.restoreAndReplayApprovals(rc)
 	// welcome 先进入该连接唯一 send queue；随后 process-restart 收口可能触发
 	// Coordinator retry/Dispatch，但其 run.offer 只能排在 welcome 之后。
-	g.settleRestartedRuns(rc.restartedRunIDs)
+	g.settleRestartedRuns(rc)
 
 	go rc.writeLoop()
 	go rc.readLoop()
@@ -347,36 +349,58 @@ func (g *Gateway) registerRunner(ctx context.Context, rc *runnerConn) error {
 // settleRestartedRuns 收敛不同 boot_id 留下的 lease。新进程没有旧进程的
 // pending/runs/provider state，绝不能把它当普通网络重连继续续租；running 先
 // 经 reconnecting 再 lost，其他非终态直接 failed，由既有 terminal hooks 恢复。
-func (g *Gateway) settleRestartedRuns(runIDs []string) {
+//
+// Run Journal M2 闭合与证据：收口前合成闭合未闭合相位（崩溃点），收口成功后
+// 发 run.recovery_failed 带全程证据。恢复事件一次性单发、不成对（started/
+// completed 不发）：boot_id 变化即判死旧进程状态不可恢复，reconnecting 只是
+// 状态机合法跳板、不存在真实恢复窗口，收口在本次调用内同步终结。
+func (g *Gateway) settleRestartedRuns(rc *runnerConn) {
 	if g.engine == nil {
 		return
 	}
 	ctx := context.Background()
-	for _, runID := range runIDs {
+	const (
+		code    = "runner_process_restarted"
+		message = "Runner boot_id 已变化，旧进程内执行状态不可恢复"
+	)
+	base := map[string]any{
+		"runner_id": rc.runnerID, "boot_id": rc.bootID, "connection_epoch": rc.epoch,
+	}
+	for _, runID := range rc.restartedRunIDs {
 		run, err := g.engine.Run(ctx, runID)
 		if err != nil || run == nil || run.Status.IsTerminal() {
 			continue
 		}
+		evidence := withEvidence(nil, base)
+		if lease, leaseErr := g.activeLease(ctx, runID); leaseErr == nil && lease != nil {
+			evidence["lease_id"], evidence["fencing_token"] = lease.LeaseID, lease.FencingToken
+		}
+		g.synthCloseUnclosedPhase(ctx, runID, code, message, evidence)
+		closed := false
 		switch run.Status {
 		case domain.RunRunning:
-			if err := g.engine.RecordRunStatus(ctx, runID, domain.RunReconnecting, nil); err == nil {
-				if err := g.engine.RecordRunStatus(ctx, runID, domain.RunLost, nil); err != nil {
-					log.Printf("runnergateway: run %s 进程重启后标记 lost 失败: %v", runID, err)
-				}
+			if err := g.engine.RecordRunStatus(ctx, runID, domain.RunReconnecting, withEvidence(nil, evidence)); err == nil {
+				closed = g.recordLost(ctx, runID, code, evidence)
 			} else {
-				log.Printf("runnergateway: run %s 进程重启后标记 reconnecting 失败: %v", runID, err)
+				slog.Warn("runnergateway: run 进程重启后标记 reconnecting 失败",
+					"run_id", runID, "code", code, "error", err)
 			}
 		case domain.RunReconnecting:
-			if err := g.engine.RecordRunStatus(ctx, runID, domain.RunLost, nil); err != nil {
-				log.Printf("runnergateway: run %s 进程重启后标记 lost 失败: %v", runID, err)
-			}
+			closed = g.recordLost(ctx, runID, code, evidence)
 		default:
-			if err := g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, map[string]any{
-				"code": "runner_process_restarted", "retryable": true,
-				"message": "Runner boot_id 已变化，旧进程内执行状态不可恢复",
-			}); err != nil {
-				log.Printf("runnergateway: run %s 进程重启后标记 failed 失败: %v", runID, err)
+			closed = g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, withEvidence(map[string]any{
+				"code": code, "retryable": true, "message": message,
+			}, evidence)) == nil
+			if !closed {
+				slog.Warn("runnergateway: run 进程重启后标记 failed 失败",
+					"run_id", runID, "code", code)
 			}
+		}
+		if closed {
+			// 收口成功后补恢复结局；发射失败只 slog，绝不回滚收口。
+			g.emitRecoveryEvent(ctx, runID, domain.EventRunRecoveryFailed, withEvidence(map[string]any{
+				"code": code, "message": message, "retryable": true,
+			}, evidence))
 		}
 	}
 }
@@ -537,14 +561,28 @@ func (g *Gateway) handleDisconnect(rc *runnerConn) {
 
 	ctx := context.Background()
 	now := time.Now().UTC()
+	// last_heartbeat_at 必须在 offline 投影覆写 last_seen_at 之前读取。
+	connEvidence := map[string]any{
+		"runner_id": rc.runnerID, "boot_id": rc.bootID, "connection_epoch": rc.epoch,
+	}
+	if runner, err := g.store.Runners().Get(ctx, rc.runnerID); err == nil && runner != nil && runner.LastSeenAt != nil {
+		connEvidence["last_heartbeat_at"] = runner.LastSeenAt.UTC().Format(time.RFC3339Nano)
+	}
 	_ = g.store.Runners().SetStatus(ctx, rc.runnerID, "offline", now)
 	if !hasHostPeer {
 		_ = g.store.ExecutionHosts().SetStatus(ctx, rc.hostID, domain.HostStatusOffline, now)
 	}
 	for _, runID := range runIDs {
-		if g.engine != nil {
-			g.markRunReconnecting(ctx, runID, "runner disconnected")
+		if g.engine == nil {
+			continue
 		}
+		evidence := withEvidence(nil, connEvidence)
+		rc.mu.Lock()
+		if lease := rc.activeRuns[runID]; lease != nil {
+			evidence["lease_id"], evidence["fencing_token"] = lease.LeaseID, lease.FencingToken
+		}
+		rc.mu.Unlock()
+		g.markRunReconnecting(ctx, runID, "runner_disconnected", "runner disconnected", evidence)
 	}
 	log.Printf("runnergateway: %s 断开（host=%s，活动 run %d 个进入 reconnecting）",
 		rc.runnerID, rc.hostID, len(runIDs))
@@ -552,7 +590,12 @@ func (g *Gateway) handleDisconnect(rc *runnerConn) {
 
 // markRunReconnecting 把任意非终态 Run 收敛到 reconnecting；若状态读取或迁移
 // 失败则直接 failed，绝不让已无 lease 的 Run 无限悬置。
-func (g *Gateway) markRunReconnecting(ctx context.Context, runID, reason string) {
+//
+// Run Journal M2：进入 reconnecting 即恢复窗口开启——先合成闭合未闭合相位
+// （崩溃点证据）、发 run.recovery_started；重连成功则窗口自然关闭（无需结局
+// 事件），判死终局由 lease 过期/failed 兜底路径发 run.recovery_failed 补齐。
+// 发射失败只 slog，绝不改变收口控制流。
+func (g *Gateway) markRunReconnecting(ctx context.Context, runID, code, message string, evidence map[string]any) {
 	run, err := g.engine.Run(ctx, runID)
 	if err != nil || run == nil || run.Status.IsTerminal() {
 		return
@@ -560,37 +603,196 @@ func (g *Gateway) markRunReconnecting(ctx context.Context, runID, reason string)
 	if run.Status == domain.RunReconnecting {
 		return
 	}
-	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunReconnecting, nil); err == nil {
+	g.synthCloseUnclosedPhase(ctx, runID, code, message, evidence)
+	g.emitRecoveryEvent(ctx, runID, domain.EventRunRecoveryStarted, withEvidence(map[string]any{
+		"code": code, "message": message,
+	}, evidence))
+	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunReconnecting, withEvidence(nil, evidence)); err == nil {
 		return
 	}
-	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, map[string]any{
-		"code": "runner_connection_lost", "retryable": true, "message": reason,
-	}); err != nil {
-		log.Printf("runnergateway: run %s 断连收口失败: %v", runID, err)
+	// reconnecting 不可达：failed 兜底同步收口即恢复终局（started→failed 成对）。
+	failData := withEvidence(map[string]any{
+		"code": "runner_connection_lost", "retryable": true, "message": message,
+	}, evidence)
+	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, failData); err != nil {
+		slog.Warn("runnergateway: run 断连收口失败",
+			"run_id", runID, "code", "runner_connection_lost", "error", err)
+		return
 	}
+	g.emitRecoveryEvent(ctx, runID, domain.EventRunRecoveryFailed, failData)
 }
 
 // markExpiredLeaseTerminal 在 lease 已释放后确保非终态 Run 最终落 terminal。
 // 先经 reconnecting 再 lost，若任一迁移失败则 failed 兜底。
+//
+// Run Journal M2：收口成功后发 run.recovery_failed 带全程证据（lease 身份、
+// 过期时刻、最后心跳）。当 reconnecting 腿刚由 markRunReconnecting 发过
+// started 时两者成对；run 早已处于 reconnecting（如断连路径先发过 started）
+// 时本条独立成立——恢复结局证据不依赖 started 是否在途。
 func (g *Gateway) markExpiredLeaseTerminal(ctx context.Context, runID string) {
 	if g.engine == nil {
 		return
 	}
-	g.markRunReconnecting(ctx, runID, "runner lease expired")
+	const (
+		code    = "runner_lease_expired"
+		message = "Runner lease 已过期且无法恢复"
+	)
+	evidence := g.leaseEvidence(ctx, runID)
+	g.markRunReconnecting(ctx, runID, code, message, evidence)
 	run, err := g.engine.Run(ctx, runID)
 	if err != nil || run == nil || run.Status.IsTerminal() {
 		return
 	}
 	if run.Status == domain.RunReconnecting {
-		if err := g.engine.RecordRunStatus(ctx, runID, domain.RunLost, nil); err == nil {
+		if g.recordLost(ctx, runID, code, evidence) {
+			g.emitRecoveryEvent(ctx, runID, domain.EventRunRecoveryFailed, withEvidence(map[string]any{
+				"code": code, "message": message, "retryable": true,
+			}, evidence))
 			return
 		}
 	}
-	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, map[string]any{
-		"code": "runner_lease_expired", "retryable": true, "message": "Runner lease 已过期且无法恢复",
-	}); err != nil {
-		log.Printf("runnergateway: run %s lease 过期收口失败: %v", runID, err)
+	failData := withEvidence(map[string]any{
+		"code": code, "retryable": true, "message": message,
+	}, evidence)
+	if err := g.engine.RecordRunStatus(ctx, runID, domain.RunFailed, failData); err != nil {
+		slog.Warn("runnergateway: run lease 过期收口失败",
+			"run_id", runID, "code", code, "error", err)
+		return
 	}
+	g.emitRecoveryEvent(ctx, runID, domain.EventRunRecoveryFailed, failData)
+}
+
+// ── Run Journal：死 runner 恢复路径的证据与合成闭合 ─────────────────
+
+// withEvidence 把路径证据合并进 data（浅拷贝成新 map，避免共享 map 被下游
+// 事件管道改写）；data 为 nil 时等价于证据拷贝。
+func withEvidence(data, evidence map[string]any) map[string]any {
+	out := make(map[string]any, len(data)+len(evidence))
+	for k, v := range data {
+		out[k] = v
+	}
+	for k, v := range evidence {
+		out[k] = v
+	}
+	return out
+}
+
+// recordLost 以 lost 终局收口（data 带恢复原因与证据）；返回迁移是否成功。
+func (g *Gateway) recordLost(ctx context.Context, runID, code string, evidence map[string]any) bool {
+	return g.engine.RecordRunStatus(ctx, runID, domain.RunLost, withEvidence(map[string]any{
+		"reason": code,
+	}, evidence)) == nil
+}
+
+// activeLease 读该 run 的最高 fencing lease 行（含已释放——过期判死恰恰
+// 发生在释放之后，释放行本身就是证据）。
+func (g *Gateway) activeLease(ctx context.Context, runID string) (*application.RunLease, error) {
+	if g.store == nil {
+		return nil, domain.ErrNotFound
+	}
+	return g.store.Runners().ActiveLease(ctx, runID)
+}
+
+// leaseEvidence 从 DB 侧取 lease/runner 证据：lease 身份与过期时刻（=
+// renewed_until）、fencing token、runner 身份与最后心跳。查询失败时返回已
+// 收集到的部分——证据尽力而为，绝不阻塞收口。
+func (g *Gateway) leaseEvidence(ctx context.Context, runID string) map[string]any {
+	evidence := map[string]any{}
+	lease, err := g.activeLease(ctx, runID)
+	if err != nil || lease == nil {
+		return evidence
+	}
+	evidence["lease_id"] = lease.LeaseID
+	evidence["fencing_token"] = lease.FencingToken
+	evidence["runner_id"] = lease.RunnerID
+	evidence["lease_expired_at"] = lease.RenewedUntil.UTC().Format(time.RFC3339Nano)
+	if g.store != nil {
+		if runner, err := g.store.Runners().Get(ctx, lease.RunnerID); err == nil && runner != nil {
+			evidence["boot_id"] = runner.BootID
+			if runner.LastSeenAt != nil {
+				evidence["last_heartbeat_at"] = runner.LastSeenAt.UTC().Format(time.RFC3339Nano)
+			}
+		}
+	}
+	return evidence
+}
+
+// emitRecoveryEvent 落一条 run.recovery_*（surface 事件，契约 asyncapi 已
+// 声明、此前全仓库零发出点，本文件是它们的激活点）。engine 缺失静默跳过；
+// 发射失败只 slog——观测绝不改变收口控制流。
+func (g *Gateway) emitRecoveryEvent(ctx context.Context, runID, evType string, data map[string]any) {
+	if g.engine == nil {
+		return
+	}
+	if err := g.engine.RecordRunEvent(ctx, runID, evType, data); err != nil {
+		slog.Warn("runnergateway: 恢复事件落库失败",
+			"run_id", runID, "event", evType, "code", data["code"], "error", err)
+	}
+}
+
+// synthCloseUnclosedPhase 收口前合成闭合该 run 最后一个未闭合相位：有
+// phase_entered 无配对 phase_closed 即崩溃/卡死环节，恢复路径带证据把它闭合
+// （failure.code = 恢复原因码），使「死在哪个环节」单查询可读。找不到未闭合
+// 相位就不发。journal 读取或发射失败只 slog，绝不改变收口控制流。
+func (g *Gateway) synthCloseUnclosedPhase(ctx context.Context, runID, code, message string, evidence map[string]any) {
+	if g.engine == nil || g.store == nil {
+		return
+	}
+	events, err := g.store.Events().ListRunEventsIncludeInternal(ctx, runID)
+	if err != nil {
+		slog.Warn("runnergateway: 读 run journal 失败，跳过相位合成闭合",
+			"run_id", runID, "code", code, "error", err)
+		return
+	}
+	phase, enteredAt, ok := unclosedJournalPhase(events)
+	if !ok {
+		return
+	}
+	var durationMS int64
+	if !enteredAt.IsZero() {
+		durationMS = time.Since(enteredAt).Milliseconds()
+	}
+	data := observability.PhaseClosedPayload(phase, observability.PhaseFailed, &observability.PhaseFailure{
+		Code: code, Message: message, Retryable: true,
+	}, durationMS, evidence)
+	if data == nil {
+		return // 词表外相位：不发（Journal 埋点只发词表内相位，此为防御）
+	}
+	if err := g.engine.RecordRunEvent(ctx, runID, domain.EventRunPhaseClosed, data); err != nil {
+		slog.Warn("runnergateway: 相位合成闭合落库失败",
+			"run_id", runID, "code", code, "phase", phase, "error", err)
+	}
+}
+
+// unclosedJournalPhase 从 run 全量事件（含 internal）里找最后一个有 entered
+// 无配对 closed 的相位。events 必须按 run_seq 升序（ListRunEventsIncludeInternal
+// 的既有语义）。与 application 侧重启对账的同名逻辑同构——两包互不依赖，
+// 各持一份（RunEvent 属 application，下沉会引入反向 import）。
+func unclosedJournalPhase(events []application.RunEvent) (phase string, enteredAt time.Time, ok bool) {
+	open := map[string]time.Time{}
+	var order []string
+	for _, ev := range events {
+		switch ev.EventType {
+		case domain.EventRunPhaseEntered:
+			name, _ := ev.Payload["phase"].(string)
+			if name == "" {
+				continue
+			}
+			if _, seen := open[name]; !seen {
+				order = append(order, name)
+			}
+			open[name] = ev.OccurredAt
+		case domain.EventRunPhaseClosed:
+			name, _ := ev.Payload["phase"].(string)
+			delete(open, name)
+		}
+	}
+	for i := len(order) - 1; i >= 0; i-- {
+		if at, openNow := open[order[i]]; openNow {
+			return order[i], at, true
+		}
+	}
+	return "", time.Time{}, false
 }
 
 // leaseSweeper 定期释放过期租约，并把任何仍非终态的受影响 Run 收敛。

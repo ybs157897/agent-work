@@ -107,23 +107,26 @@ func parseVerdict(block string) (pass bool, reasons []string, err error) {
 // 提取 ```verdict 围栏块并推动主任务 phase——pass → acceptance（人等 Accept()
 // 既有唯一完工路径）；fail → 回 execution + reasons 落 activity；缺失/解析失败 →
 // verdict_parse_failed blocker（同 plan_parse_failed 策略）。
-func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// 所有失败路径都落 user 可见 blocker（=acted），故本钩子恒 ok；err 保留签名
+// 对称性，当前无静默失败分支。控制流不变。
+func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRun) (bool, error) {
 	if r == nil || r.Status != domain.RunSucceeded {
-		return
+		return false, nil
 	}
 	if eval, _ := r.Input["evaluation"].(bool); !eval {
-		return
+		return false, nil
 	}
 	wctx := context.WithoutCancel(ctx)
 	if key, governed := runGovernanceTurnKey(r); governed {
 		goal, goalErr := s.store.Goals().Get(wctx, key.GoalID)
 		if goalErr != nil || goal.Status != domain.GoalActive {
-			return
+			return false, nil
 		}
 	}
 	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
 	if err != nil || !isTaskWorkItem(wi) {
-		return
+		return false, nil
 	}
 	if isGovernedCoordinatorRun(r) {
 		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
@@ -131,24 +134,24 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 			// An accepted Handoff fences every late control outcome from the
 			// relinquishing source, including evaluation verdicts. The immutable
 			// Run transcript remains evidence; it cannot advance Task/Goal state.
-			return
+			return false, nil
 		}
 	}
 	text, err := s.runFinalText(wctx, r.ID)
 	if err != nil {
 		log.Printf("evaluation: run %s 最终文本读取失败: %v", r.ID, err)
 		s.blockForParseFailure(wctx, r, "verdict_read_failed", "评估证据读取失败："+err.Error())
-		return
+		return true, nil
 	}
 	block, ok := extractLastFencedBlock(text, "verdict")
 	if !ok {
 		s.blockForParseFailure(wctx, r, "verdict_parse_failed", "评估回复缺少 ```verdict 围栏块")
-		return
+		return true, nil
 	}
 	pass, reasons, err := parseVerdict(block)
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "verdict_parse_failed", err.Error())
-		return
+		return true, nil
 	}
 	if key, governed := runGovernanceTurnKey(r); governed {
 		status := domain.ValidationResultFailed
@@ -165,14 +168,15 @@ func (s *Service) maybeProcessVerdict(ctx context.Context, r *domain.ExecutionRu
 		}); resultErr != nil {
 			log.Printf("evaluation: run %s validation result 写入失败: %v", r.ID, resultErr)
 			s.blockForParseFailure(wctx, r, "validation_result_write_failed", "评估验证结果无法持久化："+resultErr.Error())
-			return
+			return true, nil
 		}
 	}
 	if pass {
 		s.applyVerdictPass(wctx, wi)
-		return
+		return true, nil
 	}
 	s.applyVerdictFail(wctx, wi, reasons)
+	return true, nil
 }
 
 // applyVerdictPass 主任务 review → acceptance（评估 run succeeded 已先经

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
 	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/outbox"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
@@ -85,6 +87,11 @@ func main() {
 // run 承载全部启动与生命周期：资源清理走 defer，保证启动失败路径（返回 error）
 // 与信号退出路径都先释放 dsh 网关进程、DB 连接再退出。
 func run() error {
+	// D4（Run Journal M2）：结构化日志默认 handler——text 输出 stderr，level
+	// info。gateway 恢复路径与重启对账等「出了事才看得到」的关键环节经 slog
+	// 输出，字段带 run_id/code；其余 log.Printf 保持现状（只换关键环节）。
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
 	dsn := env("DATABASE_URL", sqlstore.DefaultDSN)
 	addr := env("LISTEN_ADDR", ":8080")
 
@@ -200,7 +207,8 @@ func run() error {
 	// M2 Runner WSS Gateway（v2）：按 snapshot.execution_host_id 精确路由到
 	// Runner，host_local 走进程内 ModuleRunner（唯一本地执行面）。
 	gateway := runnergateway.New(store, svc, hub)
-	svc.SetDispatcher(&chainDispatcher{gw: gateway, modules: modules, store: store, svc: svc})
+	svc.SetDispatcher(&chainDispatcher{gw: gateway, modules: modules, store: store, svc: svc,
+		journal: observability.NewJournal(svc.RecordRunEvent)})
 	svc.ApprovalForwarder = func(ctx context.Context, runID, approvalID string, approved bool) {
 		// 在线 Runner（ingress 已做 runner 侧审批 ID 翻译）→ 进程内模块 Controls。
 		gateway.ForwardApproval(ctx, runID, approvalID, approved)
@@ -351,6 +359,17 @@ func run() error {
 	} else if recovered > 0 {
 		log.Printf("启动恢复：%d 个 queued session-heal run 已重新分派", recovered)
 	}
+	// 控制面重启对账 sweeper（Run Journal M2 §3.5）：进程死亡时 host_local 的
+	// 在飞 run 无主（leaseSweeper 只管远程 lease），在通用 orphan 对账之前带
+	// 证据合成收口——合成闭合未闭合相位 + recovery/decision 事件，失败码
+	// control_plane_restart，lost 恒 retryable 交 coordinator due-state 循环
+	// 重驱。queued 是合法待派发，本扫不动（留给下方 ReconcileOrphanRuns）。
+	// 失败只 slog，不阻断启动。
+	if swept, err := svc.ReconcileOrphanedLocalRuns(ctx); err != nil {
+		slog.Warn("控制面重启对账未完全成功", "error", err)
+	} else if swept > 0 {
+		slog.Info("控制面重启对账：无租约在飞 run 已带证据收敛", "count", swept)
+	}
 	// 清理上一进程遗留的「无 lease 且非终态」普通孤儿 run（进程内模块执行），
 	// 防止该 (agent, task) 的后续 wakeup 被永久 coalesce 进死 run；runner 路径有
 	// lease，由 runnergateway sweeper 负责不受影响。失败不阻断启动。
@@ -424,6 +443,9 @@ type chainDispatcher struct {
 	modules *runtime.ModuleRunner
 	store   application.Store
 	svc     *application.Service
+	// journal 承载 Run Journal 的 dispatch 相位锚点（internal 事件，只落
+	// run_events，不进 SSE/回放）。
+	journal *observability.Journal
 }
 
 func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun) error {
@@ -439,15 +461,30 @@ func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun
 	if err != nil {
 		return fmt.Errorf("run %s 无 context snapshot，拒绝分派: %w", run.ID, err)
 	}
+	// Run Journal dispatch 相位（入队/选 runner/lease 授予）：entered 在路由
+	// 决策点发一次（两条路径必经此处，恰发一对中的一半），closed 由各执行面
+	// 在交接成功/失败点补齐——host_local 在本文件，remote 在 runnergateway ingress。
+	timer, err := c.journal.EnterPhase(ctx, run.ID, observability.PhaseDispatch, 1, map[string]any{
+		"host_id": snapshot.ExecutionHostID, "runtime": run.RuntimeLabel, "adapter": adapterID,
+	})
+	if err != nil {
+		log.Printf("run journal: run %s dispatch phase_entered 落库失败: %v", run.ID, err)
+		timer = nil
+	}
 	if snapshot.ExecutionHostID == domain.LocalHostID {
 		if c.modules.Has(adapterID) {
 			log.Printf("dispatch: run %s → 进程内模块（%s，host_local）", run.ID, adapterID)
-			return c.modules.Dispatch(ctx, run)
+			err := c.modules.Dispatch(ctx, run)
+			c.closeDispatchPhase(timer, run.ID, err)
+			return err
 		}
-		return fmt.Errorf("%w: adapter %s 未注册本地执行面", domain.ErrCapabilityMissing, adapterID)
+		err := fmt.Errorf("%w: adapter %s 未注册本地执行面", domain.ErrCapabilityMissing, adapterID)
+		c.closeDispatchPhase(timer, run.ID, err)
+		return err
 	}
 	log.Printf("dispatch: run %s → Runner（adapter=%s，host=%s）", run.ID, adapterID, snapshot.ExecutionHostID)
 	if err := c.gw.Dispatch(ctx, run, snapshot, adapterID); err != nil {
+		// dispatch 相位的 closed 由 ingress 的 lease/入队失败路径发出，这里不重复发；
 		// 提交后目标 Host 无可用 Runner：Run 落 failed(retryable)，由 Coordinator
 		// 既有有界 retry/replan 恢复；禁止跨 Host/本机 fallback（RFC §7.4）。
 		_ = c.svc.RecordRunStatus(context.WithoutCancel(ctx), run.ID, domain.RunFailed,
@@ -456,6 +493,27 @@ func (c *chainDispatcher) Dispatch(ctx context.Context, run *domain.ExecutionRun
 		return err
 	}
 	return nil
+}
+
+// closeDispatchPhase 收口 host_local 路径的 dispatch 相位（成对语义的另一半）。
+// timer 为 nil 表示 entered 未落库——缺观测不补假事件；journal 失败只记日志，
+// 绝不打断业务路径。failure 分类沿用既有 dispatch 终态语义（Service.dispatchRun
+// 把 Dispatcher 错误统一落 failed(code=dispatch_failed, retryable)）。
+func (c *chainDispatcher) closeDispatchPhase(timer *observability.PhaseTimer, runID string, dispatchErr error) {
+	if timer == nil {
+		return
+	}
+	var err error
+	if dispatchErr != nil {
+		err = timer.Close(observability.PhaseFailed, &observability.PhaseFailure{
+			Code: "dispatch_failed", Message: dispatchErr.Error(), Retryable: true,
+		}, map[string]any{"route": "host_local"})
+	} else {
+		err = timer.Close(observability.PhaseOK, nil, map[string]any{"route": "host_local"})
+	}
+	if err != nil {
+		log.Printf("run journal: run %s dispatch phase_closed 落库失败: %v", runID, err)
+	}
 }
 
 // seed 在无数据时创建演示 Workspace、角色团队与看板任务。

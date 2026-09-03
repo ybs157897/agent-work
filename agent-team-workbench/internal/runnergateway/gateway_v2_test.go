@@ -587,7 +587,7 @@ func TestBootChangeDoesNotRestoreOrRenewOrphanedLease(t *testing.T) {
 	if err := g.registerRunner(context.Background(), rc); err != nil {
 		t.Fatal(err)
 	}
-	g.settleRestartedRuns(rc.restartedRunIDs)
+	g.settleRestartedRuns(rc)
 	if !runners.leases[0].Released {
 		t.Fatal("不同 boot_id 必须释放旧 lease")
 	}

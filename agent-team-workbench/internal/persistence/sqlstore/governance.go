@@ -1322,6 +1322,33 @@ func (r *TurnReceiptRepo) ListPhases(ctx context.Context, key domain.TurnKey) ([
 	return out, rows.Err()
 }
 
+// LatestTurnHeaderByRunID 用 turn_receipt_phases.run_ids JSON 数组反查 run
+// 所属治理回合：任一 phase 行的 run_ids 含 runID 即该 turn 的成员 run；
+// 多 turn 命中取 created_at 最新（并列按 goal/todo/turn_seq 降序，保证确定性）。
+// 无命中返回 (nil, nil)——journal 调试面对无治理引用的 run 下发 governance=null。
+func (r *TurnReceiptRepo) LatestTurnHeaderByRunID(ctx context.Context, runID string) (*domain.TurnReceiptHeader, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, fmt.Errorf("%w: run id required", domain.ErrValidation)
+	}
+	header := &domain.TurnReceiptHeader{}
+	err := r.scanHeader(r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT `+headerCols+` FROM turn_receipt_headers h
+		 WHERE EXISTS (
+		     SELECT 1 FROM turn_receipt_phases p, json_each(p.run_ids)
+		     WHERE p.goal_id = h.goal_id AND p.todo_id = h.todo_id AND p.turn_seq = h.turn_seq
+		       AND json_each.value = ?
+		 )
+		 ORDER BY h.created_at DESC, h.goal_id DESC, h.todo_id DESC, h.turn_seq DESC
+		 LIMIT 1`, runID), header)
+	if err != nil {
+		if err = r.store.mapErr(err); errors.Is(err, domain.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return header, nil
+}
+
 func mapGovernanceConstraint(err error) error {
 	if err == nil {
 		return nil

@@ -1363,7 +1363,10 @@ func (f *strictSink) RecordRunProgress(ctx context.Context, runID string, progre
 func (f *strictSink) RecordRunEvent(ctx context.Context, runID, evType string, data map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.run.Status.IsTerminal() {
+	// Run Journal internal 事件（run.phase_*）不受终态门约束：存储/应用层对
+	// internal 事件没有终态检查（只落 run_events），settle 收口在终态落账之后
+	// 发出是 Run Journal 的设计语义，不计入终态后副作用。
+	if f.run.Status.IsTerminal() && !domain.IsInternalEventName(evType) {
 		f.afterTerminal = append(f.afterTerminal, "event:"+evType)
 		return domain.ErrTerminalImmutable
 	}

@@ -76,6 +76,8 @@ type fakeRunnerRepo struct {
 	statuses [][2]string // runnerID, status
 	leases   []*application.RunLease
 	renews   []renewCall
+	// leaseErr 非空时 CreateLease 失败（dispatch 失败路径 / journal 断言用）。
+	leaseErr error
 }
 
 type renewCall struct {
@@ -116,6 +118,9 @@ func (f *fakeRunnerRepo) SetStatus(ctx context.Context, runnerID, status string,
 func (f *fakeRunnerRepo) CreateLease(ctx context.Context, l *application.RunLease) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.leaseErr != nil {
+		return f.leaseErr
+	}
 	if l.FencingToken == 0 {
 		l.FencingToken = int64(len(f.leases) + 1)
 	}
@@ -185,6 +190,27 @@ func (f *fakeRunnerRepo) ExpireLeases(ctx context.Context, now time.Time) ([]str
 	return nil, nil
 }
 
+// ActiveLease 返回该 run 的最高 fencing lease 行（含已释放，与 sqlstore 语义
+// 一致——过期判死发生在释放之后，释放行正是恢复证据的来源）。
+func (f *fakeRunnerRepo) ActiveLease(ctx context.Context, runID string) (*application.RunLease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var best *application.RunLease
+	for _, l := range f.leases {
+		if l.RunID != runID {
+			continue
+		}
+		if best == nil || l.FencingToken > best.FencingToken {
+			best = l
+		}
+	}
+	if best == nil {
+		return nil, domain.ErrNotFound
+	}
+	cp := *best
+	return &cp, nil
+}
+
 // Snapshot 取记录快照（测试断言用）。
 func (f *fakeRunnerRepo) Snapshot() (upserts []*application.Runner, statuses [][2]string, leases []*application.RunLease, renews []renewCall) {
 	f.mu.Lock()
@@ -203,18 +229,70 @@ func (f *fakeRunRepo) ListApprovals(ctx context.Context, runID string) ([]*domai
 	return f.approvals, nil
 }
 
-// fakeStore 按 gateway 触面提供三个仓储，其余方法不会被调用。
+// fakeEventRepo 是 run_events 的内存投影：journal 读路径（合成闭合相位需要
+// ListRunEventsIncludeInternal）与恢复事件断言共用。events 按 run 分桶追加，
+// 顺序即 run_seq 序。其余 EventRepo 方法不被网关触达（内嵌接口零值兜底）。
+type fakeEventRepo struct {
+	application.EventRepo
+
+	mu    sync.Mutex
+	byRun map[string][]application.RunEvent
+}
+
+func newFakeEventRepo() *fakeEventRepo {
+	return &fakeEventRepo{byRun: make(map[string][]application.RunEvent)}
+}
+
+// seed 预置一条事件（测试构造 journal 历史，如 phase_entered）。
+func (r *fakeEventRepo) seed(runID, eventType string, payload map[string]any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byRun == nil {
+		r.byRun = make(map[string][]application.RunEvent)
+	}
+	r.byRun[runID] = append(r.byRun[runID], application.RunEvent{
+		RunSeq: int64(len(r.byRun[runID]) + 1), EventType: eventType,
+		Payload: payload, OccurredAt: time.Now().UTC(),
+	})
+}
+
+// append 是 engine 发出事件的镜像入口（recordSink 接线）。
+func (r *fakeEventRepo) append(runID, eventType string, payload map[string]any) {
+	r.seed(runID, eventType, payload)
+}
+
+func (r *fakeEventRepo) ListRunEventsIncludeInternal(ctx context.Context, runID string) ([]application.RunEvent, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]application.RunEvent, len(r.byRun[runID]))
+	copy(out, r.byRun[runID])
+	return out, nil
+}
+
+func (r *fakeEventRepo) ListRunEvents(ctx context.Context, runID string) ([]application.RunEvent, error) {
+	return r.ListRunEventsIncludeInternal(ctx, runID)
+}
+
+// fakeStore 按 gateway 触面提供仓储，其余方法不会被调用。events 为 nil 时
+// Events() 返回空仓（合成闭合查不到相位、不发事件——与未埋点 run 一致）。
 type fakeStore struct {
 	application.Store
 
 	hosts   *fakeHostRepo
 	runners *fakeRunnerRepo
 	runs    *fakeRunRepo
+	events  *fakeEventRepo
 }
 
 func (f *fakeStore) ExecutionHosts() application.ExecutionHostRepo { return f.hosts }
 func (f *fakeStore) Runners() application.RunnerRepo               { return f.runners }
 func (f *fakeStore) Runs() application.RunRepo                     { return f.runs }
+func (f *fakeStore) Events() application.EventRepo {
+	if f.events == nil {
+		return newFakeEventRepo()
+	}
+	return f.events
+}
 func (f *fakeStore) InTx(ctx context.Context, fn func(context.Context) error) error {
 	return fn(ctx)
 }

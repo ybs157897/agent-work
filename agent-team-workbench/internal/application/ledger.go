@@ -33,31 +33,36 @@ var (
 // 本身会被状态机拒绝，钩子不执行；即便钩子被重复触发，重算输入不变则输出不变）。
 // 并发终态经 work_items.version 守卫互斥，冲突方重读重算（有界重试，收敛到含
 // 全部已关闭轮次的摘要）；失败只记日志，下一个终态钩子会整体重算自愈。
-func (s *Service) maybeSummarizeSegment(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// acted=摘要已重算；err=重算失败（含版本冲突重试耗尽）。控制流不变。
+func (s *Service) maybeSummarizeSegment(ctx context.Context, r *domain.ExecutionRun) (bool, error) {
 	if r == nil || !r.Status.IsTerminal() {
-		return
+		return false, nil
 	}
 	wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
 	if err != nil || !isTaskWorkItem(wi) {
-		return
+		return false, nil
 	}
 	wctx := context.WithoutCancel(ctx)
 	const maxAttempts = 3
+	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		err := s.store.InTx(wctx, func(ctx context.Context) error {
 			return s.refreshRollingDigest(ctx, r.WorkItemID)
 		})
 		if err == nil {
-			return
+			return true, nil
 		}
+		lastErr = err
 		if !errors.Is(err, domain.ErrVersionConflict) {
 			log.Printf("ledger: rolling_digest 刷新失败（work item %s）: %v", r.WorkItemID, err)
-			return
+			return false, err
 		}
 		if attempt == maxAttempts {
 			log.Printf("ledger: rolling_digest 刷新放弃（work item %s，版本冲突重试耗尽）", r.WorkItemID)
 		}
 	}
+	return false, lastErr
 }
 
 // refreshRollingDigest 事务内重算：素材与 CreateRun 的会话历史同源

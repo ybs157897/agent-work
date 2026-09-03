@@ -128,12 +128,27 @@ func activeLeaseMatches(l *RunLease, leaseID, runnerID string, fencing int64) bo
 	return l != nil && !l.Released && l.LeaseID == leaseID && l.RunnerID == runnerID && l.FencingToken == fencing
 }
 
-// releasedLeaseUsageAllowed 判定「已释放租约 + 终态 Run」的迟到 usage.updated
-// 是否放行（终态观测例外）。租约按 lease_id 读含已释放行，身份四要素
-// （lease_id/run/runner/fencing）必须与帧完全一致，且 Run 已终态——非终态
-// Run 命中已释放租约说明租约被 sweep/接管收走，仍按 stale 拒绝。lease 不存在
-// （ErrNotFound）按不满足处理；其他存储错误上返（瞬态失败不 ACK，Runner 重试）。
-func (s *Service) releasedLeaseUsageAllowed(ctx context.Context, in RunnerEventInput) (bool, error) {
+// LateTerminalObservationKind 报告 kind 是否可走「已释放租约 + 终态 Run」的
+// 迟到终态观测例外：usage.updated（runnerd 终态后补发用量证据）与
+// run.phase_entered/run.phase_closed（Run Journal 相位闭包——settle 闭包在
+// 终态帧之后发出，落不了 run_events 就等于每个远程 run 都以未闭合 settle
+// 收尾，违反「未闭合即故障点」）。其余 kind 一律不享受例外；网关侧放行
+// 判断与本闭集共用同一事实源。
+func LateTerminalObservationKind(kind string) bool {
+	switch kind {
+	case domain.EventUsageUpdated, domain.EventRunPhaseEntered, domain.EventRunPhaseClosed:
+		return true
+	}
+	return false
+}
+
+// releasedLeaseObservationAllowed 判定「已释放租约 + 终态 Run」的迟到终态
+// 观测帧（LateTerminalObservationKind 闭集）是否放行（终态观测例外）。租约
+// 按 lease_id 读含已释放行，身份四要素（lease_id/run/runner/fencing）必须与
+// 帧完全一致，且 Run 已终态——非终态 Run 命中已释放租约说明租约被
+// sweep/接管收走，仍按 stale 拒绝。lease 不存在（ErrNotFound）按不满足处理；
+// 其他存储错误上返（瞬态失败不 ACK，Runner 重试）。
+func (s *Service) releasedLeaseObservationAllowed(ctx context.Context, in RunnerEventInput) (bool, error) {
 	lease, err := s.store.Runners().GetLease(ctx, in.LeaseID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return false, nil
@@ -164,7 +179,7 @@ type RunnerEventInput struct {
 	// dedup key = (run_id, lease_id, runner_id, producer_seq)。
 	EventID     string
 	ProducerSeq int64
-	Kind        string // run.status_changed / run.session / usage.updated / approval.requested / artifact.manifest / message.* / tool.* …
+	Kind        string // run.status_changed / run.session / usage.updated / approval.requested / artifact.manifest / message.* / tool.* / run.phase_* …
 	Data        map[string]any
 }
 
@@ -192,7 +207,9 @@ type RunnerEventAck struct {
 // ApplyRunnerEvent 是所有 Runner event 的统一应用命令（RFC §8.3.1）。
 // 白名单 kind：run.status_changed / run.progress_updated / run.session /
 // usage.updated / approval.requested / artifact.manifest /
-// message.* / tool.* / session.compacted / subagent.updated / file_changes.reverted。
+// message.* / tool.* / session.compacted / subagent.updated / file_changes.reverted /
+// run.phase_entered / run.phase_closed（Run Journal internal 相位帧，D2——
+// 只落 run_events，经通用白名单分支走 recordRunEventTx）。
 func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (RunnerEventAck, error) {
 	ack := RunnerEventAck{
 		RunID: in.RunID, LeaseID: in.LeaseID, RunnerID: in.RunnerID,
@@ -211,16 +228,16 @@ func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (Ru
 			return err
 		}
 		if !activeLeaseMatches(lease, in.LeaseID, in.RunnerID, in.FencingToken) {
-			// 终态观测例外（仅 usage.updated）：终态事件在步骤⑤同事务释放
-			// lease，而 runnerd 终态后保留租约 framing 补发 session/usage——
-			// 丢帧重传/断线重连场景下合法的迟到 usage 不得被打成 stale。
-			// 严格身份（lease_id/run/runner/fencing 四要素）+ 租约确已释放 +
-			// Run 已终态，三者齐备才放行；其余一律维持 stale。
-			if in.Kind != domain.EventUsageUpdated {
+			// 终态观测例外（LateTerminalObservationKind 闭集）：终态事件在步骤⑤
+			// 同事务释放 lease，而 runnerd 终态后保留租约 framing 补发 session/
+			// usage/相位闭包——丢帧重传/断线重连场景下合法的迟到终态观测帧
+			// 不得被打成 stale。严格身份（lease_id/run/runner/fencing 四要素）+
+			// 租约确已释放 + Run 已终态，三者齐备才放行；其余一律维持 stale。
+			if !LateTerminalObservationKind(in.Kind) {
 				ack.Outcome = RunnerEventStale
 				return nil
 			}
-			allowed, err := s.releasedLeaseUsageAllowed(ctx, in)
+			allowed, err := s.releasedLeaseObservationAllowed(ctx, in)
 			if err != nil {
 				return err
 			}
@@ -349,8 +366,9 @@ func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (Ru
 			}
 		default:
 			// message.* / tool.* / session.compacted / subagent.updated /
-			// file_changes.reverted 等 Run 域事件：走 RecordRunEvent 同一核心
-			//（白名单校验在 emit 内，未知事件名即毒帧）。
+			// file_changes.reverted / run.phase_entered / run.phase_closed 等
+			// Run 域事件：走 RecordRunEvent 同一核心（白名单校验在 emit 内，
+			// 未知事件名即毒帧；internal 相位帧在 Append 处只落 run_events）。
 			if !domain.IsKnownEventName(in.Kind) {
 				poison = true
 				break
@@ -415,7 +433,11 @@ func (s *Service) ApplyRunnerEvent(ctx context.Context, in RunnerEventInput) (Ru
 		return ack, nil
 	}
 	if r, getErr := s.store.Runs().Get(context.WithoutCancel(ctx), in.RunID); getErr == nil {
-		s.notifier.Notify(r.WorkspaceID)
+		// internal 相位帧不唤醒 workspace（与进程内 RecordRunEvent 同一闸门）：
+		// journal 观测面不许触发 SSE 唤醒。
+		if !domain.IsInternalEventName(in.Kind) {
+			s.notifier.Notify(r.WorkspaceID)
+		}
 	}
 	return ack, nil
 }
