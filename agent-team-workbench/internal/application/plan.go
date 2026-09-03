@@ -808,8 +808,34 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if contextErr != nil {
 				return fmt.Errorf("构建评估 Coordinator proof: %w", contextErr)
 			}
+			// 评估 run 与 Coordinator 轮次同源继承 runtime：owner 是系统 Coordinator
+			// 时从 workspace 配置派生显式偏好（use_fallback 与 ModelRef 由同一控制
+			// 上下文键成对固化，createRunLocked 据此冻结模型快照），候选解析不再
+			// 回落 mock。Preferred binding 行缺失直接 fail-closed，不做探测/改选。
+			var evalRuntimePreference *domain.RuntimePreference
+			owner, ownerErr := s.store.Agents().Get(ctx, plan.AgentProfileID)
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if owner.Kind.IsSystem() {
+				config, configErr := s.store.TaskCoordinators().GetConfig(ctx, wi.WorkspaceID)
+				if configErr != nil {
+					return configErr
+				}
+				useFallback, _ := evalContext["use_fallback"].(bool)
+				evalRuntimePreference = coordinatorRuntimePreference(config, useFallback)
+				if evalRuntimePreference != nil && evalRuntimePreference.Preferred != "" {
+					if _, err := s.store.Bindings().GetByLabel(ctx, wi.WorkspaceID, evalRuntimePreference.Preferred); err != nil {
+						if errors.Is(err, domain.ErrNotFound) {
+							return fmt.Errorf("%w: Coordinator Runtime %q 未配置", domain.ErrValidation, evalRuntimePreference.Preferred)
+						}
+						return err
+					}
+				}
+			}
 			evalRun, err := s.createRunLocked(ctx, plan.WorkItemID, CreateRunParams{
 				AgentProfileID: plan.AgentProfileID, Instruction: instruction, Evaluation: true,
+				RuntimePreference:  evalRuntimePreference,
 				CoordinatorContext: evalContext, coordinatorAdmission: coordinatorAdmission,
 				governanceContext: planGovernanceRunContext(plan),
 				// 评估快照克隆被评估 Plan 的 source snapshot（RFC §4.7：evaluation 不切换身份）。
