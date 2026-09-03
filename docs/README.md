@@ -9,13 +9,17 @@
 ### 产品
 
 - [`product/end-goal.md`](product/end-goal.md)：最终产品目标、系统 Task Coordinator、会话管理与知识层的收口愿景。
+- [`product/loopx-native-governance-goal.md`](product/loopx-native-governance-goal.md)：LoopX 长程治理语义原生移植的目标、需求、不变式、非目标与验收合同。
 - [`product/product-agent-charter.md`](product/product-agent-charter.md)：产品 Agent 的澄清、立法和交付章程。
 
 ### 架构
 
+- [`architecture/system-architecture-handbook.md`](architecture/system-architecture-handbook.md)：当前系统的权威状态、主调用链、事务、Runtime/Runner、API/UI、恢复路径与源码导航入口。
 - [`architecture/c4-container-diagram.md`](architecture/c4-container-diagram.md)：当前容器边界、数据流和跨容器契约。
 - [`architecture/task-control-surface-context-design.md`](architecture/task-control-surface-context-design.md)：Execution Host、Workspace Location、Execution Context Snapshot、Task Comment、Review Queue 与 Delivery Brief。
+- [`architecture/loopx-native-governance-implementation-plan.md`](architecture/loopx-native-governance-implementation-plan.md)：原生治理语义 WP0–WP7 的依赖、实施、门禁、回滚、灰度与完成审计。
 - [`architecture/clawteam-borrowings-design.md`](architecture/clawteam-borrowings-design.md)：ClawTeam/OpenClaw 借鉴设计及已采纳、挂起和否决项。
+- [`architecture/2026-09-01-loopx-task-foundation-architecture-assessment.md`](architecture/2026-09-01-loopx-task-foundation-architecture-assessment.md)：LoopX 整体迁移、原生语义移植与外部混合层的任务执行底座评估。
 - [`../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md`](../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md)：SQLite 单一存储、唯一迁移目录与 PostgreSQL 复活条件。
 - [`../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md`](../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md)：任务控制面实施边界、失败停手条件和验收矩阵。
 
@@ -30,6 +34,10 @@
 
 - [`frontend/chat-content-blocks-v1.md`](frontend/chat-content-blocks-v1.md)：`languagegui/v1` 内容块契约。
 - [`frontend/chat-rendering-spec.md`](frontend/chat-rendering-spec.md)：Transcript、AgentOutput、工具活动、子代理与 swarm 正文渲染规格。
+
+### 评审
+
+- [`review/2026-09-02-loopx-native-governance-completion-audit.md`](review/2026-09-02-loopx-native-governance-completion-audit.md)：WP0–WP7、R0–R8、AC-01–AC-15 的完成证据、最终补漏、1440/1024 浏览器截图与外部 gate；截图资产位于 [`review/assets/`](review/assets/)。
 
 ## 外部参考
 

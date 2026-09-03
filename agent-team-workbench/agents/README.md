@@ -1,15 +1,19 @@
 # Agent 配置目录
 
-每个子目录是一个 Agent 的配置真相源；DB 只是运行时投影。
+单 Workspace 时每个根子目录是一个 Agent 的配置真相源；多 Workspace 时使用
+`workspaces/<workspace_id>/<slug>/` 命名空间，避免同名 Agent 互相覆盖；DB 只是运行时投影。
 
-- `agent.yaml`：名称、角色、技能、Runtime 偏好、模型覆盖、权限（工具白名单 + 审批策略 + sandbox）
-- `prompt.md`：系统提示词（作为 persona 注入 Runtime 会话）
+- `<slug>/agent.yaml`：名称、角色、技能、Runtime 偏好、模型覆盖、权限（工具白名单 + 审批策略 + sandbox）
+- `<slug>/prompt.md`：系统提示词（作为 persona 注入 Runtime 会话）
 
 同步时机：
 
 1. control-plane 启动时自动导入（新增/更新 DB 投影）；
-2. Web 端「智能体团队 → 详情 → 配置」保存后回写本目录；
+2. Web 端「智能体团队 → 详情 → 配置」保存后回写本目录（多 Workspace 写入对应命名空间）；
 3. 手动改完文件后调用 `POST /api/v1/workspaces/{id}/agent-config/reload` 重新导入。
+
+多 Workspace 部署不再接受无 workspace 身份的根目录遗留配置；请先将其移动到
+`workspaces/<workspace_id>/` 后再 reload。
 
 字段说明：
 

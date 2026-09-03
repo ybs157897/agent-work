@@ -1147,7 +1147,7 @@ connection_epoch
 fencing_token
 ```
 
-Gateway 只接受与当前 active lease 完全匹配的帧。connection_epoch 只识别当前 transport connection，不参与事件身份或 dedup key。
+Gateway 通常只接受与当前 active lease 完全匹配的帧。唯一例外是终态后迟到的 `usage.updated`：当前 connection/epoch/runner 必须匹配，Gateway 才转交 Application；Application 再以已释放 lease 的 lease/run/runner/fencing 四要素及 Run 终态做最终裁决。status/session/message 等事件不共享该例外。connection_epoch 只识别当前 transport connection，不参与事件身份或 dedup key。
 
 Runner 创建事件时分配稳定 `event_id/producer_seq`，序列化后放入 pending；重连原样重发，事件身份不变。dedup key：
 
