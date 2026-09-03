@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -573,7 +574,8 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) (st
 		return "", nil
 	}
 	conversation, _ := r.Input["conversation"].(map[string]any)
-	if resume, _ := conversation["resume_session_ref"].(string); resume == "" {
+	resume, _ := conversation["resume_session_ref"].(string)
+	if resume == "" {
 		return "", nil
 	}
 	if heal, _ := r.Input["auto_heal_of"].(string); heal != "" {
@@ -647,6 +649,25 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) (st
 	}
 	s.recordCoordinatorSessionHeal(healCtx, r, retry)
 	if created {
+		// Run Journal：自愈决策锚点落在失败的旧 run 上，link_run_id 指向新 run
+		// （跨 run 因果靠 link 字段单查询展开，新 run 不写任何东西）；被抑制的
+		// 自愈（重放 run / 更早恢复已推进）走到不了这里，保持沉默的大多数。
+		// 发射失败只记日志，绝不改变自愈结果。
+		inputs := map[string]any{"failure_family": r.ErrorFamily}
+		if r.Failure != nil && r.Failure.Code != "" {
+			inputs["failure_code"] = r.Failure.Code
+		}
+		if resume != "" {
+			inputs["session_anchor_ref"] = resume
+		}
+		reason := "provider 会话丢失（session_unknown），发起 fresh 自愈重试"
+		if r.Failure != nil && r.Failure.Message != "" {
+			reason = fmt.Sprintf("provider 会话丢失（session_unknown）：%s", r.Failure.Message)
+		}
+		j := observability.NewJournal(s.RecordRunEvent)
+		if err := j.Decision(healCtx, r.ID, observability.DecisionSelfHealRetry, reason, inputs, retry.ID); err != nil {
+			log.Printf("journal: run %s 记录 self_heal_retry decision 失败: %v", r.ID, err)
+		}
 		return retry.ID, nil
 	}
 	return "", nil

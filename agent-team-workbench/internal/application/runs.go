@@ -1289,6 +1289,16 @@ func (s *Service) ControlRun(ctx context.Context, runID string, action string) (
 	// 迁移成功后通知 Runner/Adapter 停止执行（协议文档 §8.3 取消语义）；
 	// 直达终态的迁移同样要通知（如 starting 态模块可能已在执行）。
 	if s.ControlForwarder != nil && run.Status == target {
+		// Run Journal：取消/中断意图被前转到执行端的决策锚点（控制面视角的
+		// 「为什么停」，action 区分 cancel/interrupt）。这是 ControlRun 的统一
+		// 前转点：HTTP 入口与系统取消（coordinator/plan 的活动 run 清理）都经此；
+		// 治理域 Goal 取消走自己的前转回路（governance.go），不经此处、不重复记录。
+		j := observability.NewJournal(s.RecordRunEvent)
+		if err := j.Decision(ctx, runID, observability.DecisionCancelForward,
+			fmt.Sprintf("控制面 %s 意图已前转到执行端（%s）", action, run.Status),
+			map[string]any{"action": action}, ""); err != nil {
+			log.Printf("journal: run %s 记录 cancel_forward decision 失败: %v", runID, err)
+		}
 		s.ControlForwarder(ctx, runID, action)
 	}
 	return run, nil

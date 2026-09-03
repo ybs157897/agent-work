@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -589,6 +590,21 @@ func (s *Service) startScheduledWorkerRetry(ctx context.Context, state *domain.T
 	}
 	if retry == nil {
 		return nil
+	}
+	// Run Journal：非受管 Worker 线的 due-state 重驱决策，落在被重驱的源 run 上，
+	// link_run_id 指向重试 run。治理/非治理分界：retry_worker checkpoint 只由
+	// handleCoordinatorWorkerTerminal（普通 Worker 终态）写入，治理 Coordinator
+	// 的失败恢复走 recover/repair_plan 并由 turn_receipt 承担决策留痕，到不了
+	// 这里——所以本点恒为非治理决策。发射失败只记日志，不回流重驱路径。
+	dueState := fmt.Sprintf("%s:%s", state.Status, coordinatorControlAction(state))
+	j := observability.NewJournal(s.RecordRunEvent)
+	if err := j.Decision(ctx, parent.ID, observability.DecisionCoordinatorRedrive,
+		fmt.Sprintf("Worker 失败退避到期，自动重试（第 %d/%d 次尝试）",
+			coordinatorRunAttempt(ctx, s.store.Runs(), retry), coordinatorMaxWorkerAttempts),
+		map[string]any{
+			"coordinator_id": state.ID, "due_state": dueState,
+		}, retry.ID); err != nil {
+		log.Printf("journal: run %s 记录 coordinator_redrive decision 失败: %v", parent.ID, err)
 	}
 	s.notifier.Notify(retry.WorkspaceID)
 	latestState, stateErr := s.store.TaskCoordinators().GetState(ctx, state.RootWorkItemID)
