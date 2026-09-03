@@ -1,6 +1,6 @@
 # Run Journal：全生命周期环节日志设计（参考 DSH turn 日志）
 
-> 状态：**M1 已立项**（2026-09-03 用户拍板 D1–D4，实施分支 codex/run-journal-m1）
+> 状态：**M1–M3 已实施完成**（2026-09-03 D1–D4 拍板；实施分支 codex/run-journal-m1，30 刀，验证全绿，待合并——实施结论见 §8）
 > 日期：2026-09-02
 > 复核：2026-09-03 已对 LoopX 合入后的 main（ca0ab59，+61k 行治理全栈）做增量复核，修订各处；修订点以【2026-09-03】标注。
 > 动机：参考 deepseek-harness 的 turn 日志（事件溯源 + 唯一写入口 + 边界埋点 + 崩溃闭合），让 ATW 的每个 run 在**每一个环节**都有可查询的日志锚点，故障定位 = 查日志，而不是猜。
@@ -163,3 +163,27 @@ LoopX 治理已合入 main（ca0ab59，迁移 0024–0042）。**turn_receipt �
 - **D2 远程 runner 环节帧 = 加协议帧**：runner 协议 v2 增加 phase 帧，远程 runner 内环节（spawn/handshake/first_event）由 runner 侧上报；与审计 §7 的 Remote Runner 真实验收 gate 同期做（M2）。
 - **D3 log_chunk 上限 = 64KB/run 环形截断**：超出标记 truncated，防表膨胀。
 - **D4 slog 替换范围 = 只换关键环节**：gateway 恢复失败、钩子失败等"出了事才看得到"的点优先；不追全量 130+ 处。
+
+## 7. 防回归清单
+
+- 新事件类型走既有契约门禁 B（事件名常量 ↔ asyncapi enum 双向对账），不加新门禁种类。
+- 每个环节埋点配一条"该环节失败 → 最后 phase 事件正确"的集成断言（证据匹配表面）。
+- 回放保真测试加 internal 过滤断言（钉死可见性分层）。
+- usage/runs_count 幂等路径不经 Journal 改道（phase 事件是旁路观测，不进事务关键路径的幂等键）。
+- 不引入异步落盘；若未来事件量成问题，优先在 `EventRepo.Append` 内做同事务批量，而不是 write-behind。
+
+## 8. 实施结论【2026-09-03：M1–M3 全部落地】
+
+分支 `codex/run-journal-m1`（30 刀，等合并声明）。全部设计条目已实现并验证（build/vet/gofmt 干净；runtime/runnergateway/cmd race 绿；application 全包 ~85s 绿；契约门禁绿；前端 tsc -b/lint/792 测试绿）：
+
+- **M1 黑盒清零**：脊柱（internal 事件 lane，只落 run_events 不进 SSE/回放）+ dispatch/spawn/handshake/first_event/streaming/settle/post 七段埋点 + OnLog 收口（64KB/run 预算阀）。
+- **M2 闭合与因果**：`run.recovery_*` 三事件激活且带证据（last_heartbeat_at/lease_expired_at/fencing_token/boot_id）；控制面重启对账 sweeper（`ReconcileOrphanedLocalRuns`，孤儿=无 lease 的活动非终态，queued/远程不碰，幂等）；`run.decision` 收口自愈/取消前转/普通重驱三类非治理决策；D2 远程 phase 帧打通（schema 零结构改动，修复了"迟到 settle 闭合被 stale 收走"的真 bug）。
+- **M3 查询面**：`GET /api/v1/runs/{run_id}/journal`（phases 配对 + log 摘要 + decisions + governance receipt 互链）；前端 `/runs/:runId/journal` 环节时间线页（failed/未闭合一眼可辨，对话页"环节"入口）。
+
+实施期偏差记录（蜂群回报，均已评审接受）：
+1. closed 载荷不带 attempt，配对为"同 phase 最近一次未闭合"（LIFO）——相位 attempt 不嵌套，语义等价。
+2. 终态观测例外（原仅 usage.updated）扩面到相位闭包帧，沿用四要素身份+lease 释放+run 终态三重门槛。
+3. W3 给 9 个终态钩子加了错误返回值（否则拿不到失败信号）；maybeProcessVerdict 恒 ok（失败走用户可见 blocker）。
+4. 前端事件契约测试从"EVENT_NAMES == AsyncAPI enum"改为"∪ internal 名单"对账（internal 事件按设计不进 SSE）。
+5. W4 发现既有 `ReconcileOrphanRuns`（M4）：新 sweeper 排它之前，queued/自愈语义留旧路径，分工写进 run_reconcile.go 头注释。
+6. 已知边界：runnerd 终态后 lease 回收存在理论窄窗口竞态（真实网络不可达、失败模式优雅），记录在 notes/proposed/architecture/2026-09-03-run-journal-d2-phase-frames.md。
