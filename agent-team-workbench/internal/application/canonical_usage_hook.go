@@ -63,16 +63,22 @@ func governanceInt64(value any) (int64, bool) {
 // maybeCanonicalizeRunUsage 终态钩子（RecordRunStatus / replayRunTerminalHooks /
 // replayCoordinatorTerminalHooks 三处复用）：自带事务，失败只记日志不上返——
 // report 已持久，canonical 可由 quota sweep / reconcile 重放补齐。
-func (s *Service) maybeCanonicalizeRunUsage(ctx context.Context, run *domain.ExecutionRun) {
+// 返回值（frozen, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// frozen=canonical 已冻结（含幂等命中）；err=落账失败。控制流不变。
+func (s *Service) maybeCanonicalizeRunUsage(ctx context.Context, run *domain.ExecutionRun) (bool, error) {
 	if run == nil || !run.Status.IsTerminal() {
-		return
+		return false, nil
 	}
+	frozen := false
 	if err := s.store.InTx(ctx, func(txctx context.Context) error {
-		_, err := s.canonicalizeRunUsageLocked(txctx, run.ID, false)
+		existing, err := s.canonicalizeRunUsageLocked(txctx, run.ID, false)
+		frozen = existing
 		return err
 	}); err != nil {
 		log.Printf("usage: run %s canonical 终态落账失败（等待重放）: %v", run.ID, err)
+		return false, err
 	}
+	return frozen, nil
 }
 
 // canonicalizeRunUsageLocked 是 canonical usage 的唯一写点：fresh 读 Run，

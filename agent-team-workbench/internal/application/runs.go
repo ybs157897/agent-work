@@ -12,6 +12,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -1470,35 +1471,117 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 		}
 		s.notifier.Notify(r.WorkspaceID)
 	}
+	// ── Run Journal：post 相位（终态钩子管线）成对埋点 ─────────────────
+	// 每个钩子一对 run.phase_entered/run.phase_closed{phase:post}（internal：
+	// 只落 run_events，不进 SSE/回放）；观测失败只记日志，绝不改变钩子的
+	// 尽力而为语义——错误信号只进事件载荷，不上返、不改钩子顺序契约。
+	j := observability.NewJournal(s.RecordRunEvent)
 	// session_unknown 失败自愈：系统 Coordinator 由自己的有界恢复策略负责，
-	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。
-	if !isGovernedCoordinatorRun(r) {
-		s.maybeSelfHeal(ctx, r)
+	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。自愈是决策点：输入证据
+	//（failure 家族/code）进 entered，触发与否与 heal_run_id 进 closed。
+	// maybeSelfHeal 只对 failed run 生效，调用与埋点都跟着这个生效区间走。
+	if r != nil && r.Status == domain.RunFailed && !isGovernedCoordinatorRun(r) {
+		s.journalSelfHealHook(ctx, j, r)
 	}
 	if r != nil {
 		if wi, werr := s.store.WorkItems().Get(ctx, r.WorkItemID); werr == nil && isTaskWorkItem(wi) {
+			// 埋点只跟 post 相位（终态钩子管线）；非终态触发的钩子调用保持
+			// 原样（如 quota sweep 的进行式结算），但不给 journal 灌噪声。
+			inPost := r.Status.IsTerminal()
+			pair := func(hook string, run func() (bool, error)) {
+				if !inPost {
+					_, _ = run()
+					return
+				}
+				s.journalPostHook(ctx, j, r.ID, hook, run)
+			}
 			// M1 编排：子任务静默钩子（waiting plan 的 children_quiet 唤醒；尽力而为）。
-			s.maybeAdvancePlans(ctx, r)
+			pair("maybeAdvancePlans", func() (bool, error) { return s.maybeAdvancePlans(ctx, r) })
 			// M2 评估：verdict 处理先行（phase 迁移不依赖新 plan）。
-			s.maybeProcessVerdict(ctx, r)
+			pair("maybeProcessVerdict", func() (bool, error) { return s.maybeProcessVerdict(ctx, r) })
 			// M2 lead-as-planner：从 lead 最终文本提取 plan（source_run_id 唯一索引兜底幂等）。
-			s.maybeExtractPlan(ctx, r)
+			pair("maybeExtractPlan", func() (bool, error) { return s.maybeExtractPlan(ctx, r) })
 			// S2 任务台账：片段关闭（run 终态）自动重算滚动摘要（确定性，尽力而为）。
-			s.maybeSummarizeSegment(ctx, r)
+			pair("maybeSummarizeSegment", func() (bool, error) { return s.maybeSummarizeSegment(ctx, r) })
 			// canonical usage：必须先于 Coordinator 终态决策——决策可能提交治理
 			// Plan 触发 admission 结算，结算 sweep 依赖 Run 的 canonical 已冻结。
-			s.maybeCanonicalizeRunUsage(ctx, r)
+			pair("maybeCanonicalizeRunUsage", func() (bool, error) { return s.maybeCanonicalizeRunUsage(ctx, r) })
 			// 系统 Coordinator：在派发收口前创建有界 retry/recovery，保证新成员
 			// 能进入原 dispatch，避免批次先被错误收成 degraded。
-			s.maybeAdvanceTaskCoordinator(ctx, r)
+			pair("maybeAdvanceTaskCoordinator", func() (bool, error) { return s.maybeAdvanceTaskCoordinator(ctx, r) })
 			// quota sweep：必须在 Coordinator 推进之后——retry checkpoint 先落，
 			// sweep 的关闭判定才能看到 pending retry，不会过早释放重试预算。
-			s.maybeSettleGovernanceTurnQuota(ctx, r)
+			pair("maybeSettleGovernanceTurnQuota", func() (bool, error) { return s.maybeSettleGovernanceTurnQuota(ctx, r) })
 			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
-			s.maybeSettleDispatch(ctx, r)
+			pair("maybeSettleDispatch", func() (bool, error) { return s.maybeSettleDispatch(ctx, r) })
 		}
 	}
 	return nil
+}
+
+// ── Run Journal：post 相位埋点辅助 ──────────────────────────────────
+
+// postHookFailureCode 是终态钩子失败在 phase_closed.failure.code 上的统一分类。
+const postHookFailureCode = "post_hook"
+
+// journalPostHook 通用终态钩子成对埋点：entered{hook} → 执行钩子 →
+// closed{hook, acted, outcome}。err 非空映射为 failed{post_hook}；acted=false
+// 表示钩子自判「不适用/无事可做」。观测发射失败只记日志，钩子闭包始终执行。
+func (s *Service) journalPostHook(ctx context.Context, j *observability.Journal, runID, hook string, run func() (bool, error)) {
+	s.journalPhasePair(ctx, j, runID, map[string]any{"hook": hook}, func() (map[string]any, observability.PhaseOutcome, *observability.PhaseFailure) {
+		acted, err := run()
+		detail := map[string]any{"hook": hook, "acted": acted}
+		if err != nil {
+			return detail, observability.PhaseFailed, &observability.PhaseFailure{
+				Code: postHookFailureCode, Message: fmt.Sprintf("%s: %v", hook, err),
+			}
+		}
+		return detail, observability.PhaseOK, nil
+	})
+}
+
+// journalSelfHealHook 包住 maybeSelfHeal（自愈决策点）：entered 带输入证据
+// （failure 家族 / failure code，来自 run 的 failure 字段），closed 带触发与否
+// 与 heal_run_id（仅本轮实际创建并派发了 fresh 重试时非空）。
+func (s *Service) journalSelfHealHook(ctx context.Context, j *observability.Journal, r *domain.ExecutionRun) {
+	const hook = "maybeSelfHeal"
+	entered := map[string]any{"hook": hook}
+	if r.ErrorFamily != "" {
+		entered["failure_family"] = r.ErrorFamily
+	}
+	if r.Failure != nil && r.Failure.Code != "" {
+		entered["failure_code"] = r.Failure.Code
+	}
+	s.journalPhasePair(ctx, j, r.ID, entered, func() (map[string]any, observability.PhaseOutcome, *observability.PhaseFailure) {
+		healRunID, err := s.maybeSelfHeal(ctx, r)
+		detail := map[string]any{"hook": hook, "acted": healRunID != ""}
+		if healRunID != "" {
+			detail["heal_run_id"] = healRunID
+		}
+		if err != nil {
+			return detail, observability.PhaseFailed, &observability.PhaseFailure{
+				Code: postHookFailureCode, Message: fmt.Sprintf("%s: %v", hook, err),
+			}
+		}
+		return detail, observability.PhaseOK, nil
+	})
+}
+
+// journalPhasePair 记录一对 run.phase_entered/run.phase_closed{post}，并在两者
+// 之间执行 hook 闭包。journal 发射失败只记日志（观测绝不打断业务路径），
+// entered 记录失败时闭包照常执行——埋点缺失时钩子行为与未接线时完全一致。
+func (s *Service) journalPhasePair(ctx context.Context, j *observability.Journal, runID string, enteredDetail map[string]any,
+	hook func() (closedDetail map[string]any, outcome observability.PhaseOutcome, failure *observability.PhaseFailure)) {
+	timer, err := j.EnterPhase(ctx, runID, observability.PhasePost, 1, enteredDetail)
+	if timer == nil {
+		log.Printf("journal: run %s 记录 phase_entered{post} 失败（钩子照常执行）: %v", runID, err)
+		hook()
+		return
+	}
+	detail, outcome, failure := hook()
+	if err := timer.Close(outcome, failure, detail); err != nil {
+		log.Printf("journal: run %s 记录 phase_closed{post} 失败: %v", runID, err)
+	}
 }
 
 // RecordRunSessionRef 在 provider 创建/恢复真实会话后持久化私有句柄。

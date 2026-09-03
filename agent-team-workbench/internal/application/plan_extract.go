@@ -18,28 +18,31 @@ const AgentRoleLead = "lead"
 
 // maybeExtractPlan lead run 终态钩子（RecordRunStatus 终态提交后、事务外，
 // maybeAdvancePlans 同款位置；尽力而为）。plan 落在该 run 所属 work item 上。
-func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// acted=落 blocker 或提交 plan 等实际动作；err=静默失败（证据读取/提交失败且
+// 无 blocker 兜底）。控制流不变：失败依旧只记日志/落 blocker。
+func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) (bool, error) {
 	if r == nil || r.Status != domain.RunSucceeded || r.AgentProfileID == "" {
-		return
+		return false, nil
 	}
 	if action, _ := coordinatorContextOf(r)["action"].(string); action == "evaluation" {
 		// Evaluation output is consumed by maybeProcessVerdict; it is not a
 		// Planner decision, even when a delegated target Agent owns the Plan.
-		return
+		return false, nil
 	}
 	wctx := context.WithoutCancel(ctx)
 	wi, err := s.store.WorkItems().Get(wctx, r.WorkItemID)
 	if err != nil || !isTaskWorkItem(wi) {
-		return
+		return false, nil
 	}
 	agent, err := s.store.Agents().Get(wctx, r.AgentProfileID)
 	if err != nil || (agent.Role != AgentRoleLead && !isGovernedCoordinatorRun(r)) {
-		return
+		return false, nil
 	}
 	if isGovernedCoordinatorRun(r) {
 		state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(wctx, r.WorkItemID)
 		if stateErr != nil {
-			return
+			return false, nil
 		}
 		// Once a Handoff has been accepted, the source Run is fenced even if a
 		// late terminal frame still carries a PlanDecision. Preserve that frame
@@ -47,10 +50,10 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 		// Plan and is activated by maybeAdvanceTaskCoordinator below.
 		if handoffContinuationPending(state) &&
 			stringValue(state.Data[coordinatorHandoffSourceRunIDKey]) == r.ID {
-			return
+			return false, nil
 		}
 		if state.CurrentRunID != r.ID {
-			return
+			return false, nil
 		}
 	}
 	text, err := s.runFinalText(wctx, r.ID)
@@ -62,24 +65,24 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 				s.blockForParseFailure(wctx, r, "plan_read_failed", "Coordinator 计划证据读取失败："+err.Error())
 			}
 		}
-		return
+		return false, err
 	}
 	if isGovernedCoordinatorRun(r) {
 		s.processSystemCoordinatorPlanDecision(wctx, r, text)
-		return
+		return true, nil
 	}
 	decision, source, found, err := DecodeCoordinatorPlanText(text)
 	if !found {
-		return // lead 可以只聊不派
+		return false, nil // lead 可以只聊不派
 	}
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "plan_parse_failed", err.Error())
-		return
+		return true, nil
 	}
 	steps, err := PlanDecisionStepInputs(decision)
 	if err != nil {
 		s.blockForParseFailure(wctx, r, "plan_parse_failed", err.Error())
-		return
+		return true, nil
 	}
 	if _, err := s.SubmitPlan(wctx, r.WorkspaceID, SubmitPlanParams{
 		WorkItemID: r.WorkItemID, AgentProfileID: r.AgentProfileID,
@@ -91,13 +94,16 @@ func (s *Service) maybeExtractPlan(ctx context.Context, r *domain.ExecutionRun) 
 	}); err != nil {
 		switch {
 		case errors.Is(err, domain.ErrIdempotencyConflict):
-			return // source_run_id 唯一索引：同 run 二次终态事件不重复提取
+			return false, nil // source_run_id 唯一索引：同 run 二次终态事件不重复提取
 		case errors.Is(err, domain.ErrValidation):
 			s.blockForParseFailure(wctx, r, "plan_parse_failed", err.Error())
+			return true, nil
 		default:
 			log.Printf("plan: run %s 提取的 plan 提交失败: %v", r.ID, err)
+			return false, err
 		}
 	}
+	return true, nil
 }
 
 // blockForParseFailure plan/verdict 提取失败的统一兜底：主任务落 blocker

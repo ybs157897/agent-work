@@ -50,9 +50,12 @@ func settlementRunID(r *domain.ExecutionRun) string {
 //
 // 迁移、渲染、入队、事件同事务：enqueue 失败整体回滚 collecting 迁移，由下一
 // 个成员终态事件重试，批不会卡死在 collecting。
-func (s *Service) maybeSettleDispatch(ctx context.Context, r *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// acted=收口事务已执行；err=收口或 checkpoint 清理失败。控制流不变：失败依旧
+// 只记日志并落 retry checkpoint。
+func (s *Service) maybeSettleDispatch(ctx context.Context, r *domain.ExecutionRun) (bool, error) {
 	if r == nil || r.DispatchID == "" || !r.Status.IsTerminal() {
-		return
+		return false, nil
 	}
 	wctx := context.WithoutCancel(ctx)
 	err := s.store.InTx(wctx, func(ctx context.Context) error {
@@ -63,11 +66,13 @@ func (s *Service) maybeSettleDispatch(ctx context.Context, r *domain.ExecutionRu
 		if retryErr := s.scheduleSettlementRetry(wctx, r, err); retryErr != nil {
 			log.Printf("settle: 派发收口重试 checkpoint 写入失败（run %s / dispatch %s）: %v", r.ID, r.DispatchID, retryErr)
 		}
-		return
+		return false, err
 	}
 	if clearErr := s.clearSettlementRetry(wctx, r); clearErr != nil {
 		log.Printf("settle: 派发收口重试 checkpoint 清理失败（run %s / dispatch %s）: %v", r.ID, r.DispatchID, clearErr)
+		return true, clearErr
 	}
+	return true, nil
 }
 
 func (s *Service) settleDispatchTx(ctx context.Context, r *domain.ExecutionRun) error {

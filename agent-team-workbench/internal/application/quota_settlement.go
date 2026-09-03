@@ -22,18 +22,22 @@ import (
 // 终态后尝试关闭本 Turn 的 usage 台账。尽力而为：失败只记日志，重放安全。
 // allowAbsentClose 恒为 false：进行式触发不得提前冻结 absent evidence
 // （复审裁决 #4），关闭性收口只属于 StartCoordinator/admission/Todo 收口面。
-func (s *Service) maybeSettleGovernanceTurnQuota(ctx context.Context, run *domain.ExecutionRun) {
+// 返回值（acted, err）只是给 run journal 埋点的信号（runs.go post 相位）：
+// acted=sweep 已执行；err=sweep 失败。控制流不变。
+func (s *Service) maybeSettleGovernanceTurnQuota(ctx context.Context, run *domain.ExecutionRun) (bool, error) {
 	if run == nil {
-		return
+		return false, nil
 	}
 	key, ok := runGovernanceTurnKey(run)
 	if !ok {
-		return
+		return false, nil
 	}
 	if err := s.settleGovernanceTurnQuota(ctx, key, false); err != nil {
 		log.Printf("quota: turn %s:%s:%d settlement sweep 失败（等待重放）: %v",
 			key.GoalID, key.TodoID, key.TurnSeq, err)
+		return false, err
 	}
+	return true, nil
 }
 
 // settleGovernanceTurnQuota 是 sweep 的共享入口（终态钩子、admission 重放、
