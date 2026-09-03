@@ -1,7 +1,6 @@
 # 全员 Kimi 冒烟两轮复演：问题点标记与修复契约
 
-Status: proposed
-Branch: codex/eval-runtime-inheritance
+Status: implemented（验证轮通过，见文末「验证轮实测」）
 
 ## 证据来源
 
@@ -124,3 +123,29 @@ runs.go 守卫抛 `ErrValidation`（基础设施/配置类），经
 - 修复后重启 control-plane 跑第二轮全员 Kimi 冒烟（同 API 发布路径），
   对照 turn 日志确认 P1 自愈（无人工 unblock）、P2 评估 run 建成、
   P5 子任务随验收关闭。
+
+## 验证轮实测（2026-09-03 18:43–18:45，修复后二进制 + 主库副本）
+
+环境：worktree 构建的 control-plane（本分支 HEAD）跑主库 `sqlite3 .backup`
+副本（已应用 0043 迁移），运行时/凭据/host-registry 均自主树解析，无污染主库。
+
+任务 `wi_01M1KDVRBRQ85HXQS88CHRDB8C`（干净冒烟，同验收标准）全程 **57 秒**
+（10:43:32 创建 → 10:44:29 waiting_user），**零人工介入**：
+
+| 环节 | 结果 | 证据 |
+|---|---|---|
+| intake 首个决策 | ✅ 一次通过严格校验（无 barrier 违规） | `coordinator.plan_updated`（run `run_01M1KDVRC0…`） |
+| dispatch → Worker | ✅ Sentinel run 5.5s 成功 | `run_01M1KDYWDYM…`（子任务 `wi_01M1KDWDYK…`） |
+| settlement 唤醒 | ✅ | `run_01M1KDWTMP…` |
+| finish{evaluation:true} | ✅ 评估 run 以 **kimi_local** 建成并 succeeded | `run_01M1KDX3SV…`（input.evaluation=1，runtime_label=kimi_local） |
+| 评估 verdict | ✅ `{"pass": true}`，逐条对照验收标准 | message.completed |
+| 验收级联 | ✅ Accept 根任务后子任务同步 completed | 两 work_items 行 + coordinator state completed/acceptance |
+
+P1 说明：本轮 Kimi 首发决策即合规（提示词强化生效的单一数据点，不能证明
+根除）；F3 自动修复链路与 F2 fail-closed 分类由集成测试覆盖（语义修复/耗尽
+落点、binding 未就绪/缺失四用例），本轮冒烟未触发属预期。
+
+遗留观察（非本分支范围）：首个被环境污染的验证任务里，Coordinator 把「运行时
+凭据缺失」（实为验证 harness cwd 错误导致的瞬态故障）按合同判为非可重试并
+defer 35 分钟——Coordinator 无法区分环境瞬态故障与真实认证失败，其自身轮次
+刚用同一凭据成功也未被用作反证。记为后续改进候选。
