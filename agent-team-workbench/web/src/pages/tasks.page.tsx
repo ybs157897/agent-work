@@ -29,6 +29,11 @@ export const TASK_STATUS_COLUMNS: { id: WorkItemStatus; title: string; dot: stri
   { id: 'cancelled', title: '已取消', dot: 'bg-status-standby', ring: 'ring-status-standby/30' },
 ];
 
+/** 看板只追踪用户发布的总任务；带 parent_id 的派生任务只进入总任务详情。 */
+export function rootTasks(items: readonly WorkItem[]): WorkItem[] {
+  return items.filter((item) => !item.parent_id);
+}
+
 const PRIORITY_DOT: Record<Priority, string> = {
   low: 'bg-status-standby',
   medium: 'bg-status-warning',
@@ -78,14 +83,15 @@ export default function TasksPage() {
     setSearchParams(next, { replace: true });
   };
 
+  const rootItems = useMemo(() => rootTasks(items), [items]);
   const visibleItems = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return items;
-    return items.filter((item) =>
+    if (!normalized) return rootItems;
+    return rootItems.filter((item) =>
       item.id.toLocaleLowerCase().includes(normalized)
       || item.title.toLocaleLowerCase().includes(normalized)
       || item.description.toLocaleLowerCase().includes(normalized));
-  }, [items, query]);
+  }, [query, rootItems]);
 
   const columns = TASK_STATUS_COLUMNS.map((c) => ({
     ...c,
@@ -378,7 +384,6 @@ function TaskCard({
             {due}
           </span>
         )}
-        {task.parent_id && <span className="text-text-tertiary">子任务</span>}
         {childCount > 0 && (
           <span title={`${childCount} 个直接子任务`} className="inline-flex items-center gap-0.5 tabular-nums">
             <GitBranch className="h-3 w-3 text-text-tertiary" aria-hidden />

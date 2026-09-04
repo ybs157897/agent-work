@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkItem } from '../api/types';
-import { childCountByParent, sortTasksTree, TASK_STATUS_COLUMNS } from './tasks.page';
+import { childCountByParent, rootTasks, sortTasksTree, TASK_STATUS_COLUMNS } from './tasks.page';
 
 const wi = (id: string, createdAt: string, parentId?: string): WorkItem => ({
   id,
@@ -108,6 +108,22 @@ describe('TASK_STATUS_COLUMNS', () => {
       'completed',
       'blocked',
       'cancelled',
+    ]);
+  });
+});
+
+describe('rootTasks', () => {
+  it('看板只保留没有 parent_id 的总任务，派生任务与孤儿子任务都留在详情层', () => {
+    const items = [
+      wi('root-in-progress', '2026-08-23T01:00:00Z'),
+      wi('child-running', '2026-08-23T02:00:00Z', 'root-in-progress'),
+      wi('root-completed', '2026-08-23T03:00:00Z'),
+      wi('orphan-child', '2026-08-23T04:00:00Z', 'missing-parent'),
+    ];
+
+    expect(rootTasks(items).map((item) => item.id)).toEqual([
+      'root-in-progress',
+      'root-completed',
     ]);
   });
 });
