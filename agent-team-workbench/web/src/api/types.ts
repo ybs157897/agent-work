@@ -123,6 +123,15 @@ export interface Blocker {
   created_at: string;
 }
 
+/** 根 Task 验收读模型；ready 是控制线状态，动作能力再叠加当前会话权限。 */
+export interface WorkItemReview {
+  ready: boolean;
+  can_accept: boolean;
+  can_return: boolean;
+  accept_reason?: string;
+  return_reason?: string;
+}
+
 export interface WorkItem {
   id: string;
   workspace_id: string;
@@ -142,6 +151,8 @@ export interface WorkItem {
   /** 获取执行锁的时间（F1；无锁时缺省）。 */
   locked_at?: string;
   blocker?: Blocker;
+  /** 列表/bootstrap/详情一致的只读验收可用性投影。 */
+  review?: WorkItemReview;
   runs_count: number;
   latest_run_id?: string;
   /** 任务台账滚动摘要（S2 确定性生成）：仅详情响应携带，列表/bootstrap 省略。 */
@@ -636,6 +647,8 @@ export interface DispatchRun {
   work_item_id: string;
   agent_profile_id?: string;
   agent_name?: string;
+  /** 服务端从受保护 Coordinator envelope 投影；旧响应缺省时前端 fail closed。 */
+  role?: 'worker' | 'coordinator' | 'evaluation';
   status: RunStatus;
   /** 一行摘要（S1 为 run 指令摘录，确定性生成）。 */
   summary?: string;

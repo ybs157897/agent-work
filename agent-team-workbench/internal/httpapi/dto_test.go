@@ -49,3 +49,27 @@ func TestCreateRunRequestDecodesOutputContractWithoutTouchingInstruction(t *test
 		t.Fatalf("create run request decode mismatch: %+v", req)
 	}
 }
+
+func TestDispatchRunRoleSeparatesWorkerCoordinatorAndEvaluation(t *testing.T) {
+	tests := []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{name: "legacy worker", input: map[string]any{"instruction": "work"}, want: "worker"},
+		{name: "governed worker", input: map[string]any{"task_coordinator": map[string]any{"role": "worker"}}, want: "worker"},
+		{name: "coordinator", input: map[string]any{"task_coordinator": map[string]any{"role": "coordinator", "action": "wakeup"}}, want: "coordinator"},
+		{name: "evaluation", input: map[string]any{"task_coordinator": map[string]any{"role": "coordinator", "action": "evaluation"}}, want: "evaluation"},
+		{name: "evaluation action proves evaluation", input: map[string]any{"task_coordinator": map[string]any{"action": "evaluation"}}, want: "evaluation"},
+		{name: "unknown protected role", input: map[string]any{"task_coordinator": map[string]any{"role": "future"}}, want: "coordinator"},
+		{name: "malformed protected envelope", input: map[string]any{"task_coordinator": "not-an-envelope"}, want: "coordinator"},
+		{name: "null protected envelope", input: map[string]any{"task_coordinator": nil}, want: "coordinator"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dispatchRunRole(&domain.ExecutionRun{Input: test.input}); got != test.want {
+				t.Fatalf("dispatchRunRole() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

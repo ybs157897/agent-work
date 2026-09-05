@@ -2111,6 +2111,17 @@ components:
       type: string
       enum: [low, medium, high, urgent]
 
+    WorkItemReview:
+      type: object
+      description: 任务验收只读可用性；ready 不包含当前用户权限，按钮能力包含当前会话权限。
+      required: [ready, can_accept, can_return]
+      properties:
+        ready: { type: boolean, description: 根任务阶段与 Coordinator waiting_user 已到人审阶段 }
+        can_accept: { type: boolean, description: 当前会话可提交总任务验收 }
+        can_return: { type: boolean, description: 当前会话可提交总任务打回 }
+        accept_reason: { type: string, description: 验收不可用或当前会话无验收权限时的说明 }
+        return_reason: { type: string, description: 打回不可用或当前会话无打回权限时的说明 }
+
     WorkItem:
       type: object
       properties:
@@ -2139,6 +2150,7 @@ components:
             message: { type: string }
             source: { type: string }
             created_at: { type: string, format: date-time }
+        review: { $ref: "#/components/schemas/WorkItemReview" }
         runs_count: { type: integer }
         latest_run_id: { type: string, nullable: true }
         rolling_digest: { type: string, description: 任务台账滚动摘要（S2 确定性生成，无 LLM；仅详情响应携带，列表省略） }
@@ -2356,6 +2368,7 @@ components:
               work_item_id: { type: string }
               agent_profile_id: { type: string }
               agent_name: { type: string }
+              role: { type: string, enum: [worker, coordinator, evaluation] }
               status: { type: string }
               summary: { type: string, description: 一行摘要（S1 为 run 指令摘录，确定性生成） }
         created_at: { type: string, format: date-time }

@@ -63,6 +63,7 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 		Items []struct {
 			Runs []struct {
 				AgentName string `json:"agent_name"`
+				Role      string `json:"role"`
 				Summary   string `json:"summary"`
 			} `json:"runs"`
 		} `json:"items"`
@@ -72,6 +73,7 @@ func TestWorkItemRecordKindHTTPBoundary(t *testing.T) {
 	}
 	if len(dispatchBody.Items) != 1 || len(dispatchBody.Items[0].Runs) != 1 ||
 		dispatchBody.Items[0].Runs[0].AgentName != "Task Coordinator" ||
+		dispatchBody.Items[0].Runs[0].Role != "coordinator" ||
 		strings.Contains(dispatchBody.Items[0].Runs[0].Summary, "TASK_DATA_JSON") {
 		t.Fatalf("Task 时间线应显示系统身份与产品摘要，不暴露内部控制载荷: %#v", dispatchBody.Items)
 	}

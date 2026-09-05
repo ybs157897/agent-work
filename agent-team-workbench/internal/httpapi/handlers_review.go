@@ -79,7 +79,7 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]reviewQueueItemDTO, 0, len(page.Items))
 	for i := range page.Items {
-		items = append(items, toReviewQueueItemDTO(&page.Items[i]))
+		items = append(items, s.toReviewQueueItemDTO(r, &page.Items[i]))
 	}
 	out := reviewQueueDTO{
 		Items: items, TotalCount: page.TotalCount, GeneratedAt: page.GeneratedAt.UTC().Format(rfc3339NanoUTC),
@@ -91,8 +91,8 @@ func (s *Server) handleReviewQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func toReviewQueueItemDTO(item *application.ReviewQueueItem) reviewQueueItemDTO {
-	wiDTO := toWorkItemDTO(item.WorkItem)
+func (s *Server) toReviewQueueItemDTO(r *http.Request, item *application.ReviewQueueItem) reviewQueueItemDTO {
+	wiDTO := s.enrichWorkItem(r, item.WorkItem)
 	wiDTO.RunsCount = item.RunCount
 	wiDTO.LatestRunID = item.LatestRunID
 	out := reviewQueueItemDTO{
@@ -239,11 +239,11 @@ func (s *Server) handleDeliveryBrief(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDeliveryBriefDTO(brief))
+	writeJSON(w, http.StatusOK, s.toDeliveryBriefDTO(r, brief))
 }
 
-func toDeliveryBriefDTO(b *application.DeliveryBrief) deliveryBriefDTO {
-	wiDTO := toWorkItemDTO(b.WorkItem)
+func (s *Server) toDeliveryBriefDTO(r *http.Request, b *application.DeliveryBrief) deliveryBriefDTO {
+	wiDTO := s.enrichWorkItem(r, b.WorkItem)
 	wiDTO.RunsCount = b.RunsTotal
 	wiDTO.LatestRunID = b.LatestRunID
 

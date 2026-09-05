@@ -91,12 +91,12 @@ func TestListWorkItemDispatches(t *testing.T) {
 		t.Fatalf("批次成员应为 lead run + 子 run: %v", card["runs"])
 	}
 	leadCard := runs[0].(map[string]any)
-	if leadCard["id"] != first.ID || leadCard["agent_profile_id"] != workerID {
+	if leadCard["id"] != first.ID || leadCard["agent_profile_id"] != workerID || leadCard["role"] != "worker" {
 		// @直达：触发 run 本身归 worker（升序首位），agent_name 随之解析。
 		t.Fatalf("成员（升序首位）应为 @直达 run 且归 worker: %v", leadCard)
 	}
 	childCard := runs[1].(map[string]any)
-	if childCard["agent_profile_id"] != workerID || childCard["agent_name"] != "Worker" {
+	if childCard["agent_profile_id"] != workerID || childCard["agent_name"] != "Worker" || childCard["role"] != "worker" {
 		t.Fatalf("子 run 成员应带 agent 归属: %v", childCard)
 	}
 	if childCard["work_item_id"] == wi.ID || childCard["work_item_id"] == "" {
