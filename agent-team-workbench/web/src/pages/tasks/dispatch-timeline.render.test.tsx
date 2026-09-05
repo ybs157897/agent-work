@@ -11,6 +11,9 @@ const dispatchStoreState = vi.hoisted(() => ({
 const runStoreState = vi.hoisted(() => ({
   runs: {} as Record<string, unknown>,
   timelines: {} as Record<string, unknown[]>,
+  historyErrors: {} as Record<string, string | undefined>,
+  historyLoading: {} as Record<string, boolean>,
+  loadHistory: vi.fn(),
   fetchRun: vi.fn(),
   watchRun: vi.fn(),
   unwatchRun: vi.fn(),
@@ -23,7 +26,7 @@ vi.mock('../../stores/runs.store', () => ({
   useRunsStore: (selector: (state: typeof runStoreState) => unknown) => selector(runStoreState),
 }));
 
-import { DispatchRunRow, DispatchTimeline, taskAgentRuns } from './dispatch-timeline';
+import { DispatchTimeline, TaskAgentOutputCard, taskAgentRuns } from './dispatch-timeline';
 import { projectTaskRunIO, TaskRunOutput } from './task-run-output';
 
 const card = (overrides: Partial<DispatchCard> = {}): DispatchCard => ({
@@ -36,15 +39,17 @@ const card = (overrides: Partial<DispatchCard> = {}): DispatchCard => ({
       id: 'run_1',
       work_item_id: 'wi_1',
       agent_profile_id: 'agent_1',
-      agent_name: '小明',
+      agent_name: 'Task Coordinator',
+      role: 'coordinator',
       status: 'succeeded',
-      summary: '执行 worker 任务',
+      summary: '系统正在汇总',
     },
     {
       id: 'run_2',
       work_item_id: 'wi_2',
       agent_profile_id: 'agent_2',
       agent_name: '阿评',
+      role: 'worker',
       status: 'running',
       summary: '评审任务',
     },
@@ -78,34 +83,46 @@ describe('DispatchTimeline', () => {
     dispatchStoreState.refreshFor.mockClear();
     runStoreState.runs = {};
     runStoreState.timelines = {};
+    runStoreState.historyErrors = {};
+    runStoreState.historyLoading = {};
     runStoreState.fetchRun.mockClear();
     runStoreState.watchRun.mockClear();
     runStoreState.unwatchRun.mockClear();
   });
 
-  it('以 Agent 执行为一级列表，隐藏派发批次与过程摘要', () => {
+  it('直接展示 Worker 输入输出，隐藏 Coordinator、派发批次与展开交互', () => {
     dispatchStoreState.byWorkItem = {
       wi_1: [card({ trigger_message: { run_id: 'run_0', excerpt: '帮我出一版方案' } })],
     };
     const html = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(html).toContain('执行 Agent');
-    expect(html).toContain('小明');
+    expect(html).toContain('Agent 输入与输出');
     expect(html).toContain('阿评');
     expect(html).toContain('输入');
     expect(html).toContain('最终输出');
+    expect(html).not.toContain('Task Coordinator');
+    expect(html).not.toContain('aria-expanded');
     expect(html).not.toContain('派发时间线');
     expect(html).not.toContain('帮我出一版方案');
     expect(html).not.toContain('2 个会话');
   });
 
-  it('跨批次按 run id 去重并保持新批次优先', () => {
-    const older = card({ id: 'disp_old', created_at: '2026-08-29T00:00:00Z' });
+  it('跨批次按子任务去重，保留新批次内最新 Worker 尝试', () => {
+    const older = card({
+      id: 'disp_old',
+      created_at: '2026-08-29T00:00:00Z',
+      runs: [{ ...card().runs[1], id: 'run_old' }],
+    });
     const newer = card({
       id: 'disp_new',
       created_at: '2026-08-30T00:00:00Z',
-      runs: [{ ...older.runs[0], id: 'run_3', agent_name: '新 Agent' }, older.runs[1]],
+      runs: [
+        card().runs[0],
+        { ...card().runs[1], id: 'run_first' },
+        { ...card().runs[1], id: 'run_retry', status: 'succeeded' },
+        { ...card().runs[0], id: 'run_eval', role: 'evaluation' },
+      ],
     });
-    expect(taskAgentRuns([newer, older]).map((item) => item.run.id)).toEqual(['run_3', 'run_2', 'run_1']);
+    expect(taskAgentRuns([newer, older], 'wi_1').map((item) => item.run.id)).toEqual(['run_retry']);
   });
 
   it('未拉取、空列表与失败分别呈现明确状态', () => {
@@ -113,22 +130,26 @@ describe('DispatchTimeline', () => {
 
     dispatchStoreState.byWorkItem = { wi_1: [] };
     const empty = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
-    expect(empty).toContain('尚无 Agent 执行');
+    expect(empty).toContain('等待执行 Agent 输出');
 
     dispatchStoreState.errorByWorkItem = { wi_1: '派发记录加载失败，请重试' };
     const failed = renderToStaticMarkup(<DispatchTimeline taskId="wi_1" workspaceId="ws_1" />);
     expect(failed).toContain('role="alert"');
     expect(failed).toContain('派发记录加载失败，请重试');
-    expect(failed).not.toContain('尚无 Agent 执行');
+    expect(failed).not.toContain('等待执行 Agent 输出');
   });
 
-  it('Agent 行只展示身份、状态与时间，不展示输入摘要', () => {
-    const html = renderToStaticMarkup(<DispatchRunRow run={card().runs[0]} createdAt="2026-08-30T01:02:03Z" />);
-    expect(html).toContain('小明');
+  it('Agent 卡直接渲染身份、状态、输入和最终输出', () => {
+    const run = { ...card().runs[1], status: 'succeeded' as const };
+    runStoreState.timelines = {
+      [run.id]: [runCreated('执行 worker 任务'), completed('e2', 2, '最终结果')],
+    };
+    const html = renderToStaticMarkup(<TaskAgentOutputCard run={run} createdAt="2026-08-30T01:02:03Z" />);
+    expect(html).toContain('阿评');
     expect(html).toContain('已成功');
-    expect(html).toContain('aria-label="小明"');
-    expect(html).toContain('查看 小明 的输入与最终输出');
-    expect(html).not.toContain('执行 worker 任务');
+    expect(html).toContain('执行 worker 任务');
+    expect(html).toContain('最终结果');
+    expect(html).not.toContain('aria-expanded');
   });
 });
 
@@ -136,6 +157,25 @@ describe('TaskRunOutput', () => {
   beforeEach(() => {
     runStoreState.runs = {};
     runStoreState.timelines = {};
+    runStoreState.historyErrors = {};
+    runStoreState.historyLoading = {};
+  });
+
+  it('历史请求失败显示错误和当前 Agent 重试入口，不伪装为加载中', () => {
+    runStoreState.historyErrors = { run_1: '输入与结果加载失败，请重试' };
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="Nova" />);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('输入与结果加载失败，请重试');
+    expect(html).toContain('重试加载 Nova 的输入与输出');
+    expect(html).not.toContain('加载中');
+    expect(html).not.toContain('未返回可展示的最终结果');
+  });
+
+  it('成功请求但没有正文时显示空结果，区别于网络错误', () => {
+    runStoreState.timelines = { run_1: [] };
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="Nova" />);
+    expect(html).toContain('本次执行未返回可展示的最终结果');
+    expect(html).not.toContain('重试加载');
   });
 
   it('成功 run 只展示输入和最后一条 assistant completed', () => {

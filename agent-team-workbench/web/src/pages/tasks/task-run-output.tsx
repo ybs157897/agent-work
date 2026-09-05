@@ -2,6 +2,7 @@ import { useEffect, useMemo } from 'react';
 import type { DispatchRun, RunStatus } from '../../api/types';
 import { AgentOutput } from '../../components/chat/agent-output';
 import { MessageActions } from '../../components/chat/message-actions';
+import { Button } from '../../components/ui';
 import { useRunsStore, type TimelineEntry } from '../../stores/runs.store';
 import { parseContentBlockDocument, type ContentBlockDocument } from '../../utils/content-blocks';
 
@@ -50,6 +51,9 @@ export function projectTaskRunIO(
 export function TaskRunOutput({ run, agentName }: { run: DispatchRun; agentName: string }) {
   const snapshot = useRunsStore((state) => state.runs[run.id]);
   const timeline = useRunsStore((state) => state.timelines[run.id]);
+  const historyError = useRunsStore((state) => state.historyErrors[run.id]);
+  const historyLoading = useRunsStore((state) => state.historyLoading[run.id]);
+  const loadHistory = useRunsStore((state) => state.loadHistory);
   const watchRun = useRunsStore((state) => state.watchRun);
   const unwatchRun = useRunsStore((state) => state.unwatchRun);
 
@@ -70,18 +74,26 @@ export function TaskRunOutput({ run, agentName }: { run: DispatchRun; agentName:
     <div className="plane-task-agent-io" data-task-run-output={run.id}>
       <section className="plane-task-io-block" aria-label={`${agentName} 的输入`}>
         <h4 className="mb-tight text-caption font-semibold text-text-tertiary">输入</h4>
-        {timeline === undefined ? (
+        {timeline === undefined && !historyError ? (
           <p className="text-body text-text-tertiary">输入加载中…</p>
         ) : input ? (
           <p className="whitespace-pre-wrap break-words text-body leading-relaxed text-text-primary">{input}</p>
         ) : (
-          <p className="text-body text-text-tertiary">无可展示输入</p>
+          <p className="text-body text-text-tertiary">{historyError ? '输入暂时无法读取' : '无可展示输入'}</p>
         )}
       </section>
 
       <section className="plane-task-io-block" aria-label={`${agentName} 的最终输出`}>
         <h4 className="mb-tight text-caption font-semibold text-text-tertiary">最终输出</h4>
-        {timeline === undefined ? (
+        {historyError && (
+          <div className="mb-snug flex flex-wrap items-center justify-between gap-tight rounded-control border border-status-error/30 bg-status-error/5 p-snug" role="alert">
+            <p className="text-body text-status-error">{historyError}</p>
+            <Button size="sm" type="button" disabled={historyLoading} onClick={() => void loadHistory(run.id)} aria-label={`重试加载 ${agentName} 的输入与输出`}>
+              重试加载
+            </Button>
+          </div>
+        )}
+        {timeline === undefined && !historyError ? (
           <p className="text-body text-text-tertiary">结果加载中…</p>
         ) : projection.output || projection.contentBlocks ? (
           <>
@@ -94,9 +106,9 @@ export function TaskRunOutput({ run, agentName }: { run: DispatchRun; agentName:
             />
             {projection.output && <MessageActions text={projection.output} className="mt-tight" />}
           </>
-        ) : (
+        ) : !historyError ? (
           <p className="text-body text-text-tertiary">{outputPlaceholder}</p>
-        )}
+        ) : null}
       </section>
     </div>
   );

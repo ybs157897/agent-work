@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Bootstrap, CanonicalEvent, Workspace } from '../api/types';
+import type { Bootstrap, CanonicalEvent, WorkItem, Workspace } from '../api/types';
 // import bootstrap 模块即完成全部 workspace-scoped store 的 reset 注册。
 import { bootstrap, switchWorkspace } from './bootstrap';
 import { useRunsStore } from './runs.store';
@@ -61,7 +61,7 @@ const workspaceOf = (id: string, name: string): Workspace => ({
   version: 1,
 });
 
-const bootstrapPayload = (workspace: Workspace, cursor: number): Bootstrap => ({
+const bootstrapPayload = (workspace: Workspace, cursor: number, workItems: WorkItem[] = []): Bootstrap => ({
   workspace,
   dashboard: {
     active_agents: 0,
@@ -71,7 +71,7 @@ const bootstrapPayload = (workspace: Workspace, cursor: number): Bootstrap => ({
     recent_activities: [],
   },
   agents: { items: [] },
-  work_items: { items: [] },
+  work_items: { items: workItems },
   health: { control_plane: 'ok', runners: [] },
   event_cursor: cursor,
 });
@@ -150,7 +150,7 @@ function resetWorkspaceStore() {
     eventCursor: 0,
     sseStatus: 'connecting',
   });
-  useTasksStore.setState({ items: [], loaded: false, filter: {}, selectedTaskId: null });
+  useTasksStore.setState({ items: [], loaded: false, loading: false, error: null, filter: {} });
   useRunsStore.getState().reset();
 }
 
@@ -285,6 +285,46 @@ describe('switchWorkspace 固定顺序（RFC §12.1/12.2）', () => {
     expect(useWorkspaceStore.getState().phase).toBe('ready');
     expect(useWorkspaceStore.getState().eventCursor).toBe(30);
     expect((fetch as ReturnType<typeof vi.fn>).mock.calls.some((call) => String(call[0]).includes('/ws_A/bootstrap'))).toBe(false);
+  });
+
+  it('cursor_expired 后 hydrate 仍会再次补齐全部任务分页', async () => {
+    await prepareWindow({ persisted: 'ws_B' });
+    const root: WorkItem = {
+      id: 'wi_root', workspace_id: 'ws_B', record_kind: 'task', title: '总任务', description: '',
+      status: 'in_progress', phase: 'execution', priority: 'medium', due_date: null,
+      runs_count: 0, version: 1, created_at: '', updated_at: '',
+    };
+    const child: WorkItem = {
+      ...root, id: 'wi_child', title: '执行 Agent', parent_id: root.id,
+    };
+    let bootstrapCalls = 0;
+    let taskListCalls = 0;
+    stubFetchRouter({
+      '/events': () => new Response('', { status: 410 }),
+      '/me': () => json({ user_id: 'u1', name: 'o', role: 'owner', feature_flags: {} }),
+      '/workspaces/ws_B/bootstrap': () => {
+        bootstrapCalls += 1;
+        return json(bootstrapPayload(WS_B, bootstrapCalls === 1 ? 30 : 40, [root]));
+      },
+      '/work-items': () => {
+        taskListCalls += 1;
+        return taskListCalls % 2 === 1
+          ? json({ items: [root], next_cursor: 'task-page-2' })
+          : json({ items: [child], next_cursor: null });
+      },
+      '/workspaces': () => json({ items: [WS_A, WS_B] }),
+    });
+
+    await bootstrap();
+    await vi.waitFor(() => expect(taskListCalls).toBe(2));
+    expect(useTasksStore.getState().items.map((item) => item.id)).toEqual(['wi_root', 'wi_child']);
+
+    const stream = FakeEventSource.instances[0];
+    stream.emitOpen();
+    stream.emitErrorClosed();
+    await vi.waitFor(() => expect(bootstrapCalls).toBe(2));
+    await vi.waitFor(() => expect(taskListCalls).toBe(4));
+    expect(useTasksStore.getState().items.map((item) => item.id)).toEqual(['wi_root', 'wi_child']);
   });
 
   it('A 的慢 tasks 响应在切换到 B 后不得写入 B（resolve-time guard）', async () => {

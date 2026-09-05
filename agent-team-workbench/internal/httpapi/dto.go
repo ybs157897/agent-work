@@ -57,6 +57,14 @@ type blockerDTO struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type reviewAvailabilityDTO struct {
+	Ready        bool   `json:"ready"`
+	CanAccept    bool   `json:"can_accept"`
+	CanReturn    bool   `json:"can_return"`
+	AcceptReason string `json:"accept_reason,omitempty"`
+	ReturnReason string `json:"return_reason,omitempty"`
+}
+
 type workItemDTO struct {
 	ID             string  `json:"id"`
 	WorkspaceID    string  `json:"workspace_id"`
@@ -70,11 +78,12 @@ type workItemDTO struct {
 	DueDate        *string `json:"due_date"`
 	AgentProfileID string  `json:"agent_profile_id,omitempty"`
 	// 执行锁（F1）：locked_by_run_id 非空=任务正被该 run 执行（防双跑）。
-	LockedByRunID string      `json:"locked_by_run_id,omitempty"`
-	LockedAt      *time.Time  `json:"locked_at,omitempty"`
-	Blocker       *blockerDTO `json:"blocker,omitempty"`
-	RunsCount     int         `json:"runs_count"`
-	LatestRunID   string      `json:"latest_run_id,omitempty"`
+	LockedByRunID string                 `json:"locked_by_run_id,omitempty"`
+	LockedAt      *time.Time             `json:"locked_at,omitempty"`
+	Blocker       *blockerDTO            `json:"blocker,omitempty"`
+	Review        *reviewAvailabilityDTO `json:"review,omitempty"`
+	RunsCount     int                    `json:"runs_count"`
+	LatestRunID   string                 `json:"latest_run_id,omitempty"`
 	// RollingDigest 任务台账滚动摘要（S2，确定性生成）。仅详情响应携带
 	//（enrichWorkItem 填充）；列表/bootstrap 不带，防 4KB 级摘要撑爆列表载荷。
 	RollingDigest string    `json:"rolling_digest,omitempty"`
@@ -418,9 +427,43 @@ type dispatchRunDTO struct {
 	WorkItemID     string `json:"work_item_id"`
 	AgentProfileID string `json:"agent_profile_id,omitempty"`
 	AgentName      string `json:"agent_name,omitempty"`
+	Role           string `json:"role"`
 	Status         string `json:"status"`
 	// Summary 成员一行摘要（S1 确定性生成：run 指令摘录；不引入 LLM 转述）。
 	Summary string `json:"summary,omitempty"`
+}
+
+// dispatchRunRole 使用受保护的 Coordinator envelope 区分执行 Worker 与控制面
+// Run；普通历史 Run 没有 envelope，按 Worker 保留。
+func dispatchRunRole(run *domain.ExecutionRun) string {
+	if run == nil {
+		return "worker"
+	}
+	rawControl, present := run.Input["task_coordinator"]
+	if !present {
+		return "worker"
+	}
+	control, coordinated := rawControl.(map[string]any)
+	if !coordinated {
+		// The key is reserved for the protected control-plane envelope. A
+		// malformed value must not fall back to the legacy Worker default.
+		return "coordinator"
+	}
+	role, _ := control["role"].(string)
+	if role == "worker" {
+		return "worker"
+	}
+	if role == "coordinator" {
+		if action, _ := control["action"].(string); action == "evaluation" {
+			return "evaluation"
+		}
+		return "coordinator"
+	}
+	// 受保护 envelope 出现未知角色时 fail closed，不把控制面载荷冒充 Worker。
+	if action, _ := control["action"].(string); action == "evaluation" {
+		return "evaluation"
+	}
+	return "coordinator"
 }
 
 // dispatchExcerptDTO 触发消息摘录（锚回来源 run）。
@@ -487,6 +530,7 @@ func toDispatchCardDTO(d *domain.Dispatch, runs []*domain.ExecutionRun, trigger 
 			ID: run.ID, WorkItemID: run.WorkItemID,
 			AgentProfileID: run.AgentProfileID,
 			AgentName:      agentNames[run.AgentProfileID],
+			Role:           dispatchRunRole(run),
 			Status:         string(run.Status),
 			Summary:        runInstructionExcerpt(run),
 		})

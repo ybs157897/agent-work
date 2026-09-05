@@ -51,6 +51,8 @@ interface RunsStore {
   watching: Record<string, number>;
   /** 已加载过历史回放的 run。 */
   historyLoaded: Record<string, boolean>;
+  historyLoading: Record<string, boolean>;
+  historyErrors: Record<string, string | undefined>;
 
   watchRun: (runId: string) => void;
   unwatchRun: (runId: string) => void;
@@ -385,6 +387,8 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
   changesRevision: {},
   watching: {},
   historyLoaded: {},
+  historyLoading: {},
+  historyErrors: {},
 
   watchRun: (runId) => {
     set((s) => ({ watching: { ...s.watching, [runId]: (s.watching[runId] ?? 0) + 1 } }));
@@ -441,7 +445,11 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
   loadHistory: async (runId) => {
     const scope = captureScope();
     if (get().historyLoaded[runId]) return;
-    set((s) => ({ historyLoaded: { ...s.historyLoaded, [runId]: true } }));
+    set((s) => ({
+      historyLoaded: { ...s.historyLoaded, [runId]: true },
+      historyLoading: { ...s.historyLoading, [runId]: true },
+      historyErrors: { ...s.historyErrors, [runId]: undefined },
+    }));
     try {
       const { items } = await listRunEvents(runId);
       if (!isCurrent(scope)) return; // 切换后旧 Workspace 的历史不回写
@@ -461,11 +469,16 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
       liveEventKeys.set(runId, seenEvents);
       set((s) => ({
         timelines: { ...s.timelines, [runId]: mergeTimeline(history, s.timelines[runId] ?? []) },
+        historyLoading: { ...s.historyLoading, [runId]: false },
       }));
     } catch {
-      // 历史加载失败不阻塞实时流；下次 watch 重试。
+      // 保留实时投影；失败必须可见，并允许当前阅读面直接重试。
       if (!isCurrent(scope)) return;
-      set((s) => ({ historyLoaded: { ...s.historyLoaded, [runId]: false } }));
+      set((s) => ({
+        historyLoaded: { ...s.historyLoaded, [runId]: false },
+        historyLoading: { ...s.historyLoading, [runId]: false },
+        historyErrors: { ...s.historyErrors, [runId]: '输入与结果加载失败，请重试' },
+      }));
     }
   },
 
@@ -476,7 +489,7 @@ export const useRunsStore = create<RunsStore>()((set, get) => ({
     runSnapshotFetches.clear();
     runTerminalRefreshQueued.clear();
     observedRunTerminals.clear();
-    set({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, changesRevision: {}, watching: {}, historyLoaded: {} });
+    set({ runs: {}, timelines: {}, approvals: {}, artifacts: {}, changesRevision: {}, watching: {}, historyLoaded: {}, historyLoading: {}, historyErrors: {} });
   },
 
   applyEvent: (ev) => {

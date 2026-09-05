@@ -241,11 +241,19 @@ Chat 的正文工作流采用单一、按事件顺序的 Run 时间线：`thinki
 - Final 正文：默认完整展开并持续按 Markdown 段落流式渲染，不提供「展开全文/收起全文」或高度帽；长文、代码块与 ContentBlocks 均保持直接可读。
 - 错误三通道：`tool.failed` 只在 ActivityGroup/ToolRow 标错；模型/供应商 `RunFailed` 只在 composer 上方 RunErrorBanner 展示（详情/复制/可重试时真实 Retry）；cancelled/interrupted/user stop 使用停止或 info 语义，不显示模型错误 Banner，也不把运行错误复制成 assistant/transcript 行。
 
-## Task Coordinator 追踪页
+## Task 总任务追踪与验收
 
-`/tasks/:taskId` 是 Task 的独立全页，不是 Chat 抽屉的另一种皮肤。看板只承担观察、筛选和进入详情；状态由系统 Coordinator 控制，禁止拖拽改列或在页面选择 Worker。发布根 Task 后首屏显示「Coordinator 接取中」，随后以同一页呈现整体进度、当前阶段、当前 Agent、下一动作和阻塞恢复路径；子任务沿 `/tasks/:taskId` 内导航，不能跳转 `/chat`。
+`/tasks` 看板只展示无 `parent_id` 的总任务；派生子任务是内部执行结构，不占据看板列。看板展示层把 `status=in_progress + phase=review|acceptance + review.ready=true` 单独投影为“待验收”泳道，与普通“进行中”分列，但不新增后端状态或第二套状态机。`review.ready` 来自服务端对用户验收节点的只读判定，不能仅凭 phase 推断；详情只展示一个任务状态。总任务卡片和列表从根任务及后代任务的 `agent_profile_id` 推导已分派 Worker，排除系统 Agent 后去重叠放小头像；头像只是参与者摘要，完整输入输出仍以详情为准。全部任务分页成功后原子更新底层集合，优先级和搜索只筛选根任务，不改变子任务数和参与者；搜索同时支持标题、描述、完整 ID 与屏幕显示的 `WI-XXXXXX`。加载失败保留已有数据并提供重试，不显示为已完成的空态。
 
-主时间线按因果顺序固定为：规划 → 派发 → 执行尝试 → 失败归因 → 自动重试/重新分配 → 结果 → 用户验收。每个失败节点必须同时给出原因和下一步；技术 Run、工具调用与 Worker 正文按需展开，正文仍唯一复用 `AgentOutput`。未知或缺少 `record_kind=task` 的 Coordinator SSE 事件不进入任何页面投影。
+空泳道默认收起，以可点击的状态索引保留可发现性；少量非空泳道适配可用宽度，窄窗口保留看板区域内横向滚动，列表作为紧凑查看方式。Task 局部使用 Plane 浅色语义 token，辅助文字不小于 12px，正常文字对比度不低于 4.5:1，完成任务不划删除线。详情、创建 Drawer 和打回 Modal 均使用 `skin="task"`，不能因 portal 脱离页面节点而回落到另一套皮肤。
+
+点击总任务以 React Router background location 打开右侧 side-peek，原看板的视图、筛选、搜索和滚动位置保持不变。关闭按钮、遮罩、Escape 与浏览器返回都退出到同一背景看板；Drawer/Modal 必须锁定背景滚动、限制焦点、关闭后恢复触发元素，并在 reduced-motion 下取消位移动画。嵌套 Modal 遮罩须高于 Drawer，只有最顶层弹层可以交互，其余背景设为 `inert` 与 `aria-hidden`；退出动画期间仍保持锁定。Modal 内容独立滚动，底部操作不能在低高度窗口被裁切。直接深链 `/tasks/:taskId` 保留全页 fallback，子任务深链先解析权威 `root_work_item_id`，历史任务才沿 `parent_id` 回溯；关闭后到达的解析响应不得重新打开详情。
+
+详情顶部只保留总任务编号、状态、标题与根任务验收操作；正文只直接展开 Worker Agent 的“输入 / 最终输出”。不显示子任务列表、属性侧栏、编辑/阻塞按钮、Dispatch 批次、系统或委派 Coordinator、evaluation、技术时间线，也不要求逐个展开 Agent。Worker/Coordinator/evaluation 角色由服务端从受保护的 Coordinator envelope 投影；前端对旧响应仅信任挂在子任务上的 Run。
+
+验收只发生在根任务：操作入口分别受服务端 `review.can_accept/can_return` 控制；依据不完整或权限不足时显示具体原因，不提供必然失败的验收按钮。`review.ready` 与权限独立：处于用户验收节点但证据失效时仍可显示“待验收”，允许有权限的用户打回补充。字段缺失或读取异常时默认不可操作。读接口不补写证据，写命令仍执行完整领域校验；冲突后刷新最新任务供重新确认。子任务永不出现验收或其他状态操作；服务端根验收继续在同一事务内级联收口子任务，前端不重算、不逐项提交。
+
+Agent 历史请求失败须在该 Agent 的最终输出区提供明确错误和局部重试，不冒充加载中、空结果或最终正文，也不影响其他 Agent 阅读。新建任务只发布总任务，不暴露父子层级选择；必填说明初始为中性，校验在失焦或提交后显示。创建和打回表单关闭后保留当前草稿，提交成功才清除；打回草稿按任务隔离，普通任务刷新不清空。任务切换后到达的旧请求不关闭新任务详情。
 
 Task Coordinator 是系统级 Agent。配置面只开放 Codex/Kimi runtime、模型引用、推理强度和备用 runtime/model；提示词仅展示不可编辑的版本与锁定状态。普通 Agent 配置页、Chat Agent 切换排和 Chat `@` 候选均不展示该系统身份。
 

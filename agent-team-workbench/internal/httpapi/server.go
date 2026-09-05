@@ -482,7 +482,7 @@ func renderProblem(status int, code, title, detail string) (int, []byte) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id": "user_demo", "name": "Demo User", "role": "owner",
+		"user_id": "user_demo", "name": "Demo User", "role": string(s.demoRole),
 		"feature_flags": map[string]bool{"runtime_bridge": true},
 	})
 }
@@ -617,7 +617,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	wiDTOs := make([]workItemDTO, 0, len(items))
 	for _, wi := range items {
-		wiDTOs = append(wiDTOs, toWorkItemDTO(wi))
+		wiDTOs = append(wiDTOs, s.enrichWorkItem(r, wi))
 	}
 	cursor, err := s.store.Events().LatestSeq(r.Context(), wsID)
 	if err != nil {

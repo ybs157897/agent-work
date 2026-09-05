@@ -11,6 +11,7 @@ import (
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/security"
 )
 
 // ── AgentProfile ─────────────────────────────────────────────────────
@@ -243,9 +244,29 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, dto)
 }
 
-// enrichWorkItem 附带 blocker 与 run 计数（只读投影）。
+func (s *Server) reviewAvailability(r *http.Request, wi *domain.WorkItem) *reviewAvailabilityDTO {
+	availability, err := s.svc.ReviewAvailability(r.Context(), wi, application.ReviewAvailabilityPermissions{
+		CanApprove: security.Allow(s.demoRole, security.PermApproval),
+		CanWrite:   security.Allow(s.demoRole, security.PermWorkItemWrite),
+	})
+	if err != nil {
+		// A broken read projection must never turn into an actionable button or
+		// a false empty state. Keep the response shape stable and fail closed.
+		availability = application.ReviewAvailability{
+			AcceptReason: "验收状态暂不可用，请刷新后重试",
+			ReturnReason: "验收状态暂不可用，请刷新后重试",
+		}
+	}
+	return &reviewAvailabilityDTO{
+		Ready: availability.Ready, CanAccept: availability.CanAccept, CanReturn: availability.CanReturn,
+		AcceptReason: availability.AcceptReason, ReturnReason: availability.ReturnReason,
+	}
+}
+
+// enrichWorkItem 附带 blocker、run 计数与真实验收可用性（只读投影）。
 func (s *Server) enrichWorkItem(r *http.Request, wi *domain.WorkItem) workItemDTO {
 	dto := toWorkItemDTO(wi)
+	dto.Review = s.reviewAvailability(r, wi)
 	if b, err := s.store.WorkItems().ActiveBlocker(r.Context(), wi.ID); err == nil && b != nil {
 		dto.Blocker = &blockerDTO{Code: b.Code, Message: b.Message, Source: b.Source, CreatedAt: b.CreatedAt}
 	}

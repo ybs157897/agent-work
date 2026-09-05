@@ -11,6 +11,7 @@ import { bootstrap } from './stores/bootstrap';
 import { useWorkspaceStore } from './stores/workspace.store';
 import { inkMotion } from './design/motion';
 import { isChatPath, isFullBleedPath, isTasksPath } from './utils/route-layout';
+import { taskPeekBackground } from './utils/task-peek';
 
 const AgentsPage = lazy(() => import('./pages/agents.page'));
 const ChatPage = lazy(() => import('./pages/chat.page'));
@@ -62,38 +63,49 @@ export default function App() {
 
 function AnimatedRoutes() {
   const location = useLocation();
+  const backgroundLocation = taskPeekBackground(location.state);
+  const routeLocation = backgroundLocation ?? location;
   const reduceMotion = useReducedMotion();
-  const isFullBleed = isFullBleedPath(location.pathname) || isTasksPath(location.pathname);
+  const isFullBleed = isFullBleedPath(routeLocation.pathname) || isTasksPath(routeLocation.pathname);
   return (
-    <AnimatePresence mode="wait">
-      <motion.div
-        key={location.pathname}
-        initial={reduceMotion ? false : { opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
-        transition={{ duration: reduceMotion ? 0 : inkMotion.duration.normal, ease: inkMotion.easeOut }}
-        className={
-          isFullBleed
-            ? 'h-full min-h-0 flex flex-col overflow-hidden'
-            : 'min-h-full flex flex-col'
-        }
-      >
-        <Suspense fallback={<RouteFallback fullBleed={isFullBleed} />}>
+    <>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={routeLocation.pathname}
+          initial={reduceMotion ? false : { opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
+          transition={{ duration: reduceMotion ? 0 : inkMotion.duration.normal, ease: inkMotion.easeOut }}
+          className={
+            isFullBleed
+              ? 'h-full min-h-0 flex flex-col overflow-hidden'
+              : 'min-h-full flex flex-col'
+          }
+        >
+          <Suspense fallback={<RouteFallback fullBleed={isFullBleed} />}>
+            <Routes location={routeLocation}>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/tasks/:taskId" element={<TaskWorkspacePage />} />
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
+              <Route path="/models" element={<ModelsPage />} />
+              <Route path="/logs" element={<LogsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="*" element={<NotFoundPage />} />
+            </Routes>
+          </Suspense>
+        </motion.div>
+      </AnimatePresence>
+      {backgroundLocation && (
+        <Suspense fallback={null}>
           <Routes location={location}>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/agents" element={<AgentsPage />} />
-            <Route path="/tasks" element={<TasksPage />} />
             <Route path="/tasks/:taskId" element={<TaskWorkspacePage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
-            <Route path="/models" element={<ModelsPage />} />
-            <Route path="/logs" element={<LogsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </Suspense>
-      </motion.div>
-    </AnimatePresence>
+      )}
+    </>
   );
 }
 
