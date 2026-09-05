@@ -1,23 +1,19 @@
 import { useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { createWorkItem } from '../../api/endpoints';
-import type { Priority, WorkItem } from '../../api/types';
+import type { Priority } from '../../api/types';
 import { Drawer } from '../../components/drawer';
+import { Button, Input, Select, Textarea } from '../../components/ui';
 import { useTasksStore } from '../../stores/tasks.store';
 import { toast } from '../../stores/toast.store';
-import { sortTasksTree } from '../../utils/task-tree';
 import { useWorkspaceStore } from '../../stores/workspace.store';
 import { captureScope, isCurrent } from '../../stores/scope';
-
-/** 父任务候选：非终态任务（终态任务不再接收子任务），树序展示。 */
-const parentCandidates = (items: WorkItem[]) =>
-  sortTasksTree(items.filter((t) => t.status !== 'completed' && t.status !== 'cancelled'));
 
 export function parseAcceptanceCriteria(value: string): string[] {
   return value.split('\n').map((criterion) => criterion.trim()).filter(Boolean);
 }
 
-/** 发布 Task：根任务统一进入 Coordinator 队列；可选父任务挂为子任务。 */
+/** 用户发布入口只创建总任务；拆分由任务执行流程负责。 */
 export function CreateTaskModal({
   open,
   onClose,
@@ -26,7 +22,6 @@ export function CreateTaskModal({
   onClose: () => void;
 }) {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const tasks = useTasksStore((s) => s.items);
   const refresh = useTasksStore((s) => s.refresh);
 
   const [title, setTitle] = useState('');
@@ -34,15 +29,17 @@ export function CreateTaskModal({
   const [acceptanceCriteria, setAcceptanceCriteria] = useState('');
   const [priority, setPriority] = useState<Priority>('medium');
   const [dueDate, setDueDate] = useState('');
-  const [parentId, setParentId] = useState('');
+  const [acceptanceTouched, setAcceptanceTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const clientKey = useRef<string>();
   const acceptanceItems = parseAcceptanceCriteria(acceptanceCriteria);
-  const rootTask = parentId === '';
-  const acceptanceInvalid = rootTask && acceptanceItems.length === 0;
+  const acceptanceMissing = acceptanceItems.length === 0;
+  const acceptanceInvalid = acceptanceTouched && acceptanceMissing;
 
   const submit = async () => {
-    if (!workspace || !title.trim() || acceptanceInvalid) return;
+    if (!workspace || submitting) return;
+    setAcceptanceTouched(true);
+    if (!title.trim() || acceptanceMissing) return;
     const scope = captureScope();
     if (scope.workspaceId !== workspace.id) return;
     setSubmitting(true);
@@ -57,24 +54,19 @@ export function CreateTaskModal({
         status: 'todo',
         priority,
         due_date: dueDate || null,
-        parent_id: parentId || undefined,
         acceptance_criteria: acceptanceItems,
         client_key: clientKey.current,
       });
       if (!isCurrent(scope)) return;
       await refresh();
       if (!isCurrent(scope)) return;
-      toast.success(
-        parentId
-          ? `已创建子任务「${title.trim()}」，将通知根 Coordinator 重新规划`
-          : `已发布任务「${title.trim()}」，Coordinator 已自动接取`,
-      );
+      toast.success(`已发布任务「${title.trim()}」，已进入执行队列`);
       setTitle('');
       setDescription('');
       setAcceptanceCriteria('');
       setPriority('medium');
       setDueDate('');
-      setParentId('');
+      setAcceptanceTouched(false);
 
       clientKey.current = undefined;
       onClose();
@@ -86,95 +78,80 @@ export function CreateTaskModal({
     }
   };
 
-  const inputCls =
-    'mt-1 w-full rounded-input border border-border-strong bg-surface-raised px-snug py-tight text-body outline-none focus:ring-2 focus:ring-brand-primary/30';
-
   return (
-    <Drawer open={open} onClose={onClose} title="发布任务" width={480}>
+    <Drawer open={open} onClose={onClose} title="发布任务" width={480} skin="task">
       <div className="p-comfortable">
-        <div className="space-y-base">
-        <div className="rounded-card border border-brand-primary/20 bg-brand-primary/5 px-snug py-tight" role="status">
-          <p className="text-body font-medium text-text-primary">发布后自动接取</p>
-          <p className="mt-0.5 text-caption text-text-secondary">
-            {parentId ? '这是子任务，根任务 Coordinator 会收到变更并重新规划。' : '系统 Coordinator 会自动拆分任务、选择 Agent 并开始执行。'}
-          </p>
-        </div>
-        <label className="block">
-          <span className="text-body text-text-secondary">标题</span>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} className={inputCls} placeholder="任务标题" />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">描述</span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            className={`${inputCls} resize-none`}
-            placeholder="背景、目标、验收标准…"
-          />
-        </label>
-        <label className="block">
-          <span className="text-body text-text-secondary">
-            验收标准 <span className="text-caption text-text-tertiary">（{rootTask ? '根任务必填' : '子任务可选'}，每行一条）</span>
-          </span>
-          <textarea
-            value={acceptanceCriteria}
-            onChange={(e) => setAcceptanceCriteria(e.target.value)}
-            rows={3}
-            className={`${inputCls} resize-none ${acceptanceInvalid ? 'border-status-error' : ''}`}
-            placeholder="例如：登录流程有自动化测试\n例如：失败时能看到恢复原因"
-            aria-required={rootTask}
-            aria-invalid={acceptanceInvalid}
-            aria-describedby={acceptanceInvalid ? 'root-acceptance-error' : undefined}
-          />
-          {acceptanceInvalid && (
-            <p id="root-acceptance-error" className="mt-1 text-caption text-status-error" role="alert">
-              根任务至少填写一条验收标准；它会成为后续治理与验收的依据。
-            </p>
-          )}
-        </label>
-        <div className="grid grid-cols-2 gap-snug">
+        <form className="space-y-base" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          <p className="text-body text-text-secondary">描述目标与验收标准，系统会安排 Agent 执行。完成后由你统一验收。</p>
           <label className="block">
-            <span className="text-body text-text-secondary">优先级</span>
-            <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className={inputCls}>
-              <option value="low">低优</option>
-              <option value="medium">中优</option>
-              <option value="high">高优</option>
-              <option value="urgent">紧急</option>
-            </select>
+            <span className="text-body text-text-secondary">标题 <span className="text-caption">（必填）</span></span>
+            <Input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="这次要完成什么？" />
           </label>
           <label className="block">
-            <span className="text-body text-text-secondary">截止日</span>
-            <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} className={inputCls} />
+            <span className="text-body text-text-secondary">描述 <span className="text-caption">（可选）</span></span>
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="resize-y"
+              placeholder="补充背景、范围和需要注意的事项"
+            />
           </label>
-        </div>
-        <label className="block">
-          <span className="text-body text-text-secondary">父任务（可选）</span>
-          <select value={parentId} onChange={(e) => setParentId(e.target.value)} className={inputCls}>
-            <option value="">无 · 作为根任务</option>
-            {parentCandidates(tasks).map((entry) => (
-              <option key={entry.item.id} value={entry.item.id}>
-                {`${'　'.repeat(entry.depth)}${entry.item.title}`}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="flex justify-end gap-snug pt-tight">
-          <button
-            onClick={onClose}
-            className="bg-transparent border border-border-strong text-text-secondary rounded-button px-base py-tight font-medium hover:bg-surface-base transition-colors"
-          >
-            取消
-          </button>
-          <button
-            onClick={submit}
-            disabled={!title.trim() || acceptanceInvalid || submitting}
-            className="bg-brand-primary text-text-inverse rounded-button px-base py-tight font-medium transition-all duration-150 hover:bg-brand-accent active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? '发布中…' : '发布任务'}
-          </button>
-        </div>
-      </div>
+          <label className="block">
+            <span className="text-body text-text-secondary">
+              验收标准 <span className="text-caption text-text-tertiary">（必填，每行一条）</span>
+            </span>
+            <Textarea
+              value={acceptanceCriteria}
+              onChange={(e) => setAcceptanceCriteria(e.target.value)}
+              rows={3}
+              onBlur={() => setAcceptanceTouched(true)}
+              className="resize-y"
+              placeholder={'例如：登录流程有自动化测试\n例如：失败时能看到恢复原因'}
+              aria-required="true"
+              invalid={acceptanceInvalid}
+              aria-describedby={acceptanceInvalid ? 'root-acceptance-error' : 'root-acceptance-hint'}
+            />
+            {acceptanceInvalid && (
+              <p id="root-acceptance-error" className="mt-1 text-caption text-status-error" role="alert">
+                请至少填写一条验收标准。
+              </p>
+            )}
+            {!acceptanceInvalid && (
+              <p id="root-acceptance-hint" className="mt-micro text-caption text-text-tertiary">写清满足什么条件才算完成，方便最后验收。</p>
+            )}
+          </label>
+          <div className="grid grid-cols-2 gap-snug">
+            <label className="block">
+              <span className="text-body text-text-secondary">优先级</span>
+              <Select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}>
+                <option value="low">低优</option>
+                <option value="medium">中优</option>
+                <option value="high">高优</option>
+                <option value="urgent">紧急</option>
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-body text-text-secondary">截止日</span>
+              <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+            </label>
+          </div>
+          <div className="flex justify-end gap-snug pt-tight">
+            <Button
+              type="button"
+              onClick={onClose}
+            >
+              取消
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={!title.trim() || acceptanceMissing || submitting}
+            >
+              {submitting ? '发布中…' : '发布任务'}
+            </Button>
+          </div>
+        </form>
       </div>
     </Drawer>
   );

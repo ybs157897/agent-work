@@ -16,12 +16,15 @@ describe('CreateTaskModal root acceptance contract', () => {
     });
   });
 
-  it('marks the root acceptance field invalid and disables submit when empty', () => {
+  it('初次打开提示必填但不提前报错，未填写完整时禁止发布', () => {
     const html = renderToStaticMarkup(<CreateTaskModal open onClose={() => undefined} />);
-    expect(html).toContain('根任务必填');
+    expect(html).toContain('必填，每行一条');
     expect(html).toContain('aria-required="true"');
-    expect(html).toContain('aria-invalid="true"');
-    expect(html).toContain('根任务至少填写一条验收标准');
+    expect(html).not.toContain('aria-invalid="true"');
+    expect(html).not.toContain('role="alert"');
+    expect(html).toContain('写清满足什么条件才算完成');
+    expect(html).not.toContain('父任务');
+    expect(html).not.toContain('子任务');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>发布任务<\/button>/);
   });
 });

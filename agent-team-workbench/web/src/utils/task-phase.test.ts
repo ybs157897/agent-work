@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import type { Plan, PlanStep, WorkItem } from '../api/types';
-import { canReturnTask, evaluationPassed, isAwaitingAcceptance, planTriggeredEvaluation, stepTriggeredEvaluation } from './task-phase';
+import type { Plan, PlanStep, WorkItem, WorkItemReview } from '../api/types';
+import {
+  evaluationPassed,
+  isAwaitingAcceptance,
+  planTriggeredEvaluation,
+  stepTriggeredEvaluation,
+  taskBoardLane,
+  taskBoardLaneExplanation,
+} from './task-phase';
 
-const task = (status: WorkItem['status'], phase?: WorkItem['phase']): Pick<WorkItem, 'status' | 'phase'> => ({
+const task = (status: WorkItem['status'], phase?: WorkItem['phase'], review?: WorkItemReview) => ({
   status,
   ...(phase ? { phase } : {}),
+  ...(review ? { review } : {}),
 });
 
 const step = (verb: PlanStep['verb'], payload: Record<string, unknown>): PlanStep => ({
@@ -30,8 +38,9 @@ const planOf = (steps: PlanStep[]): Plan => ({
 
 describe('isAwaitingAcceptance', () => {
   it('review 与 acceptance 阶段（in_progress）都提示待验收', () => {
-    expect(isAwaitingAcceptance(task('in_progress', 'review'))).toBe(true);
-    expect(isAwaitingAcceptance(task('in_progress', 'acceptance'))).toBe(true);
+    const ready = { ready: true, can_accept: true, can_return: true };
+    expect(isAwaitingAcceptance(task('in_progress', 'review', ready))).toBe(true);
+    expect(isAwaitingAcceptance(task('in_progress', 'acceptance', ready))).toBe(true);
   });
 
   it('execution、缺省 phase 不提示', () => {
@@ -45,15 +54,43 @@ describe('isAwaitingAcceptance', () => {
     expect(isAwaitingAcceptance(task('blocked', 'review'))).toBe(false);
     expect(isAwaitingAcceptance(task('cancelled', 'review'))).toBe(false);
   });
+
+  it('review 快照未就绪时保持进行中，并给出可读解释', () => {
+    const pending = task('in_progress', 'acceptance', { ready: false, can_accept: false, can_return: false });
+    expect(isAwaitingAcceptance(pending)).toBe(false);
+    expect(taskBoardLane(pending)).toBe('in_progress');
+    expect(taskBoardLaneExplanation(pending)).toBe('验收依据尚未就绪，任务仍在进行中');
+  });
+
+  it('缺少 review 快照时保持核验中，不进入待验收', () => {
+    const missing = task('in_progress', 'review');
+    expect(isAwaitingAcceptance(missing)).toBe(false);
+    expect(taskBoardLane(missing)).toBe('in_progress');
+    expect(taskBoardLaneExplanation(missing)).toBe('验收依据尚未就绪，任务仍在进行中');
+  });
+
+  it('review.ready=true 才进入待验收，能力字段只控制对应操作', () => {
+    const ready = task('in_progress', 'review', { ready: true, can_accept: true, can_return: false });
+    expect(isAwaitingAcceptance(ready)).toBe(true);
+    expect(taskBoardLane(ready)).toBe('awaiting_acceptance');
+    expect(taskBoardLaneExplanation(ready)).toBeUndefined();
+  });
 });
 
-describe('canReturnTask', () => {
-  it('只限制已确认接入 Coordinator 的 child；legacy child 保留旧 Return', () => {
-    expect(canReturnTask({ ...task('in_progress', 'review'), parent_id: undefined }, 'loading')).toBe(true);
-    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'coordinated')).toBe(false);
-    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'loading')).toBe(false);
-    expect(canReturnTask({ ...task('in_progress', 'acceptance'), parent_id: 'wi_root' }, 'legacy')).toBe(true);
-    expect(canReturnTask({ ...task('in_progress', 'execution'), parent_id: undefined }, 'legacy')).toBe(false);
+describe('taskBoardLane', () => {
+  it('把 review 与 acceptance 从普通进行中拆到待验收泳道', () => {
+    expect(taskBoardLane(task('in_progress', 'execution'))).toBe('in_progress');
+    expect(taskBoardLane(task('in_progress'))).toBe('in_progress');
+    const ready = { ready: true, can_accept: true, can_return: true };
+    expect(taskBoardLane(task('in_progress', 'review', ready))).toBe('awaiting_acceptance');
+    expect(taskBoardLane(task('in_progress', 'acceptance', ready))).toBe('awaiting_acceptance');
+  });
+
+  it('终态或阻塞态忽略残留 phase，保持领域状态泳道', () => {
+    expect(taskBoardLane(task('todo', 'acceptance'))).toBe('todo');
+    expect(taskBoardLane(task('completed', 'acceptance'))).toBe('completed');
+    expect(taskBoardLane(task('blocked', 'review'))).toBe('blocked');
+    expect(taskBoardLane(task('cancelled', 'review'))).toBe('cancelled');
   });
 });
 
@@ -87,19 +124,20 @@ describe('planTriggeredEvaluation', () => {
 describe('evaluationPassed', () => {
   const evaluatedPlan = planOf([step('finish', { summary: '完成', evaluation: true })]);
   const plainPlan = planOf([step('finish', { summary: '完成' })]);
+  const readyAcceptance = task('in_progress', 'acceptance', { ready: true, can_accept: true, can_return: true });
 
   it('acceptance + 最新 plan 触发过评估 → 评估通过待人工验收', () => {
-    expect(evaluationPassed(task('in_progress', 'acceptance'), evaluatedPlan)).toBe(true);
+    expect(evaluationPassed(readyAcceptance, evaluatedPlan)).toBe(true);
   });
 
   it('acceptance 但 plan 未触发评估（人工直评路径）不显示评估提示', () => {
-    expect(evaluationPassed(task('in_progress', 'acceptance'), plainPlan)).toBe(false);
-    expect(evaluationPassed(task('in_progress', 'acceptance'), undefined)).toBe(false);
+    expect(evaluationPassed(readyAcceptance, plainPlan)).toBe(false);
+    expect(evaluationPassed(readyAcceptance, undefined)).toBe(false);
   });
 
   it('非 acceptance 阶段一律不显示：评估失败回 execution 后不做历史推测', () => {
-    expect(evaluationPassed(task('in_progress', 'execution'), evaluatedPlan)).toBe(false);
-    expect(evaluationPassed(task('in_progress', 'review'), evaluatedPlan)).toBe(false);
-    expect(evaluationPassed(task('completed', 'acceptance'), evaluatedPlan)).toBe(false);
+    expect(evaluationPassed(task('in_progress', 'execution', { ready: true, can_accept: true, can_return: true }), evaluatedPlan)).toBe(false);
+    expect(evaluationPassed(task('in_progress', 'review', { ready: true, can_accept: true, can_return: true }), evaluatedPlan)).toBe(false);
+    expect(evaluationPassed(task('completed', 'acceptance', { ready: true, can_accept: true, can_return: true }), evaluatedPlan)).toBe(false);
   });
 });

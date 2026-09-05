@@ -1,5 +1,5 @@
-import { Bot, ChevronDown, ChevronRight } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Bot } from 'lucide-react';
+import { useEffect } from 'react';
 import type { DispatchCard, DispatchRun } from '../../api/types';
 import { Avatar } from '../../components/avatar';
 import { runStatusColor, runStatusText } from '../../components/status';
@@ -20,14 +20,27 @@ export interface TaskAgentRun {
   createdAt: string;
 }
 
-/** 新批次优先，按 run id 去重；批次本身不进入 Task 详情的视觉层级。 */
-export function taskAgentRuns(dispatches: readonly DispatchCard[]): TaskAgentRun[] {
-  const seen = new Set<string>();
+/**
+ * 新批次优先，每个派生任务只保留最新 Worker 尝试；Coordinator/evaluation
+ * 永不进入用户详情。旧响应缺少 role 时，只信任挂在子任务上的 run。
+ */
+export function taskAgentRuns(dispatches: readonly DispatchCard[], rootTaskId: string): TaskAgentRun[] {
+  const seenWorkItems = new Set<string>();
   const result: TaskAgentRun[] = [];
   for (const dispatch of dispatches) {
+    const order: string[] = [];
+    const latestByWorkItem = new Map<string, DispatchRun>();
     for (const run of dispatch.runs) {
-      if (seen.has(run.id)) continue;
-      seen.add(run.id);
+      const worker = run.role === 'worker' || (!run.role && run.work_item_id !== rootTaskId);
+      if (!worker) continue;
+      if (!latestByWorkItem.has(run.work_item_id)) order.push(run.work_item_id);
+      latestByWorkItem.set(run.work_item_id, run);
+    }
+    for (const workItemId of order) {
+      if (seenWorkItems.has(workItemId)) continue;
+      const run = latestByWorkItem.get(workItemId);
+      if (!run) continue;
+      seenWorkItems.add(workItemId);
       result.push({ run, createdAt: dispatch.created_at });
     }
   }
@@ -44,13 +57,13 @@ export function DispatchTimeline({ taskId, workspaceId }: DispatchTimelineProps)
     if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
   }, [taskId, workspaceId, refreshFor]);
 
-  const runs = taskAgentRuns(dispatches ?? []);
+  const runs = taskAgentRuns(dispatches ?? [], taskId);
 
   return (
     <section className="plane-task-section space-y-snug" aria-labelledby="task-agent-runs-title">
       <div>
-        <h2 id="task-agent-runs-title" className="text-body-lg font-semibold text-text-primary">执行 Agent</h2>
-        <p className="mt-micro text-caption text-text-tertiary">每次执行只展示收到的输入与完成后的最终输出</p>
+        <h2 id="task-agent-runs-title" className="text-body-lg font-semibold text-text-primary">Agent 输入与输出</h2>
+        <p className="mt-micro text-caption text-text-tertiary">按 Agent 直接展示本次输入与最终结果，无需逐层进入或展开</p>
       </div>
       {error && <InlineRequestError message={error} onRetry={() => {
         if (captureScope().workspaceId === workspaceId) void refreshFor(taskId, workspaceId);
@@ -60,14 +73,14 @@ export function DispatchTimeline({ taskId, workspaceId }: DispatchTimelineProps)
       ) : runs.length === 0 && !error ? (
         <EmptyState
           icon={<Bot className="h-5 w-5" aria-hidden />}
-          title="尚无 Agent 执行"
-          description="任务开始执行后，这里会显示每个 Agent 的输入与最终结果。"
+          title="等待执行 Agent 输出"
+          description="Coordinator 完成派发后，这里会直接出现各 Agent 的输入与最终结果。"
         />
       ) : runs.length > 0 ? (
-        <ol className="space-y-tight">
-          {runs.map(({ run, createdAt }, index) => (
-            <li key={run.id}>
-              <DispatchRunRow run={run} createdAt={createdAt} defaultExpanded={index === 0} />
+        <ol className="space-y-snug">
+          {runs.map(({ run, createdAt }) => (
+            <li key={run.work_item_id}>
+              <TaskAgentOutputCard run={run} createdAt={createdAt} />
             </li>
           ))}
         </ol>
@@ -89,40 +102,21 @@ function InlineRequestError({ message, onRetry }: { message: string; onRetry: ()
   );
 }
 
-/** Agent 执行行：元信息保持单行，展开区域严格只有输入与最终输出。 */
-export function DispatchRunRow({
+/** Agent 结果直接展开，详情中不再制造第二层交互。 */
+export function TaskAgentOutputCard({
   run,
   createdAt,
-  defaultExpanded = false,
 }: {
   run: DispatchRun;
   createdAt?: string;
-  defaultExpanded?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
   const runSnapshot = useRunsStore((state) => state.runs[run.id]);
-  const fetchRun = useRunsStore((state) => state.fetchRun);
   const name = run.agent_name ?? run.agent_profile_id ?? '未指派';
   const status = runSnapshot?.status ?? run.status;
-  const outputId = `task-run-output-${run.id}`;
-
-  // 折叠行也缓存轻量 Run 快照；runs.store 会就地应用后续 SSE 状态。
-  // 完整事件历史仍只在展开 TaskRunOutput 后加载。
-  useEffect(() => {
-    void fetchRun(run.id);
-  }, [fetchRun, run.id]);
 
   return (
-    <div className="plane-task-agent">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        aria-controls={expanded ? outputId : undefined}
-        title={expanded ? `收起 ${name} 的执行结果` : `查看 ${name} 的执行结果`}
-        aria-label={`${expanded ? '收起' : '查看'} ${name} 的输入与最终输出`}
-        className="plane-task-agent-trigger"
-      >
+    <article className="plane-task-agent" aria-label={`${name} 的输入与最终输出`}>
+      <header className="plane-task-agent-header">
         <Avatar name={name === '未指派' ? run.id : name} size={24} />
         <span className="min-w-0 flex-1 truncate text-body font-medium text-text-primary">{name}</span>
         <StatusPill><span className={runStatusColor(status)}>{runStatusText(status)}</span></StatusPill>
@@ -131,13 +125,8 @@ export function DispatchRunRow({
             {formatDateTime(runSnapshot?.created_at ?? createdAt ?? '')}
           </span>
         )}
-        {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-tertiary" aria-hidden />}
-      </button>
-      {expanded && (
-        <div id={outputId}>
-          <TaskRunOutput run={run} agentName={name} />
-        </div>
-      )}
-    </div>
+      </header>
+      <TaskRunOutput run={run} agentName={name} />
+    </article>
   );
 }

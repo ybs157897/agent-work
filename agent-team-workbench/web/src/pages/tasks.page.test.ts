@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { WorkItem } from '../api/types';
-import { childCountByParent, rootTasks, sortTasksTree, TASK_STATUS_COLUMNS } from './tasks.page';
+import type { AgentProfile, WorkItem } from '../api/types';
+import {
+  childCountByParent,
+  matchesTaskQuery,
+  rootTasks,
+  sortTasksTree,
+  TASK_STATUS_COLUMNS,
+  taskParticipantsByRoot,
+  workItemKey,
+} from './tasks.page';
 
 const wi = (id: string, createdAt: string, parentId?: string): WorkItem => ({
   id,
@@ -105,10 +113,61 @@ describe('TASK_STATUS_COLUMNS', () => {
     expect(TASK_STATUS_COLUMNS.map((column) => column.id)).toEqual([
       'todo',
       'in_progress',
+      'awaiting_acceptance',
       'completed',
       'blocked',
       'cancelled',
     ]);
+  });
+});
+
+describe('taskParticipantsByRoot', () => {
+  const agent = (id: string, name: string, isSystem = false, kind?: string): AgentProfile => ({
+    id,
+    name,
+    role: 'worker',
+    skills: [],
+    availability: 'enabled',
+    presence: 'offline',
+    is_system: isSystem,
+    ...(kind ? { kind } : {}),
+    version: 1,
+  });
+
+  it('沿后代任务归集非系统 Worker，并按 Agent id 去重', () => {
+    const root = wi('root', '2026-08-23T01:00:00Z');
+    const childA = { ...wi('child-a', '2026-08-23T02:00:00Z', root.id), agent_profile_id: 'agent-a' };
+    const childARepeat = { ...wi('child-a-repeat', '2026-08-23T03:00:00Z', root.id), agent_profile_id: 'agent-a' };
+    const grandchildB = { ...wi('grandchild-b', '2026-08-23T04:00:00Z', childA.id), agent_profile_id: 'agent-b' };
+    const systemChild = { ...wi('system-child', '2026-08-23T05:00:00Z', root.id), agent_profile_id: 'agent-system' };
+    const coordinatorKindChild = { ...wi('coordinator-kind-child', '2026-08-23T06:00:00Z', root.id), agent_profile_id: 'agent-coordinator-kind' };
+
+    const participants = taskParticipantsByRoot(
+      [grandchildB, systemChild, coordinatorKindChild, childARepeat, root, childA],
+      [
+        agent('agent-b', 'Pixel'),
+        agent('agent-system', 'Task Coordinator', true),
+        agent('agent-coordinator-kind', 'Legacy Coordinator', false, 'task_coordinator'),
+        agent('agent-a', 'Forge'),
+      ],
+    );
+
+    expect(participants.get(root.id)?.map((item) => item.name)).toEqual(['Forge', 'Pixel']);
+  });
+
+  it('兼容直接绑定非系统 Worker 的历史根任务', () => {
+    const root = { ...wi('legacy-root', '2026-08-23T01:00:00Z'), agent_profile_id: 'agent-a' };
+    expect(taskParticipantsByRoot([root], [agent('agent-a', 'Forge')]).get(root.id)?.[0].name).toBe('Forge');
+  });
+
+  it('缺父、循环父链和未知 Agent 都不会污染根任务头像', () => {
+    const root = wi('root', '2026-08-23T01:00:00Z');
+    const orphan = { ...wi('orphan', '2026-08-23T02:00:00Z', 'missing'), agent_profile_id: 'agent-a' };
+    const loopA = { ...wi('loop-a', '2026-08-23T03:00:00Z', 'loop-b'), agent_profile_id: 'agent-a' };
+    const loopB = { ...wi('loop-b', '2026-08-23T04:00:00Z', 'loop-a'), agent_profile_id: 'agent-a' };
+    const unknown = { ...wi('unknown', '2026-08-23T05:00:00Z', root.id), agent_profile_id: 'missing-agent' };
+
+    expect(taskParticipantsByRoot([root, orphan, loopA, loopB, unknown], [agent('agent-a', 'Forge')]).size).toBe(0);
   });
 });
 
@@ -125,5 +184,15 @@ describe('rootTasks', () => {
       'root-in-progress',
       'root-completed',
     ]);
+  });
+});
+
+describe('task search projection', () => {
+  it('uses the Plane short key as a searchable field', () => {
+    const task = wi('wi_ABC123', '2026-08-23T01:00:00Z');
+    expect(workItemKey(task.id)).toBe('WI-ABC123');
+    expect(matchesTaskQuery(task, 'wi-abc123')).toBe(true);
+    expect(matchesTaskQuery(task, 'abc123')).toBe(true);
+    expect(matchesTaskQuery(task, 'missing')).toBe(false);
   });
 });

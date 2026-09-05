@@ -1,41 +1,68 @@
-import { useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { acceptWorkItem, getWorkItem, unblockWorkItem } from '../api/endpoints';
-import type { WorkItem, WorkItemStatus } from '../api/types';
-import { ErrorState } from '../components/async-state';
-import { BlockTaskModal } from './tasks/block-modal';
+import { getCoordinatorSnapshot, getWorkItem } from '../api/endpoints';
 import { TaskDetail } from './tasks/task-detail';
 import { useTasksStore } from '../stores/tasks.store';
 import { captureScope, isCurrent, isCurrentWorkspaceEntity } from '../stores/scope';
-import { toast } from '../stores/toast.store';
+import { resolveTaskRootId, taskBoardTarget, taskPeekBackground, taskPeekTarget } from '../utils/task-peek';
 
 /**
- * Task 的独立全页入口。Task 不再把详情当作 Chat 抽屉，也不在 URL 中创建
- * Chat conversation；子任务导航保持在 /tasks/:id 内。
+ * `/tasks/:id` 同时承载看板 side-peek 和直接深链 fallback。
+ * 子任务链接在渲染前解析到权威根任务，永不暴露子任务验收面。
  */
 export default function TaskWorkspacePage() {
   const { taskId } = useParams<{ taskId: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const upsert = useTasksStore((state) => state.upsert);
-  const task = useTasksStore((state) => (taskId ? state.items.find((item) => item.id === taskId) : undefined));
-  const [blocking, setBlocking] = useState<WorkItem | null>(null);
-  const [loadError, setLoadError] = useState<string | undefined>();
+  const backgroundLocation = taskPeekBackground(location.state);
+  const [loadError, setLoadError] = useState<string>();
+  const [peekOpen, setPeekOpen] = useState(true);
+  const closingRef = useRef(false);
+
+  const finishClose = useCallback(() => {
+    if (backgroundLocation) navigate(-1);
+    else navigate(taskBoardTarget(location.search), { replace: true });
+  }, [backgroundLocation, location.search, navigate]);
+
+  const close = useCallback(() => {
+    if (backgroundLocation) {
+      closingRef.current = true;
+      setPeekOpen(false);
+    } else finishClose();
+  }, [backgroundLocation, finishClose]);
+
+  useEffect(() => {
+    closingRef.current = false;
+    setPeekOpen(true);
+  }, [taskId]);
 
   useEffect(() => {
     if (!taskId) return;
     let active = true;
     const scope = captureScope();
+    const coordinatorRootFor = async (workItemId: string): Promise<string | undefined> => {
+      try {
+        return (await getCoordinatorSnapshot(workItemId)).root_work_item_id;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    };
+
     getWorkItem(taskId)
-      .then((item) => {
+      .then(async (item) => {
         if (!active || !isCurrent(scope)) return;
-        if (!isCurrentWorkspaceEntity(scope, item)) {
-          setLoadError('该任务不属于当前工作区，已返回任务看板。');
-          navigate('/tasks', { replace: true });
-          return;
-        }
-        if (item.record_kind !== 'task') {
-          setLoadError('该记录属于 Chat，不能在 Task 页面打开。');
+        if (!isCurrentWorkspaceEntity(scope, item)) throw new Error('该任务不属于当前工作区');
+        if (item.record_kind !== 'task') throw new Error('该记录属于 Chat，不能在 Task 页面打开');
+        const rootTaskId = await resolveTaskRootId(item, coordinatorRootFor, getWorkItem);
+        if (!active || !isCurrent(scope) || closingRef.current) return;
+        if (rootTaskId !== item.id) {
+          navigate(taskPeekTarget(rootTaskId, location.search), {
+            replace: true,
+            ...(backgroundLocation ? { state: { backgroundLocation } } : {}),
+          });
           return;
         }
         setLoadError(undefined);
@@ -43,79 +70,21 @@ export default function TaskWorkspacePage() {
       })
       .catch((error: unknown) => {
         if (!active || !isCurrent(scope)) return;
-        setLoadError(error instanceof ApiError ? error.message : '任务加载失败');
+        setLoadError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : '任务加载失败');
       });
     return () => {
       active = false;
     };
-  }, [navigate, taskId, upsert]);
-
-  const transitionTask = async (item: WorkItem, to: WorkItemStatus) => {
-    if (item.record_kind !== 'task') return;
-    const scope = captureScope();
-    if (!isCurrentWorkspaceEntity(scope, item)) {
-      toast.error('该任务不属于当前工作区，无法操作。');
-      navigate('/tasks', { replace: true });
-      return;
-    }
-    try {
-      if (to === 'blocked') {
-        if (item.status !== 'in_progress') {
-          toast.error('只有进行中的任务才能标记阻塞');
-          return;
-        }
-        setBlocking(item);
-        return;
-      }
-      if (item.status === 'blocked' && to === 'in_progress') {
-        const updated = await unblockWorkItem(item.id, item.version);
-        if (!isCurrentWorkspaceEntity(scope, updated)) return;
-        upsert(updated);
-        toast.success(`已解除阻塞「${item.title}」`);
-        return;
-      }
-      if (to === 'completed' && (item.phase === 'review' || item.phase === 'acceptance')) {
-        const updated = await acceptWorkItem(item.id, item.version);
-        if (!isCurrentWorkspaceEntity(scope, updated)) return;
-        upsert(updated);
-        toast.success(`任务「${item.title}」验收通过`);
-        return;
-      }
-      toast.error('该状态由 Coordinator 管理，当前操作不可用');
-    } catch (error: unknown) {
-      if (!isCurrent(scope)) return;
-      if (error instanceof ApiError && error.isVersionConflict) {
-        toast.error('任务状态已更新，请刷新后重试');
-        const latest = await getWorkItem(item.id).catch(() => undefined);
-        if (latest?.record_kind === 'task' && isCurrentWorkspaceEntity(scope, latest)) upsert(latest);
-      } else {
-        toast.error(error instanceof ApiError ? error.message : '操作失败，请重试');
-      }
-    }
-  };
-
-  if (loadError) {
-    return (
-      <main className="page-shell flex min-h-full items-center justify-center">
-        <ErrorState message={loadError} actionLabel="返回任务看板" onRetry={() => navigate('/tasks')} />
-      </main>
-    );
-  }
+  }, [backgroundLocation, location.search, navigate, taskId, upsert]);
 
   return (
-    <>
-      <TaskDetail
-        taskId={taskId ?? null}
-        fullPage
-        onClose={() => navigate('/tasks')}
-        onTransition={transitionTask}
-      />
-      <BlockTaskModal task={blocking} onClose={() => setBlocking(null)} />
-      {!task && !loadError && (
-        <div className="page-shell" role="status" aria-label="任务加载中">
-          <p className="text-body text-text-tertiary">任务加载中…</p>
-        </div>
-      )}
-    </>
+    <TaskDetail
+      taskId={taskId ?? null}
+      error={loadError}
+      open={peekOpen}
+      fullPage={!backgroundLocation}
+      onClose={close}
+      onExitComplete={backgroundLocation ? finishClose : undefined}
+    />
   );
 }

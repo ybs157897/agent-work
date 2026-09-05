@@ -8,6 +8,7 @@ import { SseStatusPill } from './sse-status';
 import { WorkspaceSelector } from './workspace-selector';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { isChatPath, isTasksPath, mainContentClassName } from '../utils/route-layout';
+import { taskPeekBackground } from '../utils/task-peek';
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
@@ -32,7 +33,11 @@ const BREADCRUMBS: Record<string, string> = {
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const workspace = useWorkspaceStore((state) => state.workspace);
-  const breadcrumb = location.pathname.startsWith('/tasks/') ? '任务详情' : BREADCRUMBS[location.pathname] ?? '';
+  const backgroundLocation = taskPeekBackground(location.state);
+  const backgroundPath = backgroundLocation?.pathname === '/tasks/' ? '/tasks' : backgroundLocation?.pathname;
+  const breadcrumb = backgroundLocation
+    ? BREADCRUMBS[backgroundPath ?? ''] ?? ''
+    : location.pathname.startsWith('/tasks/') ? '任务详情' : BREADCRUMBS[location.pathname] ?? '';
   const isChat = isChatPath(location.pathname);
   const isTasksWorkspace = isTasksPath(location.pathname);
 
