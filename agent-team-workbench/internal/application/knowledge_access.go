@@ -35,6 +35,9 @@ func (s *Service) AttachKnowledgeRunAccess(run *domain.ExecutionRun, executionHo
 	if run == nil || run.Input == nil {
 		return nil
 	}
+	if len(executionHostIDs) > 1 {
+		return fmt.Errorf("%w: knowledge access accepts at most one execution host", domain.ErrValidation)
+	}
 	if strings.TrimSpace(s.KnowledgeEndpoint) == "" || strings.TrimSpace(s.KnowledgeCLIPath) == "" {
 		delete(run.Input, "knowledge_access")
 		stripKnowledgeAccessInstruction(run)
