@@ -1,4 +1,4 @@
-import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, MessagesSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { BookOpen, Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, MessagesSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
 import { motion } from 'motion/react';
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: '/task-chat', icon: MessagesSquare, label: '任务对话' },
   { to: '/chat', icon: MessageSquare, label: '对话' },
   { to: '/models', icon: Cpu, label: '模型' },
+  { to: '/knowledge', icon: BookOpen, label: '知识库' },
   { to: '/logs', icon: ScrollText, label: '日志' },
   { to: '/settings', icon: Settings, label: '设置' },
 ];
@@ -28,6 +29,7 @@ const BREADCRUMBS: Record<string, string> = {
   '/task-chat': '任务对话',
   '/chat': '对话',
   '/models': '模型',
+  '/knowledge': '知识库',
   '/logs': '日志',
   '/settings': '设置',
 };
