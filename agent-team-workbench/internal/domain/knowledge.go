@@ -21,6 +21,7 @@ const (
 	PrefixKnowledgeRepeal        = "kbrp_"
 	PrefixKnowledgeSubmission    = "kss_"
 	PrefixKnowledgeQuerySnapshot = "kbq_"
+	PrefixKnowledgeRunCapture    = "kbc_"
 	// PrefixKnowledgeQuery is kept as the semantic name used by query callers;
 	// persisted snapshots use the same identity namespace.
 	PrefixKnowledgeQuery = PrefixKnowledgeQuerySnapshot
@@ -441,6 +442,22 @@ type KnowledgeRepeal struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// KnowledgeRunCapture is the durable post-terminal handoff from an ordinary
+// Agent Run to the librarian. It is intentionally an inbox row rather than a
+// second Run/Lease state machine: the consumer later reads the original Run
+// evidence and records a normal KnowledgeSubmission.
+type KnowledgeRunCapture struct {
+	ID            string     `json:"id"`
+	WorkspaceID   string     `json:"workspace_id"`
+	RunID         string     `json:"run_id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ProcessedAt   *time.Time `json:"processed_at,omitempty"`
+	SubmissionID  string     `json:"submission_id,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	Version       int        `json:"version"`
+}
+
 // ValidateReadScope is shared by repository and engine callers.  The database
 // query must still repeat this predicate; this method prevents accidental
 // construction of an unscoped query object in application code.
@@ -724,6 +741,25 @@ func (r *KnowledgeRepeal) Validate() error {
 	}
 	if strings.TrimSpace(r.WorkspaceID) == "" || r.CurrentVersion < 1 || strings.TrimSpace(r.Reason) == "" {
 		return fmt.Errorf("%w: incomplete knowledge repeal", ErrValidation)
+	}
+	return nil
+}
+
+func (c *KnowledgeRunCapture) Validate() error {
+	if c == nil {
+		return fmt.Errorf("%w: nil knowledge run capture", ErrValidation)
+	}
+	if err := validateTypedID("knowledge_run_capture.id", c.ID, PrefixKnowledgeRunCapture); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.WorkspaceID) == "" || strings.TrimSpace(c.RunID) == "" {
+		return fmt.Errorf("%w: knowledge run capture workspace_id and run_id are required", ErrValidation)
+	}
+	if c.CreatedAt.IsZero() || c.Version < 1 {
+		return fmt.Errorf("%w: knowledge run capture created_at and positive version are required", ErrValidation)
+	}
+	if c.ProcessedAt != nil && strings.TrimSpace(c.SubmissionID) == "" {
+		return fmt.Errorf("%w: processed knowledge run capture requires submission_id", ErrValidation)
 	}
 	return nil
 }

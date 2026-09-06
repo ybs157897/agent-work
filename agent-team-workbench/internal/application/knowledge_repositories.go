@@ -51,6 +51,14 @@ type KnowledgeRepo interface {
 	HasSubmissionForRun(ctx context.Context, workspaceID, agentID, runID string) (bool, error)
 	UpdateSubmissionStatus(ctx context.Context, submissionID string, status domain.KnowledgeSubmissionStatus, resultItemIDs, resultVersionIDs []string, errorMessage string, expectedVersion int) error
 
+	// Run captures are the durable post-terminal inbox. Pending rows are
+	// returned only when their retry backoff has elapsed; processing completion
+	// is idempotent by the immutable Run identity.
+	EnqueueRunCapture(ctx context.Context, workspaceID, runID string) error
+	ListPendingRunCaptures(ctx context.Context, limit int) ([]*domain.KnowledgeRunCapture, error)
+	CompleteRunCapture(ctx context.Context, runID, submissionID string) error
+	RecordRunCaptureError(ctx context.Context, runID, message string) error
+
 	// PublishVersion is a compare-and-swap over the item's current version.
 	// Application code authenticates the librarian/owner before calling it; the
 	// repository only enforces item/version identity and atomic visibility.
