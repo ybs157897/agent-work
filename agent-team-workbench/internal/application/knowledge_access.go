@@ -29,14 +29,11 @@ type knowledgeAccessFile struct {
 
 // AttachKnowledgeRunAccess runs before immutable Run.Input is inserted. The
 // endpoint and executable are deployment-owned; a remote execution host never
-// receives a local filesystem capability. The variadic host argument preserves
-// old embedders that did not yet pass an execution-host identity.
-func (s *Service) AttachKnowledgeRunAccess(run *domain.ExecutionRun, executionHostIDs ...string) error {
+// receives a local filesystem capability. An empty or unknown host fails
+// closed and receives no bridge.
+func (s *Service) AttachKnowledgeRunAccess(run *domain.ExecutionRun, executionHostID string) error {
 	if run == nil || run.Input == nil {
 		return nil
-	}
-	if len(executionHostIDs) > 1 {
-		return fmt.Errorf("%w: knowledge access accepts at most one execution host", domain.ErrValidation)
 	}
 	if strings.TrimSpace(s.KnowledgeEndpoint) == "" || strings.TrimSpace(s.KnowledgeCLIPath) == "" {
 		delete(run.Input, "knowledge_access")
@@ -48,11 +45,7 @@ func (s *Service) AttachKnowledgeRunAccess(run *domain.ExecutionRun, executionHo
 		stripKnowledgeAccessInstruction(run)
 		return nil
 	}
-	hostID := domain.LocalHostID
-	if len(executionHostIDs) > 0 && executionHostIDs[0] != "" {
-		hostID = executionHostIDs[0]
-	}
-	if hostID != domain.LocalHostID {
+	if executionHostID != domain.LocalHostID {
 		delete(run.Input, "knowledge_access")
 		stripKnowledgeAccessInstruction(run)
 		return nil

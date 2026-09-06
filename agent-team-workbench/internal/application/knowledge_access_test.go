@@ -117,11 +117,25 @@ func TestLibrarianNeverReceivesWorkerQueryCapability(t *testing.T) {
 	svc.KnowledgeEndpoint = "http://localhost"
 	svc.KnowledgeCLIPath = "/tmp/client"
 	run := &domain.ExecutionRun{Input: map[string]any{"instruction": "investigate", "knowledge_librarian": map[string]any{"job_id": "job"}}}
-	if err := svc.AttachKnowledgeRunAccess(run); err != nil {
+	if err := svc.AttachKnowledgeRunAccess(run, domain.LocalHostID); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := run.Input["knowledge_access"]; ok {
 		t.Fatal("recursive knowledge authority attached to librarian")
+	}
+}
+
+func TestEmptyHostDoesNotReceiveShellCapability(t *testing.T) {
+	svc := NewService(nil, nil, nil, nil)
+	svc.KnowledgeEndpoint = "http://localhost"
+	svc.KnowledgeCLIPath = "/tmp/client"
+	svc.KnowledgeAccessDir = t.TempDir()
+	run := &domain.ExecutionRun{ID: "run_empty_host", Input: map[string]any{"instruction": "task"}}
+	if err := svc.AttachKnowledgeRunAccess(run, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := run.Input["knowledge_access"]; ok {
+		t.Fatal("empty-host Run received local knowledge capability")
 	}
 }
 
