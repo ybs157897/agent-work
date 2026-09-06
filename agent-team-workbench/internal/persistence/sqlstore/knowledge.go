@@ -1507,6 +1507,9 @@ func (r *KnowledgeRepo) CreateQuerySnapshot(ctx context.Context, snapshot *domai
 			snapshot.CreatedAt = timeNow()
 		}
 		snapshot.Budget = snapshot.Budget.Normalize()
+		if snapshot.Scope == nil {
+			snapshot.Scope = domain.KnowledgeScope{}
+		}
 		if snapshot.Results == nil {
 			snapshot.Results = []domain.KnowledgeHit{}
 		}
@@ -1538,10 +1541,10 @@ func (r *KnowledgeRepo) CreateQuerySnapshot(ctx context.Context, snapshot *domai
 		}
 		_, err := r.store.execStmt(ctx, r.store.exec(ctx),
 			`INSERT INTO knowledge_query_snapshots(id, workspace_id, requester_agent_id, question,
-			 context, budget_json, index_revision, result_json, coverage_json, created_at)
-			 VALUES (?,?,?,?,?,?,?,?,?,?)`, snapshot.ID, snapshot.WorkspaceID,
+				context, scope_json, budget_json, index_revision, result_json, coverage_json, created_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?)`, snapshot.ID, snapshot.WorkspaceID,
 			snapshot.RequesterAgentID, snapshot.Question, snapshot.Context,
-			jsonText(snapshot.Budget), snapshot.IndexRevision, snapshot.ResultJSON,
+			jsonText(snapshot.Scope), jsonText(snapshot.Budget), snapshot.IndexRevision, snapshot.ResultJSON,
 			snapshot.CoverageJSON, timeParam(snapshot.CreatedAt))
 		return r.store.mapErr(err)
 	})
@@ -1552,17 +1555,20 @@ func (r *KnowledgeRepo) GetQuerySnapshot(ctx context.Context, workspaceID, reque
 		return nil, err
 	}
 	snapshot := &domain.KnowledgeQuerySnapshot{}
-	var budgetJSON, resultJSON, coverageJSON string
+	var budgetJSON, scopeJSON, resultJSON, coverageJSON string
 	var created scanTime
 	if err := r.store.queryRow(ctx, r.store.exec(ctx),
 		`SELECT id, workspace_id, requester_agent_id, question, context, budget_json,
-		 index_revision, result_json, coverage_json, created_at FROM knowledge_query_snapshots
-		 WHERE id=? AND workspace_id=? AND requester_agent_id=?`, snapshotID, workspaceID, requesterAgentID).
+			scope_json, index_revision, result_json, coverage_json, created_at FROM knowledge_query_snapshots
+			WHERE id=? AND workspace_id=? AND requester_agent_id=?`, snapshotID, workspaceID, requesterAgentID).
 		Scan(&snapshot.ID, &snapshot.WorkspaceID, &snapshot.RequesterAgentID, &snapshot.Question,
-			&snapshot.Context, &budgetJSON, &snapshot.IndexRevision, &resultJSON, &coverageJSON, &created); err != nil {
+			&snapshot.Context, &budgetJSON, &scopeJSON, &snapshot.IndexRevision, &resultJSON, &coverageJSON, &created); err != nil {
 		return nil, r.store.mapErr(err)
 	}
 	if err := json.Unmarshal([]byte(budgetJSON), &snapshot.Budget); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(scopeJSON), &snapshot.Scope); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(resultJSON), &snapshot.Results); err != nil {

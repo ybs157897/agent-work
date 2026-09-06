@@ -413,6 +413,7 @@ type KnowledgeQuerySnapshot struct {
 	RequesterAgentID string            `json:"requester_agent_id"`
 	Question         string            `json:"question"`
 	Context          string            `json:"context,omitempty"`
+	Scope            KnowledgeScope    `json:"scope,omitempty"`
 	Budget           KnowledgeBudget   `json:"budget"`
 	IndexRevision    int64             `json:"index_revision"`
 	Results          []KnowledgeHit    `json:"results"`

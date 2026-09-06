@@ -74,6 +74,11 @@ type CreateRunParams struct {
 	// an authority token: public CreateRun callers must not be able to claim the
 	// root control line by copying a map.
 	coordinatorAdmission *coordinatorRunAdmission
+	// knowledgeJobID/knowledgeTurnSeq are application-internal markers for the
+	// librarian Harness.  They are intentionally unexported so a public Run
+	// caller cannot claim ownership of a knowledge job.
+	knowledgeJobID   string
+	knowledgeTurnSeq int64
 }
 
 type coordinatorRunAdmission struct {
@@ -648,6 +653,17 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
 	r.Input["policy"] = orchestrator.PolicySnapshot(agent)
+	if p.knowledgeJobID != "" {
+		turnSeq := p.knowledgeTurnSeq
+		if turnSeq < 1 {
+			turnSeq = 1
+		}
+		r.Input["knowledge_librarian"] = map[string]any{
+			"job_id": p.knowledgeJobID, "turn_seq": turnSeq,
+			"schema_version": KnowledgeLibrarianSchemaVersion,
+			"schema_digest":  KnowledgeLibrarianSchemaDigest,
+		}
+	}
 	if p.CoordinatorContext != nil {
 		r.Input["task_coordinator"] = mapsCloneAny(p.CoordinatorContext)
 		r.Input["coordinator_prompt_version"] = domain.TaskCoordinatorPromptVersion
@@ -657,6 +673,9 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	if p.governanceContext != nil {
 		r.Input["governance"] = mapsCloneAny(p.governanceContext)
+	}
+	if err := s.AttachKnowledgeRunAccess(r, snapshot.ExecutionHostID); err != nil {
+		return nil, err
 	}
 	configDigest := orchestrator.ConfigDigest(r.Input)
 	// 会话指纹 = config digest ⊕ 执行上下文身份（RFC §4.8）：context 变化
@@ -1386,6 +1405,9 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		return err
 	}
 	evType := domain.EventRunStatusChanged
+	if err := s.enqueueKnowledgeRunCaptureLocked(ctx, r, wi); err != nil {
+		return err
+	}
 	switch to {
 	case domain.RunSucceeded:
 		evType = domain.EventRunCompleted
@@ -1496,6 +1518,9 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	if r != nil {
 		if r.Status.IsTerminal() {
 			s.dispatchedRuns.Delete(r.ID)
+			if err := s.CleanupKnowledgeRunAccess(context.WithoutCancel(ctx), r.ID); err != nil {
+				log.Printf("knowledge access: terminal cleanup for run %s failed: %v", r.ID, err)
+			}
 		}
 		s.notifier.Notify(r.WorkspaceID)
 	}
@@ -1508,7 +1533,7 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。自愈是决策点：输入证据
 	//（failure 家族/code）进 entered，触发与否与 heal_run_id 进 closed。
 	// maybeSelfHeal 只对 failed run 生效，调用与埋点都跟着这个生效区间走。
-	if r != nil && r.Status == domain.RunFailed && !isGovernedCoordinatorRun(r) {
+	if r != nil && r.Status == domain.RunFailed && !isGovernedCoordinatorRun(r) && !isKnowledgeLibrarianRun(r) {
 		s.journalSelfHealHook(ctx, j, r)
 	}
 	if r != nil {
@@ -1542,6 +1567,11 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 			pair("maybeSettleGovernanceTurnQuota", func() (bool, error) { return s.maybeSettleGovernanceTurnQuota(ctx, r) })
 			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
 			pair("maybeSettleDispatch", func() (bool, error) { return s.maybeSettleDispatch(ctx, r) })
+		}
+		if marker, librarian := knowledgeLibrarianMarker(r); librarian && r.Status.IsTerminal() && marker.JobID != "" {
+			s.journalPostHook(ctx, j, r.ID, "maybeAdvanceKnowledgeLibrarian", func() (bool, error) {
+				return s.maybeAdvanceKnowledgeLibrarian(ctx, r)
+			})
 		}
 	}
 	return nil
@@ -2175,6 +2205,23 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 	if run.Status != domain.RunReconnecting && run.Status != domain.RunLost {
 		return nil, fmt.Errorf("%w: only reconnecting/lost runs can resume", domain.ErrValidation)
 	}
+	if marker, librarian := knowledgeLibrarianMarker(run); librarian && run.Status == domain.RunLost {
+		job, jobErr := s.store.KnowledgeJobs().Get(ctx, marker.JobID)
+		if jobErr != nil {
+			return nil, jobErr
+		}
+		if job.CurrentRunID != run.ID {
+			return nil, fmt.Errorf("%w: lost librarian Run is no longer current", domain.ErrStateConflict)
+		}
+		if _, resumeErr := s.ResumeKnowledgeJob(ctx, marker.JobID); resumeErr != nil {
+			return nil, resumeErr
+		}
+		updatedJob, updatedErr := s.store.KnowledgeJobs().Get(ctx, marker.JobID)
+		if updatedErr != nil {
+			return nil, updatedErr
+		}
+		return s.store.Runs().Get(ctx, updatedJob.CurrentRunID)
+	}
 	// 能力协商：binding 未声明 resume=supported 则显式拒绝，不静默降级。
 	if run.RuntimeLabel != "" {
 		binding, err := s.store.Bindings().GetByLabel(ctx, run.WorkspaceID, run.RuntimeLabel)
@@ -2204,6 +2251,10 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 			ContextSourceSnapshotID: run.ContextSnapshotID,
 		}
 		p.OutputContract, _ = run.Input["output_contract"].(string)
+		if marker, ok := knowledgeLibrarianMarker(run); ok {
+			p.knowledgeJobID = marker.JobID
+			p.knowledgeTurnSeq = marker.TurnSeq + 1
+		}
 		if raw, ok := run.Input["acceptance_criteria"].([]any); ok {
 			for _, item := range raw {
 				if text, ok := item.(string); ok {

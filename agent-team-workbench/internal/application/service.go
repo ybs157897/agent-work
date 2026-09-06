@@ -48,6 +48,13 @@ type Service struct {
 	// 与 ModelResolver 同风格）；nil 时该步骤响亮失败（error=no_retriever），
 	// 绝不静默降级。
 	Knowledge knowledge.Retriever
+	// KnowledgeEndpoint and KnowledgeCLIPath explicitly enable a Run-bound
+	// shell bridge on deployments that have installed the client executable.
+	// KnowledgeAccessDir is a local-only 0700 directory containing per-Run 0600
+	// capability files; no token is copied into Run.Input or instructions.
+	KnowledgeEndpoint  string
+	KnowledgeCLIPath   string
+	KnowledgeAccessDir string
 	// agentConfigSyncIntentsEnabled gates the external-config bridge. Tests and
 	// embedders that do not mount an agents/ synchronizer keep the historical
 	// DB-only Agent update path; the control-plane enables this before serving.

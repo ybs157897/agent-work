@@ -4,7 +4,7 @@ info:
   version: 0.2.0
   description: |
     浏览器 ↔ Go Control Plane 协议（协议文档 §5）。
-    约定：/api/v1 前缀；资源 ID 带类型前缀（ws_/agent_/wi_/run_/approval_/artifact_）；
+    约定：/api/v1 前缀；资源 ID 带类型前缀（ws_/agent_/wi_/run_/approval_/artifact_/kb_/kbv_/kbs_/kbr_/kss_/kbj_）；
     JSON 字段 snake_case；写命令要求 Idempotency-Key；可变资源带 version/ETag；
     错误一律 application/problem+json。
 servers:
@@ -31,6 +31,8 @@ tags:
   - name: todos
   - name: handoffs
   - name: governance
+  - name: knowledge-librarian
+    description: 知识管理员 Agent 的 workspace 管理面与 Run-bound Harness 面
 
 paths:
   /me:
@@ -75,6 +77,460 @@ paths:
       operationId: getDashboard
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Dashboard" } } } }
+
+  /workspaces/{workspace_id}/knowledge/config:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeLibrarianConfig
+      summary: 读取 Workspace 的知识管理员配置
+      description: 未配置时返回 disabled、空 librarian_agent_id 和 version=0 的安全投影；不阻止读取共享知识。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfig" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [knowledge-librarian]
+      operationId: updateKnowledgeLibrarianConfig
+      summary: 选择已有 Agent 并更新 Enabled/AutoCollect
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfigPatch" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfig" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/items:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-librarian]
+      operationId: listKnowledgeItems
+      summary: 使用 keyset 分页列出当前可见的知识条目
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/KnowledgeStatus" }
+          description: 默认 effective；candidate/draft 等状态需要管理权限。
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, maxLength: 512 }
+          description: 空值不加项目过滤；非空使用 key=value 或 JSON object。
+        - name: kind
+          in: query
+          required: false
+          schema: { type: string }
+          description: 按知识类型筛选。
+        - name: visibility
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/KnowledgeVisibility" }
+          description: 按 private/workspace 筛选。
+        - name: agent_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: 管理员查看某 Agent 的私有视图；不是由调用者自填的所有权声明。
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+          description: 单页条目数；服务端使用 id 游标分页。
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/items/{item_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeItem
+      summary: 读取条目当前版本和来源证据
+      parameters:
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/items/{item_id}/versions:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: listKnowledgeVersions
+      summary: 列出条目的不可变版本链
+      parameters:
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeVersionList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/items/{item_id}/versions/{version}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+      - { $ref: "#/components/parameters/KnowledgeVersionSelector" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeVersion
+      summary: 读取指定数字版本或版本 ID
+      parameters:
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/items/{item_id}/relations:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: listKnowledgeRelations
+      summary: 读取条目的正向、反向或双向关系
+      parameters:
+        - name: direction
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/KnowledgeRelationDirection" }
+          description: 默认 both。
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeRelationList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/items/{item_id}/repeal:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+    post:
+      tags: [knowledge-librarian]
+      operationId: repealKnowledgeItem
+      summary: 废止一个知识条目并保留历史版本
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeRepealRequest" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItem" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/submissions:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-librarian]
+      operationId: listKnowledgeSubmissions
+      summary: 列出候选提交收件箱（可能被截断）
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/KnowledgeSubmissionStatus" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmissionList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [knowledge-librarian]
+      operationId: submitKnowledgeCandidate
+      summary: 提交一批带来源的候选知识变化
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeSubmitCandidateRequest" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeSubmission
+      summary: 读取一个候选提交及其原始请求
+      parameters:
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}/curate:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
+    post:
+      tags: [knowledge-librarian]
+      operationId: curateKnowledgeSubmission
+      summary: 启动一次候选整理作业
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}/publish:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
+    post:
+      tags: [knowledge-librarian]
+      operationId: publishKnowledgeSubmission
+      summary: 发布已通过整理门的候选变化
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/inquiries:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [knowledge-librarian]
+      operationId: createKnowledgeInquiry
+      summary: 创建一次有界知识调查作业
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeInquiryRequest" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /workspaces/{workspace_id}/knowledge/jobs:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-librarian]
+      operationId: listKnowledgeJobs
+      summary: 列出当前可见的知识调查和整理作业（可能被截断）
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: "#/components/schemas/KnowledgeJobStatus" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJobList" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/jobs/{job_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeJobId" }
+    get:
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeJob
+      summary: 读取调查作业进度、覆盖和结果
+      parameters:
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /workspaces/{workspace_id}/knowledge/jobs/{job_id}/cancel:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { $ref: "#/components/parameters/KnowledgeJobId" }
+    post:
+      tags: [knowledge-librarian]
+      operationId: cancelKnowledgeJob
+      summary: 取消一项尚未终态的知识作业
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKeyOptional" }
+        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /knowledge-agent/runs/{run_id}/items/{item_id}:
+    parameters:
+      - { $ref: "#/components/parameters/RunId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+    get:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: readKnowledgeItemFromRun
+      summary: Run-bound 读取条目当前版本
+      description: 身份由活动 Run 和 Bearer token 推导，调用方不能用 query/body 改写 workspace 或 Agent 身份。
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /knowledge-agent/runs/{run_id}/items/{item_id}/versions/{version}:
+    parameters:
+      - { $ref: "#/components/parameters/RunId" }
+      - { $ref: "#/components/parameters/KnowledgeItemId" }
+      - { $ref: "#/components/parameters/KnowledgeVersionSelector" }
+    get:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: readKnowledgeVersionFromRun
+      summary: Run-bound 读取固定数字版本或版本 ID
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /knowledge-agent/runs/{run_id}/submissions:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: submitKnowledgeCandidateFromRun
+      summary: Run-bound 提交任务后的知识候选
+      description: server 从活动 Run 覆盖 workspace、agent、run 和 work_item 身份；请求中的同名字段会被覆盖。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeAgentSubmitCandidateRequest" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /knowledge-agent/runs/{run_id}/inquiries:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: createKnowledgeInquiryFromRun
+      summary: Run-bound 创建知识调查
+      description: requester、workspace、source_run 和 agent 由活动 Run 固定；作业取消跟随该 Run 的控制面。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeRunInquiryRequest" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /knowledge-agent/runs/{run_id}/jobs/{job_id}:
+    parameters:
+      - { $ref: "#/components/parameters/RunId" }
+      - { $ref: "#/components/parameters/KnowledgeJobId" }
+    get:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: getKnowledgeJobFromRun
+      summary: Run-bound 读取调查作业
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /knowledge-agent/runs/{run_id}/jobs/{job_id}/cancel:
+    parameters:
+      - { $ref: "#/components/parameters/RunId" }
+      - { $ref: "#/components/parameters/KnowledgeJobId" }
+    post:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: cancelKnowledgeJobFromRun
+      summary: Run-bound 取消调查作业
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /workspaces/{workspace_id}/events:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -1669,6 +2125,11 @@ components:
       type: apiKey
       in: cookie
       name: session
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: run-scoped-knowledge-token
+      description: 仅由活动 Run 注入的知识访问凭据；Run 终态后立即失效
 
   parameters:
     WorkspaceId: { name: workspace_id, in: path, required: true, schema: { type: string } }
@@ -1687,6 +2148,33 @@ components:
     ModelId: { name: model_id, in: path, required: true, schema: { type: string } }
     ExecutionHostId: { name: host_id, in: path, required: true, schema: { type: string } }
     WorkspaceLocationId: { name: location_id, in: path, required: true, schema: { type: string } }
+    KnowledgeItemId:
+      name: item_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^kb_" }
+    KnowledgeVersionSelector:
+      name: version
+      in: path
+      required: true
+      schema: { type: string, pattern: "^(kbv_|[1-9][0-9]*$)" }
+      description: 数字版本或 kbv_ 前缀的固定版本 ID
+    KnowledgeSubmissionId:
+      name: submission_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^kss_" }
+    KnowledgeJobId:
+      name: job_id
+      in: path
+      required: true
+      schema: { type: string, pattern: "^kbj_" }
+    KnowledgeAgentView:
+      name: agent_id
+      in: query
+      required: false
+      schema: { type: string }
+      description: 仅管理身份可指定 Agent 私有视图；不授予额外权限，缺省为共享或管理员默认视图。
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -1715,8 +2203,647 @@ components:
     CursorExpired:
       description: SSE cursor 已过保留窗口；客户端需重新 bootstrap
       content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    Unauthorized:
+      description: 缺少或无效的会话凭据，或 Run-bound token 缺失、无效、已过期
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    Forbidden:
+      description: 当前身份没有该知识资源或管理动作的权限
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    NotFound:
+      description: 资源不在当前 Workspace、Agent 或 Run-bound 可见范围
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    BadRequest:
+      description: 请求体、Idempotency-Key 或 query 参数格式不合法
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
 
   schemas:
+    KnowledgeStatus:
+      type: string
+      enum: [candidate, draft, effective, superseded, repealed]
+
+    KnowledgeVisibility:
+      type: string
+      enum: [private, workspace]
+
+    KnowledgeSourceKind:
+      type: string
+      enum: [run, artifact, work_item, document, code, test, user, agent]
+
+    KnowledgeRelationKind:
+      type: string
+      enum: [related_to, depends_on, impacts, triggers, calls, subscribes_to, shares_state, constrained_by, conflicts_with, supersedes]
+
+    KnowledgeRelationDirection:
+      type: string
+      enum: [both, out, in]
+
+    KnowledgeSubmissionStatus:
+      type: string
+      enum: [received, processing, accepted, merged, rejected, needs_review]
+
+    KnowledgeCoverageStatus:
+      type: string
+      enum: [complete, partial, missing, conflict]
+
+    KnowledgeJobMode:
+      type: string
+      enum: [inquiry, curation]
+
+    KnowledgeJobStatus:
+      type: string
+      enum: [queued, running, waiting_retry, completed, incomplete, conflict, cancelled, failed]
+
+    KnowledgeScope:
+      type: object
+      description: 适用范围元数据；通常包含 project/repository/branch/feature/condition 等键。
+      additionalProperties: true
+
+    KnowledgeLibrarianConfig:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, librarian_agent_id, enabled, auto_collect, version, created_at, updated_at]
+      properties:
+        workspace_id: { type: string }
+        librarian_agent_id: { type: string }
+        enabled: { type: boolean }
+        auto_collect: { type: boolean }
+        version: { type: integer, minimum: 0 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    KnowledgeLibrarianConfigPatch:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        librarian_agent_id: { type: string, nullable: true }
+        enabled: { type: boolean }
+        auto_collect: { type: boolean }
+        expected_version: { type: integer, minimum: 0 }
+
+    KnowledgeRepealRequest:
+      type: object
+      additionalProperties: false
+      description: 使用当前条目版本做 CAS 废止；废止后默认检索移除该条目，历史版本仍可读取。
+      required: [expected_version, reason]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1, description: 当前 KnowledgeItem.current_version。 }
+        reason: { type: string, minLength: 1, maxLength: 4000 }
+
+    KnowledgeItem:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, visibility, kind, title, summary, current_version, status, version, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^kb_" }
+        workspace_id: { type: string }
+        owner_agent_id: { type: string }
+        visibility: { $ref: "#/components/schemas/KnowledgeVisibility" }
+        kind: { type: string, minLength: 1 }
+        title: { type: string, minLength: 1 }
+        summary: { type: string }
+        tags: { type: array, items: { type: string } }
+        aliases: { type: array, items: { type: string } }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        current_version_id: { type: string, pattern: "^kbv_" }
+        current_version: { type: integer, format: int64, minimum: 0 }
+        status: { $ref: "#/components/schemas/KnowledgeStatus" }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    KnowledgeVersion:
+      type: object
+      additionalProperties: false
+      required: [id, item_id, version, base_version, status, kind, title, body_markdown, content_digest, created_by_agent_id, created_at]
+      properties:
+        id: { type: string, pattern: "^kbv_" }
+        item_id: { type: string, pattern: "^kb_" }
+        version: { type: integer, format: int64, minimum: 1 }
+        base_version: { type: integer, format: int64, minimum: 0 }
+        status: { $ref: "#/components/schemas/KnowledgeStatus" }
+        kind: { type: string, minLength: 1 }
+        title: { type: string, minLength: 1 }
+        summary: { type: string }
+        body_markdown: { type: string, minLength: 1 }
+        tags: { type: array, items: { type: string } }
+        aliases: { type: array, items: { type: string } }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        metadata: { type: object, additionalProperties: true }
+        content_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        created_by_agent_id: { type: string }
+        created_by_run_id: { type: string }
+        created_by_work_item_id: { type: string }
+        supersedes_version_id: { type: string, pattern: "^kbv_" }
+        published_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    KnowledgeSource:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, submitted_by_agent_id, kind, ref, created_at]
+      properties:
+        id: { type: string, pattern: "^kbs_" }
+        workspace_id: { type: string }
+        submitted_by_agent_id: { type: string }
+        kind: { $ref: "#/components/schemas/KnowledgeSourceKind" }
+        ref: { type: string, minLength: 1 }
+        locator: { type: string }
+        excerpt: { type: string }
+        digest: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    KnowledgeRelation:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, source_version_id, from_item_id, to_item_id, kind, created_at]
+      properties:
+        id: { type: string, pattern: "^kbr_" }
+        workspace_id: { type: string }
+        source_version_id: { type: string, pattern: "^kbv_" }
+        from_item_id: { type: string, pattern: "^kb_" }
+        to_item_id: { type: string, pattern: "^kb_" }
+        kind: { $ref: "#/components/schemas/KnowledgeRelationKind" }
+        condition: { type: string }
+        rationale: { type: string }
+        source_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+        created_at: { type: string, format: date-time }
+
+    KnowledgeItemBundle:
+      type: object
+      additionalProperties: false
+      required: [item, version, sources]
+      properties:
+        item: { $ref: "#/components/schemas/KnowledgeItem" }
+        version: { $ref: "#/components/schemas/KnowledgeVersion" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSource" }
+
+    KnowledgeItemList:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeItem" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: 下一页的 keyset 游标；为 null 表示当前可见结果已全部返回。
+
+    KnowledgeVersionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeVersion" }
+
+    KnowledgeRelationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeRelation" }
+
+    KnowledgeSourceInput:
+      type: object
+      additionalProperties: false
+      required: [kind, ref]
+      properties:
+        kind: { $ref: "#/components/schemas/KnowledgeSourceKind" }
+        ref: { type: string, minLength: 1 }
+        locator: { type: string }
+        excerpt: { type: string }
+        digest: { type: string }
+        metadata: { type: object, additionalProperties: true }
+        role: { type: string }
+
+    KnowledgeRelationInput:
+      type: object
+      additionalProperties: false
+      required: [to_item_id, kind]
+      properties:
+        from_item_id: { type: string, pattern: "^kb_" }
+        to_item_id: { type: string, pattern: "^kb_" }
+        kind: { $ref: "#/components/schemas/KnowledgeRelationKind" }
+        condition: { type: string }
+        rationale: { type: string }
+        source_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+
+    KnowledgeChange:
+      type: object
+      additionalProperties: false
+      required: [base_version, title, body, kind]
+      properties:
+        item_id: { type: string, pattern: "^kb_" }
+        base_version: { type: integer, format: int64, minimum: 0 }
+        owner_agent_id: { type: string }
+        visibility: { $ref: "#/components/schemas/KnowledgeVisibility" }
+        title: { type: string, minLength: 1 }
+        body: { type: string, minLength: 1 }
+        kind: { type: string, minLength: 1 }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        summary: { type: string }
+        tags: { type: array, items: { type: string } }
+        aliases: { type: array, items: { type: string } }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSourceInput" }
+        relations:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeRelationInput" }
+
+    KnowledgeSubmitCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [agent_id, client_key]
+      description: workspace_id 由路径覆盖；changes 非空与 no_change=true 二选一。
+      properties:
+        agent_id: { type: string, pattern: "^agent_" }
+        run_id: { type: string }
+        work_item_id: { type: string }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+        changes:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/KnowledgeChange" }
+        no_change: { type: boolean }
+
+    KnowledgeAgentSubmitCandidateRequest:
+      type: object
+      additionalProperties: false
+      required: [client_key]
+      description: Run-bound 请求的 workspace/agent/run/work_item 身份由 Bearer token 绑定的活动 Run 覆盖。
+      properties:
+        workspace_id: { type: string, description: 忽略；由活动 Run 覆盖 }
+        agent_id: { type: string, description: 忽略；由活动 Run 覆盖 }
+        run_id: { type: string, description: 忽略；由活动 Run 覆盖 }
+        work_item_id: { type: string, description: 忽略；由活动 Run 覆盖 }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+        changes:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/KnowledgeChange" }
+        no_change: { type: boolean }
+
+    KnowledgeSubmissionRequest:
+      type: object
+      additionalProperties: false
+      required: [workspace_id, agent_id, client_key]
+      properties:
+        workspace_id: { type: string }
+        agent_id: { type: string }
+        run_id: { type: string }
+        work_item_id: { type: string }
+        client_key: { type: string }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeChange" }
+        no_change: { type: boolean }
+
+    KnowledgeSubmission:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, agent_id, client_key, request, request_digest, status, version, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^kss_" }
+        workspace_id: { type: string }
+        agent_id: { type: string }
+        run_id: { type: string }
+        work_item_id: { type: string }
+        client_key: { type: string }
+        request: { $ref: "#/components/schemas/KnowledgeSubmissionRequest" }
+        request_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        status: { $ref: "#/components/schemas/KnowledgeSubmissionStatus" }
+        result_item_ids:
+          type: array
+          items: { type: string, pattern: "^kb_" }
+        result_version_ids:
+          type: array
+          items: { type: string, pattern: "^kbv_" }
+        error_message: { type: string }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    KnowledgeSubmissionList:
+      type: object
+      additionalProperties: false
+      required: [items, truncated]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSubmission" }
+        truncated:
+          type: boolean
+          description: true 表示服务端达到列表上限，items 不是完整收件箱。
+
+    KnowledgeBudget:
+      type: object
+      additionalProperties: false
+      required: [max_results, max_depth, max_nodes, max_bytes, max_searches, max_relations]
+      properties:
+        max_results: { type: integer, minimum: 0 }
+        max_depth: { type: integer, minimum: 0 }
+        max_nodes: { type: integer, minimum: 0 }
+        max_bytes: { type: integer, format: int64, minimum: 0 }
+        max_searches: { type: integer, minimum: 0 }
+        max_relations: { type: integer, minimum: 0 }
+
+    KnowledgeJobBudget:
+      type: object
+      additionalProperties: false
+      required: [max_results, max_depth, max_nodes, max_bytes, max_searches, max_relations, max_turns, max_input_tokens, max_output_tokens, max_duration_seconds]
+      properties:
+        max_results: { type: integer, minimum: 0 }
+        max_depth: { type: integer, minimum: 0 }
+        max_nodes: { type: integer, minimum: 0 }
+        max_bytes: { type: integer, format: int64, minimum: 0 }
+        max_searches: { type: integer, minimum: 0 }
+        max_relations: { type: integer, minimum: 0 }
+        max_turns: { type: integer, minimum: 0 }
+        max_input_tokens: { type: integer, format: int64, minimum: 0 }
+        max_output_tokens: { type: integer, format: int64, minimum: 0 }
+        max_duration_seconds: { type: integer, minimum: 0 }
+
+    KnowledgeJobUsage:
+      type: object
+      additionalProperties: false
+      required: [turns, searches, reads, relations, bytes, input_tokens, output_tokens]
+      properties:
+        turns: { type: integer, minimum: 0 }
+        searches: { type: integer, minimum: 0 }
+        reads: { type: integer, minimum: 0 }
+        relations: { type: integer, minimum: 0 }
+        bytes: { type: integer, format: int64, minimum: 0 }
+        input_tokens: { type: integer, format: int64, minimum: 0 }
+        output_tokens: { type: integer, format: int64, minimum: 0 }
+
+    KnowledgeCoverageEntry:
+      type: object
+      additionalProperties: false
+      required: [subject, status]
+      properties:
+        subject: { type: string, minLength: 1 }
+        status: { $ref: "#/components/schemas/KnowledgeCoverageStatus" }
+        evidence_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+        related_item_ids:
+          type: array
+          items: { type: string, pattern: "^kb_" }
+        missing:
+          type: array
+          items: { type: string }
+        note: { type: string }
+
+    KnowledgeCoverage:
+      type: object
+      additionalProperties: false
+      required: [status, entries, visited_nodes, visited_relations, truncated, budget]
+      properties:
+        status: { $ref: "#/components/schemas/KnowledgeCoverageStatus" }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeCoverageEntry" }
+        visited_nodes: { type: integer, minimum: 0 }
+        visited_relations: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        budget: { $ref: "#/components/schemas/KnowledgeBudget" }
+
+    KnowledgeJobRequiredRelation:
+      type: object
+      additionalProperties: false
+      required: [id, from_item_id, to_item_id, kind]
+      properties:
+        id: { type: string, pattern: "^kbr_" }
+        source_version_id: { type: string, pattern: "^kbv_" }
+        from_item_id: { type: string, pattern: "^kb_" }
+        to_item_id: { type: string, pattern: "^kb_" }
+        kind: { $ref: "#/components/schemas/KnowledgeRelationKind" }
+        source_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+
+    KnowledgeJobFrontier:
+      type: object
+      additionalProperties: false
+      required: [subject, depth]
+      properties:
+        subject: { type: string }
+        depth: { type: integer, minimum: 0 }
+        kind: { type: string }
+        reason: { type: string }
+
+    KnowledgeHit:
+      type: object
+      additionalProperties: false
+      required: [item, version]
+      properties:
+        item: { $ref: "#/components/schemas/KnowledgeItem" }
+        version: { $ref: "#/components/schemas/KnowledgeVersion" }
+        score: { type: number, format: double }
+        snippet: { type: string }
+        relations:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeRelation" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSource" }
+
+    KnowledgeReadItem:
+      type: object
+      additionalProperties: false
+      required: [item]
+      properties:
+        item: { $ref: "#/components/schemas/KnowledgeItem" }
+        version: { $ref: "#/components/schemas/KnowledgeVersion" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSource" }
+
+    KnowledgeReadVersion:
+      type: object
+      additionalProperties: false
+      required: [version, sources]
+      properties:
+        version: { $ref: "#/components/schemas/KnowledgeVersion" }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeSource" }
+
+    KnowledgeResultRelation:
+      type: object
+      additionalProperties: false
+      required: [to_item_id, kind]
+      properties:
+        id: { type: string, pattern: "^kbr_" }
+        workspace_id: { type: string }
+        source_version_id: { type: string, pattern: "^kbv_" }
+        from_item_id: { type: string, pattern: "^kb_" }
+        to_item_id: { type: string, pattern: "^kb_" }
+        kind: { $ref: "#/components/schemas/KnowledgeRelationKind" }
+        condition: { type: string }
+        rationale: { type: string }
+        source_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+        created_at: { type: string, format: date-time }
+
+    KnowledgeCitation:
+      type: object
+      additionalProperties: false
+      properties:
+        item_id: { type: string, pattern: "^kb_" }
+        version_id: { type: string, pattern: "^kbv_" }
+        source_id: { type: string, pattern: "^kbs_" }
+        locator: { type: string }
+        excerpt: { type: string }
+
+    KnowledgeJobResult:
+      type: object
+      additionalProperties: false
+      description: 当前调查动作或终态知识包；未开始/仅完成 Run 记账时可能只含 _accounted_run_ids。
+      properties:
+        action: { type: string, enum: [search, read, relations, finish] }
+        status: { $ref: "#/components/schemas/KnowledgeCoverageStatus" }
+        answer: { type: string }
+        summary: { type: string }
+        count: { type: integer, minimum: 0 }
+        hits:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeHit" }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeReadItem" }
+        versions:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeReadVersion" }
+        coverage:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeCoverageEntry" }
+        evidence_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+        citations:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeCitation" }
+        relations:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeResultRelation" }
+        gaps:
+          type: array
+          items: { type: string }
+        conflicts:
+          type: array
+          items: { type: string }
+        revised_changes:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeChange" }
+        no_change: { type: boolean }
+        submission_id: { type: string, pattern: "^kss_" }
+        _accounted_run_ids:
+          type: array
+          items: { type: string }
+
+    KnowledgeJob:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, requesting_agent_id, agent_profile_id, work_item_id, mode, status, question, budget, used, coverage, turn_seq, retry_count, repair_attempt, client_key, version, created_at, updated_at]
+      properties:
+        id: { type: string, pattern: "^kbj_" }
+        workspace_id: { type: string }
+        requesting_agent_id: { type: string }
+        source_run_id: { type: string }
+        submission_id: { type: string, pattern: "^kss_" }
+        agent_profile_id: { type: string }
+        work_item_id: { type: string }
+        current_run_id: { type: string }
+        mode: { $ref: "#/components/schemas/KnowledgeJobMode" }
+        status: { $ref: "#/components/schemas/KnowledgeJobStatus" }
+        question: { type: string, minLength: 1 }
+        context: { type: string }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        budget: { $ref: "#/components/schemas/KnowledgeJobBudget" }
+        used: { $ref: "#/components/schemas/KnowledgeJobUsage" }
+        coverage: { $ref: "#/components/schemas/KnowledgeCoverage" }
+        evidence_ids:
+          type: array
+          items: { type: string, pattern: "^kbs_" }
+        visited_version_ids:
+          type: array
+          items: { type: string, pattern: "^kbv_" }
+        required_item_ids:
+          type: array
+          items: { type: string, pattern: "^kb_" }
+        required_relations:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeJobRequiredRelation" }
+        frontier:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeJobFrontier" }
+        observations:
+          type: array
+          items: { type: string }
+        result: { $ref: "#/components/schemas/KnowledgeJobResult" }
+        turn_seq: { type: integer, format: int64, minimum: 0 }
+        retry_count: { type: integer, minimum: 0 }
+        repair_attempt: { type: integer, minimum: 0 }
+        next_action_at: { type: string, format: date-time }
+        last_decision_digest: { type: string }
+        last_error: { type: string }
+        client_key: { type: string, minLength: 1 }
+        version: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+
+    KnowledgeJobList:
+      type: object
+      additionalProperties: false
+      required: [items, truncated]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/KnowledgeJob" }
+        truncated:
+          type: boolean
+          description: true 表示服务端达到列表上限，items 不是完整作业列表。
+
+    KnowledgeInquiryRequest:
+      type: object
+      additionalProperties: false
+      required: [question]
+      properties:
+        question: { type: string, minLength: 1, maxLength: 20000 }
+        context: { type: string, maxLength: 20000 }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        budget: { $ref: "#/components/schemas/KnowledgeJobBudget" }
+        client_key: { type: string, maxLength: 256 }
+
+    KnowledgeRunInquiryRequest:
+      type: object
+      additionalProperties: false
+      required: [question, client_key]
+      description: Run-bound 调查请求；身份由活动 Run 绑定，client_key 用于恢复和去重。
+      properties:
+        question: { type: string, minLength: 1, maxLength: 20000 }
+        context: { type: string, maxLength: 20000 }
+        scope: { $ref: "#/components/schemas/KnowledgeScope" }
+        budget: { $ref: "#/components/schemas/KnowledgeJobBudget" }
+        client_key: { type: string, minLength: 1, maxLength: 256 }
+
     Problem:
       type: object
       required: [type, title, status]

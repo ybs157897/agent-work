@@ -121,6 +121,7 @@ type Store struct {
 	dispatches             *DispatchRepo
 	decisions              *DecisionRepo
 	search                 *SearchRepo
+	knowledge              *KnowledgeRepo
 	coordinators           *TaskCoordinatorRepo
 	goals                  *GoalRepo
 	todos                  *TodoRepo
@@ -131,6 +132,7 @@ type Store struct {
 	validationResults      *ValidationResultRepo
 	deliveryBriefSnapshots *DeliveryBriefSnapshotRepo
 	quotaGapResolutions    *QuotaGapResolutionRepo
+	knowledgeJobs          *KnowledgeJobRepo
 	// Execution context 四仓储（任务控制面 RFC §4；实现在 execution_contexts.go）。
 	execHosts    application.ExecutionHostRepo
 	locations    application.WorkspaceLocationRepo
@@ -163,6 +165,7 @@ func New(db *sql.DB) *Store {
 	s.dispatches = &DispatchRepo{store: s}
 	s.decisions = &DecisionRepo{store: s}
 	s.search = &SearchRepo{store: s}
+	s.knowledge = &KnowledgeRepo{store: s}
 	s.coordinators = &TaskCoordinatorRepo{store: s}
 	s.goals = &GoalRepo{store: s}
 	s.todos = &TodoRepo{store: s}
@@ -173,6 +176,7 @@ func New(db *sql.DB) *Store {
 	s.validationResults = &ValidationResultRepo{store: s}
 	s.deliveryBriefSnapshots = &DeliveryBriefSnapshotRepo{store: s}
 	s.quotaGapResolutions = &QuotaGapResolutionRepo{store: s}
+	s.knowledgeJobs = &KnowledgeJobRepo{store: s}
 	s.execHosts = &ExecutionHostRepo{store: s}
 	s.locations = &WorkspaceLocationRepo{store: s}
 	s.wiContexts = &WorkItemContextRepo{store: s}
@@ -200,6 +204,7 @@ func (s *Store) ApprovalGrants() application.ApprovalGrantRepo     { return s.gr
 func (s *Store) Dispatches() application.DispatchRepo              { return s.dispatches }
 func (s *Store) DecisionEntries() application.DecisionRepo         { return s.decisions }
 func (s *Store) Search() application.SearchRepo                    { return s.search }
+func (s *Store) Knowledge() application.KnowledgeRepo              { return s.knowledge }
 func (s *Store) TaskCoordinators() application.TaskCoordinatorRepo { return s.coordinators }
 func (s *Store) Goals() application.GoalRepo                       { return s.goals }
 func (s *Store) Todos() application.TodoRepo                       { return s.todos }
@@ -216,6 +221,8 @@ func (s *Store) DeliveryBriefSnapshots() application.DeliveryBriefSnapshotRepo {
 func (s *Store) QuotaGapResolutions() application.QuotaGapResolutionRepo {
 	return s.quotaGapResolutions
 }
+
+func (s *Store) KnowledgeJobs() application.KnowledgeJobRepo { return s.knowledgeJobs }
 
 // Execution context accessor（实现在 execution_contexts.go）。
 func (s *Store) ExecutionHosts() application.ExecutionHostRepo         { return s.execHosts }

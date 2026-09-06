@@ -105,6 +105,7 @@ func (s *Server) guard(perm string, next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	s.registerKnowledgeRoutes(mux)
 
 	mux.HandleFunc("GET /api/v1/me", s.guard(security.PermRead, s.handleMe))
 	// /health 与 /runtimes/dsh/catalog 在 openapi 中声明为公开端点（security: []），不挂守卫。

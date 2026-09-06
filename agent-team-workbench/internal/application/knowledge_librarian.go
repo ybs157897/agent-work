@@ -642,6 +642,9 @@ func (s *Service) SubmitKnowledgeCandidate(ctx context.Context, req domain.Knowl
 		ClientKey: req.ClientKey, Request: req, Status: domain.KnowledgeSubmissionReceived,
 		Version: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
+	if req.NoChange {
+		submission.Status = domain.KnowledgeSubmissionMerged
+	}
 	_, result, err := s.store.Knowledge().SubmitCandidate(ctx, submission)
 	if err != nil {
 		return nil, err
