@@ -868,6 +868,9 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 			if originErr != nil {
 				return originErr
 			}
+			if originErr := validateKnowledgeCurationOrigin(job, origin); originErr != nil {
+				return originErr
+			}
 			source, err = s.store.Knowledge().GetSource(ctx, job.WorkspaceID, origin.AgentID, id)
 			if err != nil {
 				return fmt.Errorf("%w: curation evidence %s is outside authorized scope", domain.ErrNotFound, id)
@@ -884,6 +887,9 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 	seeded := make([]domain.KnowledgeSourceInput, 0)
 	if job.SubmissionID != "" {
 		if origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID); err == nil {
+			if originErr := validateKnowledgeCurationOrigin(job, origin); originErr != nil {
+				return originErr
+			}
 			for _, originalChange := range origin.Request.Changes {
 				seeded = append(seeded, originalChange.Sources...)
 			}
@@ -931,6 +937,14 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 				return fmt.Errorf("%w: curation change %d source %q was not an authorized exact evidence match", domain.ErrValidation, i, source.Ref)
 			}
 		}
+	}
+	return nil
+}
+
+func validateKnowledgeCurationOrigin(job *domain.KnowledgeJob, origin *domain.KnowledgeSubmission) error {
+	if job == nil || origin == nil || origin.WorkspaceID != job.WorkspaceID || origin.AgentID == "" ||
+		origin.Request.WorkspaceID != job.WorkspaceID || origin.Request.AgentID != origin.AgentID {
+		return fmt.Errorf("%w: curation origin submission identity is inconsistent", domain.ErrValidation)
 	}
 	return nil
 }
