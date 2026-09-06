@@ -251,6 +251,43 @@ func TestKnowledgePrivateScopeAndVersionCAS(t *testing.T) {
 	}
 }
 
+func TestKnowledgeRelationsDoNotRevealPrivateEndpoint(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	public := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityWorkspace, "公开功能", nil)
+	private := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityPrivate, "私有实现", nil)
+	for _, item := range []*domain.KnowledgeItem{public, private} {
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publicVersion := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), public.ID, alpha.ID, "公开功能", "public", 0)
+	privateVersion := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), private.ID, alpha.ID, "私有实现", "private", 0)
+	if err := store.Knowledge().CreateVersionBundle(ctx, publicVersion, nil, []*domain.KnowledgeRelation{{
+		ID: domain.NewID(domain.PrefixKnowledgeRelation), WorkspaceID: ws.ID, SourceVersionID: publicVersion.ID,
+		FromItemID: public.ID, ToItemID: private.ID, Kind: domain.KnowledgeRelationDependsOn,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().CreateVersion(ctx, privateVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, public.ID, publicVersion.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, private.ID, privateVersion.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if relations, err := store.Knowledge().ListRelations(ctx, ws.ID, beta.ID, public.ID, domain.KnowledgeRelationBoth, 10); err != nil || len(relations) != 0 {
+		t.Fatalf("private endpoint relation leaked to beta: %+v err=%v", relations, err)
+	}
+	if relations, err := store.Knowledge().ListRelations(ctx, ws.ID, alpha.ID, public.ID, domain.KnowledgeRelationBoth, 10); err != nil || len(relations) != 1 || relations[0].ToItemID != private.ID {
+		t.Fatalf("owner could not inspect private relation: %+v err=%v", relations, err)
+	}
+}
+
 func TestKnowledgeSubmissionIdempotencyAndImmutableVersion(t *testing.T) {
 	db, store, ws, alpha, _ := knowledgeTestDB(t)
 	ctx := context.Background()
