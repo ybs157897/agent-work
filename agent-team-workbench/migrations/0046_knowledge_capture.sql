@@ -40,7 +40,6 @@ END;
 CREATE TRIGGER knowledge_run_captures_processed_shape_insert
 BEFORE INSERT ON knowledge_run_captures
 WHEN (NEW.processed_at IS NULL AND NEW.submission_id IS NOT NULL)
-   OR (NEW.processed_at IS NOT NULL AND NEW.submission_id IS NULL)
 BEGIN
     SELECT RAISE(ABORT, 'invalid knowledge capture processed shape');
 END;
@@ -48,7 +47,6 @@ END;
 CREATE TRIGGER knowledge_run_captures_processed_shape_update
 BEFORE UPDATE OF processed_at, submission_id ON knowledge_run_captures
 WHEN (NEW.processed_at IS NULL AND NEW.submission_id IS NOT NULL)
-   OR (NEW.processed_at IS NOT NULL AND NEW.submission_id IS NULL)
 BEGIN
     SELECT RAISE(ABORT, 'invalid knowledge capture processed shape');
 END;
@@ -58,4 +56,3 @@ BEFORE DELETE ON knowledge_run_captures
 BEGIN
     SELECT RAISE(ABORT, 'knowledge capture history is immutable');
 END;
-

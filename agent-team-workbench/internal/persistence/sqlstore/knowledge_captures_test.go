@@ -86,3 +86,23 @@ func TestKnowledgeRunCaptureEnqueueRejectsCrossWorkspaceRun(t *testing.T) {
 		t.Fatalf("cross-workspace enqueue = %v, want not found", err)
 	}
 }
+
+func TestKnowledgeRunCaptureCanCompleteWithoutSubmissionForSkippedRuns(t *testing.T) {
+	_, store, ws, alpha, _ := knowledgeTestDB(t)
+	ctx := context.Background()
+	run := knowledgeCaptureRun(t, store, ws, alpha)
+	if err := store.Knowledge().EnqueueRunCapture(ctx, ws.ID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	// A librarian Run or a Run already captured through another durable path
+	// has no new submission to attach; it still must leave the inbox processed.
+	if err := store.Knowledge().CompleteRunCapture(ctx, run.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().CompleteRunCapture(ctx, run.ID, ""); err != nil {
+		t.Fatalf("empty completion replay = %v", err)
+	}
+	if pending, err := store.Knowledge().ListPendingRunCaptures(ctx, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("skipped capture remains pending: %+v err=%v", pending, err)
+	}
+}

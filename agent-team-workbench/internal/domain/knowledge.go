@@ -758,8 +758,8 @@ func (c *KnowledgeRunCapture) Validate() error {
 	if c.CreatedAt.IsZero() || c.Version < 1 {
 		return fmt.Errorf("%w: knowledge run capture created_at and positive version are required", ErrValidation)
 	}
-	if c.ProcessedAt != nil && strings.TrimSpace(c.SubmissionID) == "" {
-		return fmt.Errorf("%w: processed knowledge run capture requires submission_id", ErrValidation)
+	if c.ProcessedAt == nil && strings.TrimSpace(c.SubmissionID) != "" {
+		return fmt.Errorf("%w: pending knowledge run capture cannot have submission_id", ErrValidation)
 	}
 	return nil
 }

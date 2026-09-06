@@ -84,8 +84,8 @@ func (r *KnowledgeRepo) ListPendingRunCaptures(ctx context.Context, limit int) (
 }
 
 func (r *KnowledgeRepo) CompleteRunCapture(ctx context.Context, runID, submissionID string) error {
-	if strings.TrimSpace(runID) == "" || strings.TrimSpace(submissionID) == "" {
-		return fmt.Errorf("%w: knowledge capture completion requires run and submission", domain.ErrValidation)
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("%w: knowledge capture completion requires run", domain.ErrValidation)
 	}
 	var captureWorkspace string
 	var processed *string
@@ -96,23 +96,25 @@ func (r *KnowledgeRepo) CompleteRunCapture(ctx context.Context, runID, submissio
 		return r.store.mapErr(err)
 	}
 	if processed != nil {
-		if existingSubmission != nil && *existingSubmission == submissionID {
+		if submissionID == "" || (existingSubmission != nil && *existingSubmission == submissionID) {
 			return nil
 		}
 		return domain.ErrIdempotencyConflict
 	}
-	var submissionRunID, submissionWorkspace string
-	if err := r.store.queryRow(ctx, r.store.exec(ctx),
-		`SELECT workspace_id, run_id FROM knowledge_submissions WHERE id=?`, submissionID).
-		Scan(&submissionWorkspace, &submissionRunID); err != nil {
-		return r.store.mapErr(err)
-	}
-	if submissionWorkspace != captureWorkspace || submissionRunID != runID {
-		return fmt.Errorf("%w: knowledge capture submission is not bound to the captured Run", domain.ErrValidation)
+	if submissionID != "" {
+		var submissionRunID, submissionWorkspace string
+		if err := r.store.queryRow(ctx, r.store.exec(ctx),
+			`SELECT workspace_id, run_id FROM knowledge_submissions WHERE id=?`, submissionID).
+			Scan(&submissionWorkspace, &submissionRunID); err != nil {
+			return r.store.mapErr(err)
+		}
+		if submissionWorkspace != captureWorkspace || submissionRunID != runID {
+			return fmt.Errorf("%w: knowledge capture submission is not bound to the captured Run", domain.ErrValidation)
+		}
 	}
 	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
 		`UPDATE knowledge_run_captures SET processed_at=?, submission_id=?, last_error='', next_attempt_at=NULL, version=version+1
-		 WHERE run_id=? AND processed_at IS NULL`, timeParam(timeNow()), submissionID, runID)
+		 WHERE run_id=? AND processed_at IS NULL`, timeParam(timeNow()), nullString(submissionID), runID)
 	if err != nil {
 		return r.store.mapErr(err)
 	}
@@ -125,7 +127,7 @@ func (r *KnowledgeRepo) CompleteRunCapture(ctx context.Context, runID, submissio
 		return r.store.mapErr(err)
 	}
 	if processed != nil {
-		if existingSubmission != nil && *existingSubmission == submissionID {
+		if submissionID == "" || (existingSubmission != nil && *existingSubmission == submissionID) {
 			return nil
 		}
 		return domain.ErrIdempotencyConflict
