@@ -206,6 +206,15 @@ func (s *Service) settleKnowledgeSemanticFailure(ctx context.Context, marker Kno
 			// A changed current run means another recovery owner won.
 			return nil
 		}
+		// The original semantic-error transaction rolled back together with
+		// its job mutation. Re-read and account the terminal Run here before
+		// closing the job, preserving the existing canonical/per-run usage
+		// authority and avoiding a lost final turn on retry.
+		if terminalRun, runErr := s.store.Runs().Get(ctx, runID); runErr != nil {
+			return runErr
+		} else if usageErr := accountKnowledgeRun(job, terminalRun); usageErr != nil {
+			cause = fmt.Errorf("%v；%v", cause, usageErr)
+		}
 		return s.finishKnowledgeJobLocked(ctx, job, domain.KnowledgeJobIncomplete,
 			truncateKnowledgeRunes("知识管理员决策未通过应用层校验："+cause.Error(), 4000))
 	})
@@ -340,15 +349,25 @@ func (s *Service) finishKnowledgeJobLocked(ctx context.Context, job *domain.Know
 	job.NextActionAt = nil
 	now := time.Now().UTC()
 	job.UpdatedAt, job.FinishedAt = now, &now
-	if job.Mode == domain.KnowledgeJobCuration && job.SubmissionID != "" {
-		if origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID); err == nil && origin.Status == domain.KnowledgeSubmissionProcessing {
-			if err := s.store.Knowledge().UpdateSubmissionStatus(ctx, origin.ID, domain.KnowledgeSubmissionNeedsReview,
-				origin.ResultItemIDs, origin.ResultVersionIDs, truncateKnowledgeRunes(reason, 4000), origin.Version); err != nil {
-				return err
-			}
-		}
+	if err := s.markKnowledgeCurationNeedsReviewLocked(ctx, job, reason); err != nil {
+		return err
 	}
 	return s.store.KnowledgeJobs().Update(ctx, job, job.Version)
+}
+
+func (s *Service) markKnowledgeCurationNeedsReviewLocked(ctx context.Context, job *domain.KnowledgeJob, reason string) error {
+	if job == nil || job.Mode != domain.KnowledgeJobCuration || job.SubmissionID == "" {
+		return nil
+	}
+	origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+	if err != nil {
+		return err
+	}
+	if origin.Status != domain.KnowledgeSubmissionProcessing {
+		return nil
+	}
+	return s.store.Knowledge().UpdateSubmissionStatus(ctx, origin.ID, domain.KnowledgeSubmissionNeedsReview,
+		origin.ResultItemIDs, origin.ResultVersionIDs, truncateKnowledgeRunes(reason, 4000), origin.Version)
 }
 
 func (s *Service) scheduleKnowledgeRetryLocked(ctx context.Context, job *domain.KnowledgeJob, reason string) error {
@@ -595,10 +614,11 @@ func (s *Service) applyKnowledgeReadLocked(ctx context.Context, job *domain.Know
 	}
 	itemIDs := dedupeKnowledgeIDs(read.ItemIDs)
 	versionIDs := dedupeKnowledgeIDs(read.VersionIDs)
-	if len(itemIDs)+len(versionIDs) > knowledgeJobMaxReadIDs {
+	sourceIDs := dedupeKnowledgeIDs(read.SourceIDs)
+	if len(itemIDs)+len(versionIDs)+len(sourceIDs) > knowledgeJobMaxReadIDs {
 		return nil, fmt.Errorf("%w: read request exceeds %d IDs", domain.ErrValidation, knowledgeJobMaxReadIDs)
 	}
-	result := map[string]any{"action": "read", "items": []any{}, "versions": []any{}}
+	result := map[string]any{"action": "read", "items": []any{}, "versions": []any{}, "sources": []any{}}
 	items := make([]any, 0, len(itemIDs))
 	for _, itemID := range itemIDs {
 		item, err := s.store.Knowledge().GetItem(ctx, job.WorkspaceID, job.RequestingAgentID, itemID)
@@ -653,9 +673,69 @@ func (s *Service) applyKnowledgeReadLocked(ctx context.Context, job *domain.Know
 			}
 		}
 	}
+	sources := make([]any, 0, len(sourceIDs))
+	for _, sourceID := range sourceIDs {
+		if !appendKnowledgeIDIfKnown(job.EvidenceIDs, sourceID) {
+			job.Observations = append(job.Observations, "read 未找到本作业已授权证据 "+sourceID)
+			continue
+		}
+		if seed, ok, err := s.knowledgeReceiptSourceSeed(ctx, job, sourceID); err != nil {
+			return nil, err
+		} else if ok {
+			sources = append(sources, map[string]any{"evidence_id": sourceID, "source": seed.Source, "verification_status": "supplied_unverified", "note": "原提交摘录已提供，尚未由外部来源核验"})
+			job.Used.Reads++
+			continue
+		}
+		source, sourceErr := s.store.Knowledge().GetSource(ctx, job.WorkspaceID, job.RequestingAgentID, sourceID)
+		if sourceErr != nil && job.SubmissionID != "" && errors.Is(sourceErr, domain.ErrNotFound) {
+			if origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID); originErr != nil {
+				return nil, originErr
+			} else if source, sourceErr = s.store.Knowledge().GetSource(ctx, job.WorkspaceID, origin.AgentID, sourceID); sourceErr == nil {
+				// authorized producer scope fallback for private origin evidence
+			}
+		}
+		if sourceErr != nil {
+			if errors.Is(sourceErr, domain.ErrNotFound) {
+				job.Observations = append(job.Observations, "read 未找到或不可见证据 "+sourceID)
+				continue
+			}
+			return nil, sourceErr
+		}
+		sources = append(sources, map[string]any{"evidence_id": sourceID, "source": source, "verification_status": "read"})
+		job.Used.Reads++
+	}
 	job.Used.Reads += len(items) + len(versions)
-	result["items"], result["versions"] = items, versions
+	result["items"], result["versions"], result["sources"] = items, versions, sources
 	return boundKnowledgeResult(job, result), nil
+}
+
+func appendKnowledgeIDIfKnown(ids []string, target string) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) knowledgeReceiptSourceSeed(ctx context.Context, job *domain.KnowledgeJob, sourceID string) (knowledgeEvidenceSeed, bool, error) {
+	if job == nil || job.Mode != domain.KnowledgeJobCuration || job.SubmissionID == "" || !strings.HasPrefix(sourceID, "submission:"+job.SubmissionID+":change:") {
+		return knowledgeEvidenceSeed{}, false, nil
+	}
+	origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+	if err != nil {
+		return knowledgeEvidenceSeed{}, false, err
+	}
+	if err := validateKnowledgeCurationOrigin(job, origin); err != nil {
+		return knowledgeEvidenceSeed{}, false, err
+	}
+	seeds, _ := knowledgeSubmissionEvidenceSeeds(origin)
+	for _, seed := range seeds {
+		if seed.EvidenceID == sourceID {
+			return seed, true, nil
+		}
+	}
+	return knowledgeEvidenceSeed{}, false, nil
 }
 
 func (s *Service) applyKnowledgeRelationsLocked(ctx context.Context, job *domain.KnowledgeJob,
@@ -728,6 +808,9 @@ func (s *Service) applyKnowledgeFinishLocked(ctx context.Context, job *domain.Kn
 			job.EvidenceIDs = appendUniqueString(job.EvidenceIDs, evidenceID)
 		}
 	}
+	if job.Mode == domain.KnowledgeJobCuration && gate.Status != domain.KnowledgeCoverageComplete && finish.NoChange {
+		finish.Gaps = unionKnowledgeStrings(finish.Gaps, []string{"资料不足时不能以 no_change 冒充无增量"})
+	}
 	result := map[string]any{"action": "finish", "status": string(gate.Status), "answer": truncateKnowledgeRunes(finish.Answer, knowledgeJobMaxObservationRunes), "summary": truncateKnowledgeRunes(finish.Summary, knowledgeJobMaxObservationRunes), "coverage": finish.Coverage, "evidence_ids": finish.EvidenceIDs, "citations": finish.Citations, "relations": finish.Relations, "gaps": finish.Gaps, "conflicts": finish.Conflicts, "snapshot_ids": append([]string(nil), job.SnapshotIDs...)}
 	if job.Result != nil {
 		if accounted, ok := job.Result["_accounted_run_ids"]; ok {
@@ -738,18 +821,26 @@ func (s *Service) applyKnowledgeFinishLocked(ctx context.Context, job *domain.Kn
 		return nil, fmt.Errorf("%w: inquiry finish cannot contain curation changes", domain.ErrValidation)
 	}
 	if job.Mode == domain.KnowledgeJobCuration {
-		if !finish.NoChange && len(finish.Changes) == 0 {
+		if gate.Status == domain.KnowledgeCoverageComplete && !finish.NoChange && len(finish.Changes) == 0 {
 			return nil, fmt.Errorf("%w: curation finish requires revised_changes or no_change", domain.ErrValidation)
 		}
-		submission, err := s.persistKnowledgeCurationSubmissionLocked(ctx, job, finish)
-		if err != nil {
-			return nil, err
-		}
-		if submission != nil {
-			result["submission_id"] = submission.ID
-			if job.SubmissionID != "" && submission.ID != job.SubmissionID {
-				result["origin_submission_id"] = job.SubmissionID
-				result["curated_submission_id"] = submission.ID
+		if gate.Status != domain.KnowledgeCoverageComplete && !finish.NoChange && len(finish.Changes) == 0 {
+			if err := s.markKnowledgeCurationNeedsReviewLocked(ctx, job, strings.Join(finish.Gaps, "; ")); err != nil {
+				return nil, err
+			}
+			result["submission_id"] = job.SubmissionID
+			result["origin_submission_id"] = job.SubmissionID
+		} else {
+			submission, err := s.persistKnowledgeCurationSubmissionLocked(ctx, job, finish)
+			if err != nil {
+				return nil, err
+			}
+			if submission != nil {
+				result["submission_id"] = submission.ID
+				if job.SubmissionID != "" && submission.ID != job.SubmissionID {
+					result["origin_submission_id"] = job.SubmissionID
+					result["curated_submission_id"] = submission.ID
+				}
 			}
 		}
 	}
@@ -851,8 +942,32 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 	// actually read. An ID appearing in job JSON is only a reference; it does
 	// not grant access by itself.
 	readSources := make(map[string]domain.KnowledgeSource, len(job.EvidenceIDs))
+	seededSourcesByID := make(map[string]domain.KnowledgeSourceInput)
+	var origin *domain.KnowledgeSubmission
+	if job.SubmissionID != "" {
+		var originErr error
+		origin, originErr = s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+		if originErr != nil {
+			return originErr
+		}
+		if originErr := validateKnowledgeCurationOrigin(job, origin); originErr != nil {
+			return originErr
+		}
+		if seeds, _ := knowledgeSubmissionEvidenceSeeds(origin); len(seeds) > 0 {
+			for _, seed := range seeds {
+				seededSourcesByID[seed.EvidenceID] = seed.Source
+			}
+		}
+	}
 	for _, id := range job.EvidenceIDs {
 		if id == "" {
+			continue
+		}
+		if seeded, ok := seededSourcesByID[id]; ok {
+			// Receipt evidence is an immutable input seed, not a database
+			// source row. It is deliberately marked as supplied excerpt;
+			// publication still needs the manager review gate.
+			_ = seeded
 			continue
 		}
 		source, err := s.store.Knowledge().GetSource(ctx, job.WorkspaceID, job.RequestingAgentID, id)
@@ -864,12 +979,8 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 			if job.SubmissionID == "" {
 				return fmt.Errorf("%w: curation evidence %s is not readable in requester scope", domain.ErrNotFound, id)
 			}
-			origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
-			if originErr != nil {
-				return originErr
-			}
-			if originErr := validateKnowledgeCurationOrigin(job, origin); originErr != nil {
-				return originErr
+			if origin == nil {
+				return fmt.Errorf("%w: curation origin submission is missing", domain.ErrValidation)
 			}
 			source, err = s.store.Knowledge().GetSource(ctx, job.WorkspaceID, origin.AgentID, id)
 			if err != nil {
@@ -884,18 +995,9 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 	// The original producer receipt is itself a complete, immutable evidence
 	// seed. Keep it as a separate list because it has no persisted source ID
 	// until publication preparation creates one.
-	seeded := make([]domain.KnowledgeSourceInput, 0)
-	if job.SubmissionID != "" {
-		if origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID); err == nil {
-			if originErr := validateKnowledgeCurationOrigin(job, origin); originErr != nil {
-				return originErr
-			}
-			for _, originalChange := range origin.Request.Changes {
-				seeded = append(seeded, originalChange.Sources...)
-			}
-		} else {
-			return err
-		}
+	seeded := make([]domain.KnowledgeSourceInput, 0, len(seededSourcesByID))
+	for _, source := range seededSourcesByID {
+		seeded = append(seeded, source)
 	}
 	for i, change := range changes {
 		if len(change.Sources) == 0 {
@@ -903,14 +1005,24 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 		}
 		for _, source := range change.Sources {
 			if sourceID := knowledgeSourceID(source); sourceID != "" {
-				actual, ok := readSources[sourceID]
-				if !ok {
+				if actual, ok := readSources[sourceID]; ok {
+					if err := validateKnowledgeSourceEvidence(source, &actual); err != nil {
+						return fmt.Errorf("%w: curation change %d source_id %q: %v", domain.ErrValidation, i, sourceID, err)
+					}
+					continue
+				}
+				if actual, ok := seededSourcesByID[sourceID]; ok {
+					if err := validateKnowledgeSourceEvidence(source, &actual); err != nil {
+						return fmt.Errorf("%w: curation change %d source_id %q: %v", domain.ErrValidation, i, sourceID, err)
+					}
+					continue
+				}
+				if sourceID == "" {
+					continue
+				}
+				if _, ok := readSources[sourceID]; !ok {
 					return fmt.Errorf("%w: curation change %d source_id %q was not read or is unauthorized", domain.ErrValidation, i, sourceID)
 				}
-				if err := validateKnowledgeSourceEvidence(source, &actual); err != nil {
-					return fmt.Errorf("%w: curation change %d source_id %q: %v", domain.ErrValidation, i, sourceID, err)
-				}
-				continue
 			}
 			matched := false
 			for _, actual := range readSources {
