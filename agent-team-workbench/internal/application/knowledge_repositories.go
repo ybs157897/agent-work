@@ -46,6 +46,9 @@ type KnowledgeRepo interface {
 	GetSubmissionByClientKey(ctx context.Context, workspaceID, agentID, clientKey string) (*domain.KnowledgeSubmission, error)
 	ListSubmissions(ctx context.Context, workspaceID, requesterAgentID string, status domain.KnowledgeSubmissionStatus, limit int) ([]*domain.KnowledgeSubmission, error)
 	ListSubmissionsForWorkspace(ctx context.Context, workspaceID string, status domain.KnowledgeSubmissionStatus, limit int) ([]*domain.KnowledgeSubmission, error)
+	// HasSubmissionForRun is a terminal-run收尾 guard. The complete tuple is
+	// required so a run from another Agent or Workspace cannot satisfy capture.
+	HasSubmissionForRun(ctx context.Context, workspaceID, agentID, runID string) (bool, error)
 	UpdateSubmissionStatus(ctx context.Context, submissionID string, status domain.KnowledgeSubmissionStatus, resultItemIDs, resultVersionIDs []string, errorMessage string, expectedVersion int) error
 
 	// PublishVersion is a compare-and-swap over the item's current version.

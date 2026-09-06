@@ -1010,6 +1010,19 @@ func (r *KnowledgeRepo) ListSubmissionsForWorkspace(ctx context.Context, workspa
 	return out, rows.Err()
 }
 
+func (r *KnowledgeRepo) HasSubmissionForRun(ctx context.Context, workspaceID, agentID, runID string) (bool, error) {
+	if strings.TrimSpace(workspaceID) == "" || strings.TrimSpace(agentID) == "" || strings.TrimSpace(runID) == "" {
+		return false, fmt.Errorf("%w: knowledge submission run lookup requires workspace, agent, and run", domain.ErrValidation)
+	}
+	var exists bool
+	if err := r.store.queryRow(ctx, r.store.exec(ctx),
+		`SELECT EXISTS(SELECT 1 FROM knowledge_submissions WHERE workspace_id=? AND agent_id=? AND run_id=?)`,
+		workspaceID, agentID, runID).Scan(&exists); err != nil {
+		return false, r.store.mapErr(err)
+	}
+	return exists, nil
+}
+
 func (r *KnowledgeRepo) UpdateSubmissionStatus(ctx context.Context, submissionID string,
 	status domain.KnowledgeSubmissionStatus, resultItemIDs, resultVersionIDs []string,
 	errorMessage string, expectedVersion int) error {

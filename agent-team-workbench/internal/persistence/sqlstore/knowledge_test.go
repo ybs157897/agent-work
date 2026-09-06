@@ -376,3 +376,35 @@ func TestKnowledgeRepealKeepsHistoryAndWithdrawsDefaultSearch(t *testing.T) {
 		t.Fatalf("repeal index state = %+v err=%v", state, err)
 	}
 }
+
+func TestKnowledgeHasSubmissionForRunRequiresExactWorkspaceAndAgent(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	workItem := &domain.WorkItem{ID: domain.NewID(domain.PrefixWorkItem), WorkspaceID: ws.ID, RecordKind: domain.RecordKindTask,
+		Title: "capture", Status: domain.WorkItemTodo, Priority: domain.PriorityMedium, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.WorkItems().Create(ctx, workItem); err != nil {
+		t.Fatal(err)
+	}
+	run := &domain.ExecutionRun{ID: domain.NewID(domain.PrefixRun), WorkspaceID: ws.ID, WorkItemID: workItem.ID,
+		AgentProfileID: alpha.ID, Status: domain.RunSucceeded, Version: 1, Input: map[string]any{}, CreatedAt: now, UpdatedAt: now}
+	if err := store.Runs().Create(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	request := domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: alpha.ID, RunID: run.ID, WorkItemID: workItem.ID,
+		ClientKey: "capture", NoChange: true}
+	submission := &domain.KnowledgeSubmission{ID: domain.NewID(domain.PrefixKnowledgeSubmission), WorkspaceID: ws.ID,
+		AgentID: alpha.ID, RunID: run.ID, WorkItemID: workItem.ID, ClientKey: request.ClientKey, Request: request}
+	if _, _, err := store.Knowledge().SubmitCandidate(ctx, submission); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Knowledge().HasSubmissionForRun(ctx, ws.ID, alpha.ID, run.ID); err != nil || !ok {
+		t.Fatalf("exact submission lookup = %v err=%v", ok, err)
+	}
+	if ok, err := store.Knowledge().HasSubmissionForRun(ctx, ws.ID, beta.ID, run.ID); err != nil || ok {
+		t.Fatalf("cross-agent submission lookup = %v err=%v", ok, err)
+	}
+	if ok, err := store.Knowledge().HasSubmissionForRun(ctx, "ws_other", alpha.ID, run.ID); err != nil || ok {
+		t.Fatalf("cross-workspace submission lookup = %v err=%v", ok, err)
+	}
+}
