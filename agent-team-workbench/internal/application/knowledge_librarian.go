@@ -501,7 +501,17 @@ func knowledgeJobInstruction(job *domain.KnowledgeJob, observation any, repair s
 }
 
 func (s *Service) GetKnowledgeJob(ctx context.Context, jobID string) (*domain.KnowledgeJob, error) {
-	return s.store.KnowledgeJobs().Get(ctx, jobID)
+	job, err := s.store.KnowledgeJobs().Get(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	// Coverage counters are a read projection. Re-derive them from the current
+	// requester-scoped evidence without rewriting the immutable job result, so
+	// jobs created before the projection was introduced still render truthfully.
+	if err := s.refreshKnowledgeCoverageStatsLocked(ctx, job); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 func (s *Service) ListKnowledgeJobs(ctx context.Context, workspaceID, requesterAgentID string,

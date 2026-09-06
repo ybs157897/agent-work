@@ -7,6 +7,24 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
+func TestRefreshKnowledgeCoverageStatsDeduplicatesScopedVersionsAndRelations(t *testing.T) {
+	repo := &sourceValidationKnowledgeRepo{versions: map[string]*domain.KnowledgeVersion{
+		"kbv_a": {ID: "kbv_a", ItemID: "kb_a"},
+		"kbv_b": {ID: "kbv_b", ItemID: "kb_b"},
+	}}
+	svc := &Service{store: sourceValidationStore{knowledge: repo}}
+	job := &domain.KnowledgeJob{WorkspaceID: "ws", RequestingAgentID: "agent", VisitedVersionIDs: []string{"kbv_a", "kbv_a", "kbv_b"}, RequiredRelations: []domain.KnowledgeJobRequiredRelation{{ID: "kbr_1"}, {ID: "kbr_1"}, {ID: "kbr_2"}}}
+	if err := svc.refreshKnowledgeCoverageStatsLocked(nil, job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Coverage.VisitedNodes != 2 || job.Coverage.VisitedRelations != 2 {
+		t.Fatalf("coverage stats = nodes %d relations %d, want 2/2", job.Coverage.VisitedNodes, job.Coverage.VisitedRelations)
+	}
+	if repo.versionCalls != 3 {
+		t.Fatalf("refresh must resolve each stored version ID through scoped repo: calls=%d", repo.versionCalls)
+	}
+}
+
 func TestInheritKnowledgeCurationDefaultsPreservesPrivateScopeAcrossSplitChanges(t *testing.T) {
 	origin := &domain.KnowledgeSubmission{WorkspaceID: "ws_private", AgentID: "agent_owner", Request: domain.KnowledgeSubmitCandidate{
 		WorkspaceID: "ws_private", AgentID: "agent_owner", ClientKey: "origin",

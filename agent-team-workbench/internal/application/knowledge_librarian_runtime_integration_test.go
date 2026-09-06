@@ -95,7 +95,7 @@ func TestKnowledgeInquirySearchDecisionAdvancesBoundedRun(t *testing.T) {
 	if len(dispatcher.runs) != 2 {
 		t.Fatalf("search decision dispatched %d Runs, want exactly 2", len(dispatcher.runs))
 	}
-	if updated.Used.Searches != 1 || len(updated.EvidenceIDs) != 1 {
+	if updated.Used.Searches != 1 || len(updated.EvidenceIDs) != 1 || updated.Coverage.VisitedNodes != 1 || updated.Coverage.VisitedRelations != 0 {
 		t.Fatalf("search observation/usage not persisted: %+v", updated)
 	}
 	if len(updated.SnapshotIDs) != 1 {

@@ -480,6 +480,9 @@ func (s *Service) applyKnowledgeDecisionLocked(ctx context.Context, job *domain.
 		_ = s.store.KnowledgeJobs().UpdateAction(ctx, action, action.Version)
 		return err
 	}
+	if err := s.refreshKnowledgeCoverageStatsLocked(ctx, job); err != nil {
+		return err
+	}
 	action.Status = domain.KnowledgeJobActionApplied
 	action.Result = result
 	action.ErrorMessage = ""
@@ -502,6 +505,42 @@ func (s *Service) applyKnowledgeDecisionLocked(ctx context.Context, job *domain.
 		return err
 	}
 	*next = createdRun
+	return nil
+}
+
+// refreshKnowledgeCoverageStatsLocked derives the UI counters from evidence
+// the control plane has actually read. Version IDs are resolved through the
+// requester-scoped repository, so an invalid or hidden ID can never inflate
+// visited_nodes by merely appearing in model output. Relation IDs are already
+// trusted receipts collected from scoped relation reads.
+func (s *Service) refreshKnowledgeCoverageStatsLocked(ctx context.Context, job *domain.KnowledgeJob) error {
+	if s == nil || job == nil {
+		return fmt.Errorf("%w: knowledge coverage requires service/job", domain.ErrValidation)
+	}
+	items := make(map[string]struct{}, len(job.VisitedVersionIDs))
+	for _, versionID := range job.VisitedVersionIDs {
+		if versionID == "" {
+			continue
+		}
+		version, err := s.store.Knowledge().GetVersion(ctx, job.WorkspaceID, job.RequestingAgentID, versionID)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				continue
+			}
+			return err
+		}
+		if version != nil && version.ItemID != "" {
+			items[version.ItemID] = struct{}{}
+		}
+	}
+	relations := make(map[string]struct{}, len(job.RequiredRelations))
+	for _, relation := range job.RequiredRelations {
+		if relation.ID != "" {
+			relations[relation.ID] = struct{}{}
+		}
+	}
+	job.Coverage.VisitedNodes = len(items)
+	job.Coverage.VisitedRelations = len(relations)
 	return nil
 }
 
