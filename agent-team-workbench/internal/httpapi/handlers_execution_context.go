@@ -5,7 +5,9 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
@@ -174,8 +176,14 @@ func (s *Server) handleListExecutionHosts(w http.ResponseWriter, r *http.Request
 // workspace_path_forbidden（RFC §9.1/§9.2：schema additionalProperties 之外的
 // 红线字段）。在幂等闭包内调用（r.Body 已被 idempotent 读出并复位）。
 func pathForbiddenBytes(r *http.Request) (int, []byte, bool) {
+	body, err := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		status, raw := renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
+		return status, raw, true
+	}
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&raw); err == nil {
+	if err := json.Unmarshal(body, &raw); err == nil {
 		for _, key := range []string{"path", "cwd", "root_path", "absolute_path", "workspace_root"} {
 			if _, ok := raw[key]; ok {
 				b, _ := json.Marshal(Problem{
