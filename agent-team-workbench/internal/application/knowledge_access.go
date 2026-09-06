@@ -59,6 +59,9 @@ func (s *Service) AttachKnowledgeRunAccess(run *domain.ExecutionRun, executionHo
 		stripKnowledgeAccessInstruction(run)
 		return nil
 	}
+	if strings.TrimSpace(run.ID) == "" || strings.ContainsAny(run.ID, `/\`) {
+		return fmt.Errorf("%w: invalid Run identity for knowledge access", domain.ErrValidation)
+	}
 	u, err := url.Parse(s.KnowledgeEndpoint)
 	if err != nil || u == nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("%w: invalid knowledge endpoint", domain.ErrValidation)

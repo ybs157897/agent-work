@@ -168,3 +168,14 @@ func TestKnowledgeAccessRejectsSymlinkedCapabilityDirectory(t *testing.T) {
 		t.Fatalf("symlinked capability directory error = %v", err)
 	}
 }
+
+func TestKnowledgeAccessRejectsPathTraversalRunID(t *testing.T) {
+	svc := NewService(nil, nil, nil, nil)
+	svc.KnowledgeEndpoint = "http://localhost"
+	svc.KnowledgeCLIPath = "/tmp/client"
+	svc.KnowledgeAccessDir = t.TempDir()
+	run := &domain.ExecutionRun{ID: "../escape", Input: map[string]any{"instruction": "task"}}
+	if err := svc.AttachKnowledgeRunAccess(run, domain.LocalHostID); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("path traversal Run ID error = %v", err)
+	}
+}
