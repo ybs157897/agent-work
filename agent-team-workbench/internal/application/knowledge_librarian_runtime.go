@@ -808,6 +808,11 @@ func (s *Service) applyKnowledgeFinishLocked(ctx context.Context, job *domain.Kn
 			job.EvidenceIDs = appendUniqueString(job.EvidenceIDs, evidenceID)
 		}
 	}
+	if job.Mode == domain.KnowledgeJobCuration {
+		if err := mergeKnowledgeFinishRelations(finish); err != nil {
+			return nil, err
+		}
+	}
 	if job.Mode == domain.KnowledgeJobCuration && gate.Status != domain.KnowledgeCoverageComplete && finish.NoChange {
 		finish.Gaps = unionKnowledgeStrings(finish.Gaps, []string{"资料不足时不能以 no_change 冒充无增量"})
 	}
@@ -889,13 +894,24 @@ func (s *Service) persistKnowledgeCurationSubmissionLocked(ctx context.Context, 
 		}
 		return origin, nil
 	}
+	origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+	if originErr != nil {
+		return nil, originErr
+	}
+	if err := validateKnowledgeCurationOrigin(job, origin); err != nil {
+		return nil, err
+	}
+	changes := append([]domain.KnowledgeChange(nil), finish.Changes...)
+	if err := inheritKnowledgeCurationDefaults(origin, changes); err != nil {
+		return nil, err
+	}
+	finish.Changes = changes
 	if err := s.validateKnowledgeCurationSources(ctx, job, finish.Changes); err != nil {
 		return nil, err
 	}
 	if err := s.validateKnowledgeCurationItemScope(ctx, job, finish.Changes); err != nil {
 		return nil, err
 	}
-	changes := append([]domain.KnowledgeChange(nil), finish.Changes...)
 	request := domain.KnowledgeSubmitCandidate{WorkspaceID: job.WorkspaceID, AgentID: job.AgentProfileID,
 		RunID: job.CurrentRunID, WorkItemID: job.WorkItemID,
 		ClientKey: "knowledge-curation:" + job.ID + ":" + fmt.Sprint(job.TurnSeq),
@@ -919,10 +935,6 @@ func (s *Service) persistKnowledgeCurationSubmissionLocked(ctx context.Context, 
 		return nil, err
 	}
 	if job.SubmissionID != "" {
-		origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
-		if originErr != nil {
-			return nil, originErr
-		}
 		if err := s.store.Knowledge().UpdateSubmissionStatus(ctx, origin.ID, domain.KnowledgeSubmissionMerged,
 			prepared.ResultItemIDs, prepared.ResultVersionIDs, "", origin.Version); err != nil {
 			return nil, err

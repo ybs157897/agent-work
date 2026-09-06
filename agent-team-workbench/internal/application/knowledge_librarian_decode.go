@@ -226,7 +226,7 @@ func validateKnowledgeDecision(decision *KnowledgeLibrarianDecision) error {
 }
 
 func knowledgeLibrarianPrompt() string {
-	return knowledgeLibrarianPromptBase() + "\nFor revised_changes.sources, copy kind, ref, locator, and digest exactly from the supplied source. The excerpt must be the original quote or a contiguous literal substring after whitespace normalization; never use a summary or paraphrase as a quote.\n"
+	return knowledgeLibrarianPromptBase() + "\nFor revised_changes.sources, copy kind, ref, locator, and digest exactly from the supplied source. The excerpt must be the original quote or a contiguous literal substring after whitespace normalization; never use a summary or paraphrase as a quote. Put every curation relation in finish.relations as well as linking its changed endpoint with @change:N or an existing item ID; the control plane persists only relations attached to revised_changes. If no changed endpoint is named, report that relation in gaps instead of dropping it.\n"
 }
 
 func knowledgeLibrarianPromptBase() string {
