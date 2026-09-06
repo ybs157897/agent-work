@@ -14,7 +14,7 @@ Date: 2026-09-06
 
 本契约延续既有知识层方向：workspace 级知识层、KnowledgeRetriever 抽象、Agent 通过 consult_knowledge 消费知识。[end-goal.md:119-121] 知识是共享领域事实，角色提示词定义 Agent 是谁以及如何工作。[knowledge/README.md:1-3]
 
-当前实现对账（2026-09-06）：SQLite 条目、版本、来源、关系、作业和 Run-bound 能力已有代码与 RoundTrip 集成验证；本机 Worker 使用 0600 Run capability 文件和 `--access-file` Shell bridge，远程 Worker 不接收本地文件桥。知识管理员的真实多轮模型调查、真实浏览器路径和远程 Worker 能力尚未完成验收，本文不把它们标为成功。
+当前实现对账（2026-09-06）：SQLite 条目、版本、来源、关系、作业和 Run-bound 能力已有代码与 RoundTrip 集成验证；本机 Worker 使用 0600 Run capability 文件和 `--access-file` Shell bridge，远程 Worker 的本机文件 bridge 未实现。知识管理员的真实多轮模型调查和真实浏览器路径尚未完成验收，本文不把它们标为成功。
 
 ## 1. 已授权目标与边界
 

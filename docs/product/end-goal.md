@@ -151,13 +151,13 @@ Planner 不是裸的 provider 调用，也不是可被用户删除、改提示�
 
 ## 分期路线（每期独立可用）
 
-> **进度（2026-09-06）**：M1–M4、系统 Task Coordinator 与任务控制面补全已完成。知识管理员的 SQLite/Run/UI 闭环已有实现和集成验证，但首个真实模型调查、真实浏览器路径和远程 Worker 能力仍是未关闭的验收门；后续仍保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
+> **进度（2026-09-06）**：M1–M4、系统 Task Coordinator 与任务控制面补全已完成。知识管理员的 SQLite/Run/UI 闭环已有实现和集成验证，但首个真实模型调查和真实浏览器路径仍是未关闭的验收门；远程 Worker 本机 Shell bridge 尚未实现。后续仍保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
 
 - **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树 —— ✅ 完成
 - **M2**：planner/评估执行能力 + task_sessions 树形化（parent_anchor_id）+ 会话自识别分类器 —— 除分类器外完成；planner 身份已由后续系统 Task Coordinator 决策收口
 - **M3**：既有 `consult_knowledge` + `KnowledgeRetriever` + 缓存命中率面板 —— 前两项完成，面板未做；知识管理员扩展另有独立验收门
 - **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量 —— ✅ 完成
-- **知识管理员扩展**：SQLite 共享/私有知识、候选→整理→发布、关系调查和本机 Worker bridge —— ⚠️ 代码与集成验证完成，真实模型/浏览器/远程 Worker 验收未完成
+- **知识管理员扩展**：SQLite 共享/私有知识、候选→整理→发布、关系调查和本机 Worker bridge —— ⚠️ 代码与集成验证完成，真实模型/浏览器验收未完成；远程 Worker 本机 bridge 未实现
 
 ## 参考与决策留痕
 

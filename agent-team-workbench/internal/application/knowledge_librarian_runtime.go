@@ -1017,12 +1017,7 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 					}
 					continue
 				}
-				if sourceID == "" {
-					continue
-				}
-				if _, ok := readSources[sourceID]; !ok {
-					return fmt.Errorf("%w: curation change %d source_id %q was not read or is unauthorized", domain.ErrValidation, i, sourceID)
-				}
+				return fmt.Errorf("%w: curation change %d source_id %q was not read or is unauthorized", domain.ErrValidation, i, sourceID)
 			}
 			matched := false
 			for _, actual := range readSources {

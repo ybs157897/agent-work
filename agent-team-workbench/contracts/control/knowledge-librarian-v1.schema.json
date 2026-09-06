@@ -322,6 +322,14 @@
             "type": "string",
             "maxLength": 200
           }
+        },
+        "source_ids": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
         }
       },
       "required": [],
@@ -334,6 +342,11 @@
         {
           "required": [
             "version_ids"
+          ]
+        },
+        {
+          "required": [
+            "source_ids"
           ]
         }
       ]

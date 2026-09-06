@@ -46,6 +46,13 @@ type StartKnowledgeCurationParams struct {
 	Budget            domain.KnowledgeJobBudget
 }
 
+type knowledgeEvidenceSeed struct {
+	EvidenceID  string                      `json:"evidence_id"`
+	ChangeIndex int                         `json:"change_index"`
+	SourceIndex int                         `json:"source_index"`
+	Source      domain.KnowledgeSourceInput `json:"source"`
+}
+
 // GetKnowledgeLibrarianConfig returns an explicit persisted config.  A
 // workspace without a row has the safe disabled/version-zero projection so a
 // PATCH can create it with expected_version=0.
@@ -226,6 +233,10 @@ func (s *Service) StartKnowledgeCuration(ctx context.Context, p StartKnowledgeCu
 		contextText += "\n\n"
 	}
 	contextText += "待整理提交 " + submission.ID + " 的原始候选：\n" + truncateKnowledgeRunes(candidate, 64000)
+	seeds, seedIDs := knowledgeSubmissionEvidenceSeeds(submission)
+	if len(seeds) > 0 {
+		contextText += "\n\n已提交来源证据（仅代表原提交提供的摘录，不代表管理员已核验外部事实）：\n" + truncateKnowledgeRunes(mustKnowledgeJSON(seeds), 64000)
+	}
 	return s.startKnowledgeJob(ctx, knowledgeJobStart{
 		WorkspaceID: p.WorkspaceID, RequestingAgentID: p.RequestingAgentID,
 		SourceRunID: p.SourceRunID, SubmissionID: submission.ID,
@@ -235,8 +246,24 @@ func (s *Service) StartKnowledgeCuration(ctx context.Context, p StartKnowledgeCu
 		// it as a scope would hide every existing item because ordinary
 		// entries do not carry that synthetic key.
 		Scope: knowledgeCurationScope(submission), ClientKey: p.ClientKey,
-		Budget: p.Budget,
+		Budget: p.Budget, EvidenceIDs: seedIDs,
 	})
+}
+
+func knowledgeSubmissionEvidenceSeeds(submission *domain.KnowledgeSubmission) ([]knowledgeEvidenceSeed, []string) {
+	if submission == nil {
+		return nil, nil
+	}
+	seeds := make([]knowledgeEvidenceSeed, 0)
+	ids := make([]string, 0)
+	for changeIndex, change := range submission.Request.Changes {
+		for sourceIndex, source := range change.Sources {
+			evidenceID := fmt.Sprintf("submission:%s:change:%d:source:%d", submission.ID, changeIndex, sourceIndex)
+			seeds = append(seeds, knowledgeEvidenceSeed{EvidenceID: evidenceID, ChangeIndex: changeIndex, SourceIndex: sourceIndex, Source: source})
+			ids = append(ids, evidenceID)
+		}
+	}
+	return seeds, ids
 }
 
 func knowledgeCurationScope(submission *domain.KnowledgeSubmission) domain.KnowledgeScope {
@@ -277,6 +304,7 @@ type knowledgeJobStart struct {
 	Scope             domain.KnowledgeScope
 	ClientKey         string
 	Budget            domain.KnowledgeJobBudget
+	EvidenceIDs       []string
 }
 
 func (s *Service) validateKnowledgeRequester(ctx context.Context, workspaceID, agentID string) error {
@@ -366,7 +394,8 @@ func (s *Service) startKnowledgeJob(ctx context.Context, start knowledgeJobStart
 			Used: domain.KnowledgeJobUsage{}, TurnSeq: 0, RetryCount: 0,
 			RepairAttempt: 0, ClientKey: start.ClientKey, Version: 1,
 			IndexRevision: indexRevision, SnapshotIDs: []string{},
-			CreatedAt: now, UpdatedAt: now,
+			EvidenceIDs: start.EvidenceIDs,
+			CreatedAt:   now, UpdatedAt: now,
 		}
 		if err := s.store.KnowledgeJobs().Create(ctx, job); err != nil {
 			return err

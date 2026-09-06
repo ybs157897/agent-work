@@ -8,7 +8,7 @@ Date: 2026-09-06
 
 ## 1. 定位
 
-知识管理员是 workspace 内的专职调查、整理和发布 Agent。需要关系展开和原文核验的查询入口是知识管理员 Harness；既有 Plan 的 `consult_knowledge` 仍提供受控预取。普通 Agent 不直接改共享有效知识。
+知识管理员是 workspace 内的专职调查和整理 Agent；发布由显式管理命令完成。需要关系展开和原文核验的查询入口是知识管理员 Harness；既有 Plan 的 `consult_knowledge` 仍提供受控预取。普通 Agent 不直接改共享有效知识。
 
 实现基线已经固定：
 
@@ -19,13 +19,13 @@ Date: 2026-09-06
 
 知识层只纳入当前授权范围内的已入库知识和提交证据。代码、测试或其他外部源码读取默认关闭；来源策略未显式授权时，管理员必须把该部分视为缺口，不能声称已覆盖。
 
-实现状态（2026-09-06）：知识 SQLite/版本发布、Run-bound Harness、候选收件箱和查询关系闭环已有代码与 RoundTrip 集成验证；首个真实多轮模型调查、完整浏览器路径和远程 Worker 的本机 Shell bridge 尚未验收。实现、集成测试或局部 UI 通过不等于知识内容已经完备。
+实现状态（2026-09-06）：知识 SQLite/版本发布、Run-bound Harness、候选收件箱和查询关系闭环已有代码与 RoundTrip 集成验证；首个真实多轮模型调查和完整浏览器路径尚未验收，远程 Worker 的本机 Shell bridge 未实现。实现、集成测试或局部 UI 通过不等于知识内容已经完备。
 
 ## 2. 身份与范围
 
 ### 2.1 人和管理界面
 
-浏览器请求使用 session cookie：
+当前本地 HTTP server 使用配置的 `demoRole` 执行路由权限守卫；OpenAPI 保留 session cookie 形状，但真实登录会话身份尚未接入。现有权限点语义为：
 
 - 普通读取需要 PermRead；
 - 配置、候选提交、整理和发布需要 PermAgentWrite；
