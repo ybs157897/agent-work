@@ -23,7 +23,6 @@ import { childCountByParent, sortTasksTree, type TaskTreeEntry } from '../utils/
 import { isAwaitingAcceptance, taskBoardLane, taskBoardLaneExplanation, type TaskBoardLane } from '../utils/task-phase';
 import { formatDueDate } from '../utils/format';
 import { taskPeekTarget } from '../utils/task-peek';
-import { CreateTaskModal } from './tasks/create-task-modal';
 
 // 树工具实现归 utils/task-tree（task-detail/创建弹窗共用）；此处转出供测试与页面使用。
 export { sortTasksTree, childCountByParent } from '../utils/task-tree';
@@ -131,7 +130,6 @@ export default function TasksPage() {
   const navigate = useNavigate();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [createOpen, setCreateOpen] = useState(false);
   const [query, setQuery] = useState('');
 
   // viewMode 是本地 UI 状态：放 URL，不进后端（协议 §4.1）；queue=review 与 view 独立。
@@ -268,7 +266,7 @@ export default function TasksPage() {
             )}
             <button
               type="button"
-              onClick={() => setCreateOpen(true)}
+              onClick={() => navigate('/task-chat')}
               className="plane-board-add focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -315,7 +313,7 @@ export default function TasksPage() {
               showEmptyColumns={showEmptyColumns}
               onShowEmpty={() => setShowEmptyColumns(true)}
             />
-            <EmptyTaskState onCreate={() => setCreateOpen(true)} />
+            <EmptyTaskState onCreate={() => navigate('/task-chat')} />
           </div>
         ) : viewMode === 'kanban' ? (
           <div className="px-base py-snug">
@@ -338,7 +336,7 @@ export default function TasksPage() {
                   tasks={col.tasks}
                   childCounts={childCounts}
                   participantsByRoot={participantsByRoot}
-                  onCreate={col.id === 'todo' ? () => setCreateOpen(true) : undefined}
+                  onCreate={col.id === 'todo' ? () => navigate('/task-chat') : undefined}
                   onOpen={openTask}
                 />
               ))}
@@ -388,7 +386,6 @@ export default function TasksPage() {
         )}
       </section>
 
-      <CreateTaskModal open={createOpen} onClose={() => setCreateOpen(false)} />
     </main>
   );
 }
@@ -447,14 +444,14 @@ function EmptyTaskState({ onCreate }: { onCreate: () => void }) {
     <div className="plane-board-search-empty" role="status">
       <KanbanSquare className="h-5 w-5 text-text-tertiary" aria-hidden />
       <h3 className="text-body-lg font-semibold text-text-primary">还没有总任务</h3>
-      <p className="max-w-md text-caption text-text-secondary">创建一个总任务后，执行 Agent 的输入和最终输出会集中在任务详情里。</p>
+      <p className="max-w-md text-caption text-text-secondary">先和 Agent 对话补充目标、范围和验收标准，确认草案后才会发布并进入执行队列。</p>
       <button
         type="button"
         onClick={onCreate}
         className="plane-board-add focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
       >
         <Plus className="h-3.5 w-3.5" aria-hidden />
-        新建总任务
+        开始对话创建
       </button>
     </div>
   );
@@ -558,8 +555,8 @@ function KanbanColumn({
           <button
             type="button"
             onClick={onCreate}
-            aria-label="发布任务"
-            title="发布任务"
+            aria-label="打开任务对话"
+            title="打开任务对话"
             className="inline-flex h-7 w-7 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-raised hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
           >
             <Plus className="h-4 w-4" aria-hidden />

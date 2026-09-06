@@ -1,4 +1,4 @@
-import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { Bot, Cpu, KanbanSquare, LayoutDashboard, MessageSquare, MessagesSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
 import { motion } from 'motion/react';
 import React from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
   { to: '/agents', icon: Bot, label: '智能体配置' },
   { to: '/tasks', icon: KanbanSquare, label: '任务看板' },
+  { to: '/task-chat', icon: MessagesSquare, label: '任务对话' },
   { to: '/chat', icon: MessageSquare, label: '对话' },
   { to: '/models', icon: Cpu, label: '模型' },
   { to: '/logs', icon: ScrollText, label: '日志' },
@@ -24,6 +25,7 @@ const BREADCRUMBS: Record<string, string> = {
   '/': '总览',
   '/agents': '智能体配置',
   '/tasks': '任务看板',
+  '/task-chat': '任务对话',
   '/chat': '对话',
   '/models': '模型',
   '/logs': '日志',
