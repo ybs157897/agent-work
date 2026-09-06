@@ -118,9 +118,15 @@ Planner 不是裸的 provider 调用，也不是可被用户删除、改提示�
 
 ## 4. 知识层
 
-MVP：workspace 级 `knowledge/` 语料目录 + 关键词检索；接口定成 `KnowledgeRetriever` 一层，实现可换，后续升 embedding。知识 agent（如配置示例中的 A）负责沉淀，所有 agent 经 `consult_knowledge` 消费。仓库根 `docs/` 是维护者文档，不进入运行时检索。
+知识层的目标是让所有 Agent 在受控范围内共享可追溯事实，同时保留各 Agent 的私有经验。Workspace SQLite 是知识条目、版本、来源、关系、候选提交、调查作业和检索投影状态的唯一权威；`agent-team-workbench/knowledge/` 下的 Markdown 只作为正文表达以及显式导入/导出格式，仓库根 `docs/` 是维护者文档，不进入运行时检索。
 
-## 现状对账（2026-08-31 核订）
+- 条目可见性分为 `private` 与 `workspace`。私有条目只对归属 Agent 和授权管理者可见，共享条目仍按 Workspace、项目和其他适用范围过滤。
+- 已有 Plan 的 `consult_knowledge` 继续提供受控的知识预取；需要问题分解、原文回读和双向关系展开的查询进入异步知识管理员 Harness。两条路径使用同一知识权威，不把所有查询都简化成关键词 Top-K。
+- 任务结果先作为带来源的候选提交，整理、版本冲突处理和发布门独立于 Run 成功与任务验收。`complete` 只表示在声明的来源、可见范围、版本和预算内完成覆盖，不代表世界范围的知识完备。
+- 本机普通 Worker 可通过 `atw-knowledge --access-file` 使用 0600 Run capability 文件；该 Shell bridge 当前只对本机 Execution Host 可用。远程 Worker 不接收本地文件桥，远程知识管理员 Run 仍沿既有 Run/Runner/Adapter 协议执行。
+- 来源核验按来源类型有边界：Run 可核验输出摘要和 digest，Artifact 只核验 manifest/digest 而不代表已读取正文，文档/用户来源保留提交摘录，代码/测试摘录不代表仓库核验，Agent 来源只核验身份。缺失或未授权来源必须保留为缺口。
+
+## 现状对账（2026-09-06）
 
 | 能力 | 状态 |
 |---|---|
@@ -134,22 +140,29 @@ MVP：workspace 级 `knowledge/` 语料目录 + 关键词检索；接口定成 `
 | 系统 Task Coordinator / 评估 run | ✅ 已有（每根 Task 独立控制线；2026-08-30 合入本地 main `0366666`） |
 | join / 审批钩子 / 步数与预算护栏 | ✅ 已有（plan executor guardrails，`35b55c5`） |
 | 任务级执行锁 | ✅ 已有（执行锁迁移 0014，merge `9c3dd6c`）；公开根 Task 不走手工 claim |
-| consult_knowledge / KnowledgeRetriever（关键词检索 MVP） | ✅ 已有（`internal/knowledge` + plan 动词，migration 0009） |
+| consult_knowledge / KnowledgeRetriever（既有 Plan 预取） | ✅ 已有（`internal/knowledge` + Plan 动词，migration 0009）；知识管理员查询仍走独立 Harness |
+| SQLite 知识条目/版本/来源/关系与私有/共享范围 | ⚠️ 已有代码、迁移与 RoundTrip 集成验证；真实浏览器和首个真实模型作业验收仍待完成 |
+| 知识管理员调查/整理/发布闭环 | ⚠️ 已有 Run-bound Harness、候选收件箱、版本发布和关系覆盖逻辑；真实模型多轮调查与浏览器验收仍待完成 |
+| 本机 Worker 知识 capability bridge | ⚠️ 仅本机 Host 的 0600 `--access-file` Shell bridge 已实现；远程 Worker 不支持本地文件桥 |
+| 来源核验边界与不完备结果 | ⚠️ 控制面已写入受控来源核验标记；未经授权、未读正文和预算截断仍必须显示为未验证/缺口 |
 | 任务控制面（Host/Location/Snapshot、TaskComment、Review Queue/Brief、Runner v2） | ✅ 已实现并通过代码、迁移、前端与浏览器验收 |
 | 缓存命中率面板（usage_cached → UI） | ⚠️ 部分：usage_cached 已随 usage.updated 进入前端 store，UI 面板未做 |
 | Agent 自识别会话策略（分类器 + 信号触发） | ❌ 待做 |
 
 ## 分期路线（每期独立可用）
 
-> **进度（2026-08-31）**：M1–M4、系统 Task Coordinator 与任务控制面补全均已完成。后续保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
+> **进度（2026-09-06）**：M1–M4、系统 Task Coordinator 与任务控制面补全已完成。知识管理员的 SQLite/Run/UI 闭环已有实现和集成验证，但首个真实模型调查、真实浏览器路径和远程 Worker 能力仍是未关闭的验收门；后续仍保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
 
 - **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树 —— ✅ 完成
 - **M2**：planner/评估执行能力 + task_sessions 树形化（parent_anchor_id）+ 会话自识别分类器 —— 除分类器外完成；planner 身份已由后续系统 Task Coordinator 决策收口
-- **M3**：consult_knowledge + KnowledgeRetriever + 缓存命中率面板 —— 后两项前者完成、面板未做
+- **M3**：既有 `consult_knowledge` + `KnowledgeRetriever` + 缓存命中率面板 —— 前两项完成，面板未做；知识管理员扩展另有独立验收门
 - **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量 —— ✅ 完成
+- **知识管理员扩展**：SQLite 共享/私有知识、候选→整理→发布、关系调查和本机 Worker bridge —— ⚠️ 代码与集成验证完成，真实模型/浏览器/远程 Worker 验收未完成
 
 ## 参考与决策留痕
 
+- 知识管理员产品契约：[`knowledge-librarian-requirements.md`](knowledge-librarian-requirements.md)
+- 知识管理员调用协议：[`knowledge-librarian.md`](../protocol/knowledge-librarian.md)
 - 任务控制面补全架构：[`task-control-surface-context-design.md`](../architecture/task-control-surface-context-design.md)
 - 会话预算/轮换决策：[`2026-08-23-model-context-history-budget.md`](../../notes/implemented/architecture/2026-08-23-model-context-history-budget.md)
 - resume 永不静默降级：[`2026-08-23-resume-never-silent-degrade.md`](../../notes/implemented/architecture/2026-08-23-resume-never-silent-degrade.md)
