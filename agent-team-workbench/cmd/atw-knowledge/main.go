@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,6 +20,11 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/knowledgeclient"
 )
 
+type accessFilePayload struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -29,6 +35,7 @@ func main() {
 func run() error {
 	fs := flag.NewFlagSet("atw-knowledge", flag.ContinueOnError)
 	endpoint := fs.String("url", os.Getenv("ATW_KNOWLEDGE_URL"), "Run-bound knowledge endpoint")
+	accessFile := fs.String("access-file", "", "Run-bound capability file")
 	timeout := fs.Duration("timeout", 3*time.Minute, "maximum query duration")
 	key := fs.String("key", "", "stable idempotency key for retry")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -41,7 +48,15 @@ func run() error {
 	if *timeout <= 0 || *timeout > 30*time.Minute {
 		return fmt.Errorf("timeout must be between 0 and 30 minutes")
 	}
-	client, err := knowledgeclient.New(*endpoint, os.Getenv("ATW_KNOWLEDGE_TOKEN"))
+	accessURL, accessToken := *endpoint, os.Getenv("ATW_KNOWLEDGE_TOKEN")
+	var err error
+	if *accessFile != "" {
+		accessURL, accessToken, err = loadAccessFile(*accessFile)
+		if err != nil {
+			return err
+		}
+	}
+	client, err := knowledgeclient.New(accessURL, accessToken)
 	if err != nil {
 		return err
 	}
@@ -97,4 +112,42 @@ func run() error {
 	}
 	_, err = fmt.Fprintln(os.Stdout, string(raw))
 	return err
+}
+
+func loadAccessFile(path string) (string, string, error) {
+	if path == "" {
+		return "", "", fmt.Errorf("access file path is required")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", "", fmt.Errorf("stat access file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		return "", "", fmt.Errorf("access file must be a private regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", fmt.Errorf("read access file: %w", err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return "", "", fmt.Errorf("read access file: %w", err)
+	}
+	if len(raw) == 64<<10 {
+		return "", "", fmt.Errorf("access file is too large")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var payload accessFilePayload
+	if err := dec.Decode(&payload); err != nil {
+		return "", "", fmt.Errorf("invalid access file")
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return "", "", fmt.Errorf("invalid access file")
+	}
+	if payload.URL == "" || payload.Token == "" {
+		return "", "", fmt.Errorf("access file is incomplete")
+	}
+	return payload.URL, payload.Token, nil
 }
