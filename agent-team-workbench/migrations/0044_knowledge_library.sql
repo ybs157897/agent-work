@@ -102,8 +102,7 @@ CREATE TABLE knowledge_sources (
     excerpt               TEXT NOT NULL DEFAULT '',
     digest                TEXT NOT NULL DEFAULT '',
     metadata_json         TEXT NOT NULL DEFAULT '{}',
-    created_at            DATETIME NOT NULL,
-    UNIQUE (workspace_id, kind, ref, locator, digest)
+    created_at            DATETIME NOT NULL
 );
 CREATE INDEX idx_knowledge_sources_workspace ON knowledge_sources(workspace_id, created_at DESC);
 

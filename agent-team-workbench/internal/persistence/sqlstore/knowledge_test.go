@@ -288,6 +288,49 @@ func TestKnowledgeRelationsDoNotRevealPrivateEndpoint(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSourcesAllowSameReferenceAcrossItemsAndVersions(t *testing.T) {
+	_, store, ws, alpha, _ := knowledgeTestDB(t)
+	ctx := context.Background()
+	first := knowledgeItem("kb_source_a", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "A", nil)
+	second := knowledgeItem("kb_source_b", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "B", nil)
+	for _, item := range []*domain.KnowledgeItem{first, second} {
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newSource := func(id string) *domain.KnowledgeSource {
+		return &domain.KnowledgeSource{ID: id, WorkspaceID: ws.ID, SubmittedByAgentID: alpha.ID,
+			Kind: domain.KnowledgeSourceDocument, Ref: "shared.md@rev1", Locator: "## 规则", Digest: "sha256:shared"}
+	}
+	v1 := knowledgeVersion("kbv_source_a1", first.ID, alpha.ID, "A", "A v1", 0)
+	if err := store.Knowledge().CreateVersionBundle(ctx, v1, []*domain.KnowledgeSource{newSource("kbs_source_a1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, first.ID, v1.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	v2 := knowledgeVersion("kbv_source_a2", first.ID, alpha.ID, "A", "A v2", 1)
+	if err := store.Knowledge().CreateVersionBundle(ctx, v2, []*domain.KnowledgeSource{newSource("kbs_source_a2")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, first.ID, v2.ID, 1, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	vB := knowledgeVersion("kbv_source_b1", second.ID, alpha.ID, "B", "B v1", 0)
+	if err := store.Knowledge().CreateVersionBundle(ctx, vB, []*domain.KnowledgeSource{newSource("kbs_source_b1")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, second.ID, vB.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, versionID := range []string{v2.ID, vB.ID} {
+		sources, err := store.Knowledge().ListVersionSources(ctx, ws.ID, alpha.ID, versionID)
+		if err != nil || len(sources) != 1 || sources[0].Ref != "shared.md@rev1" {
+			t.Fatalf("same reference version %s sources=%+v err=%v", versionID, sources, err)
+		}
+	}
+}
+
 func TestKnowledgeSubmissionIdempotencyAndImmutableVersion(t *testing.T) {
 	db, store, ws, alpha, _ := knowledgeTestDB(t)
 	ctx := context.Background()
