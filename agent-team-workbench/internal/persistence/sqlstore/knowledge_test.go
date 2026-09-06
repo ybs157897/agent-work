@@ -331,6 +331,51 @@ func TestKnowledgeSourcesAllowSameReferenceAcrossItemsAndVersions(t *testing.T) 
 	}
 }
 
+func TestKnowledgeSearchWithRelationsOutsideTransactionCompletesBeforeDeadline(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	first := knowledgeItem("kb_deadline_a", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "A", nil)
+	second := knowledgeItem("kb_deadline_b", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "B", nil)
+	for _, item := range []*domain.KnowledgeItem{first, second} {
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v1 := knowledgeVersion("kbv_deadline_a1", first.ID, alpha.ID, "A", "A triggers B", 0)
+	v2 := knowledgeVersion("kbv_deadline_b1", second.ID, alpha.ID, "B", "B runs after A", 0)
+	if err := store.Knowledge().CreateVersionBundle(ctx, v1, nil, []*domain.KnowledgeRelation{{
+		ID: "kbr_deadline", WorkspaceID: ws.ID, SourceVersionID: v1.ID,
+		FromItemID: first.ID, ToItemID: second.ID, Kind: domain.KnowledgeRelationTriggers,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().CreateVersion(ctx, v2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, first.ID, v1.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, second.ID, v2.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	deadlineCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	hits, err := store.Knowledge().Search(deadlineCtx, &domain.KnowledgeQuery{
+		WorkspaceID: ws.ID, RequesterAgentID: beta.ID, Terms: []string{"A"}, Budget: domain.KnowledgeBudget{MaxResults: 10},
+	})
+	if err != nil {
+		t.Fatalf("relation search outside transaction exceeded deadline or failed: %v", err)
+	}
+	if len(hits) == 0 || len(hits[0].Relations) != 1 || hits[0].Relations[0].ToItemID != second.ID {
+		t.Fatalf("relation search result = %+v", hits)
+	}
+	rebuildCtx, rebuildCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer rebuildCancel()
+	if err := store.Knowledge().RebuildIndex(rebuildCtx, ws.ID); err != nil {
+		t.Fatalf("rebuild index outside nested query deadline: %v", err)
+	}
+}
+
 func TestKnowledgeSubmissionIdempotencyAndImmutableVersion(t *testing.T) {
 	db, store, ws, alpha, _ := knowledgeTestDB(t)
 	ctx := context.Background()

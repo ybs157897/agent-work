@@ -794,19 +794,31 @@ func (r *KnowledgeRepo) ListRelations(ctx context.Context, workspaceID, requeste
 	if err != nil {
 		return nil, r.store.mapErr(err)
 	}
-	defer rows.Close()
 	var out []*domain.KnowledgeRelation
 	for rows.Next() {
 		relation, scanErr := scanKnowledgeRelation(rows)
 		if scanErr != nil {
+			_ = rows.Close()
 			return nil, scanErr
-		}
-		if err := r.loadRelationSources(ctx, relation); err != nil {
-			return nil, err
 		}
 		out = append(out, relation)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	// The SQLite connection is single-writer/single-reader in tests and in the
+	// control plane. Load relation evidence only after closing the result set;
+	// issuing a nested query while rows is open blocks forever at MaxOpenConns(1).
+	for _, relation := range out {
+		if err := r.loadRelationSources(ctx, relation); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (r *KnowledgeRepo) SubmitCandidate(ctx context.Context, submission *domain.KnowledgeSubmission) (bool, *domain.KnowledgeSubmission, error) {
@@ -1596,21 +1608,35 @@ func (r *KnowledgeRepo) RebuildIndex(ctx context.Context, workspaceID string) er
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		type rebuildEntry struct {
+			workspaceID string
+			version     *domain.KnowledgeVersion
+		}
+		entries := make([]rebuildEntry, 0)
 		counts := map[string]int{}
 		for rows.Next() {
 			var ws string
 			version, scanErr := scanKnowledgeVersionWithWorkspace(rows, &ws)
 			if scanErr != nil {
+				_ = rows.Close()
 				return scanErr
 			}
-			if err := r.indexKnowledgeVersion(ctx, ws, version, false); err != nil {
-				return err
-			}
+			entries = append(entries, rebuildEntry{workspaceID: ws, version: version})
 			counts[ws]++
 		}
 		if err := rows.Err(); err != nil {
+			_ = rows.Close()
 			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		// The query cursor must be closed before indexKnowledgeVersion issues
+		// writes; SQLite's single connection otherwise self-deadlocks.
+		for _, entry := range entries {
+			if err := r.indexKnowledgeVersion(ctx, entry.workspaceID, entry.version, false); err != nil {
+				return err
+			}
 		}
 		now := timeNow()
 		if workspaceID != "" {
