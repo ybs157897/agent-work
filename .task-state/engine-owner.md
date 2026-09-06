@@ -45,8 +45,10 @@ Branch: codex/knowledge-librarian
 
 ## Validation
 
-`go test ./cmd/migrate ./internal/persistence/sqlstore ./internal/application`
-passed at an earlier shared-tree point before the parent continuation edits.
-The current shared tree has a transient parent compile error in
-`application/knowledge_librarian.go` (`createKnowledgeContinuationLocked`), so
-final migration/sqlstore race evidence remains pending until that owner lands.
+Focused evidence now passes: `go test -race ./internal/knowledge -run
+'TestEngine|TestScopedRetriever' -count=1`, `go test -race
+./internal/persistence/sqlstore -run TestKnowledge -count=1`, and `go test
+./internal/application -run TestKnowledge -count=1`. The full application race
+run reached its 10-minute test timeout in an existing migration-heavy test
+(`TestCancelGoalRunTransitionFailureRollsBackAuthoritativeState`); that timeout
+is recorded as a timeout, not a pass.
