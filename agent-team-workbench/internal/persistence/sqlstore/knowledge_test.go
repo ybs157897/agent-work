@@ -182,6 +182,83 @@ func TestKnowledgeVisibleItemsPageFiltersBeforeKeysetLimit(t *testing.T) {
 	}
 }
 
+func TestKnowledgeSearchUsesORTermsWithoutLeakingPrivateItems(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	visibleB := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityWorkspace, "库存释放", nil)
+	visibleC := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityWorkspace, "退款处理", nil)
+	private := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityPrivate, "退款私有实现", nil)
+	for _, item := range []*domain.KnowledgeItem{visibleB, visibleC, private} {
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	versions := []*domain.KnowledgeVersion{
+		knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), visibleB.ID, alpha.ID, "库存释放", "库存释放由取消事件触发。", 0),
+		knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), visibleC.ID, alpha.ID, "退款处理", "退款处理会生成退款记录。", 0),
+		knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), private.ID, alpha.ID, "退款私有实现", "退款私有实现细节。", 0),
+	}
+	for _, version := range versions {
+		if err := store.Knowledge().CreateVersion(ctx, version); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Knowledge().PublishVersion(ctx, version.ItemID, version.ID, 0, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hits, err := store.Knowledge().Search(ctx, &domain.KnowledgeQuery{
+		WorkspaceID: ws.ID, RequesterAgentID: beta.ID,
+		Terms:  []string{"库存释放", "退款", "不存在的主体"},
+		Budget: domain.KnowledgeBudget{MaxResults: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(hits))
+	for _, hit := range hits {
+		got[hit.Item.ID] = true
+	}
+	if len(hits) != 2 || !got[visibleB.ID] || !got[visibleC.ID] || got[private.ID] {
+		t.Fatalf("multi-subject OR search = %v, want visible B/C only", knowledgeHitIDs(hits))
+	}
+
+	history := knowledgeItem(domain.NewID(domain.PrefixKnowledgeItem), ws.ID, alpha.ID,
+		domain.KnowledgeVisibilityWorkspace, "历史规则", nil)
+	if err := store.Knowledge().CreateItem(ctx, history); err != nil {
+		t.Fatal(err)
+	}
+	old := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), history.ID, alpha.ID,
+		"旧退款规则", "legacy refund behavior", 0)
+	if err := store.Knowledge().CreateVersion(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, history.ID, old.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	current := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), history.ID, alpha.ID,
+		"当前订单规则", "current order behavior", 1)
+	if err := store.Knowledge().CreateVersion(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, history.ID, current.ID, 1, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	historyHits, err := store.Knowledge().Search(ctx, &domain.KnowledgeQuery{
+		WorkspaceID: ws.ID, RequesterAgentID: beta.ID, Status: domain.KnowledgeStatusSuperseded,
+		Terms: []string{"不存在的历史词", "legacy refund behavior"}, Budget: domain.KnowledgeBudget{MaxResults: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(historyHits) != 1 || historyHits[0].Item.ID != history.ID || historyHits[0].Version.ID != old.ID {
+		t.Fatalf("historical OR search = %v, want superseded version %s", knowledgeHitIDs(historyHits), old.ID)
+	}
+}
+
 func knowledgeItemIDs(items []*domain.KnowledgeItem) []string {
 	ids := make([]string, 0, len(items))
 	for _, item := range items {

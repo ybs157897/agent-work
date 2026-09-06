@@ -1386,7 +1386,7 @@ func (r *KnowledgeRepo) searchKnowledgeFTS(ctx context.Context, query *domain.Kn
 	if limit <= 0 {
 		return nil, nil
 	}
-	args := []any{strings.Join(quoteKnowledgeTokens(terms), " "), query.WorkspaceID,
+	args := []any{strings.Join(quoteKnowledgeTokens(terms), " OR "), query.WorkspaceID,
 		domain.KnowledgeVisibilityWorkspace, query.RequesterAgentID}
 	sqlText := `SELECT ki.item_id, ki.version_id, rank,
 		snippet(knowledge_index, 8, '[', ']', '…', 16)
@@ -1424,10 +1424,14 @@ func (r *KnowledgeRepo) searchKnowledgeSubstring(ctx context.Context, query *dom
 	sqlText := `SELECT ki.item_id, ki.version_id, ki.title, ki.summary, ki.body, ki.aliases, ki.tags
 		FROM knowledge_index ki WHERE ki.workspace_id=?
 		AND (ki.visibility=? OR ki.owner_agent_id=?)`
+	termPredicates := make([]string, 0, len(terms))
 	for _, term := range terms {
-		sqlText += ` AND LOWER(COALESCE(ki.title,'') || ' ' || COALESCE(ki.summary,'') || ' ' ||
-			COALESCE(ki.body,'') || ' ' || COALESCE(ki.aliases,'') || ' ' || COALESCE(ki.tags,'')) LIKE ? ESCAPE '!'`
+		termPredicates = append(termPredicates, `LOWER(COALESCE(ki.title,'') || ' ' || COALESCE(ki.summary,'') || ' ' ||
+			COALESCE(ki.body,'') || ' ' || COALESCE(ki.aliases,'') || ' ' || COALESCE(ki.tags,'')) LIKE ? ESCAPE '!'`)
 		args = append(args, knowledgeLikePattern(term))
+	}
+	if len(termPredicates) > 0 {
+		sqlText += ` AND (` + strings.Join(termPredicates, ` OR `) + `)`
 	}
 	sqlText, args = appendKnowledgeScopeFilters(sqlText, args, "ki.scope", query.Scope)
 	sqlText += ` ORDER BY ki.item_id LIMIT ?`
@@ -1460,10 +1464,14 @@ func (r *KnowledgeRepo) searchKnowledgeVersions(ctx context.Context, query *doma
 	sqlText := `SELECT i.id, v.id, v.title, v.summary, v.body_markdown, v.aliases, v.tags
 		FROM knowledge_versions v JOIN knowledge_items i ON i.id=v.item_id
 		WHERE i.workspace_id=? AND (i.visibility=? OR i.owner_agent_id=?) AND v.status=?`
+	termPredicates := make([]string, 0, len(terms))
 	for _, term := range terms {
-		sqlText += ` AND LOWER(COALESCE(v.title,'') || ' ' || COALESCE(v.summary,'') || ' ' ||
-			COALESCE(v.body_markdown,'') || ' ' || COALESCE(v.aliases,'') || ' ' || COALESCE(v.tags,'')) LIKE ? ESCAPE '!'`
+		termPredicates = append(termPredicates, `LOWER(COALESCE(v.title,'') || ' ' || COALESCE(v.summary,'') || ' ' ||
+			COALESCE(v.body_markdown,'') || ' ' || COALESCE(v.aliases,'') || ' ' || COALESCE(v.tags,'')) LIKE ? ESCAPE '!'`)
 		args = append(args, knowledgeLikePattern(term))
+	}
+	if len(termPredicates) > 0 {
+		sqlText += ` AND (` + strings.Join(termPredicates, ` OR `) + `)`
 	}
 	sqlText, args = appendKnowledgeScopeFilters(sqlText, args, "v.scope_json", query.Scope)
 	sqlText += ` ORDER BY v.version DESC, v.id LIMIT ?`
