@@ -37,6 +37,8 @@ Branch: codex/knowledge-librarian
   research engine.
 - [x] Filtered keyset item listing and append-only item repeal with historical
   reads, reason audit, default-search withdrawal, and index revision bump.
+- [x] 0046 terminal Run capture inbox with exact enqueue idempotence, pending
+  retry backoff, submission binding, completion replay, and error recording.
 - [x] Focused regression tests for scope, private access, relations, CAS,
   immutable Markdown, idempotency and index state.
 - [x] Engine/scoped-retriever regressions for sentinel TopK, depth/node/relation/
