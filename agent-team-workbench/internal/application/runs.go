@@ -553,6 +553,24 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		// later Run request. Requirements after the first Run go through comments.
 		p.AcceptanceCriteria = append([]string(nil), wi.AcceptanceCriteria...)
 	}
+	// The librarian Harness is an application-owned protocol. Keep the
+	// persisted Agent persona unchanged, but replace the per-Run system prompt
+	// before BuildInput so the provider cannot prioritize an ordinary worker
+	// charter over the strict schema/coverage contract. The prompt then enters
+	// run.Input and therefore the existing ConfigDigest/session fingerprint.
+	if p.knowledgeJobID != "" {
+		if agent == nil || agent.Kind.IsSystem() {
+			return nil, fmt.Errorf("%w: knowledge librarian Run requires an ordinary Agent", domain.ErrValidation)
+		}
+		librarianAgent := *agent
+		librarianAgent.Instructions = knowledgeLibrarianPrompt()
+		librarianAgent.PromptVersion = KnowledgeLibrarianSchemaVersion
+		// Research/curation actions are control-plane operations. Give the
+		// librarian's per-Run policy a read-only sandbox while preserving the
+		// persisted Agent policy and ordinary worker Run behavior.
+		librarianAgent.Policy.Sandbox = "read-only"
+		agent = &librarianAgent
+	}
 	runInput := orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
 		p.RuntimePreference, agent, label, reason)
 	if quotaAdmission != nil {

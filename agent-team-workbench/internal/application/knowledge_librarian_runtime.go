@@ -844,57 +844,143 @@ func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *dom
 	if s == nil || job == nil {
 		return fmt.Errorf("%w: curation job required", domain.ErrValidation)
 	}
-	known := make(map[string]struct{}, len(job.EvidenceIDs))
-	for _, id := range job.EvidenceIDs {
-		known[id] = struct{}{}
+	if len(changes) == 0 {
+		return fmt.Errorf("%w: curation changes require evidence read by the librarian", domain.ErrValidation)
 	}
-	// The original producer receipt is itself part of the curation context.
-	// Preserve exact source inputs as an allowed evidence seed, while still
-	// rejecting a source invented by the finish model.
-	seeded := make(map[string]struct{})
+	// Build an evidence set from source rows that the requesting Agent can
+	// actually read. An ID appearing in job JSON is only a reference; it does
+	// not grant access by itself.
+	readSources := make(map[string]domain.KnowledgeSource, len(job.EvidenceIDs))
+	for _, id := range job.EvidenceIDs {
+		if id == "" {
+			continue
+		}
+		source, err := s.store.Knowledge().GetSource(ctx, job.WorkspaceID, job.RequestingAgentID, id)
+		if err != nil {
+			// A curation of a producer's private candidate may use the
+			// producer's already-authorized scope, while the librarian still
+			// remains the executing Agent. This fallback is limited to the
+			// immutable origin receipt below.
+			if job.SubmissionID == "" {
+				return fmt.Errorf("%w: curation evidence %s is not readable in requester scope", domain.ErrNotFound, id)
+			}
+			origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+			if originErr != nil {
+				return originErr
+			}
+			source, err = s.store.Knowledge().GetSource(ctx, job.WorkspaceID, origin.AgentID, id)
+			if err != nil {
+				return fmt.Errorf("%w: curation evidence %s is outside authorized scope", domain.ErrNotFound, id)
+			}
+		}
+		if source == nil || source.WorkspaceID != job.WorkspaceID {
+			return fmt.Errorf("%w: curation evidence %s is outside workspace", domain.ErrValidation, id)
+		}
+		readSources[id] = *source
+	}
+	// The original producer receipt is itself a complete, immutable evidence
+	// seed. Keep it as a separate list because it has no persisted source ID
+	// until publication preparation creates one.
+	seeded := make([]domain.KnowledgeSourceInput, 0)
 	if job.SubmissionID != "" {
 		if origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID); err == nil {
 			for _, originalChange := range origin.Request.Changes {
-				for _, source := range originalChange.Sources {
-					seeded[knowledgeSourceInputKey(source)] = struct{}{}
-				}
+				seeded = append(seeded, originalChange.Sources...)
 			}
+		} else {
+			return err
 		}
-	}
-	if len(known) == 0 && len(seeded) == 0 {
-		return fmt.Errorf("%w: curation changes require evidence read by the librarian", domain.ErrValidation)
 	}
 	for i, change := range changes {
 		if len(change.Sources) == 0 {
 			return fmt.Errorf("%w: curation change %d has no evidence source", domain.ErrValidation, i)
 		}
 		for _, source := range change.Sources {
+			if sourceID := knowledgeSourceID(source); sourceID != "" {
+				actual, ok := readSources[sourceID]
+				if !ok {
+					return fmt.Errorf("%w: curation change %d source_id %q was not read or is unauthorized", domain.ErrValidation, i, sourceID)
+				}
+				if err := validateKnowledgeSourceEvidence(source, &actual); err != nil {
+					return fmt.Errorf("%w: curation change %d source_id %q: %v", domain.ErrValidation, i, sourceID, err)
+				}
+				continue
+			}
 			matched := false
-			for evidenceID := range known {
-				if strings.Contains(source.Ref, evidenceID) || strings.Contains(source.Locator, evidenceID) || strings.Contains(source.Digest, evidenceID) {
+			for _, actual := range readSources {
+				if actual.Kind != source.Kind || actual.Ref != source.Ref {
+					continue
+				}
+				if err := validateKnowledgeSourceEvidence(source, &actual); err == nil {
 					matched = true
 					break
 				}
-				if source.Metadata != nil {
-					if sourceID, _ := source.Metadata["source_id"].(string); sourceID == evidenceID {
+			}
+			if !matched {
+				for _, actual := range seeded {
+					if actual.Kind != source.Kind || actual.Ref != source.Ref {
+						continue
+					}
+					if err := validateKnowledgeSourceEvidence(source, &actual); err == nil {
 						matched = true
 						break
 					}
 				}
 			}
-			if _, ok := seeded[knowledgeSourceInputKey(source)]; ok {
-				matched = true
-			}
 			if !matched {
-				return fmt.Errorf("%w: curation change %d source %q was not read in this job", domain.ErrValidation, i, source.Ref)
+				return fmt.Errorf("%w: curation change %d source %q was not an authorized exact evidence match", domain.ErrValidation, i, source.Ref)
 			}
 		}
 	}
 	return nil
 }
 
-func knowledgeSourceInputKey(source domain.KnowledgeSourceInput) string {
-	return source.Ref + "\x00" + source.Locator + "\x00" + source.Digest + "\x00" + source.Excerpt
+func knowledgeSourceID(source domain.KnowledgeSourceInput) string {
+	if source.Metadata == nil {
+		return ""
+	}
+	id, _ := source.Metadata["source_id"].(string)
+	return strings.TrimSpace(id)
+}
+
+func validateKnowledgeSourceEvidence(candidate domain.KnowledgeSourceInput, actual interface{}) error {
+	var kind domain.KnowledgeSourceKind
+	var ref, locator, digest, excerpt string
+	switch source := actual.(type) {
+	case *domain.KnowledgeSource:
+		if source == nil {
+			return fmt.Errorf("actual source is nil")
+		}
+		kind, ref, locator, digest, excerpt = source.Kind, source.Ref, source.Locator, source.Digest, source.Excerpt
+	case *domain.KnowledgeSourceInput:
+		if source == nil {
+			return fmt.Errorf("actual source is nil")
+		}
+		kind, ref, locator, digest, excerpt = source.Kind, source.Ref, source.Locator, source.Digest, source.Excerpt
+	case domain.KnowledgeSourceInput:
+		kind, ref, locator, digest, excerpt = source.Kind, source.Ref, source.Locator, source.Digest, source.Excerpt
+	default:
+		return fmt.Errorf("unsupported actual source type")
+	}
+	if candidate.Kind != kind || candidate.Ref != ref {
+		return fmt.Errorf("kind/ref identity mismatch")
+	}
+	if candidate.Locator != "" && candidate.Locator != locator {
+		return fmt.Errorf("locator mismatch")
+	}
+	if candidate.Digest != "" && candidate.Digest != digest {
+		return fmt.Errorf("digest mismatch")
+	}
+	if strings.TrimSpace(candidate.Excerpt) != "" && !knowledgeEvidenceSubstring(excerpt, candidate.Excerpt) {
+		return fmt.Errorf("excerpt is not contained in the authorized source")
+	}
+	return nil
+}
+
+func knowledgeEvidenceSubstring(actual, candidate string) bool {
+	normalize := func(value string) string { return strings.Join(strings.Fields(value), " ") }
+	actual, candidate = normalize(actual), normalize(candidate)
+	return candidate != "" && strings.Contains(actual, candidate)
 }
 
 func (s *Service) validateKnowledgeCurationItemScope(ctx context.Context, job *domain.KnowledgeJob, changes []domain.KnowledgeChange) error {

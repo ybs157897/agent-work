@@ -62,6 +62,10 @@ func TestKnowledgeInquirySearchDecisionAdvancesBoundedRun(t *testing.T) {
 	if prompt, _ := firstRun.Input["system_prompt"].(string); prompt == "" || !containsKnowledgePromptMarker(prompt) {
 		t.Fatalf("librarian Run missing per-Run protocol system prompt: %q", prompt)
 	}
+	policy, _ := firstRun.Input["policy"].(map[string]any)
+	if policy["sandbox"] != "read-only" {
+		t.Fatalf("librarian Run sandbox policy = %#v, want read-only", policy["sandbox"])
+	}
 	decision := `{"schema_version":"knowledge-librarian/v1","action":"search","search":{"question":"runtime fact","item_ids":["` + item.ID + `"]}}`
 	if err := svc.RecordRunStatus(ctx, first, domain.RunStarting, nil); err != nil {
 		t.Fatal(err)
