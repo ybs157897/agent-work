@@ -1,12 +1,12 @@
-const FULL_BLEED_PATHS = new Set(['/chat', '/models', '/agents']);
+const FULL_BLEED_PATHS = new Set(['/chat', '/task-chat', '/task-chat/', '/models', '/agents']);
 
 export function isFullBleedPath(pathname: string): boolean {
   return FULL_BLEED_PATHS.has(pathname);
 }
 
-/** 对话页是唯一一块暗色阅读面；壳层宣纸顶栏 / mesh 只在这条路由收起。 */
+/** Agent 与任务对话共用完整阅读面，页面自行提供标题与输入区。 */
 export function isChatPath(pathname: string): boolean {
-  return pathname === '/chat';
+  return pathname === '/chat' || pathname === '/task-chat' || pathname === '/task-chat/';
 }
 
 /** Task 列表与详情共用 Plane 白底工作面，不挂宣纸 mesh / 山水层。 */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isChatPath, isFullBleedPath, isTasksPath, mainContentClassName } from './route-layout';
 
 describe('isFullBleedPath', () => {
-  it.each(['/chat', '/models', '/agents'])('keeps %s inside the shared fixed-height shell', (path) => {
+  it.each(['/chat', '/task-chat', '/task-chat/', '/models', '/agents'])('keeps %s inside the shared fixed-height shell', (path) => {
     expect(isFullBleedPath(path)).toBe(true);
   });
 
@@ -22,18 +22,18 @@ describe('isTasksPath', () => {
 });
 
 describe('isChatPath', () => {
-  it('treats /chat as the dark reading route', () => {
-    expect(isChatPath('/chat')).toBe(true);
+  it.each(['/chat', '/task-chat', '/task-chat/'])('treats %s as a conversation reading route', (path) => {
+    expect(isChatPath(path)).toBe(true);
   });
 
-  it.each(['/', '/models', '/agents', '/chat/extra', '/chats'])('does not treat %s as chat', (path) => {
+  it.each(['/', '/models', '/agents', '/chat/extra', '/chats', '/task-chat/extra', '/task-chats'])('does not treat %s as chat', (path) => {
     expect(isChatPath(path)).toBe(false);
   });
 });
 
 describe('mainContentClassName', () => {
-  it('mounts tx-scope and drops paper mesh on /chat', () => {
-    const cls = mainContentClassName('/chat');
+  it.each(['/chat', '/task-chat', '/task-chat/'])('mounts a fixed-height reading surface on %s without paper mesh', (path) => {
+    const cls = mainContentClassName(path);
     expect(cls).toContain('tx-scope');
     expect(cls).not.toContain('mesh-bg');
     expect(cls).not.toContain('plane-board-shell');

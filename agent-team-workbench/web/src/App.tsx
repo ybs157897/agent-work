@@ -15,6 +15,7 @@ import { taskPeekBackground } from './utils/task-peek';
 
 const AgentsPage = lazy(() => import('./pages/agents.page'));
 const ChatPage = lazy(() => import('./pages/chat.page'));
+const TaskChatPage = lazy(() => import('./pages/task-chat.page'));
 const LanguageGuiDemoPage = lazy(() => import('./pages/languagegui-demo.page'));
 const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
@@ -88,6 +89,7 @@ function AnimatedRoutes() {
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/tasks/:taskId" element={<TaskWorkspacePage />} />
+              <Route path="/task-chat" element={<TaskChatPage />} />
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
               <Route path="/models" element={<ModelsPage />} />

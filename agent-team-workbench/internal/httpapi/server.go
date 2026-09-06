@@ -20,6 +20,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 	"github.com/ybs/agent-team-workbench/internal/security"
 	"github.com/ybs/agent-team-workbench/internal/sse"
+	"github.com/ybs/agent-team-workbench/internal/taskintake"
 )
 
 type ctxKey int
@@ -47,18 +48,20 @@ type AgentConfigDurableReconciler interface {
 
 // Server 承载 REST + SSE；M1 认证为演示用户（owner），RBAC 守卫已接入（M4 会话化）。
 type Server struct {
-	svc           *application.Service
-	store         application.Store
-	hub           *sse.Hub
-	demoRole      domain.MemberRole
-	agentCfg      AgentConfigSync
-	models        *modelconfig.Registry
-	credentials   *modelconfig.CredentialsStore
-	workbenchRoot string
+	svc              *application.Service
+	store            application.Store
+	hub              *sse.Hub
+	demoRole         domain.MemberRole
+	agentCfg         AgentConfigSync
+	models           *modelconfig.Registry
+	credentials      *modelconfig.CredentialsStore
+	workbenchRoot    string
+	taskIntakeClient *taskintake.Client
 }
 
 func NewServer(svc *application.Service, store application.Store, hub *sse.Hub) *Server {
-	return &Server{svc: svc, store: store, hub: hub, demoRole: domain.RoleOwner}
+	return &Server{svc: svc, store: store, hub: hub, demoRole: domain.RoleOwner,
+		taskIntakeClient: taskintake.NewClient(nil)}
 }
 
 // SetDemoRole 仅用于测试 RBAC 守卫；生产由会话中间件注入角色。
@@ -80,6 +83,10 @@ func (s *Server) SetCredentialsStore(store *modelconfig.CredentialsStore) { s.cr
 
 // SetWorkbenchRoot 用于解析 DSH agent preset 目录等相对路径。
 func (s *Server) SetWorkbenchRoot(root string) { s.workbenchRoot = root }
+
+// SetTaskIntakeClient replaces the text-only provider client. Production uses
+// the default HTTP client; tests can inject a client with an httptest transport.
+func (s *Server) SetTaskIntakeClient(client *taskintake.Client) { s.taskIntakeClient = client }
 
 // guard 按权限点拦截命令；拒绝时不泄漏资源是否存在（统一 403）。
 func (s *Server) guard(perm string, next http.HandlerFunc) http.HandlerFunc {
@@ -128,6 +135,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermRead, s.handleListWorkItems))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermWorkItemWrite, s.handleCreateWorkItem))
+	// Pre-publish task clarification is stateless and text-only. It must never
+	// enter the WorkItem/Run/Coordinator execution path before user confirmation.
+	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/task-intake/analyze", s.guard(security.PermWorkItemWrite, s.handleAnalyzeTaskIntake))
 	// Native governance read/command surface. All handlers delegate to the
 	// canonical Goal/Todo/Handoff/Evidence/ProjectionRepair Service ports.
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals", s.guard(security.PermRead, s.handleListGoals))
