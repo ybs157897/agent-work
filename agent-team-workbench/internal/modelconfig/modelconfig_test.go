@@ -2,9 +2,12 @@ package modelconfig
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -178,6 +181,138 @@ func TestDelete(t *testing.T) {
 	}
 	if err := r.Delete("../escape"); !errors.Is(err, domain.ErrValidation) {
 		t.Fatal("非法 id 删除应拒绝")
+	}
+}
+
+func TestRegistryConcurrentDeletesKeepTheFileValidAndApplyEveryDelete(t *testing.T) {
+	dir := t.TempDir()
+	setup := NewRegistry(dir)
+	const count = 24
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("delete-%02d", i)
+		if err := setup.Upsert(&Entry{ID: id, DisplayName: id, ProviderID: "provider-test", Provider: "test", Model: id, APIKeyEnv: "TEST_API_KEY"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	readerErrors := make(chan error, 1)
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := setup.List(); err != nil {
+				select {
+				case readerErrors <- err:
+				default:
+				}
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	errs := make(chan error, count)
+	var workers sync.WaitGroup
+	for i := 0; i < count; i++ {
+		i := i
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			errs <- NewRegistry(dir).Delete(fmt.Sprintf("delete-%02d", i))
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(stop)
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent delete failed: %v", err)
+		}
+	}
+	select {
+	case err := <-readerErrors:
+		t.Fatalf("concurrent registry read observed invalid YAML: %v", err)
+	default:
+	}
+
+	entries, err := setup.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("concurrent deletes left models: %+v", entries)
+	}
+}
+
+func TestRegistryConcurrentUpsertAndDeletePreservesEveryChange(t *testing.T) {
+	dir := t.TempDir()
+	setup := NewRegistry(dir)
+	const count = 24
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("remove-%02d", i)
+		if err := setup.Upsert(&Entry{ID: id, DisplayName: id, ProviderID: "provider-shared", Provider: "test", Model: id, APIKeyEnv: "TEST_API_KEY"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, count*2)
+	var workers sync.WaitGroup
+	for i := 0; i < count; i++ {
+		i := i
+		workers.Add(2)
+		go func() {
+			defer workers.Done()
+			<-start
+			errs <- NewRegistry(dir).Delete(fmt.Sprintf("remove-%02d", i))
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			id := fmt.Sprintf("keep-%02d", i)
+			errs <- NewRegistry(dir).Upsert(&Entry{ID: id, DisplayName: id, ProviderID: "provider-shared", Provider: "test", Model: id, APIKeyEnv: "TEST_API_KEY"})
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent add/delete failed: %v", err)
+		}
+	}
+
+	entries, err := setup.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != count {
+		t.Fatalf("concurrent add/delete lost changes: got %d entries, want %d", len(entries), count)
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		seen[entry.ID] = true
+	}
+	for i := 0; i < count; i++ {
+		keepID := fmt.Sprintf("keep-%02d", i)
+		removeID := fmt.Sprintf("remove-%02d", i)
+		if !seen[keepID] {
+			t.Fatalf("concurrent add/delete lost %s; final ids=%v", keepID, seen)
+		}
+		if seen[removeID] {
+			t.Fatalf("concurrent add/delete retained %s; final ids=%v", removeID, seen)
+		}
 	}
 }
 

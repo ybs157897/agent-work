@@ -85,44 +85,61 @@ func parseYAMLFile(t *testing.T, path string, out any) {
 	}
 }
 
-// extractRegisteredRoutes 用 go/parser 提取 server.go 中所有
-// `mux.HandleFunc("METHOD /path", ...)` 注册项，key 形如 "GET /api/v1/me"，
-// value 为源码位置（便于失败信息定位）。
+// extractRegisteredRoutes 用 go/parser 提取 internal/httpapi 下所有生产源码
+// 中的 `mux.HandleFunc("METHOD /path", ...)` 注册项，key 形如
+// "GET /api/v1/me"，value 为源码位置（便于失败信息定位）。路由可以由
+// server.go 委托给注册函数，不能只扫描入口文件，否则会把真实注册误报为
+// 契约缺失；测试源码不属于生产路由集合。
 func extractRegisteredRoutes(t *testing.T, root string) map[string]string {
 	t.Helper()
-	src := filepath.Join(root, "internal", "httpapi", "server.go")
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, src, nil, 0)
+	dir := filepath.Join(root, "internal", "httpapi")
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("解析 %s 失败: %v", src, err)
+		t.Fatalf("读取 HTTP API 源码目录失败 %s: %v", dir, err)
 	}
+	fset := token.NewFileSet()
 	routes := map[string]string{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok || len(call.Args) != 2 {
-			return true
+	parsedFiles := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
 		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "HandleFunc" {
-			return true
+		src := filepath.Join(dir, entry.Name())
+		file, parseErr := parser.ParseFile(fset, src, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("解析 %s 失败: %v", src, parseErr)
 		}
-		lit, ok := call.Args[0].(*ast.BasicLit)
-		if !ok || lit.Kind != token.STRING {
+		parsedFiles++
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) != 2 {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "HandleFunc" {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			pattern, unquoteErr := strconv.Unquote(lit.Value)
+			if unquoteErr != nil {
+				return true
+			}
+			key, ok := normalizeRoutePattern(pattern)
+			if !ok {
+				return true
+			}
+			routes[key] = fset.Position(lit.Pos()).String()
 			return true
-		}
-		pattern, err := strconv.Unquote(lit.Value)
-		if err != nil {
-			return true
-		}
-		key, ok := normalizeRoutePattern(pattern)
-		if !ok {
-			return true
-		}
-		routes[key] = fset.Position(lit.Pos()).String()
-		return true
-	})
+		})
+	}
+	if parsedFiles == 0 {
+		t.Fatalf("从 %s 未解析到任何生产 Go 源码——路由注册方式变更后必须同步更新本门禁的自省逻辑", dir)
+	}
 	if len(routes) == 0 {
-		t.Fatalf("从 %s 未提取到任何路由——路由注册方式变更后必须同步更新本门禁的自省逻辑", src)
+		t.Fatalf("从 %s 未提取到任何生产路由——路由注册方式变更后必须同步更新本门禁的自省逻辑", dir)
 	}
 	return routes
 }

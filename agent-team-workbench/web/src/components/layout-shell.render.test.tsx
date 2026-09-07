@@ -29,4 +29,11 @@ describe('task conversation navigation', () => {
     expect(html).not.toMatch(/<a(?=[^>]*href="\/task-chat")(?=[^>]*aria-current="page")[^>]*>/);
     expect(html).toContain('plane-board-shell');
   });
+
+  it('exposes the knowledge librarian as a first-class workspace destination', () => {
+    const html = renderShell('/knowledge');
+    expect(html).toMatch(/<a(?=[^>]*href="\/knowledge")(?=[^>]*aria-current="page")[^>]*>/);
+    expect(html).toContain('知识库');
+    expect(html).toContain('mesh-bg');
+  });
 });

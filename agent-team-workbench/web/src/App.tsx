@@ -19,6 +19,7 @@ const TaskChatPage = lazy(() => import('./pages/task-chat.page'));
 const LanguageGuiDemoPage = lazy(() => import('./pages/languagegui-demo.page'));
 const LogsPage = lazy(() => import('./pages/logs.page'));
 const ModelsPage = lazy(() => import('./pages/models.page'));
+const KnowledgePage = lazy(() => import('./pages/knowledge.page'));
 const RunJournalPage = lazy(() => import('./pages/run-journal.page'));
 const SettingsPage = lazy(() => import('./pages/settings.page'));
 const TasksPage = lazy(() => import('./pages/tasks.page'));
@@ -93,6 +94,7 @@ function AnimatedRoutes() {
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
               <Route path="/models" element={<ModelsPage />} />
+              <Route path="/knowledge" element={<KnowledgePage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />

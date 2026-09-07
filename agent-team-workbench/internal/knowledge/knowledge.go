@@ -5,7 +5,11 @@
 // docs/product/product-agent-charter.md §3 为唯一依据。
 package knowledge
 
-import "context"
+import (
+	"context"
+
+	"github.com/ybs/agent-team-workbench/internal/domain"
+)
 
 // 条目生命周期状态（charter §3.1）。检索按字符串精确匹配过滤，
 // 语料侧的合法值校验由人工 review 兜底，本包不做 union 断言。
@@ -37,18 +41,26 @@ type Entry struct {
 // 或 StatusAny；Limit <=0 取默认 5，超过上限截到 20；Terms 空或全空白
 // 时无可命中条目，返回空结果。
 type Query struct {
-	Corpus string
-	Terms  []string
-	Status string
-	Limit  int
+	WorkspaceID      string
+	RequesterAgentID string
+	Scope            map[string]any
+	Corpus           string
+	Terms            []string
+	Status           string
+	Limit            int
 }
 
 // Result 是一条命中。Snippet 为正文（不含标题行）中首个含任一 term 的
 // 段落，截 200 rune；正文无命中时为空串。
 type Result struct {
-	Entry   Entry
-	Score   int
-	Snippet string
+	Entry          Entry
+	Score          int
+	Snippet        string
+	VersionID      string
+	Sources        []domain.KnowledgeSource
+	Relations      []domain.KnowledgeRelation
+	CoverageStatus domain.KnowledgeCoverageStatus
+	Truncated      bool
 }
 
 // Retriever 按语料检索条目。corpus 目录不存在不是错误（knowledge 层

@@ -122,6 +122,17 @@ func run() error {
 	if err := projectSpace.Ensure(); err != nil {
 		return fmt.Errorf("初始化项目空间 %s 失败: %w", projectSpace.Root, err)
 	}
+	knowledgeAccessDir := filepath.Join(projectSpace.Root, "knowledge-access")
+	if info, err := os.Lstat(knowledgeAccessDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("知识访问目录不能是符号链接: %s", knowledgeAccessDir)
+	}
+	if err := os.MkdirAll(knowledgeAccessDir, 0o700); err != nil {
+		return fmt.Errorf("初始化知识访问目录 %s 失败: %w", knowledgeAccessDir, err)
+	}
+	if err := os.Chmod(knowledgeAccessDir, 0o700); err != nil {
+		return fmt.Errorf("收紧知识访问目录 %s 权限失败: %w", knowledgeAccessDir, err)
+	}
+	svc.KnowledgeAccessDir = knowledgeAccessDir
 	credStore := modelconfig.NewCredentialsStore(workbenchRoot)
 	// 本机受信 registry（RFC §4.3）：root 只存在于本机 yaml；ATW_HOST_REGISTRY
 	// 缺省 ./host-registry.yaml。加载失败（含文件不存在）时本机 mount 为空、
@@ -331,17 +342,14 @@ func run() error {
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
+	svc.KnowledgeEndpoint = env("ATW_KNOWLEDGE_ENDPOINT", "")
+	svc.KnowledgeCLIPath = env("ATW_KNOWLEDGE_CLIENT", "")
 
-	// M2 consult_knowledge：知识语料检索器。root 缺省 <workbenchRoot>/knowledge，
-	// ATW_KNOWLEDGE_ROOT 覆盖；根/corpus 目录缺失不报错（语料层可空部署，
-	// FileRetriever 对不存在的 corpus 返回空结果）。
-	knowledgeRoot := env("ATW_KNOWLEDGE_ROOT", filepath.Join(workbenchRoot, "knowledge"))
-	if retriever, err := knowledge.NewFileRetriever(knowledgeRoot); err != nil {
-		log.Printf("knowledge: 检索器不可用（root %s）: %v", knowledgeRoot, err)
-	} else {
-		svc.Knowledge = retriever
-		log.Printf("knowledge: 检索器已启用（root %s）", knowledgeRoot)
-	}
+	// M2 consult_knowledge uses the published SQLite knowledge projection.  The
+	// legacy file retriever remains available to explicit import tooling/tests;
+	// it is not a second production source of effective knowledge.
+	svc.Knowledge = knowledge.NewScopedRetriever(store.Knowledge())
+	log.Printf("knowledge: SQLite published retriever enabled")
 
 	// 0021 前遗留的非终态无快照 Run：落 failed(execution_context_missing) 并触发
 	// 既有 Coordinator 恢复（RFC §6.1；无快照的 Run 永不分派）。必须先于
@@ -399,6 +407,8 @@ func run() error {
 	// 轻量 due-scan；启动先扫一次，随后持续恢复连接中断或进程重启留下的控制线。
 	go svc.RunCoordinatorRecoveryLoop(ctx, 2*time.Second)
 	log.Printf("Task Coordinator 恢复循环已启动（tick 2s）")
+	go svc.RunKnowledgeLibrarianRecoveryLoop(ctx, 2*time.Second)
+	log.Printf("Knowledge Librarian 恢复循环已启动（tick 2s）")
 
 	root := http.NewServeMux()
 	root.Handle(runnergateway.ConnectPath, gateway)

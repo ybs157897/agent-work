@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
@@ -514,6 +515,9 @@ func runInstructionExcerpt(run *domain.ExecutionRun) string {
 		}
 	}
 	instr, _ := run.Input["instruction"].(string)
+	if _, hasKnowledgeAccess := run.Input["knowledge_access"]; hasKnowledgeAccess {
+		instr, _, _ = strings.Cut(instr, "\n\n[知识管理员工具]\n")
+	}
 	runes := []rune(instr)
 	if len(runes) <= dispatchExcerptMaxRunes {
 		return instr
