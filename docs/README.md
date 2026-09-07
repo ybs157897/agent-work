@@ -1,6 +1,6 @@
 # Agent Team Workbench 文档
 
-`docs/` 保存面向维护者的产品目标、架构设计、协议说明、前端规格和外部研究资料。运行时知识语料仍位于 `agent-team-workbench/knowledge/`；文档重组不会改变检索入口或应用启动路径。
+`docs/` 保存面向维护者的产品目标、架构设计、协议说明、前端规格和外部研究资料。运行时知识状态由 `agent-team-workbench` 的 SQLite 知识层管理；`agent-team-workbench/knowledge/` 保留 Markdown 语料的表达与导入/导出格式。文档重组不会改变检索入口或应用启动路径。
 
 视觉与交互的事实源是 [`agent-team-workbench/web/DESIGN.md`](../agent-team-workbench/web/DESIGN.md)。跨项目决策留痕统一位于 [`notes/`](../notes/)。
 
@@ -11,6 +11,7 @@
 - [`product/end-goal.md`](product/end-goal.md)：最终产品目标、系统 Task Coordinator、会话管理与知识层的收口愿景。
 - [`product/loopx-native-governance-goal.md`](product/loopx-native-governance-goal.md)：LoopX 长程治理语义原生移植的目标、需求、不变式、非目标与验收合同。
 - [`product/product-agent-charter.md`](product/product-agent-charter.md)：产品 Agent 的澄清、立法和交付章程。
+- [`product/knowledge-librarian-requirements.md`](product/knowledge-librarian-requirements.md)：知识管理员 Agent 的产品边界、写入/查询闭环和验收用例。
 
 ### 架构
 
@@ -20,6 +21,7 @@
 - [`architecture/loopx-native-governance-implementation-plan.md`](architecture/loopx-native-governance-implementation-plan.md)：原生治理语义 WP0–WP7 的依赖、实施、门禁、回滚、灰度与完成审计。
 - [`architecture/clawteam-borrowings-design.md`](architecture/clawteam-borrowings-design.md)：ClawTeam/OpenClaw 借鉴设计及已采纳、挂起和否决项。
 - [`architecture/2026-09-01-loopx-task-foundation-architecture-assessment.md`](architecture/2026-09-01-loopx-task-foundation-architecture-assessment.md)：LoopX 整体迁移、原生语义移植与外部混合层的任务执行底座评估。
+- [`architecture/knowledge-librarian-design.md`](architecture/knowledge-librarian-design.md)：知识管理员的 SQLite/Markdown 版本发布、证据关系、调查 Harness、Run 接入和完成 gate。
 - [`../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md`](../notes/implemented/simplification/2026-08-31-sqlite-only-storage.md)：SQLite 单一存储、唯一迁移目录与 PostgreSQL 复活条件。
 - [`../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md`](../notes/implemented/architecture/2026-08-30-task-control-surface-completion-plan.md)：任务控制面实施边界、失败停手条件和验收矩阵。
 
@@ -27,8 +29,9 @@
 
 - [`protocol/mcp-tools.md`](protocol/mcp-tools.md)：atw-mcp 工具面与安全边界。
 - [`protocol/codex-app-server-v2.md`](protocol/codex-app-server-v2.md)：当前 Codex app-server 版本的人工可读协议基线。
+- [`protocol/knowledge-librarian.md`](protocol/knowledge-librarian.md)：知识管理员 HTTP、Run-bound CLI bridge、权限范围、作业和候选发布协议。
 
-机器可执行契约仍保留在 `agent-team-workbench/contracts/`，包括 OpenAPI、AsyncAPI 与 Runner v2 schema。
+机器可执行契约仍保留在 `agent-team-workbench/contracts/`，包括 [`web/openapi.yaml`](../agent-team-workbench/contracts/web/openapi.yaml)、AsyncAPI 与 Runner v2 schema。
 
 ### 前端
 

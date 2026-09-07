@@ -1,0 +1,356 @@
+{
+  "id": "kbj_01M1TNG6JGAD0DM926FJQCZENS",
+  "status": "completed",
+  "question": "仅依据已发布的合成验收规格，完整说明取消订单 A 涉及的相关功能、正反向关系、触发条件、规则、共同约束和验收要求。",
+  "context": "调查边界是已发布知识及其所附规格来源，用于复述规格。规格未声明的内容须标出；本次不验证仓库实现、运行状态或测试执行。",
+  "budget": {
+    "max_results": 20,
+    "max_depth": 3,
+    "max_nodes": 100,
+    "max_bytes": 262144,
+    "max_searches": 20,
+    "max_relations": 200,
+    "max_turns": 8,
+    "max_input_tokens": 0,
+    "max_output_tokens": 0,
+    "max_duration_seconds": 300
+  },
+  "used": {
+    "turns": 4,
+    "searches": 1,
+    "reads": 6,
+    "relations": 14,
+    "bytes": 33525,
+    "input_tokens": 167716,
+    "output_tokens": 3127
+  },
+  "coverage": {
+    "status": "complete",
+    "entries": [
+      {
+        "subject": "function",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "related_item_ids": [
+          "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+          "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+          "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+        ],
+        "note": "三个功能及全部可见端点均已读取。"
+      },
+      {
+        "subject": "rules",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "已覆盖取消资格、状态与事件顺序、预占及支付条件和各自幂等要求。"
+      },
+      {
+        "subject": "upstream_dependencies",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "B 依赖并订阅 A 的事件；C 由 A 在已支付取消条件下触发。A 的其他上游未声明，规格声明无其他已确认依赖。"
+      },
+      {
+        "subject": "downstream_impacts",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "A 触发库存释放与条件退款；已核对全部双向关系，B、C 无其他已声明下游。"
+      },
+      {
+        "subject": "shared_constraints",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+        ],
+        "note": "三对共享订单号关系及失败重试记录、部分完成不能视为全部成功均已覆盖。"
+      },
+      {
+        "subject": "history_validation",
+        "status": "complete",
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "规格仅 v1，无其他已确认依赖或否决方案；六类验收要求已复述，未声明测试通过，未进行实现或运行验证。"
+      }
+    ],
+    "visited_nodes": 3,
+    "visited_relations": 7,
+    "truncated": false,
+    "budget": {
+      "max_results": 20,
+      "max_depth": 3,
+      "max_nodes": 100,
+      "max_bytes": 262144,
+      "max_searches": 20,
+      "max_relations": 200
+    }
+  },
+  "index_revision": 5,
+  "visited_version_ids": [
+    "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF",
+    "kbv_01M1TNBNJ83YM3Z26YNYN523F3",
+    "kbv_01M1TKYA2Y4RW7ZAW6ZKXFVAPV"
+  ],
+  "required_item_ids": [
+    "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+    "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+    "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+  ],
+  "required_relations": [
+    {
+      "id": "kbr_01M1TNBNJ727VVVYVSPWZKJQMN",
+      "source_version_id": "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF",
+      "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "to_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "kind": "shares_state",
+      "source_ids": [
+        "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ7G9ZCBHQWHEXRAZC1",
+      "source_version_id": "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF",
+      "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+      "kind": "shares_state",
+      "source_ids": [
+        "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ7PP81AQPEKSYSBPNR",
+      "source_version_id": "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF",
+      "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "to_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "kind": "triggers",
+      "source_ids": [
+        "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ7VGHYCFDRY7XRP2A8",
+      "source_version_id": "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF",
+      "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+      "kind": "triggers",
+      "source_ids": [
+        "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ8JRH4KSRA3RMRF31C",
+      "source_version_id": "kbv_01M1TNBNJ83YM3Z26YNYN523F3",
+      "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+      "kind": "shares_state",
+      "source_ids": [
+        "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ8KYYKMS58AJ4E0AD0",
+      "source_version_id": "kbv_01M1TNBNJ83YM3Z26YNYN523F3",
+      "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "to_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "kind": "depends_on",
+      "source_ids": [
+        "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+      ]
+    },
+    {
+      "id": "kbr_01M1TNBNJ8R30RYT0DWEJ5T5XV",
+      "source_version_id": "kbv_01M1TNBNJ83YM3Z26YNYN523F3",
+      "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "to_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "kind": "subscribes_to",
+      "source_ids": [
+        "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+      ]
+    }
+  ],
+  "result": {
+    "action": "finish",
+    "answer": "依据已发布的取消订单 A、库存释放 B、退款 C 及其所附 acceptance-specification@v1，相关功能共三个，已确认的结构化关系去重后共七条。以下为合成验收规格的复述；来源为提交的规格摘录，未经外部核验，不代表仓库实现、运行状态或测试已通过。\n\n功能与规则：\n1. A（取消订单）：仅允许未发货订单取消；必须先将订单状态更新为已取消，再发出 OrderCancelled 事件；重复取消须幂等。\n2. B（库存释放）：订阅并依赖 A 的 OrderCancelled 事件；仅存在库存预占时实际释放，无预占时不释放；每笔预占只释放一次。\n3. C（退款）：仅在已支付订单取消时由 A 触发，未支付订单不退款；退款按订单号幂等。\n\n正反向关系与触发条件：\n- A → B：triggers。A 先更新取消状态，再通过 OrderCancelled 事件触发 B；有无预占决定 B 是否实际释放。\n- B → A：depends_on 与 subscribes_to 两条关系。反向查看 A 时，B 是依赖并订阅其事件的下游；这不表示 A 依赖 B，也不表示 B 反向触发 A。\n- A → C：triggers，仅已支付订单取消时成立。从 C 反向查看，其触发来源为 A；未支付不触发退款。\n- A 与 B、A 与 C、B 与 C：三条 shares_state 关系，共享内容为订单号。共享关系可从任一端理解，不构成执行先后或调用关系。\n- 规格未声明 A 的其他上游功能，也未声明 B、C 的其他下游功能；历史声明为无其他已确认依赖。\n\n共同约束：A/B/C 共享订单号；失败须保留重试记录；不得将部分完成认定为全部成功。幂等要求分别体现为 A 的重复取消幂等、B 的每笔预占只释放一次、C 的按订单号幂等。\n\n验收要求：规格明确列出未支付、已支付、有预占、无预占、重复取消、事件重投递六类覆盖。结合已声明规则，未支付取消应不退款，已支付取消应触发退款；有预占时释放且每笔只释放一次，无预占时不释放；重复取消须保持幂等，事件重投递不得造成同一预占重复释放，退款处理仍须遵守订单号幂等。取消资格、状态更新先于事件发送、失败保留重试记录及部分完成不能计为全部成功同样属于须满足的规格规则。规格没有给出完整用例组合、具体测试步骤或测试执行结果。\n\n历史与未声明内容：规格历史仅 v1，声明无其他已确认依赖或否决方案；A、B 知识条目的当前内容版本为 2，C 为 1，不能据此推断存在规格 v2。规格未声明 C 订阅 OrderCancelled，未规定 B 与 C 的执行先后，也未说明退款采用直接调用还是事件机制。重试次数、间隔、补偿或事务机制，以及重复取消是否再次发出事件均未声明，不作补充推断。上述未声明内容已明确标出，所请求的规格复述已覆盖全部可见功能和关系。",
+    "citations": [
+      {
+        "excerpt": "A为取消订单，仅允许未发货订单取消，必须先更新订单状态为已取消，再发出OrderCancelled事件，重复取消幂等。",
+        "item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+        "source_id": "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+        "version_id": "kbv_01M1TNBNJ7S4FJDKC6C4PPSMKF"
+      },
+      {
+        "excerpt": "B为库存释放，订阅OrderCancelled事件；存在库存预占时才释放，每笔预占只释放一次。A触发B，B依赖A的事件。",
+        "item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+        "source_id": "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+        "version_id": "kbv_01M1TNBNJ83YM3Z26YNYN523F3"
+      },
+      {
+        "excerpt": "C为退款，仅已支付订单取消时触发，未支付订单不退款，按订单号幂等。A在已支付条件下触发C。",
+        "item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+        "source_id": "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54",
+        "version_id": "kbv_01M1TKYA2Y4RW7ZAW6ZKXFVAPV"
+      },
+      {
+        "excerpt": "A/B/C共享订单号；失败保留重试记录，不把部分完成当成全部成功。验收覆盖未支付、已支付、有预占、无预占、重复取消、事件重投递。历史仅v1，无其他已确认依赖或否决方案。",
+        "source_id": "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+      }
+    ],
+    "conflicts": [],
+    "coverage": [
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "三个功能及全部可见端点均已读取。",
+        "related_item_ids": [
+          "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+          "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+          "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+        ],
+        "status": "complete",
+        "subject": "function"
+      },
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "已覆盖取消资格、状态与事件顺序、预占及支付条件和各自幂等要求。",
+        "status": "complete",
+        "subject": "rules"
+      },
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "B 依赖并订阅 A 的事件；C 由 A 在已支付取消条件下触发。A 的其他上游未声明，规格声明无其他已确认依赖。",
+        "status": "complete",
+        "subject": "upstream_dependencies"
+      },
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "A 触发库存释放与条件退款；已核对全部双向关系，B、C 无其他已声明下游。",
+        "status": "complete",
+        "subject": "downstream_impacts"
+      },
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+        ],
+        "note": "三对共享订单号关系及失败重试记录、部分完成不能视为全部成功均已覆盖。",
+        "status": "complete",
+        "subject": "shared_constraints"
+      },
+      {
+        "evidence_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+          "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+        ],
+        "note": "规格仅 v1，无其他已确认依赖或否决方案；六类验收要求已复述，未声明测试通过，未进行实现或运行验证。",
+        "status": "complete",
+        "subject": "history_validation"
+      }
+    ],
+    "evidence_ids": [
+      "kbs_01M1TNBNJ7W71H7RQ3A66GK46D",
+      "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA",
+      "kbs_01M1TKYA2Y5YJ4ZFG8QBNHJK54"
+    ],
+    "gaps": [],
+    "relations": [
+      {
+        "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+        "kind": "shares_state",
+        "rationale": "A 与 B 共享订单号。",
+        "source_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+        ],
+        "to_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B"
+      },
+      {
+        "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+        "kind": "shares_state",
+        "rationale": "A 与 C 共享订单号。",
+        "source_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+        ],
+        "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+      },
+      {
+        "condition": "A 先更新订单状态为已取消，再发出 OrderCancelled 事件；B 仅在存在库存预占时实际释放。",
+        "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+        "kind": "triggers",
+        "source_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+        ],
+        "to_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B"
+      },
+      {
+        "condition": "仅已支付订单取消时触发；未支付订单不退款。",
+        "from_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+        "kind": "triggers",
+        "source_ids": [
+          "kbs_01M1TNBNJ7W71H7RQ3A66GK46D"
+        ],
+        "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+      },
+      {
+        "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+        "kind": "shares_state",
+        "rationale": "B 与 C 共享订单号。",
+        "source_ids": [
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+        ],
+        "to_item_id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A"
+      },
+      {
+        "condition": "依赖 A 在订单状态更新为已取消后发出的 OrderCancelled 事件。",
+        "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+        "kind": "depends_on",
+        "source_ids": [
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+        ],
+        "to_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW"
+      },
+      {
+        "condition": "订阅 A 发出的 OrderCancelled 事件。",
+        "from_item_id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+        "kind": "subscribes_to",
+        "rationale": "终点为事件生产功能 A，订阅对象为其 OrderCancelled 事件。",
+        "source_ids": [
+          "kbs_01M1TNBNJ8YP8X66MRCXGGGKEA"
+        ],
+        "to_item_id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW"
+      }
+    ],
+    "snapshot_ids": null,
+    "status": "complete",
+    "summary": "已读取三个已发布功能及三个规格来源，并核对双向关系；完整复述七条已确认关系、条件、幂等规则、共同约束及六类验收覆盖，仅说明规格要求。"
+  }
+}

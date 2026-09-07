@@ -141,23 +141,23 @@ Planner 不是裸的 provider 调用，也不是可被用户删除、改提示�
 | join / 审批钩子 / 步数与预算护栏 | ✅ 已有（plan executor guardrails，`35b55c5`） |
 | 任务级执行锁 | ✅ 已有（执行锁迁移 0014，merge `9c3dd6c`）；公开根 Task 不走手工 claim |
 | consult_knowledge / KnowledgeRetriever（既有 Plan 预取） | ✅ 已有（`internal/knowledge` + Plan 动词，migration 0009）；知识管理员查询仍走独立 Harness |
-| SQLite 知识条目/版本/来源/关系与私有/共享范围 | ⚠️ 已有代码、迁移与 RoundTrip 集成验证；真实浏览器和首个真实模型作业验收仍待完成 |
-| 知识管理员调查/整理/发布闭环 | ⚠️ 已有 Run-bound Harness、候选收件箱、版本发布和关系覆盖逻辑；真实模型多轮调查与浏览器验收仍待完成 |
-| 本机 Worker 知识 capability bridge | ⚠️ 仅本机 Host 的 0600 `--access-file` Shell bridge 已实现；远程 Worker 不支持本地文件桥 |
-| 来源核验边界与不完备结果 | ⚠️ 控制面已写入受控来源核验标记；未经授权、未读正文和预算截断仍必须显示为未验证/缺口 |
+| SQLite 知识条目/版本/来源/关系与私有/共享范围 | ✅ 已实现并通过迁移、RoundTrip 和真实浏览器验证；位于 `codex/knowledge-librarian` 支线 |
+| 知识管理员调查/整理/发布闭环 | ✅ 本机真实多轮整理、浏览器发布和关系查询已通过；证据见[验收记录](../review/knowledge-librarian-acceptance.md) |
+| 本机 Worker 知识 capability bridge | ✅ 本机 Host 的 0600 `--access-file` Shell bridge 已通过真实 ask/read/submit；远程 Worker 工具注册与凭据传输未实现 |
+| 来源核验边界与不完备结果 | ✅ 已验证受控来源标记、显式缺口及预算收口；未经外部核验的规格摘录不会被标成真实实现已验证 |
 | 任务控制面（Host/Location/Snapshot、TaskComment、Review Queue/Brief、Runner v2） | ✅ 已实现并通过代码、迁移、前端与浏览器验收 |
 | 缓存命中率面板（usage_cached → UI） | ⚠️ 部分：usage_cached 已随 usage.updated 进入前端 store，UI 面板未做 |
 | Agent 自识别会话策略（分类器 + 信号触发） | ❌ 待做 |
 
 ## 分期路线（每期独立可用）
 
-> **进度（2026-09-06）**：M1–M4、系统 Task Coordinator 与任务控制面补全已完成。知识管理员的 SQLite/Run/UI 闭环已有实现和集成验证，但首个真实模型调查和真实浏览器路径仍是未关闭的验收门；远程 Worker 本机 Shell bridge 尚未实现。后续仍保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
+> **进度（2026-09-07）**：M1–M4、系统 Task Coordinator 与任务控制面补全已完成。知识管理员的 SQLite/Run/UI 本机闭环已在独立支线实现并通过真实模型与浏览器验收，尚未合并主线；远程 Worker 工具注册与凭据传输未实现。后续仍保留会话自识别分类器、缓存命中率 UI 面板与 codexapp multi_vendor 能力声明。
 
 - **M1**：plan 词汇表 + plans 表 + 确定性执行器（dispatch + defer）+ 子任务树 —— ✅ 完成
 - **M2**：planner/评估执行能力 + task_sessions 树形化（parent_anchor_id）+ 会话自识别分类器 —— 除分类器外完成；planner 身份已由后续系统 Task Coordinator 决策收口
 - **M3**：既有 `consult_knowledge` + `KnowledgeRetriever` + 缓存命中率面板 —— 前两项完成，面板未做；知识管理员扩展另有独立验收门
 - **M4**：多 agent 路由全编排 + 认领模式 + 审批/预算护栏全量 —— ✅ 完成
-- **知识管理员扩展**：SQLite 共享/私有知识、候选→整理→发布、关系调查和本机 Worker bridge —— ⚠️ 代码与集成验证完成，真实模型/浏览器验收未完成；远程 Worker 本机 bridge 未实现
+- **知识管理员扩展**：SQLite 共享/私有知识、候选→整理→发布、关系调查和本机 Worker bridge —— ✅ 本机闭环通过代码、集成与真实模型/浏览器验证；远程 Worker 工具注册与凭据传输未实现
 
 ## 参考与决策留痕
 

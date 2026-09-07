@@ -1,12 +1,14 @@
 # 知识管理员的单一权威与有界调查
 
-Status: proposed
+Status: implemented
 
 ## 决策与理由
 
 按[完整方案](../../../docs/architecture/knowledge-librarian-design.md)实施专用知识管理员Harness，沿现有Run/事务/事件控制面运行。正文用Markdown表达，版本/来源/关系/候选/作业保存于既有SQLite；发布构建检索投影，满足读多写少而不引入每次全量文件扫描。
 
 选择SQLite基于原子发布和已有控制面权威，不基于高频写假设。检索完整性由覆盖清单、证据、关系前沿与预算共同判断；未知资料不可能保证世界范围完备，必须显式标注缺口。
+
+本机实现及真实模型、界面与存储验收见[验收记录](../../../docs/review/knowledge-librarian-acceptance.md)。远程 Worker 的工具注册与凭据传输不在当前实现范围内。
 
 ## 放弃了什么
 

@@ -1,6 +1,6 @@
 # 知识管理员 Agent：需求与验收契约
 
-Status: proposed
+Status: implemented local scope; see acceptance record
 
 Owner: knowledge product / acceptance
 
@@ -8,13 +8,13 @@ Date: 2026-09-06
 
 ## 0. 这份文档解决什么问题
 
-知识管理员 Agent 是知识层的专职调查、整理和发布角色。其他 Agent 完成任务后，可以提交需要长期保留的事实、决策和关系证据；授权的 Agent 或人可以向知识管理员提问。知识管理员负责把问题拆成可检查的覆盖项，召回并读取原文，展开正向和反向关系，处理重复与冲突，补查缺口，再交付带引用的结构化结果。
+知识管理员 Agent 是知识层的专职调查和整理角色，发布通过显式管理命令完成。其他 Agent 完成任务后，可以提交需要长期保留的事实、决策和关系证据；授权的 Agent 或人可以向知识管理员提问。知识管理员负责把问题拆成可检查的覆盖项，召回并读取原文，展开正向和反向关系，处理重复与冲突，补查缺口，再交付带引用的结构化结果。
 
 本契约只规定产品行为和验收面。实现基线已固定为：workbench SQLite 保存知识与作业状态，Markdown 作为正文表达/导入导出格式，发布时构建可重建的检索投影。Harness 的进程接法与普通/复杂查询路由按该基线实现。
 
-本契约延续既有知识层方向：workspace 级知识层、KnowledgeRetriever 抽象、Agent 通过 consult_knowledge 消费知识。[end-goal.md:119-121] 知识是共享领域事实，角色提示词定义 Agent 是谁以及如何工作。[knowledge/README.md:1-3]
+本契约延续[终局文档](end-goal.md)中的知识层方向：workspace 级知识层、KnowledgeRetriever 抽象、Agent 通过 consult_knowledge 消费知识。[知识层说明](../../agent-team-workbench/knowledge/README.md)区分共享领域事实与定义 Agent 身份及工作方式的角色提示词。
 
-当前实现对账（2026-09-06）：SQLite 条目、版本、来源、关系、作业和 Run-bound 能力已有代码与 RoundTrip 集成验证；本机 Worker 使用 0600 Run capability 文件和 `--access-file` Shell bridge，远程 Worker 的本机文件 bridge 未实现。知识管理员的真实多轮模型调查和真实浏览器路径尚未完成验收，本文不把它们标为成功。
+当前实现对账（2026-09-06）：SQLite 条目、版本、来源、关系、作业和 Run-bound 能力已经实现；本机 Worker 使用 0600 Run capability 文件和 `--access-file` Shell bridge，远程 Worker 的工具注册与凭据传输未实现。真实多轮整理、浏览器发布、仅问 A 带出 B/C 的关系调查，以及普通 Agent 的 ask/read/submit 已验证；任务终态自动收件由应用集成测试覆盖。具体证据与限制见[验收记录](../review/knowledge-librarian-acceptance.md)。
 
 ## 1. 已授权目标与边界
 
@@ -62,7 +62,7 @@ Date: 2026-09-06
 | 用户 | 确认产品需求、范围、优先级和需要人拍板的规则 | 为每条普通事实逐条盖章 |
 | Harness/控制面 | 应用调用方、来源和 scope 权限，固定 run 快照，提供幂等和预算边界 | 代替知识管理员解释证据语义 |
 
-产品章程已把产品 Agent 定义为 PRD 法典的唯一立法者；知识管理员因此是编排与整理者，领域立法权仍属于 owner。[product-agent-charter.md:14-21]
+[产品章程](product-agent-charter.md)已把产品 Agent 定义为 PRD 法典的唯一立法者；知识管理员因此是编排与整理者，领域立法权仍属于 owner。
 
 ## 3. 知识对象的逻辑状态
 

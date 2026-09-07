@@ -1,6 +1,6 @@
 # Knowledge engine owner state
 
-Status: implementing
+Status: completed-local-scope
 
 Worktree: /Users/yin/Documents/ybs/code/agent-work-knowledge-librarian
 Branch: codex/knowledge-librarian
@@ -43,7 +43,7 @@ Branch: codex/knowledge-librarian
   immutable Markdown, idempotency and index state.
 - [x] Engine/scoped-retriever regressions for sentinel TopK, depth/node/relation/
   byte budgets, conflict coverage, nil-clock concurrency, and A→B evidence.
-- [ ] Parent integration with HTTP/Run Harness and final end-to-end acceptance.
+- [x] Parent integration with HTTP/Run Harness and final end-to-end acceptance; see `docs/review/knowledge-librarian-acceptance.md`.
 
 ## Validation
 

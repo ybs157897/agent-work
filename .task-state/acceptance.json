@@ -1,0 +1,76 @@
+{
+  "dir": "/Users/yin/Documents/ybs/code/agent-work-knowledge-librarian/agent-team-workbench/.agent-work/knowledge-acceptance-ijkvdhca",
+  "backend_port": 61413,
+  "frontend_port": 61414,
+  "root": "/Users/yin/Documents/ybs/code/agent-work-knowledge-librarian/agent-team-workbench",
+  "workspace_id": "ws_01M1TEPKAFT9QSM8R0ZZXZWCJY",
+  "librarian_agent_id": "agent_01M1TFZP1FBZJY1SBY2N3YHJP8",
+  "worker_work_item_id": "wi_01M1TJH88ANHS4ZQP3BB8K9Z1Q",
+  "corrected_submission_id": "kss_01M1THZ3SPSQKKY9REFMTMX6MH",
+  "bootstrap_incomplete_job_id": "kbj_01M1TJF0NAGJT83KV371S1NMQ0",
+  "cancelled_job_id": "kbj_01M1TJKWKCBRF25GQH24DN04AW",
+  "cancelled_run_id": "run_01M1TJM5DFWA8YTKS84YXZVV9H",
+  "curation_job_id": "kbj_01M1TKTWG4B98B14FSM38HZSM3",
+  "curated_submission_id": "kss_01M1TKYA2WQ9X4BAQJ8JZB8HSX",
+  "published_items": [
+    {
+      "id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+      "title": "退款 C"
+    },
+    {
+      "id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "title": "取消订单 A"
+    },
+    {
+      "id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "title": "库存释放 B"
+    }
+  ],
+  "worker_run_id": "run_01M1TM1J2E1SC9086H5PVZW5WV",
+  "inquiry_job_id": "kbj_01M1TM1HJ3EXZ3SW4VG8K09CCG",
+  "worker_inquiry_job_ids": [
+    "kbj_01M1TM8XHVW1085M6STGSBTEZP"
+  ],
+  "relation_revision_submission_id": "kss_01M1TMFG69RA7CF2R9B7Y97XG8",
+  "worker_finished": true,
+  "no_change_run_id": "run_01M1TN8DCCY466BMBM9PPF67WQ",
+  "relation_curation_job_id": "kbj_01M1TN70SF5DK1FW8N3194X0XN",
+  "relation_curated_submission_id": "kss_01M1TNBNJ6GQHKM5Y8J180YBNG",
+  "published_relation_count": 7,
+  "final_inquiry_job_id": "kbj_01M1TNG6JGAD0DM926FJQCZENS",
+  "final_inquiry_result_digest": "a8eb97255554ceb875b5b3848f74460e35c7dba6391d85b73ae0b8a40d87b502",
+  "final_inquiry_relation_count": 7,
+  "published_versions": [
+    {
+      "id": "kb_01M1TKYA2X82BDBAHXYXQ2DS3A",
+      "title": "退款 C",
+      "version": 1
+    },
+    {
+      "id": "kb_01M1TKYA2WH7TSPBQVBCPY06EW",
+      "title": "取消订单 A",
+      "version": 2
+    },
+    {
+      "id": "kb_01M1TKYA2W52GYMV6RQQAEB63B",
+      "title": "库存释放 B",
+      "version": 2
+    }
+  ],
+  "final_ui_db": "/Users/yin/Documents/ybs/code/agent-work-knowledge-librarian/agent-team-workbench/.agent-work/knowledge-acceptance-ijkvdhca/final-ui-7pkeu_su.db",
+  "repeal_checks": {
+    "default_list_excludes_C": true,
+    "C_state": "repealed",
+    "C_fixed_version": "kbv_01M1TKYA2Y4RW7ZAW6ZKXFVAPV",
+    "C_source_count": 1,
+    "historical_job_unchanged": true,
+    "historical_coverage_nodes": 3,
+    "historical_coverage_relations": 7
+  },
+  "status": "completed",
+  "browser_space_id": 15,
+  "browser_closed": true,
+  "backend_stopped": true,
+  "copied_auth_and_config_removed": true,
+  "final_ui_driver": "Production HTTP/application modules with copied database; no model execution"
+}

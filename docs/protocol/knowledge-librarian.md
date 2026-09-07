@@ -1,6 +1,6 @@
 # 知识管理员 Agent：部署与调用协议
 
-Status: implementation baseline; real model/browser acceptance pending
+Status: implemented local scope; see acceptance record
 
 Date: 2026-09-06
 
@@ -19,7 +19,9 @@ Date: 2026-09-06
 
 知识层只纳入当前授权范围内的已入库知识和提交证据。代码、测试或其他外部源码读取默认关闭；来源策略未显式授权时，管理员必须把该部分视为缺口，不能声称已覆盖。
 
-实现状态（2026-09-06）：知识 SQLite/版本发布、Run-bound Harness、候选收件箱和查询关系闭环已有代码与 RoundTrip 集成验证；首个真实多轮模型调查和完整浏览器路径尚未验收，远程 Worker 的本机 Shell bridge 未实现。实现、集成测试或局部 UI 通过不等于知识内容已经完备。
+检索 `terms` 采用任一词匹配的候选召回语义（OR）；Workspace、可见性、scope 和状态限制仍共同生效（AND）。多主体检索中某个词未命中，不会抹掉其他主体的候选；结果上限及截断标识仍约束调查完整性。
+
+实现状态（2026-09-06）：知识 SQLite/版本发布、Run-bound Harness、候选收件箱和查询关系闭环已有自动化及真实模型/浏览器验证，见[验收记录](../review/knowledge-librarian-acceptance.md)。远程 Worker 的工具注册与凭据传输未实现。功能验收通过不等于知识内容对任意问题已经完备。
 
 ## 2. 身份与范围
 
@@ -31,7 +33,7 @@ Date: 2026-09-06
 - 配置、候选提交、整理和发布需要 PermAgentWrite；
 - 创建调查和取消作业需要 PermRunControl。
 
-Workspace 路径是第一层隔离。默认读取是共享视图。管理身份可以通过 query 的 agent_id 查看某个 Agent 的私有视图；这个参数只选择读取视角，不授予额外权限，也不能改变数据中的 owner。
+Workspace 路径是第一层隔离。默认读取是共享视图。已经通过 PermAgentWrite 的管理身份可以通过 query 的 agent_id 选择某个 Agent 的私有视图及维护范围；这个参数不能赋予管理权限，也不能改变数据中的 owner。人可在该范围内显式发布或废止知识，审计仍记录人为管理操作；Run-bound Agent 接口没有发布/废止入口。
 
 ### 2.2 Run-bound Agent
 
@@ -130,7 +132,7 @@ GET item、GET item/version 返回：
 
 | 来源类型 | 受控核验标记 | UI/调用方可表达的含义 |
 |---|---|---|
-| run | `run_output_verified` 且 `digest_verified=true` | 已核验运行记录输出和 digest |
+| run | `run_output_verified` 且 `digest_verified=true` | 来源 Run 已终态，已核验其固定输出和 digest |
 | artifact | `artifact_manifest_verified` 且 `content_read=false` | 仅核验 artifact manifest/digest，不能说正文已核验 |
 | work_item | `work_item_reference_verified` | 已核验任务引用，不代表任务验收通过 |
 | document / user | `submitted_excerpt` | 已登记提交摘录，不代表系统重新读取来源 |

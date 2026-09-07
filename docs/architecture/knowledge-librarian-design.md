@@ -1,6 +1,6 @@
 # 知识管理员：读写闭环与 Harness 实施方案
 
-状态：实施基线。日期：2026-09-06。基线：main@12906d6。
+状态：已实现本机闭环；证据见[验收记录](../review/knowledge-librarian-acceptance.md)。日期：2026-09-06。基线：main@12906d6。
 
 ## 1. 目标与边界
 
@@ -12,11 +12,11 @@
 
 本次交付包含：知识结构与版本发布、候选提交与核实、双向关系检索、专用多轮调查/整理 Harness、任务结束收件、HTTP/Agent 查询和提交接口、管理与查询界面、迁移与回归/真实路径验收。
 
-知识管理员可以读取哪些外部源码尚未由用户定案。本次按显式来源授权配置执行；未授权代码/测试不能自动扫描，不可把该部分标成已覆盖。已入库证据、引用与关系是默认调查范围。
+外部源码读取默认关闭；只有来源策略显式授权的代码/测试才进入调查范围，未授权来源不能自动扫描，也不能被标成已覆盖。已入库证据、引用与关系是默认调查范围。
 
 ## 2. 当前事实与接点
 
-- `internal/knowledge` 当前按 corpus 遍历 Markdown；Query 没有 Workspace/Agent 范围。
+- legacy `internal/knowledge` 的 FileRetriever 仅服务显式 corpus 导入/旧 Plan 测试；生产知识管理员使用带 Workspace/Agent scope 的 SQLite KnowledgeRepo 与已发布检索投影。
 - `application/plan.go` 的 consult_knowledge 预取结果存入 Plan，dispatch 再注入子任务，不是运行中调查工具。
 - `application/runs.go` 创建 Run 时固化输入，并在终态执行应用层推进钩子；普通 chat WorkItem 可承载管理员的独立会话。
 - `migrations/0001_init.sql` 已有 Artifact、event/outbox；生成产物是 draft，验收才 accepted。
@@ -40,9 +40,11 @@
 | 提交回执 | 调用者与来源 Run、客户端幂等键、基础版本、候选变化、处理结论 |
 | 知识作业 | 查询/整理目的、当前 Run、轮次、预算、覆盖表、证据集、观察、终态结果 |
 
-工作区是最外层隔离；`agent` 可见知识只对归属 Agent 和有管理权限的人开放，共享知识按项目适用范围过滤。授权身份由调用边界提供，数据中的 owner/source 字段不能自行授予读写权限。
+工作区是最外层隔离；`private` 可见知识只对归属 Agent 和显式选择该 Agent 视图的管理者开放，`workspace` 共享知识按项目适用范围过滤。普通共享查询没有管理者全库读取旁路。授权身份由调用边界提供，数据中的 owner/source 字段不能自行授予读写权限。
 
 已发布正文/证据保持不可变，修改追加版本。发布必须校验 base_version；同键同内容重放返回既有结果，同键不同内容拒绝。更改或废止关系必须有证据与修订理由。候选知识不进入默认有效检索。
+
+整理继承可信原提交的 owner、visibility 和 scope，模型遗漏字段不会扩大访问或适用范围；无法确定归属的混合材料留待复核。整理结果顶层的关系也必须归入对应修订版本，不能仅出现在回答中。没有涉及任何修订条目的关系会被拒绝。
 
 ## 4. 查询 Harness
 
@@ -74,6 +76,17 @@
 
 ## 5. 写入 Harness
 
+```mermaid
+flowchart LR
+  W[执行 Agent] -->|任务终态收件或主动提交| S[持久候选回执]
+  S --> C[管理员整理 Harness]
+  C -->|搜索已有主体、读取来源、核对关系| R[待复核版本与变化集]
+  R -->|管理入口原子发布| K[(SQLite 已发布知识)]
+  W -->|问题与用途| Q[管理员调查 Harness]
+  K -->|检索、固定版本、双向关系| Q
+  Q -->|知识包、引用、条件、覆盖缺口| W
+```
+
 执行 Agent 提交带证据的增量：新增事实、修订/废止建议、关系新增/解除、来源引用、适用范围、基础知识版本与未确认项。允许明确 no_change，禁止以每 Run 产一篇重复笔记作为完成标准。
 
 接收先持久化并返回 receipt，再异步整理；业务任务不等待低频知识整理。任务终态检查知识变化输出/已登记产物，可生成待整理材料；失败和取消任务也可保留观察，但不伪造根因或已验收事实。
@@ -92,6 +105,7 @@
 - 用户取消作业前转到原 Run 的取消面；终态后迟到模型输出不再发布或继续调查。
 - 主控制面提供 workspace-scoped HTTP 查询、来源/提交、发布、作业及取消接口；写操作复用幂等与权限门禁。
 - Agent 入口使用绑定 Run 的能力范围，不能沿用全库裸读取的 MCP 身份模型。内置 Plan 查询与任务知识输入使用同一检索服务。
+- Worker 的 Shell bridge 当前仅对本机 Execution Host 注入 0600 Run capability 文件与 `--access-file` 命令；远程 Worker 不接收本地文件桥，远程知识管理员 Run 仍沿既有 Run/Runner/Adapter 协议运行。
 - 必须实测普通 Worker 的查询→结果→继续执行、任务输出→候选→整理→发布→下一次查询；未接线的 Runtime 标记 capability missing，禁止假装可用。
 
 ## 7. 管理界面
@@ -130,3 +144,13 @@
 后端 go build ./...、go vet ./...、触面 go test -race -count=1；前端 pnpm tsc -b、pnpm test、pnpm lint。检查gofmt、迁移与git diff。仅任务worktree内修改，文档和功能分刀；不自动合并或push。
 
 本文件规定应实现的行为，不是完成声明。实际完成度、测试命令和剩余gate以实施状态和最终验收记录为准。
+
+## 11. 部署与运行边界
+
+1. 按现有迁移入口将数据库升级至 `0047`；新增 DDL 仅在 `migrations/`。
+2. 构建 `cmd/control-plane` 和 `cmd/atw-knowledge`。启动控制面时设置 `ATW_KNOWLEDGE_ENDPOINT` 为本机 Worker 实际可达的控制面地址，`ATW_KNOWLEDGE_CLIENT` 为客户端可执行文件绝对路径；未配置时不注入 Shell bridge。
+3. 在“知识库”选择具有可用 Runtime、模型和执行位置的 Agent，启用管理员。自动收集并整理是独立开关，默认关闭。已有任务不需要迁移为新的执行模型。
+4. Task 终态只进行事务内收件入队；两秒恢复循环处理队列和知识作业。管理员的 Chat/Run 标记排除自收件；普通 Chat 不自动收集，可显式调用 `submit`。
+5. 本机能力文件位于项目运行目录的 `knowledge-access/`，目录权限 0700、文件权限 0600；凭据不写入 Run 输入、提示词或响应。Run 终态清理文件并拒绝访问。
+   CLI bridge 沿用当前 Runtime 的 Shell/网络权限；原生沙箱禁止本机 HTTP 时仍经过现有命令审批，不静默放开网络权限。部署时应确认 Worker 对所配置控制面地址的访问策略。
+6. 远程 Worker 的工具注册与凭据运输、自动扫描源码/网络、语义向量索引和 Git 文件编辑导入不在当前实现中。已提交的文档/代码摘录保留未独立核验标识；来源可定位不等于业务事实已验证。
