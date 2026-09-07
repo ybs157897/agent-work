@@ -1,8 +1,11 @@
 package modelconfig
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -77,6 +80,73 @@ func TestCredentialsStoreGetDistinguishesIOError(t *testing.T) {
 	}
 	if _, ok, err := store.Get("prov-none"); err == nil || ok {
 		t.Fatalf("IO 错误被吞掉: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCredentialsStoreConcurrentWritesPreserveEveryKeyAndValidYAML(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ATW_AGENT_WORK_DIR", filepath.Join(dir, "shared-work"))
+	stores := []*CredentialsStore{NewCredentialsStore(dir), NewCredentialsStore(filepath.Join(dir, "."))}
+
+	start := make(chan struct{})
+	stop := make(chan struct{})
+	readerErrors := make(chan error, 1)
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, _, err := stores[0].Get("provider-00"); err != nil {
+				select {
+				case readerErrors <- err:
+				default:
+				}
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	const count = 24
+	errs := make(chan error, count)
+	var workers sync.WaitGroup
+	for i := 0; i < count; i++ {
+		i := i
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			errs <- stores[i%len(stores)].Set(fmt.Sprintf("provider-%02d", i), fmt.Sprintf("sk-test-%02d", i))
+		}()
+	}
+	close(start)
+	workers.Wait()
+	close(stop)
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent credential write failed: %v", err)
+		}
+	}
+	select {
+	case err := <-readerErrors:
+		t.Fatalf("concurrent credential read observed invalid YAML: %v", err)
+	default:
+	}
+
+	for i := 0; i < count; i++ {
+		providerID := fmt.Sprintf("provider-%02d", i)
+		want := fmt.Sprintf("sk-test-%02d", i)
+		got, ok, err := stores[0].Get(providerID)
+		if err != nil || !ok || got != want {
+			t.Fatalf("credential %s lost or corrupted: got=%q ok=%v err=%v", providerID, got, ok, err)
+		}
 	}
 }
 

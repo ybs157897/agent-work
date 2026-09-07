@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -338,100 +339,118 @@ func (r *Registry) Upsert(e *Entry) error {
 	if e == nil {
 		return fmt.Errorf("%w: model entry required", domain.ErrValidation)
 	}
-	if e.ID == "" {
-		e.ID = Slugify(e.DisplayName)
-		for i := 2; ; i++ {
-			existing, err := r.Get(e.ID)
-			if err != nil {
-				return err
-			}
-			if existing == nil {
-				break
-			}
-			e.ID = fmt.Sprintf("%s-%d", Slugify(e.DisplayName), i)
+	return withFileLock(r.registryPath(), func() error {
+		autoID := e.ID == ""
+		if autoID {
+			e.ID = Slugify(e.DisplayName)
 		}
-	}
-	if err := e.Validate(); err != nil {
-		return err
-	}
-	if err := r.ensureRegistry(); err != nil {
-		return err
-	}
-	rf, err := r.load()
-	if err != nil {
-		return err
-	}
-	if rf == nil {
-		rf = &RegistryFile{}
-	}
-
-	rf.removeModel(e.ID)
-
-	pi := -1
-	if e.ProviderID != "" {
-		for i := range rf.Providers {
-			if rf.Providers[i].ID == e.ProviderID {
-				pi = i
-				break
+		if err := e.Validate(); err != nil {
+			return err
+		}
+		if err := r.ensureRegistryLocked(); err != nil {
+			return err
+		}
+		rf, err := r.load()
+		if err != nil {
+			return err
+		}
+		if rf == nil {
+			rf = &RegistryFile{}
+		}
+		if autoID {
+			baseID := e.ID
+			for i := 2; registryHasModel(rf, e.ID); i++ {
+				e.ID = fmt.Sprintf("%s-%d", baseID, i)
+			}
+			if e.ID != baseID {
+				if err := e.Validate(); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	if pi < 0 {
-		providerID := strings.TrimSpace(e.ProviderID)
-		if providerID == "" {
-			providerID = GenerateProviderID(e.Category, e.Provider)
-			for i := 2; ; i++ {
-				candidate := providerID
-				if i > 2 {
-					candidate = fmt.Sprintf("%s-%d", providerID, i)
-				}
-				taken := false
-				for _, p := range rf.Providers {
-					if p.ID == candidate {
-						taken = true
-						break
-					}
-				}
-				if !taken {
-					providerID = candidate
+
+		rf.removeModel(e.ID)
+
+		pi := -1
+		if e.ProviderID != "" {
+			for i := range rf.Providers {
+				if rf.Providers[i].ID == e.ProviderID {
+					pi = i
 					break
 				}
 			}
 		}
-		apiKeyEnv := e.APIKeyEnv
-		if apiKeyEnv == "" {
-			apiKeyEnv = SuggestAPIKeyEnv(e.Provider)
+		if pi < 0 {
+			providerID := strings.TrimSpace(e.ProviderID)
+			if providerID == "" {
+				providerID = GenerateProviderID(e.Category, e.Provider)
+				for i := 2; ; i++ {
+					candidate := providerID
+					if i > 2 {
+						candidate = fmt.Sprintf("%s-%d", providerID, i)
+					}
+					taken := false
+					for _, p := range rf.Providers {
+						if p.ID == candidate {
+							taken = true
+							break
+						}
+					}
+					if !taken {
+						providerID = candidate
+						break
+					}
+				}
+			}
+			apiKeyEnv := e.APIKeyEnv
+			if apiKeyEnv == "" {
+				apiKeyEnv = SuggestAPIKeyEnv(e.Provider)
+			}
+			rf.Providers = append(rf.Providers, ProviderDef{
+				ID:        providerID,
+				Label:     e.Category,
+				Provider:  e.Provider,
+				API:       e.API,
+				BaseURL:   e.BaseURL,
+				APIKeyEnv: apiKeyEnv,
+				Models:    []ModelDef{},
+			})
+			pi = len(rf.Providers) - 1
+		} else {
+			p := &rf.Providers[pi]
+			if e.Category != "" {
+				p.Label = e.Category
+			}
+			p.Provider = e.Provider
+			p.API = e.API
+			p.BaseURL = e.BaseURL
+			if e.APIKeyEnv != "" {
+				p.APIKeyEnv = e.APIKeyEnv
+			}
 		}
-		rf.Providers = append(rf.Providers, ProviderDef{
-			ID:        providerID,
-			Label:     e.Category,
-			Provider:  e.Provider,
-			API:       e.API,
-			BaseURL:   e.BaseURL,
-			APIKeyEnv: apiKeyEnv,
-			Models:    []ModelDef{},
+
+		model := rf.Providers[pi].fromEntry(e)
+		rf.Providers[pi].Models = append(rf.Providers[pi].Models, model)
+		sort.Slice(rf.Providers[pi].Models, func(i, j int) bool {
+			return rf.Providers[pi].Models[i].ID < rf.Providers[pi].Models[j].ID
 		})
-		pi = len(rf.Providers) - 1
-	} else {
-		p := &rf.Providers[pi]
-		if e.Category != "" {
-			p.Label = e.Category
-		}
-		p.Provider = e.Provider
-		p.API = e.API
-		p.BaseURL = e.BaseURL
-		if e.APIKeyEnv != "" {
-			p.APIKeyEnv = e.APIKeyEnv
+		rf.pruneEmptyProviders()
+		return r.save(rf)
+	})
+}
+
+func registryHasModel(rf *RegistryFile, id string) bool {
+	if rf == nil {
+		return false
+	}
+	for _, provider := range rf.Providers {
+		for _, model := range provider.Models {
+			if model.ID == id {
+				return true
+			}
 		}
 	}
-
-	model := rf.Providers[pi].fromEntry(e)
-	rf.Providers[pi].Models = append(rf.Providers[pi].Models, model)
-	sort.Slice(rf.Providers[pi].Models, func(i, j int) bool {
-		return rf.Providers[pi].Models[i].ID < rf.Providers[pi].Models[j].ID
-	})
-	rf.pruneEmptyProviders()
-	return r.save(rf)
+	return false
 }
 
 func (rf *RegistryFile) removeModel(id string) {
@@ -462,36 +481,41 @@ func (r *Registry) Delete(id string) error {
 	if !idPattern.MatchString(id) {
 		return fmt.Errorf("%w: 非法模型 id", domain.ErrValidation)
 	}
-	rf, err := r.load()
-	if err != nil {
-		return err
-	}
-	if rf == nil {
-		return nil
-	}
-	changed := false
-	next := rf.Providers[:0]
-	for _, p := range rf.Providers {
-		models := p.Models[:0]
-		for _, m := range p.Models {
-			if m.ID == id {
-				changed = true
+	return withFileLock(r.registryPath(), func() error {
+		if err := r.ensureRegistryLocked(); err != nil {
+			return err
+		}
+		rf, err := r.load()
+		if err != nil {
+			return err
+		}
+		if rf == nil {
+			return nil
+		}
+		changed := false
+		next := rf.Providers[:0]
+		for _, p := range rf.Providers {
+			models := p.Models[:0]
+			for _, m := range p.Models {
+				if m.ID == id {
+					changed = true
+					continue
+				}
+				models = append(models, m)
+			}
+			if len(models) == 0 {
 				continue
 			}
-			models = append(models, m)
+			p.Models = models
+			next = append(next, p)
 		}
-		if len(models) == 0 {
-			continue
+		if !changed {
+			return nil
 		}
-		p.Models = models
-		next = append(next, p)
-	}
-	if !changed {
-		return nil
-	}
-	rf.Providers = next
-	rf.pruneEmptyProviders()
-	return r.save(rf)
+		rf.Providers = next
+		rf.pruneEmptyProviders()
+		return r.save(rf)
+	})
 }
 
 func (r *Registry) load() (*RegistryFile, error) {
@@ -529,6 +553,10 @@ func (r *Registry) save(rf *RegistryFile) error {
 
 // ensureRegistry 在 registry.yaml 缺失时从旧版单文件条目迁移。
 func (r *Registry) ensureRegistry() error {
+	return withFileLock(r.registryPath(), r.ensureRegistryLocked)
+}
+
+func (r *Registry) ensureRegistryLocked() error {
 	if _, err := os.Stat(r.registryPath()); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -614,19 +642,45 @@ func (r *Registry) loadLegacyEntry(path string) (*Entry, error) {
 	return entry, nil
 }
 
-// writeAtomic 临时文件 + rename 原子替换；mode 为目标文件权限位
-// （registry.yaml 0644；credentials.local.yaml 必须 0600——含密钥明文）。
-// WriteFile 受 umask 影响可能缺位，rename 后显式 chmod 修正（也顺带收紧历史遗留的过宽权限）。
+// writeAtomic 使用同目录唯一临时文件，写满并同步后 rename 原子替换；mode
+// 为目标文件权限位（registry.yaml 0644；credentials.local.yaml 必须 0600——含密钥明文）。
+// rename 后显式 chmod 修正（也顺带收紧历史遗留的过宽权限）。
 func writeAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, mode); err != nil {
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	n, err := tmp.Write(data)
+	if err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if n != len(data) {
+		_ = tmp.Close()
+		return io.ErrShortWrite
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	removeTemp = false
 	return os.Chmod(path, mode)
 }

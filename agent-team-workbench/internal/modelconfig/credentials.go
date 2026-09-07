@@ -105,28 +105,30 @@ func (s *CredentialsStore) Set(providerID, apiKey string) error {
 	if providerID == "" {
 		return fmt.Errorf("provider_id 必填")
 	}
-	f, err := s.load()
-	if err != nil {
-		return err
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	next := f.Items[:0]
-	found := false
-	for _, item := range f.Items {
-		if item.ProviderID != providerID {
-			next = append(next, item)
-			continue
+	return withFileLock(s.path, func() error {
+		f, err := s.load()
+		if err != nil {
+			return err
 		}
-		found = true
-		if apiKey != "" {
+		apiKey = strings.TrimSpace(apiKey)
+		next := f.Items[:0]
+		found := false
+		for _, item := range f.Items {
+			if item.ProviderID != providerID {
+				next = append(next, item)
+				continue
+			}
+			found = true
+			if apiKey != "" {
+				next = append(next, credentialItem{ProviderID: providerID, APIKey: apiKey})
+			}
+		}
+		if !found && apiKey != "" {
 			next = append(next, credentialItem{ProviderID: providerID, APIKey: apiKey})
 		}
-	}
-	if !found && apiKey != "" {
-		next = append(next, credentialItem{ProviderID: providerID, APIKey: apiKey})
-	}
-	f.Items = next
-	return s.save(f)
+		f.Items = next
+		return s.save(f)
+	})
 }
 
 // Delete 删除供应商凭据。
