@@ -1985,9 +1985,10 @@ function RelationList({ relations, loading }: { relations: KnowledgeRelation[]; 
   return (
     <section aria-labelledby="knowledge-relations-title">
       <div className="flex items-center justify-between gap-tight">
-        <SectionHeading id="knowledge-relations-title" icon={<GitBranch className="h-4 w-4" aria-hidden="true" />} title="正反向关系" />
+        <SectionHeading id="knowledge-relations-title" icon={<GitBranch className="h-4 w-4" aria-hidden="true" />} title="当前有效关系" />
         <span className="text-caption tabular-nums text-text-tertiary">{loading ? '读取中…' : relations.length + ' 条'}</span>
       </div>
+      <p className="mt-tight text-caption text-text-tertiary">正反向关系展示当前已发布状态；切换正文版本不会切换关系历史。</p>
       <div className="mt-snug space-y-tight">
         {!loading && relations.length === 0 ? <p className="text-caption text-text-tertiary">没有可见的正反向关系。</p> : null}
         {relations.map((relation) => (
