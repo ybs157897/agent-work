@@ -46,6 +46,8 @@ export function MermaidDiagram({ source }: { source: string }) {
             startOnLoad: false,
             securityLevel: "strict",
             theme: mermaidTheme,
+            // SVG-only sanitization strips foreignObject HTML labels.
+            htmlLabels: false,
           });
           const rendered = await mermaid.render(
             `${uniqueId}-${hashCode(source)}`,
