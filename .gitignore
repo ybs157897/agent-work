@@ -7,3 +7,4 @@ agent-workbench-architecture.html
 /workbench.db
 agent-team-workbench/.tx-audit-tmp.md
 agent-team-workbench/workbench.db
+agent-team-workbench/agents/.sync/
