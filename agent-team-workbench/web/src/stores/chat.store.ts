@@ -1111,6 +1111,8 @@ interface ChatStore {
   conversations: WorkItem[];
   /** 当前会话的 run 列表（创建时间正序）。 */
   runs: ExecutionRun[];
+  /** 当前 runs 是否已从控制面读取；用于阻止代码工作台先按默认目录创建。 */
+  runsLoadedConversationId: string | null;
   sending: boolean;
   sendError: string | null;
   newConversationAttempt: { text: string; clientKey: string } | null;
@@ -1195,6 +1197,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     conversationId: null,
     conversations: [],
     runs: [],
+    runsLoadedConversationId: null,
     sending: false,
     sendError: null,
     newConversationAttempt: null,
@@ -1205,7 +1208,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
 
     selectAgent: (id) => {
       openConversationRequest += 1;
-      set({ agentId: id, conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
+      set({ agentId: id, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       void get().refreshConversations();
     },
 
@@ -1216,7 +1219,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       }
       const request = ++openConversationRequest;
       const agentId = get().agentId;
-      const reset = () => set({ conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
+      const reset = () => set({ conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       if (!workItemId) {
         reset();
         return true;
@@ -1230,7 +1233,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
           reset();
           return false;
         }
-        set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false });
+        set({ conversationId: workItemId, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false });
         return loadSelectedConversation(workItemId, agentId, request);
       }
 
@@ -1249,6 +1252,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
               : [...state.conversations, item].sort((a, b) => b.updated_at.localeCompare(a.updated_at)),
             conversationId: item.id,
             runs: [],
+            runsLoadedConversationId: null,
             queue: [],
             runAlerts: {},
             pendingUsers: {},
@@ -1283,14 +1287,14 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     refreshRuns: async () => {
       const conversationId = get().conversationId;
       if (!conversationId) {
-        set({ runs: [] });
+        set({ runs: [], runsLoadedConversationId: null });
         return false;
       }
       const conversation = get().conversations.find((item) => item.id === conversationId);
       if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== get().agentId) {
         // Do not load a task's execution history through the Chat surface,
         // even if a stale caller writes a conversation id into the store.
-        set({ conversationId: null, runs: [] });
+        set({ conversationId: null, runs: [], runsLoadedConversationId: null });
         return false;
       }
       const isStale = runsGuard.begin();
@@ -1301,7 +1305,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       // Workspace：三种都丢弃旧响应。
       if (isStale() || get().conversationId !== conversationId || !isCurrent(scope)) return false;
       items.sort((a, b) => a.created_at.localeCompare(b.created_at));
-      set({ runs: items });
+      set({ runs: items, runsLoadedConversationId: conversationId });
       return true;
     },
 
@@ -1476,6 +1480,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         conversationId: null,
         conversations: [],
         runs: [],
+        runsLoadedConversationId: null,
         sending: false,
         sendError: null,
         newConversationAttempt: null,

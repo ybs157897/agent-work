@@ -45,7 +45,7 @@ describe('Product Agent canvas layout and visibility boundary', () => {
     vi.unstubAllGlobals();
   });
 
-  const render = () => renderToStaticMarkup(<MemoryRouter initialEntries={['/chat?agent=agent_product']}><ChatPage /></MemoryRouter>);
+  const render = (entry = '/chat?agent=agent_product') => renderToStaticMarkup(<MemoryRouter initialEntries={[entry]}><ChatPage /></MemoryRouter>);
 
   it('opens the declared product role with the real conversation and scoped knowledge side by side', () => {
     const html = render();
@@ -70,5 +70,19 @@ describe('Product Agent canvas layout and visibility boundary', () => {
     expect(html).not.toContain('data-testid="knowledge-canvas"');
     expect(html).not.toContain('knowledge-chat-layout-active');
     expect(html).toContain('aria-label="打开知识画布"');
+  });
+
+  it('exposes the code workspace only for an enabled user-managed developer Agent', () => {
+    useAgentsStore.setState({ agents: [{ ...useAgentsStore.getState().agents[0], role: 'developer', availability: 'enabled' }] });
+    const html = render();
+    expect(html).toContain('aria-label="打开代码工作台"');
+
+    const codeHtml = render('/chat?agent=agent_product&canvas=code');
+    expect(codeHtml).toContain('Java 代码工作台');
+    expect(codeHtml).toContain('knowledge-chat-layout-active');
+    expect(codeHtml).toContain('aria-label="切换成员与会话列表"');
+
+    useAgentsStore.setState({ agents: [{ ...useAgentsStore.getState().agents[0], availability: 'disabled' }] });
+    expect(render()).not.toContain('aria-label="打开代码工作台"');
   });
 });

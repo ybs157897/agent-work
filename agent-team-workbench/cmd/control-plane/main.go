@@ -20,6 +20,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/codegateway"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/hostregistry"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
@@ -345,6 +346,10 @@ func run() error {
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
+	codeGateway := codegateway.New(codegateway.DefaultConfig(workbenchRoot, filepath.Join(projectSpace.Root, "code-workspaces")))
+	defer codeGateway.Close()
+	server.SetCodeWorkspaceGateway(codeGateway.Endpoint, localRegistry)
+	defer server.CloseCodeWorkspaces()
 	configureKnowledgeAccess(svc, addr, workbenchRoot)
 
 	// M2 consult_knowledge uses the published SQLite knowledge projection.  The
