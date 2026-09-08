@@ -29,4 +29,4 @@
 4. 总览、智能体、模型、任务、聊天、知识、设置等主要页面无水墨装饰，正文和外壳明暗主题一致；侧栏始终可见且无收起控制。
 5. 前端 tsc -b、test、lint、build；后端 build/vet 与触面 race；记录实际 UI 截图及剩余限制。
 
-本次在独立 codex/knowledge-reading worktree 实施；完成后停留支线，等待用户指示再合并。
+本次在独立 codex/knowledge-reading worktree 完成实施与验收；用户于 2026-09-08 授权合入 main。预览数据和证据独立保留，位置见验收记录。

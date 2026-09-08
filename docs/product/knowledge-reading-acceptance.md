@@ -1,6 +1,6 @@
 # 知识阅读与统一主题验收
 
-状态：实现和本机隔离验收完成，停留 `codex/knowledge-reading`，尚未合并 main。
+状态：实现和本机隔离验收完成；用户于 2026-09-08 授权合入 main，具体提交以 Git 历史为准。
 
 日期：2026-09-08。基线：main `739a374`。实现目录：`/Users/yin/Documents/ybs/code/agent-work-knowledge-reading`。
 
@@ -44,7 +44,7 @@
 
 最终副本有 214 条知识、86 个 Run、18 个知识 Job、0 个活动 Run，说明本轮浏览、搜索和准备草稿没有额外启动模型或知识整理。没有把历史真实模型调用当成本轮新增模型录入验收；本轮没有改模型接入和知识管理员执行协议。
 
-原始日志、JSON 证据、样本生成器与预览 PID 位于 workbench 的 `.agent-work/preview/`。该目录为隔离验收环境，不提交数据库或凭据。
+合并清理时，原始日志、JSON 证据、样本生成器、预览二进制与数据库保留在 main 工作树的 `agent-team-workbench/.agent-work/knowledge-reading-acceptance-20260908/preview/`，构建保留在该目录的 `web-dist/`；原预览地址继续使用。任务 worktree 可以清理，不删除验收数据；数据库与凭据不提交。
 
 ## 界面证据
 
