@@ -14,7 +14,8 @@ import (
 type KnowledgeRepo interface {
 	// Item metadata is mutable only through application commands.  Read methods
 	// require both workspace and requester identity so a private item cannot be
-	// reached through an unscoped ID lookup.
+	// reached through an unscoped ID lookup. ListVisibleItemsPage uses Query for
+	// a database-backed full-text page; an empty Query preserves browsing.
 	CreateItem(ctx context.Context, item *domain.KnowledgeItem) error
 	GetItem(ctx context.Context, workspaceID, requesterAgentID, itemID string) (*domain.KnowledgeItem, error)
 	ListVisibleItems(ctx context.Context, workspaceID, requesterAgentID string, status domain.KnowledgeStatus, limit int) ([]*domain.KnowledgeItem, error)

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { cx } from './cx';
+import { useWorkbenchThemeStore } from '../../stores/workbench-theme.store';
 
 /**
  * 骨架屏：默认 300ms 后才显现（快响应不闪烁，DESIGN.md 动效纪律）；
@@ -73,13 +74,15 @@ export function DashboardSkeleton() {
 /** 应用启动骨架：侧栏 + 顶栏 + 内容区轮廓，匹配 shell 布局形态。 */
 export function AppShellSkeleton({ chat = false }: { chat?: boolean }) {
   const sidebarBlock = 'animate-pulse rounded-md bg-sidebar-hover motion-reduce:animate-none';
+  const theme = useWorkbenchThemeStore.getState().theme;
   return (
     <div
-      className={`flex h-dvh w-full overflow-hidden ${chat ? 'bg-sidebar' : 'bg-surface-base'}`}
+      className={`workbench-theme flex h-dvh w-full flex-row overflow-hidden ${chat ? 'bg-sidebar' : 'bg-surface-base'}`}
+      data-theme={theme}
       role="status"
       aria-label="正在连接控制平面"
     >
-      <div className="h-full w-[72px] shrink-0 space-y-3 border-r border-sidebar-border bg-sidebar p-4">
+      <div className="workbench-sidebar h-full shrink-0 space-y-3 border-r border-sidebar-border bg-sidebar p-4">
         <div className={`${sidebarBlock} h-8 w-8`} />
         {[0, 1, 2, 3, 4, 5, 6].map((i) => (
           <div key={i} className={`${sidebarBlock} h-9 w-full`} />
@@ -91,7 +94,7 @@ export function AppShellSkeleton({ chat = false }: { chat?: boolean }) {
             <Skeleton delayMs={0} className="h-4 w-40" />
           </div>
         )}
-        <div className={chat ? 'tx-scope min-h-0 flex-1' : 'flex-1 space-y-comfortable p-comfortable'}>
+        <div className={chat ? 'workbench-chat-surface min-h-0 flex-1' : 'flex-1 space-y-comfortable p-comfortable'}>
           {chat ? null : (
             <>
               <Skeleton delayMs={0} className="h-28 w-full rounded-card" />

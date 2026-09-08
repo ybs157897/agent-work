@@ -27,7 +27,7 @@ export function ArtifactWorkspace({ artifacts, onClose }: { artifacts: Artifact[
   return (
     <div className="flex min-h-0 w-80 shrink-0 flex-col border-l border-border-strong bg-surface-warm">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
-        <span className="font-display text-body-lg text-text-primary">工作区</span>
+        <span className="font-zh text-body-lg text-text-primary">工作区</span>
         <button
           type="button"
           aria-label="关闭工作区"

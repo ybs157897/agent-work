@@ -3,15 +3,14 @@ import { useNavigate } from 'react-router-dom';
 
 import { Avatar } from '../components/avatar';
 import { PresenceDot, presenceText } from '../components/status';
+import { BentoGrid, BentoGridItem } from '../components/aceternity/bento-grid';
 import { TextGenerateEffect } from '../components/aceternity/text-generate-effect';
-import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
 import { Button, DashboardSkeleton, EmptyState } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { useDashboardStore } from '../stores/dashboard.store';
 import { useTasksStore } from '../stores/tasks.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { formatTime } from '../utils/format';
-import shanShuiPanorama from '../assets/ink/shan-shui-panorama.webp';
 
 /** 总览：统计卡 + Agent 速览 + 任务快照 + 最近日志（协议 §5.2 dashboard 投影）。 */
 export default function DashboardPage() {
@@ -28,19 +27,9 @@ export default function DashboardPage() {
 
   return (
     <div className="page-shell">
-      <InkBentoGrid className="md:auto-rows-auto md:grid-cols-3">
-        <InkBentoItem
+      <BentoGrid className="md:auto-rows-auto md:grid-cols-3">
+        <BentoGridItem
           className="md:col-span-3 !min-h-0 !justify-start !space-y-tight !p-comfortable"
-          header={
-            <img
-              src={shanShuiPanorama}
-              alt=""
-              width={1774}
-              height={887}
-              className="ink-hero-landscape"
-              aria-hidden="true"
-            />
-          }
           title={
             <div className="space-y-tight">
               <p className="text-caption font-medium uppercase tracking-wider text-brand-primary">工作台总览</p>
@@ -63,7 +52,7 @@ export default function DashboardPage() {
         <StatCard title="运行中任务" value={dashboard.running_tasks} icon={Zap} tone="info" />
         <StatCard title="今日完成" value={dashboard.completed_today} icon={CheckCircle2} tone="success" />
 
-        <InkBentoItem
+        <BentoGridItem
           className="md:col-span-2 !min-h-0"
           title="Agent 状态速览"
           description={
@@ -78,7 +67,7 @@ export default function DashboardPage() {
                     key={agent.id}
                     onClick={() => navigate(`/chat?agent=${agent.id}`)}
                     title={`与 ${agent.name} 对话`}
-                    className="group flex min-w-0 items-center gap-snug rounded-button border border-border-subtle bg-surface-base/55 p-snug text-left transition-colors duration-inkFast hover:border-border-strong hover:bg-surface-base focus-visible:ring-2 focus-visible:ring-brand-primary/35"
+                    className="group flex min-w-0 items-center gap-snug rounded-button border border-border-subtle bg-surface-base/55 p-snug text-left transition-colors duration-motionFast hover:border-border-strong hover:bg-surface-base focus-visible:ring-2 focus-visible:ring-brand-primary/35"
                     role="listitem"
                   >
                     <Avatar name={agent.name} url={agent.avatar} size={40} />
@@ -114,7 +103,7 @@ export default function DashboardPage() {
           }
         />
 
-        <InkBentoItem
+        <BentoGridItem
           className="!min-h-0"
           title="任务进度快照"
           description={
@@ -127,7 +116,7 @@ export default function DashboardPage() {
           }
         />
 
-        <InkBentoItem
+        <BentoGridItem
           className="md:col-span-3 !min-h-0"
           title="最近日志"
           description={
@@ -160,7 +149,7 @@ export default function DashboardPage() {
             </div>
           }
         />
-      </InkBentoGrid>
+      </BentoGrid>
     </div>
   );
 }
@@ -183,7 +172,7 @@ function StatCard({
   }[tone];
 
   return (
-    <InkBentoItem
+    <BentoGridItem
       className="!min-h-0 !flex-row !items-center !justify-between !space-y-0"
       title={<span className="text-display tabular-nums text-text-primary">{value}</span>}
       description={<span className="text-body text-text-secondary">{title}</span>}
@@ -224,7 +213,7 @@ function TaskStatRow({
         <span className="font-semibold tabular-nums text-body text-text-primary">{count}</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-surface-sunken" aria-hidden="true">
-        <div className={`h-full rounded-full ${color} transition-[width] duration-inkSlow motion-reduce:transition-none`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full ${color} transition-[width] duration-motionSlow motion-reduce:transition-none`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );

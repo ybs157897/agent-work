@@ -1,8 +1,9 @@
 import { useEffect, useId, useState } from "react";
+import { useWorkbenchThemeStore } from "../../stores/workbench-theme.store";
 
-// 正文恒在 tx 暗色作用域内（见 notes tx-transcript-standalone-skin）：dark 主题
-// 避免亮色图表在墨底上成为白岛；最终适配若回水墨基线，此处同步改回 "default"。
-const MERMAID_THEME = "dark";
+// Mermaid uses the dark renderer when the shared workbench is dark so diagrams
+// keep the same contrast as the surrounding transcript.
+const DEFAULT_MERMAID_THEME = "default";
 const RENDER_DEBOUNCE_MS = 300;
 const svgCache = new Map<string, string>();
 
@@ -14,7 +15,7 @@ export function hashCode(value: string): string {
   return `mmd${Math.abs(hash).toString(36)}`;
 }
 
-export function mermaidCacheKey(source: string, theme = MERMAID_THEME): string {
+export function mermaidCacheKey(source: string, theme = DEFAULT_MERMAID_THEME): string {
   return `${source}\0${theme}`;
 }
 
@@ -23,10 +24,12 @@ export function MermaidDiagram({ source }: { source: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const uniqueId = useId().replace(/:/g, "_");
+  const workbenchTheme = useWorkbenchThemeStore((state) => state.theme);
+  const mermaidTheme = workbenchTheme === 'dark' ? 'dark' : DEFAULT_MERMAID_THEME;
 
   useEffect(() => {
     let cancelled = false;
-    const key = mermaidCacheKey(source);
+    const key = mermaidCacheKey(source, mermaidTheme);
     setSvg(svgCache.get(key) ?? null);
     setError(false);
     const timer = window.setTimeout(() => {
@@ -42,7 +45,7 @@ export function MermaidDiagram({ source }: { source: string }) {
           mermaid.initialize({
             startOnLoad: false,
             securityLevel: "strict",
-            theme: MERMAID_THEME,
+            theme: mermaidTheme,
           });
           const rendered = await mermaid.render(
             `${uniqueId}-${hashCode(source)}`,
@@ -62,7 +65,7 @@ export function MermaidDiagram({ source }: { source: string }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [source, uniqueId]);
+  }, [mermaidTheme, source, uniqueId]);
 
   if (error) {
     return (

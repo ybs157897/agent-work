@@ -1,4 +1,4 @@
-export const inkMotion = {
+export const workbenchMotion = {
   duration: {
     fast: 0.14,
     normal: 0.22,

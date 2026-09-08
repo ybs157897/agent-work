@@ -44,6 +44,8 @@ export interface KnowledgeItem {
   version: number;
   created_at: string;
   updated_at: string;
+  /** Query-only excerpt returned by server-side q search. */
+  search_excerpt?: string;
 }
 
 export interface KnowledgeVersion {
@@ -103,6 +105,8 @@ export interface KnowledgeListResponse<T> {
 }
 
 export interface KnowledgeItemsFilter {
+  /** Server-side full-text query. Empty queries are omitted from the URL. */
+  q?: string;
   status?: KnowledgeStatus;
   scope?: string;
   kind?: string;
@@ -130,6 +134,7 @@ export const getKnowledgeConfig = (workspaceId: string) =>
 export const listKnowledgeItems = (workspaceId: string, filter: KnowledgeItemsFilter = {}) =>
   apiFetch<KnowledgeListResponse<KnowledgeItem>>(
     withQuery(workspaceRoot(workspaceId) + '/items', {
+      q: filter.q,
       status: filter.status,
       scope: filter.scope,
       kind: filter.kind,

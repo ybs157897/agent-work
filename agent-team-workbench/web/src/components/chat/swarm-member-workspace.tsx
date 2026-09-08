@@ -62,7 +62,7 @@ export function SwarmMemberWorkspace({ runId, member, segments, onClose }: { run
   return (
     <aside className="flex min-h-0 w-[min(28rem,42vw)] shrink-0 flex-col border-l border-border-strong bg-surface-warm" aria-label={member.runtime === 'codex' ? 'Codex 子 Agent 详情' : `第 ${member.index} 项详情`}>
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
-        <div className="min-w-0"><p className="text-caption text-text-tertiary">{runtimeLabel}{member.runtime === 'codex' ? '' : ` · 第 ${member.index} 项`}</p><h2 className="truncate font-display text-body-lg text-text-primary">{agentLabel}</h2></div>
+        <div className="min-w-0"><p className="text-caption text-text-tertiary">{runtimeLabel}{member.runtime === 'codex' ? '' : ` · 第 ${member.index} 项`}</p><h2 className="truncate font-zh text-body-lg text-text-primary">{agentLabel}</h2></div>
         <button type="button" aria-label="关闭子 Agent 详情" title="关闭" onClick={onClose} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary"><X className="h-4 w-4" aria-hidden="true" /></button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">

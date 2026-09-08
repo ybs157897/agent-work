@@ -32,9 +32,10 @@ describe('isChatPath', () => {
 });
 
 describe('mainContentClassName', () => {
-  it.each(['/chat', '/task-chat', '/task-chat/'])('mounts a fixed-height reading surface on %s without paper mesh', (path) => {
+  it.each(['/chat', '/task-chat', '/task-chat/'])('mounts a fixed-height reading surface on %s without decorative skin classes', (path) => {
     const cls = mainContentClassName(path);
-    expect(cls).toContain('tx-scope');
+    expect(cls).toContain('workbench-chat-surface');
+    expect(cls).not.toContain('tx-scope');
     expect(cls).not.toContain('mesh-bg');
     expect(cls).not.toContain('plane-board-shell');
     expect(cls).toContain('overflow-hidden');
@@ -50,10 +51,10 @@ describe('mainContentClassName', () => {
     expect(cls).toContain('flex flex-col');
   });
 
-  it('keeps paper mesh on non-Task full-bleed routes', () => {
-    expect(mainContentClassName('/models')).toContain('mesh-bg');
-    expect(mainContentClassName('/models')).not.toContain('tx-scope');
-    expect(mainContentClassName('/agents')).toContain('mesh-bg');
+  it('uses the shared workbench surface on non-Task full-bleed routes', () => {
+    expect(mainContentClassName('/models')).toContain('workbench-main-surface');
+    expect(mainContentClassName('/models')).not.toContain('mesh-bg');
+    expect(mainContentClassName('/agents')).toContain('workbench-main-surface');
   });
 
   it('uses the same Plane shell for Task detail', () => {
@@ -63,7 +64,8 @@ describe('mainContentClassName', () => {
 
   it('lets page-shell routes scroll the main pane on paper', () => {
     expect(mainContentClassName('/')).toContain('overflow-y-auto');
-    expect(mainContentClassName('/')).toContain('mesh-bg');
+    expect(mainContentClassName('/')).toContain('workbench-main-surface');
+    expect(mainContentClassName('/')).not.toContain('mesh-bg');
     expect(mainContentClassName('/')).not.toContain('tx-scope');
   });
 });

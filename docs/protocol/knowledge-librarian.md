@@ -52,7 +52,7 @@ Run-bound 请求使用 Bearer token。token 由控制面在创建活动 Run 时�
 |---|---|---|
 | GET /workspaces/{workspace_id}/knowledge/config | 无 | KnowledgeLibrarianConfig |
 | PATCH /workspaces/{workspace_id}/knowledge/config | body: librarian_agent_id、enabled、auto_collect、expected_version | KnowledgeLibrarianConfig |
-| GET /workspaces/{workspace_id}/knowledge/items | query: status、scope、kind、visibility、agent_id、limit、cursor | KnowledgeItemList |
+| GET /workspaces/{workspace_id}/knowledge/items | query: q、status、scope、kind、visibility、agent_id、limit、cursor | KnowledgeItemList |
 | GET /workspaces/{workspace_id}/knowledge/items/{item_id} | query: agent_id | KnowledgeItemBundle |
 | GET /workspaces/{workspace_id}/knowledge/items/{item_id}/versions | query: agent_id | KnowledgeVersionList |
 | GET /workspaces/{workspace_id}/knowledge/items/{item_id}/versions/{version} | query: agent_id；version 是数字或 kbv_ ID | KnowledgeItemBundle |
@@ -70,7 +70,7 @@ Run-bound 请求使用 Bearer token。token 由控制面在创建活动 Run 时�
 
 未配置管理员时，读取 config 返回 disabled、空 librarian_agent_id 和 version=0 的安全投影；这不阻止共享知识读取。调查和整理在管理员未启用或 Agent 不可用时返回 422 capability_missing。
 
-items 的 scope query 只能是 key=value 或 JSON object；limit 为 1..200。status 默认 effective，非 effective 条目需要管理权限。items 使用按 id 的 keyset 分页并返回 next_cursor；next_cursor 为 null 才表示当前可见条目已经返回完。submissions 当前最多返回 200 条，jobs 当前最多返回 100 条；两者返回 truncated=true 时只表示服务端达到展示上限，不能当作完整列表。
+items 的 `q` 为空时保持浏览；有值时在同一 workspace、权限、status、scope、kind 和 visibility 过滤下查询已发布 SQLite 投影，正文和标题都可命中，中文使用现有 FTS5 加子串 fallback。查询结果按条目 id 降序使用同一个 keyset 游标分页，不把全库加载到内存；命中页的条目可带 `search_excerpt` 摘要。q 只产生读取投影，不改变知识事实。items 的 scope query 只能是 key=value 或 JSON object；limit 为 1..200。status 默认 effective，非 effective 条目需要管理权限。items 使用按 id 的 keyset 分页并返回 next_cursor；next_cursor 为 null 才表示当前可见条目已经返回完。submissions 当前最多返回 200 条，jobs 当前最多返回 100 条；两者返回 truncated=true 时只表示服务端达到展示上限，不能当作完整列表。
 
 ## 4. Run-bound 端点
 

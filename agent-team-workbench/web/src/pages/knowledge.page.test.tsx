@@ -2,34 +2,24 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useWorkspaceStore } from '../stores/workspace.store';
-import type { KnowledgeItem, KnowledgeSource } from '../api/knowledge';
+import type { KnowledgeSource } from '../api/knowledge';
 import KnowledgePage, {
+  buildKnowledgeDiff,
   buildKnowledgeChatPath,
-  filterKnowledgeItems,
+  buildKnowledgePath,
+  buildKnowledgeSourceLink,
+  cleanKnowledgeExcerpt,
   formatKnowledgeScope,
   isKnowledgeLibrarianAgent,
   knowledgeKindLabel,
   knowledgeListEmptyState,
   knowledgeStatusClass,
+  knowledgeHeadingId,
+  parseKnowledgeUrlState,
   relationLabel,
-  sortKnowledgeItems,
   sourceKindLabel,
   sourceVerificationLabel,
 } from './knowledge.page';
-
-const item = (overrides: Partial<KnowledgeItem>): KnowledgeItem => ({
-  id: 'kb_1',
-  workspace_id: 'ws_1',
-  visibility: 'workspace',
-  kind: 'function',
-  title: '默认知识',
-  current_version: 1,
-  status: 'effective',
-  version: 1,
-  created_at: '2026-09-07T00:00:00Z',
-  updated_at: '2026-09-07T00:00:00Z',
-  ...overrides,
-});
 
 describe('KnowledgePage presentation contract', () => {
   beforeEach(() => {
@@ -77,7 +67,15 @@ describe('KnowledgePage presentation contract', () => {
     expect(isKnowledgeLibrarianAgent({ kind: 'knowledge_librarian' })).toBe(true);
     expect(isKnowledgeLibrarianAgent({ kind: 'user' })).toBe(false);
     expect(buildKnowledgeChatPath('agent/builtin')).toBe('/chat?agent=agent%2Fbuiltin');
+    expect(buildKnowledgeChatPath('agent/builtin', 'kb_1', 2, '/knowledge?ws=ws_1&item=kb_1', 'ws_1')).toBe('/chat?agent=agent%2Fbuiltin&ws=ws_1&knowledge=kb_1&version=2&return_to=%2Fknowledge%3Fws%3Dws_1%26item%3Dkb_1');
     expect(buildKnowledgeChatPath('')).toBeNull();
+  });
+
+  it('把搜索、类型、条目、版本和 Workspace 保留在可刷新深链中', () => {
+    const path = buildKnowledgePath({ workspaceId: 'ws_1', query: '退款窗口', kind: 'rule', itemId: 'kb_1', version: 2 });
+    expect(path).toBe('/knowledge?ws=ws_1&q=%E9%80%80%E6%AC%BE%E7%AA%97%E5%8F%A3&kind=rule&item=kb_1&version=2');
+    expect(parseKnowledgeUrlState(new URLSearchParams(path.slice(path.indexOf('?') + 1)))).toEqual({ query: '退款窗口', kind: 'rule', itemId: 'kb_1', version: 2, invalidVersion: null });
+    expect(parseKnowledgeUrlState(new URLSearchParams('item=kb_1&version=0'))).toMatchObject({ itemId: 'kb_1', version: null, invalidVersion: '0' });
   });
 
   it('首批内容没有命中但仍有分页时，明确要求继续加载而不是宣称全库无结果', () => {
@@ -87,17 +85,6 @@ describe('KnowledgePage presentation contract', () => {
     });
     expect(knowledgeListEmptyState('通知', false).title).toBe('没有匹配的知识');
     expect(knowledgeListEmptyState('', false).title).toBe('这里还没有已发布知识');
-  });
-
-  it('搜索标题、摘要、标签和别名，并按最近更新时间排序', () => {
-    const items = [
-      item({ id: 'kb_old', title: '旧规则', kind: 'rule', updated_at: '2026-09-06T00:00:00Z', tags: ['通知'] }),
-      item({ id: 'kb_new', title: '新功能', summary: '支持重试策略', updated_at: '2026-09-07T00:00:00Z', aliases: ['retry'] }),
-    ];
-    expect(filterKnowledgeItems(items, '重试').map((entry) => entry.id)).toEqual(['kb_new']);
-    expect(filterKnowledgeItems(items, 'retry').map((entry) => entry.id)).toEqual(['kb_new']);
-    expect(filterKnowledgeItems(items, '通知').map((entry) => entry.id)).toEqual(['kb_old']);
-    expect(sortKnowledgeItems(items).map((entry) => entry.id)).toEqual(['kb_new', 'kb_old']);
   });
 
   it('格式化适用范围，并区分来源核验状态', () => {
@@ -116,5 +103,30 @@ describe('KnowledgePage presentation contract', () => {
     expect(sourceVerificationLabel(source({}))).toBe('已核验运行记录');
     expect(sourceVerificationLabel(source({ kind: 'document', metadata: { verification: 'submitted_excerpt' } }))).toBe('已登记摘录');
     expect(sourceVerificationLabel(source({ id: '', metadata: { verification: 'run_output_verified', digest_verified: true } }))).toBe('待核验');
+  });
+
+  it('只为已知任务、Run 和安全 HTTP 文档构造来源链接', () => {
+    const makeSource = (overrides: Partial<KnowledgeSource>): KnowledgeSource => ({ id: 'kbs_1', workspace_id: 'ws_1', submitted_by_agent_id: 'agent_1', kind: 'document', ref: 'doc', created_at: '', ...overrides });
+    expect(buildKnowledgeSourceLink(makeSource({ kind: 'work_item', ref: 'wi_1' }))).toMatchObject({ href: '/tasks/wi_1', external: false });
+    expect(buildKnowledgeSourceLink(makeSource({ kind: 'run', ref: 'run_1' }))).toMatchObject({ href: '/runs/run_1/journal', external: false });
+    expect(buildKnowledgeSourceLink(makeSource({ kind: 'document', ref: 'spec', locator: 'https://example.com/spec' }))).toMatchObject({ href: 'https://example.com/spec', external: true });
+    expect(buildKnowledgeSourceLink(makeSource({ kind: 'document', ref: 'javascript:alert(1)' }))).toBeNull();
+    expect(buildKnowledgeSourceLink(makeSource({ kind: 'code', ref: 'src/main.go' }))).toBeNull();
+  });
+
+  it('生成实际的历史版本行差异，并为目录标题生成稳定锚点', () => {
+    expect(buildKnowledgeDiff('标题\n旧规则\n保留', '标题\n新规则\n保留')).toEqual([
+      { kind: 'same', text: '标题' },
+      { kind: 'removed', text: '旧规则' },
+      { kind: 'added', text: '新规则' },
+      { kind: 'same', text: '保留' },
+    ]);
+    expect(knowledgeHeadingId('退款窗口')).toBe('knowledge-heading-退款窗口');
+    expect(knowledgeHeadingId('', 2)).toBe('knowledge-heading-3');
+    expect(cleanKnowledgeExcerpt('…退款 **[窗口]**（见 [说明](https://example.com)）')).toBe('…退款 [窗口]（见 [说明]）');
+    const longContext = cleanKnowledgeExcerpt('这是很长的正文上下文。'.repeat(8) + '[星河退款窗口]。');
+    expect(longContext).toContain('[星河退款窗口]');
+    expect(longContext.startsWith('…')).toBe(true);
+    expect(longContext.slice(0, longContext.indexOf('[')).length).toBeLessThanOrEqual(45);
   });
 });

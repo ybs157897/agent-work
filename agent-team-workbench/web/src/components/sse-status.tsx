@@ -8,7 +8,7 @@ const SSE_DOT = {
   reconnecting: 'bg-status-warning status-pulse',
 } as const;
 
-/** SSE 连接胶囊：壳层顶栏与对话页头共用，避免 `/chat` 收起宣纸顶栏后丢失连接态。 */
+/** SSE 连接胶囊：壳层顶栏与对话页头共用，保证 Chat 页面仍展示连接状态。 */
 export function SseStatusPill() {
   const sseStatus = useWorkspaceStore((state) => state.sseStatus);
   return (

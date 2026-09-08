@@ -51,7 +51,7 @@ export function ChartBlock({ block }: { block: ChartBlockValue }) {
           border: '1px solid hsl(var(--color-border-subtle))',
           borderRadius: 8,
           color: 'hsl(var(--color-text-primary))',
-          boxShadow: 'var(--tx-shadow-card)',
+          boxShadow: 'var(--shadow-level-1)',
         }}
         labelStyle={{ color: 'hsl(var(--color-text-secondary))' }}
       />

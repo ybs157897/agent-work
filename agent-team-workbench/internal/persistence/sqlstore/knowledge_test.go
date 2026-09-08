@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,185 @@ func TestKnowledgeVisibleItemsPageFiltersBeforeKeysetLimit(t *testing.T) {
 	}
 	if len(private) != 0 {
 		t.Fatalf("private item leaked in filtered page: %v", knowledgeItemIDs(private))
+	}
+}
+
+func TestKnowledgeSearchItemsPageMatchesBodyAndPaginatesFullProjection(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	const total = 205
+	for i := 1; i <= total; i++ {
+		itemID := fmt.Sprintf("kb_search_%03d", i)
+		versionID := fmt.Sprintf("kbv_search_%03d", i)
+		title := fmt.Sprintf("条目 %03d", i)
+		item := knowledgeItem(itemID, ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, title,
+			domain.KnowledgeScope{"project": "orders"})
+		item.Status = domain.KnowledgeStatusEffective
+		if i == 1 {
+			item.Kind = "note"
+		}
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		version := knowledgeVersion(versionID, itemID, alpha.ID, title,
+			fmt.Sprintf("正文命中词；这是第 %03d 条正文。", i), 0)
+		version.Kind = item.Kind
+		if err := store.Knowledge().CreateVersion(ctx, version); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Knowledge().PublishVersion(ctx, itemID, versionID, 0, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	options := domain.KnowledgeListOptions{Query: "正文命中词", Limit: 37}
+	seen := make(map[string]struct{}, total)
+	pages := 0
+	for {
+		items, cursor, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+		if err != nil {
+			t.Fatalf("search page %d: %v", pages+1, err)
+		}
+		pages++
+		if len(items) > options.Limit {
+			t.Fatalf("page %d exceeded limit: %d", pages, len(items))
+		}
+		for _, item := range items {
+			if _, ok := seen[item.ID]; ok {
+				t.Fatalf("duplicate item across pages: %s", item.ID)
+			}
+			seen[item.ID] = struct{}{}
+			if !strings.Contains(item.SearchExcerpt, "正文命中词") {
+				t.Fatalf("body hit has no excerpt: %+v", item)
+			}
+		}
+		if cursor == "" {
+			break
+		}
+		options.AfterID = cursor
+	}
+	if len(seen) != total || pages < 6 {
+		t.Fatalf("full search pagination returned %d/%d items in %d pages", len(seen), total, pages)
+	}
+
+	filtered, cursor, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{Query: "正文命中词", Kind: "note", Limit: 10})
+	if err != nil || len(filtered) != 1 || filtered[0].ID != "kb_search_001" || cursor != "" {
+		t.Fatalf("kind filter on body search = ids(%v), cursor=%q, err=%v", knowledgeItemIDs(filtered), cursor, err)
+	}
+
+	private := knowledgeItem("kb_search_private", ws.ID, alpha.ID, domain.KnowledgeVisibilityPrivate,
+		"私有命中", domain.KnowledgeScope{"project": "orders"})
+	private.Status = domain.KnowledgeStatusEffective
+	if err := store.Knowledge().CreateItem(ctx, private); err != nil {
+		t.Fatal(err)
+	}
+	privateVersion := knowledgeVersion("kbv_search_private", private.ID, alpha.ID, private.Title,
+		"正文命中词 私有内容", 0)
+	if err := store.Knowledge().CreateVersion(ctx, privateVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Knowledge().PublishVersion(ctx, private.ID, privateVersion.ID, 0, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if items, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{Query: "正文命中词", Visibility: domain.KnowledgeVisibilityPrivate, Limit: 10}); err != nil || len(items) != 0 {
+		t.Fatalf("private search leaked to another agent: items=%v err=%v", knowledgeItemIDs(items), err)
+	}
+	if items, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, alpha.ID,
+		domain.KnowledgeListOptions{Query: "正文命中词", Visibility: domain.KnowledgeVisibilityPrivate, Limit: 10}); err != nil || len(items) != 1 || items[0].ID != private.ID {
+		t.Fatalf("owner private search = ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+
+	draft := knowledgeItem("kb_search_draft", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace,
+		"草稿命中", nil)
+	draft.Status = domain.KnowledgeStatusDraft
+	if err := store.Knowledge().CreateItem(ctx, draft); err != nil {
+		t.Fatal(err)
+	}
+	if items, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{Query: "草稿命中", Status: domain.KnowledgeStatusEffective, Limit: 10}); err != nil || len(items) != 0 {
+		t.Fatalf("draft item leaked into effective search: items=%v err=%v", knowledgeItemIDs(items), err)
+	}
+	if items, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, alpha.ID,
+		domain.KnowledgeListOptions{Query: "草稿命中", Status: domain.KnowledgeStatusDraft, Limit: 10}); err != nil || len(items) != 1 || items[0].ID != draft.ID {
+		t.Fatalf("draft search = ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+
+	if items, cursor, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{Query: `@@@(*`, Limit: 10}); err != nil || len(items) != 0 || cursor != "" {
+		t.Fatalf("malicious FTS query = items(%v), cursor=%q, err=%v", knowledgeItemIDs(items), cursor, err)
+	}
+}
+
+func TestKnowledgeSearchItemsPageEnforcesScopeWorkspaceKindAndVisibility(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	otherWorkspace := &domain.Workspace{ID: "ws_search_other", Name: "other", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, otherWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	otherAgent := &domain.AgentProfile{ID: "agent_search_other", WorkspaceID: otherWorkspace.ID, Name: "other",
+		Role: "worker", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Agents().Create(ctx, otherAgent); err != nil {
+		t.Fatal(err)
+	}
+	add := func(item *domain.KnowledgeItem, body string) {
+		t.Helper()
+		item.Status = domain.KnowledgeStatusEffective
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		version := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), item.ID, item.OwnerAgentID,
+			item.Title, body, 0)
+		version.Kind = item.Kind
+		if err := store.Knowledge().CreateVersion(ctx, version); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Knowledge().PublishVersion(ctx, item.ID, version.ID, 0, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orders := knowledgeItem("kb_search_orders", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace,
+		"订单租约", domain.KnowledgeScope{"project": "orders"})
+	orders.Kind = "procedure"
+	billing := knowledgeItem("kb_search_billing", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace,
+		"账单租约", domain.KnowledgeScope{"project": "billing"})
+	billing.Kind = "decision"
+	private := knowledgeItem("kb_search_private_scope", ws.ID, alpha.ID, domain.KnowledgeVisibilityPrivate,
+		"私有租约", domain.KnowledgeScope{"project": "orders"})
+	other := knowledgeItem("kb_search_other_scope", otherWorkspace.ID, otherAgent.ID,
+		domain.KnowledgeVisibilityWorkspace, "外部租约", domain.KnowledgeScope{"project": "orders"})
+	add(orders, "正文租约隔离词；订单空间正文")
+	add(billing, "正文租约隔离词；账单空间正文")
+	add(private, "正文租约隔离词；私有正文")
+	add(other, "正文租约隔离词；另一个 workspace 正文")
+
+	items, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, domain.KnowledgeListOptions{
+		Query: "租约隔离词", Scope: domain.KnowledgeScope{"project": "orders"}, Limit: 20,
+	})
+	if err != nil || len(items) != 1 || items[0].ID != orders.ID {
+		t.Fatalf("scope/workspace/private filters leaked: ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+	items, _, err = store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, domain.KnowledgeListOptions{
+		Query: "租约隔离词", Kind: "decision", Limit: 20,
+	})
+	if err != nil || len(items) != 1 || items[0].ID != billing.ID {
+		t.Fatalf("kind filter on search = ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+	items, _, err = store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, domain.KnowledgeListOptions{
+		Query: "租约隔离词", Visibility: domain.KnowledgeVisibilityPrivate, Limit: 20,
+	})
+	if err != nil || len(items) != 0 {
+		t.Fatalf("private visibility leaked to shared requester: ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+	items, _, err = store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, alpha.ID, domain.KnowledgeListOptions{
+		Query: "租约隔离词", Visibility: domain.KnowledgeVisibilityPrivate, Limit: 20,
+	})
+	if err != nil || len(items) != 1 || items[0].ID != private.ID {
+		t.Fatalf("owner private visibility search = ids(%v), err=%v", knowledgeItemIDs(items), err)
 	}
 }
 

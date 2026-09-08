@@ -62,7 +62,7 @@ export function Modal({
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={reducedMotion ? { opacity: 1, y: 0, scale: 1 } : { opacity: 0, y: 12, scale: 0.98 }}
                   transition={{ duration: reducedMotion ? 0 : 0.15, ease: 'easeOut' }}
-                  className={`ink-paper-panel pointer-events-auto flex max-h-[calc(100dvh-32px)] w-full min-h-0 flex-col overflow-hidden rounded-card p-comfortable shadow-level-4 ${taskSkin}`}
+                  className={`workbench-panel pointer-events-auto flex max-h-[calc(100dvh-32px)] w-full min-h-0 flex-col overflow-hidden rounded-card p-comfortable shadow-level-4 ${taskSkin}`}
                   style={{ maxWidth: width }}
                 >
                   <div className="mb-comfortable flex shrink-0 items-center justify-between gap-4">

@@ -42,7 +42,6 @@ import {
 } from './languagegui-segments';
 import { MarkdownBody } from '../components/chat/markdown-body';
 import { copyText } from '../components/chat/code-block';
-import shanShuiPanorama from '../assets/ink/shan-shui-panorama.webp';
 import { currencyTemplate, mergeContentDocuments, ratingTemplate, scoreTemplate, stockTemplate, weatherTemplate } from '../utils/content-block-templates';
 import { LanguageGuiToolShowcase } from './languagegui-tool-showcase';
 import './languagegui-demo.css';
@@ -76,9 +75,9 @@ function ClockFace({ hour, minute, dim = false }: { hour: number; minute: number
       {Array.from({ length: 12 }, (_, i) => (
         <line key={i} x1="32" y1="8" x2="32" y2="11" stroke="var(--lg-border-active)" strokeWidth="1.5" strokeLinecap="round" transform={`rotate(${i * 30} 32 32)`} />
       ))}
-      <line x1="32" y1="32" x2="32" y2="19" stroke="var(--lg-ink)" strokeWidth="3" strokeLinecap="round" transform={`rotate(${hourAngle} 32 32)`} />
+      <line x1="32" y1="32" x2="32" y2="19" stroke="var(--lg-text-strong)" strokeWidth="3" strokeLinecap="round" transform={`rotate(${hourAngle} 32 32)`} />
       <line x1="32" y1="32" x2="32" y2="13" stroke="var(--lg-accent)" strokeWidth="2" strokeLinecap="round" transform={`rotate(${minuteAngle} 32 32)`} />
-      <circle cx="32" cy="32" r="2.5" fill="var(--lg-ink)" />
+      <circle cx="32" cy="32" r="2.5" fill="var(--lg-text-strong)" />
     </svg>
   );
 }
@@ -570,7 +569,7 @@ const DEMO_MESSAGES: ChatMessage[] = [
           {
             type: 'image',
             title: '交付预览',
-            images: [{ src: shanShuiPanorama, alt: '水墨山水全景', caption: '复用工作台已有视觉资产' }],
+            images: [{ src: '/languagegui-delivery-preview.svg', alt: '本周交付量柱状图', caption: 'LanguageGUI 图片内容块示例' }],
           },
           {
             type: 'map',

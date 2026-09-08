@@ -23,6 +23,13 @@ describe('只读知识库 API', () => {
     expect(fetch.mock.calls[0][1].method).toBe('GET');
   });
 
+  it('把正文搜索交给服务端，并与分类及分页条件一起编码', async () => {
+    const fetch = vi.fn().mockResolvedValue(json({ items: [], next_cursor: null }));
+    vi.stubGlobal('fetch', fetch);
+    await listKnowledgeItems('ws_1', { q: '星河退款窗口', status: 'effective', kind: 'rule', limit: 200 });
+    expect(fetch.mock.calls[0][0]).toBe('/api/v1/workspaces/ws_1/knowledge/items?q=%E6%98%9F%E6%B2%B3%E9%80%80%E6%AC%BE%E7%AA%97%E5%8F%A3&status=effective&kind=rule&limit=200');
+  });
+
   it('正文、历史版本及双向关系始终读取同一工作区和条目', async () => {
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
     vi.stubGlobal('fetch', fetch);

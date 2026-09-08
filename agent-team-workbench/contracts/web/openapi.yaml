@@ -120,6 +120,11 @@ paths:
           required: false
           schema: { $ref: "#/components/schemas/KnowledgeStatus" }
           description: 默认 effective；candidate/draft 等状态需要管理权限。
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: 可选全文检索词；为空时浏览，命中结果按条目 id keyset 分页并可返回 search_excerpt。
         - name: scope
           in: query
           required: false
@@ -2335,6 +2340,7 @@ components:
         current_version_id: { type: string, pattern: "^kbv_" }
         current_version: { type: integer, format: int64, minimum: 0 }
         status: { $ref: "#/components/schemas/KnowledgeStatus" }
+        search_excerpt: { type: string, description: q 命中时返回的正文或标题摘要 }
         version: { type: integer, minimum: 1 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

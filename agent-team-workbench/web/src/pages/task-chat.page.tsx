@@ -177,7 +177,7 @@ export default function TaskChatPage() {
   };
 
   return (
-    <div className="tx-scope chat-languagegui-skin flex h-full min-h-0 w-full flex-col overflow-hidden" data-task-chat>
+    <div className="chat-languagegui-skin flex h-full min-h-0 w-full flex-col overflow-hidden" data-task-chat>
       <header className="chat-chrome flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-raised px-comfortable">
         <div className="flex min-w-0 items-center gap-snug">
           <h1 className="truncate text-body-lg font-semibold text-text-primary">任务对话</h1>
