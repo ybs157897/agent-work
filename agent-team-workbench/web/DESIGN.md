@@ -226,6 +226,27 @@ the shared Chat. There is no knowledge-specific palette, ingest form, or
 second editor surface. The full interaction and data contract lives in
 `docs/product/knowledge-reading.md`.
 
+## Agent knowledge canvas
+
+The Product Agent workspace places its knowledge reader in the center and the
+existing Chat on the right. Document and graph views share the same knowledge
+items, source links, versions, and `AgentOutput` renderer. React Flow is a
+spatial reading layer, loaded only for the graph view; its surfaces, controls,
+nodes, and edges resolve the global semantic tokens in both modes.
+
+The primary workbench sidebar stays visible. The inner Agent/conversation rail
+can be opened from the workspace toolbar. When the available content width is
+too small for both document and Chat, explicit view buttons switch between
+them without unmounting the active conversation. A selected excerpt is shown
+as a removable, versioned reference above the existing composer; selecting it
+does not send a message. Reading position and layout preferences are scoped
+to the workspace and stable Agent ID.
+
+The HTML interaction proposal is not a palette source. Paper colors, ink
+ornaments, calligraphic type, and vermilion accents from early prototypes must
+not be reintroduced. See `docs/product/product-agent-canvas.md` for the
+ownership, permission, failure-recovery, and acceptance contract.
+
 ## Interaction and accessibility
 
 - Every interactive control has default, hover, pressed or active, disabled,
