@@ -64,6 +64,55 @@ func TestKnowledgeHTTPSharedViewCannotSelectPrivateAgentAsViewer(t *testing.T) {
 	}
 }
 
+func TestKnowledgeHTTPOwnerFilterCannotExpandViewerVisibility(t *testing.T) {
+	s := newPlanTestServer(t)
+	ws, lead, worker := seedPlanHTTPEnv(t, s)
+	leadPublic, _ := seedKnowledgeHTTPItem(t, s, ws, lead, "Lead 公开规则", domain.KnowledgeVisibilityWorkspace)
+	_, _ = seedKnowledgeHTTPItem(t, s, ws, lead, "Lead 私有规则", domain.KnowledgeVisibilityPrivate)
+	_, _ = seedKnowledgeHTTPItem(t, s, ws, worker, "Worker 公开规则", domain.KnowledgeVisibilityWorkspace)
+	s.SetDemoRole(domain.RoleViewer)
+
+	code, body := getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?owner_agent_id="+lead+"&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("owner-filtered list: %d %v", code, body)
+	}
+	items, _ := body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != leadPublic.ID {
+		t.Fatalf("viewer owner filter exposed private or wrong owner items: %v", body)
+	}
+	code, body = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?q=原文证据&owner_agent_id="+lead+"&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("owner-filtered search: %d %v", code, body)
+	}
+	items, _ = body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != leadPublic.ID {
+		t.Fatalf("viewer owner filter did not reach body search: %v", body)
+	}
+
+	code, body = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?owner_agent_id=agent_unknown_owner&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("unknown owner should remain a safe list: %d %v", code, body)
+	}
+	items, _ = body["items"].([]any)
+	if len(items) != 0 {
+		t.Fatalf("unknown owner leaked items: %v", body)
+	}
+	code, _ = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?owner_agent_id=invalid-owner")
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid owner id returned %d, want 422", code)
+	}
+
+	s.SetDemoRole(domain.RoleOwner)
+	code, body = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?agent_id="+lead+"&owner_agent_id="+lead+"&limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("management owner view: %d %v", code, body)
+	}
+	items, _ = body["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("owner filter changed existing agent_id private permission: %v", body)
+	}
+}
+
 func TestKnowledgeHTTPItemsSearchUsesBodyProjectionAndStableCursor(t *testing.T) {
 	s := newPlanTestServer(t)
 	ws, owner, _ := seedPlanHTTPEnv(t, s)

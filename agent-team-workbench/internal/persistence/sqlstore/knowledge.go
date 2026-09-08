@@ -316,6 +316,9 @@ func (r *KnowledgeRepo) ListVisibleItemsPage(ctx context.Context, workspaceID, r
 		return nil, "", err
 	}
 	options = options.Normalize()
+	if err := options.Validate(); err != nil {
+		return nil, "", err
+	}
 	if !options.Status.Valid() {
 		return nil, "", fmt.Errorf("%w: invalid knowledge status %q", domain.ErrValidation, options.Status)
 	}
@@ -339,6 +342,10 @@ func (r *KnowledgeRepo) ListVisibleItemsPage(ctx context.Context, workspaceID, r
 	default:
 		q += ` AND (visibility=? OR owner_agent_id=?)`
 		args = append(args, domain.KnowledgeVisibilityWorkspace, requesterAgentID)
+	}
+	if options.OwnerAgentID != "" {
+		q += ` AND owner_agent_id=?`
+		args = append(args, options.OwnerAgentID)
 	}
 	if options.Kind != "" {
 		q += ` AND kind=?`
@@ -534,6 +541,10 @@ func appendKnowledgeItemReadFilters(sqlText string, args []any, workspaceID, req
 	default:
 		sqlText += ` AND (i.visibility=? OR i.owner_agent_id=?)`
 		args = append(args, domain.KnowledgeVisibilityWorkspace, requesterAgentID)
+	}
+	if options.OwnerAgentID != "" {
+		sqlText += ` AND i.owner_agent_id=?`
+		args = append(args, options.OwnerAgentID)
 	}
 	if options.Kind != "" {
 		sqlText += ` AND i.kind=?`

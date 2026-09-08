@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,6 +181,102 @@ func TestKnowledgeVisibleItemsPageFiltersBeforeKeysetLimit(t *testing.T) {
 	}
 	if len(private) != 0 {
 		t.Fatalf("private item leaked in filtered page: %v", knowledgeItemIDs(private))
+	}
+}
+
+func TestKnowledgeVisibleItemsPageOwnerFilterPreservesRequesterVisibilityAndCursor(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	items := []*domain.KnowledgeItem{
+		knowledgeItem("kb_owner_alpha_003", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha public 3", domain.KnowledgeScope{"project": "orders"}),
+		knowledgeItem("kb_owner_alpha_002", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha public 2", domain.KnowledgeScope{"project": "orders"}),
+		knowledgeItem("kb_owner_alpha_001", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha public 1", domain.KnowledgeScope{"project": "billing"}),
+		knowledgeItem("kb_owner_alpha_000", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha public 0", domain.KnowledgeScope{"project": "orders"}),
+		knowledgeItem("kb_owner_alpha_private", ws.ID, alpha.ID, domain.KnowledgeVisibilityPrivate, "alpha private", domain.KnowledgeScope{"project": "orders"}),
+		knowledgeItem("kb_owner_beta_public", ws.ID, beta.ID, domain.KnowledgeVisibilityWorkspace, "beta public", domain.KnowledgeScope{"project": "orders"}),
+		knowledgeItem("kb_owner_beta_private", ws.ID, beta.ID, domain.KnowledgeVisibilityPrivate, "beta private", domain.KnowledgeScope{"project": "orders"}),
+	}
+	for _, item := range items {
+		item.Status = domain.KnowledgeStatusEffective
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	options := domain.KnowledgeListOptions{OwnerAgentID: alpha.ID, Scope: domain.KnowledgeScope{"project": "orders"}, Limit: 2}
+	first, cursor, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := knowledgeItemIDs(first); !slices.Equal(got, []string{"kb_owner_alpha_003", "kb_owner_alpha_002"}) || cursor != "kb_owner_alpha_002" {
+		t.Fatalf("owner-filtered first page = ids(%v), cursor=%q", got, cursor)
+	}
+	options.AfterID = cursor
+	second, next, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := knowledgeItemIDs(second); !slices.Equal(got, []string{"kb_owner_alpha_000"}) || next != "" {
+		t.Fatalf("owner-filtered scope continuation leaked non-matching/private rows = ids(%v), cursor=%q", got, next)
+	}
+
+	options = domain.KnowledgeListOptions{OwnerAgentID: alpha.ID, Limit: 2}
+	first, cursor, err = store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := knowledgeItemIDs(first); !slices.Equal(got, []string{"kb_owner_alpha_003", "kb_owner_alpha_002"}) || cursor != "kb_owner_alpha_002" {
+		t.Fatalf("owner-filtered public page = ids(%v), cursor=%q", got, cursor)
+	}
+	options.AfterID = cursor
+	second, next, err = store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := knowledgeItemIDs(second); !slices.Equal(got, []string{"kb_owner_alpha_001", "kb_owner_alpha_000"}) || next != "" {
+		t.Fatalf("owner-filtered public continuation = ids(%v), cursor=%q", got, next)
+	}
+
+	ownerView, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, alpha.ID,
+		domain.KnowledgeListOptions{OwnerAgentID: alpha.ID, Visibility: domain.KnowledgeVisibilityPrivate, Limit: 10})
+	if err != nil || len(ownerView) != 1 || ownerView[0].ID != "kb_owner_alpha_private" {
+		t.Fatalf("requester agent private permission changed by owner filter = ids(%v), err=%v", knowledgeItemIDs(ownerView), err)
+	}
+	otherOwnerView, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, alpha.ID,
+		domain.KnowledgeListOptions{OwnerAgentID: beta.ID, Visibility: domain.KnowledgeVisibilityPrivate, Limit: 10})
+	if err != nil || len(otherOwnerView) != 0 {
+		t.Fatalf("owner filter bypassed requester private permission = ids(%v), err=%v", knowledgeItemIDs(otherOwnerView), err)
+	}
+
+	withoutOwner, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := knowledgeItemIDs(withoutOwner); !slices.Equal(got, []string{"kb_owner_beta_public", "kb_owner_beta_private", "kb_owner_alpha_003", "kb_owner_alpha_002", "kb_owner_alpha_001", "kb_owner_alpha_000"}) {
+		t.Fatalf("omitting owner filter changed baseline visibility = ids(%v)", got)
+	}
+	otherWorkspace := &domain.Workspace{ID: "ws_owner_other", Name: "owner-other", Timezone: "UTC", Version: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := store.Workspaces().Create(ctx, otherWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	otherAgent := &domain.AgentProfile{ID: "agent_owner_other", WorkspaceID: otherWorkspace.ID, Name: "other", Role: "worker", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := store.Agents().Create(ctx, otherAgent); err != nil {
+		t.Fatal(err)
+	}
+	crossWorkspace, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{OwnerAgentID: otherAgent.ID, Limit: 10})
+	if err != nil || len(crossWorkspace) != 0 {
+		t.Fatalf("cross-workspace owner should be a safe empty set = ids(%v), err=%v", knowledgeItemIDs(crossWorkspace), err)
+	}
+	unknown, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{OwnerAgentID: "agent_missing_owner", Limit: 10})
+	if err != nil || len(unknown) != 0 {
+		t.Fatalf("unknown owner should be a safe empty set = ids(%v), err=%v", knowledgeItemIDs(unknown), err)
+	}
+	if _, _, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID,
+		domain.KnowledgeListOptions{OwnerAgentID: "invalid-owner", Limit: 10}); !errors.Is(err, domain.ErrValidation) {
+		t.Fatalf("invalid owner id = %v, want validation error", err)
 	}
 }
 
@@ -359,6 +456,69 @@ func TestKnowledgeSearchItemsPageEnforcesScopeWorkspaceKindAndVisibility(t *test
 	})
 	if err != nil || len(items) != 1 || items[0].ID != private.ID {
 		t.Fatalf("owner private visibility search = ids(%v), err=%v", knowledgeItemIDs(items), err)
+	}
+}
+
+func TestKnowledgeSearchItemsPageOwnerFilterAppliesToFTSAndChineseFallback(t *testing.T) {
+	_, store, ws, alpha, beta := knowledgeTestDB(t)
+	ctx := context.Background()
+	add := func(item *domain.KnowledgeItem, body string) {
+		t.Helper()
+		item.Status = domain.KnowledgeStatusEffective
+		if err := store.Knowledge().CreateItem(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		version := knowledgeVersion(domain.NewID(domain.PrefixKnowledgeVersion), item.ID, item.OwnerAgentID, item.Title, body, 0)
+		version.Kind = item.Kind
+		if err := store.Knowledge().CreateVersion(ctx, version); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Knowledge().PublishVersion(ctx, item.ID, version.ID, 0, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []*domain.KnowledgeItem{
+		knowledgeItem("kb_owner_search_alpha_003", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha search 3", nil),
+		knowledgeItem("kb_owner_search_alpha_002", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha search 2", nil),
+		knowledgeItem("kb_owner_search_alpha_001", ws.ID, alpha.ID, domain.KnowledgeVisibilityWorkspace, "alpha search 1", nil),
+		knowledgeItem("kb_owner_search_alpha_private", ws.ID, alpha.ID, domain.KnowledgeVisibilityPrivate, "alpha private search", nil),
+		knowledgeItem("kb_owner_search_beta_public", ws.ID, beta.ID, domain.KnowledgeVisibilityWorkspace, "beta search", nil),
+	} {
+		add(item, "ownerfiltertoken 归属筛选词正文")
+	}
+
+	collect := func(query, ownerID string) []string {
+		t.Helper()
+		options := domain.KnowledgeListOptions{Query: query, OwnerAgentID: ownerID, Limit: 2}
+		var got []string
+		for page := 0; page < 10; page++ {
+			items, cursor, err := store.Knowledge().ListVisibleItemsPage(ctx, ws.ID, beta.ID, options)
+			if err != nil {
+				t.Fatalf("query %q page %d: %v", query, page+1, err)
+			}
+			for _, item := range items {
+				got = append(got, item.ID)
+				if query == "归属筛选词" && !strings.Contains(item.SearchExcerpt, query) {
+					t.Fatalf("fallback result has no excerpt: %+v", item)
+				}
+			}
+			if cursor == "" {
+				return got
+			}
+			options.AfterID = cursor
+		}
+		t.Fatalf("query %q did not terminate", query)
+		return nil
+	}
+
+	wantOwner := []string{"kb_owner_search_alpha_003", "kb_owner_search_alpha_002", "kb_owner_search_alpha_001"}
+	for _, query := range []string{"ownerfiltertoken", "归属筛选词"} {
+		if got := collect(query, alpha.ID); !slices.Equal(got, wantOwner) {
+			t.Fatalf("owner-filtered %s search = %v, want %v", query, got, wantOwner)
+		}
+	}
+	if got := collect("ownerfiltertoken", ""); !slices.Equal(got, []string{"kb_owner_search_beta_public", "kb_owner_search_alpha_003", "kb_owner_search_alpha_002", "kb_owner_search_alpha_001"}) {
+		t.Fatalf("search without owner filter changed baseline visibility = %v", got)
 	}
 }
 

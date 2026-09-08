@@ -111,6 +111,8 @@ export interface KnowledgeItemsFilter {
   scope?: string;
   kind?: string;
   visibility?: KnowledgeVisibility;
+  /** Ownership filter; independent of the requester visibility selected by agent_id. */
+  owner_agent_id?: string;
   agent_id?: string;
   cursor?: string;
   limit?: number;
@@ -139,6 +141,7 @@ export const listKnowledgeItems = (workspaceId: string, filter: KnowledgeItemsFi
       scope: filter.scope,
       kind: filter.kind,
       visibility: filter.visibility,
+      owner_agent_id: filter.owner_agent_id,
       agent_id: filter.agent_id,
       cursor: filter.cursor,
       limit: filter.limit,
