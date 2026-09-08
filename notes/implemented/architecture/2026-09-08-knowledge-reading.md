@@ -1,6 +1,6 @@
 # 统一正文视觉与知识阅读
 
-Status: proposed
+Status: implemented
 
 ## 决策与理由
 
