@@ -1,3 +1,4 @@
+<!-- 2026-09-08 用户授权更新：全局视觉改为生产 Agent 正文的 LanguageGUI 风格，移除水墨装饰和书法字体，主侧栏固定显示无折叠。实施契约见 ../../docs/product/knowledge-reading.md；下列旧规格由本任务随实现整体修订。 -->
 ---
 version: 1.0.0
 name: agent-team-workbench-web
