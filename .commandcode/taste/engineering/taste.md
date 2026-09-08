@@ -8,3 +8,4 @@
 - Prefer fixed standalone runtime binaries committed to the repo so other machines don't re-download; do not mix with environment-installed CLIs; no login required. Confidence: 0.8
 - Operations that can hang (e.g., loading) need a time limit with a clear error prompt; add logging first, refine per-error messaging later. Confidence: 0.75
 - Empty optional fields (e.g., max output tokens) should fall back to the model's own defaults. Confidence: 0.7
+- Prefers consolidating onto a single existing model subscription (reused across all tools via a local proxy) and removing redundant per-tool plans, rather than paying for separate subscriptions per tool. Confidence: 0.65
