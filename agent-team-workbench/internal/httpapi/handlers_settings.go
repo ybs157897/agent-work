@@ -172,6 +172,11 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
 		}
+		currentAgent, err := s.svc.Agent(r.Context(), agentID)
+		if err != nil {
+			return problemBytes(err)
+		}
+		builtinLibrarian := currentAgent.Kind.IsKnowledgeLibrarian()
 		patch := application.AgentPatch{
 			Name: req.Name, Role: req.Role, Skills: req.Skills,
 			Instructions: req.Instructions, ExpectedVersion: req.ExpectedVersion,
@@ -187,7 +192,7 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		patch.ModelOverride = req.ModelOverride
 		patch.Policy = req.Policy
 		var durable AgentConfigIntentSync
-		if s.agentCfg != nil {
+		if s.agentCfg != nil && !builtinLibrarian {
 			var ok bool
 			durable, ok = s.agentCfg.(AgentConfigIntentSync)
 			if !ok {
@@ -200,7 +205,7 @@ func (s *Server) handlePatchAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return problemBytes(err)
 		}
-		if durable != nil {
+		if durable != nil && !builtinLibrarian {
 			if syncErr := durable.ReconcileAgent(r.Context(), a.ID); syncErr != nil {
 				return s.agentConfigIntentFailure(syncErr)
 			}

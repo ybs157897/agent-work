@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -19,6 +20,7 @@ func (s *Server) registerKnowledgeWriteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/knowledge/submissions/{submission_id}/curate", s.guard(security.PermAgentWrite, s.handleKnowledgeCurate))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/knowledge/submissions/{submission_id}/publish", s.guard(security.PermAgentWrite, s.handleKnowledgePublish))
 	mux.HandleFunc("POST /api/v1/knowledge-agent/runs/{run_id}/submissions", s.handleKnowledgeAgentSubmit)
+	mux.HandleFunc("POST /api/v1/knowledge-agent/runs/{run_id}/records", s.handleKnowledgeAgentRecord)
 }
 
 func (s *Server) handleKnowledgeRepeal(w http.ResponseWriter, r *http.Request) {
@@ -70,10 +72,9 @@ func (s *Server) handleKnowledgeConfigure(w http.ResponseWriter, r *http.Request
 	}
 	s.idempotent(w, r, ws, func() (int, []byte) {
 		var req struct {
-			ExpectedVersion  int     `json:"expected_version"`
-			LibrarianAgentID *string `json:"librarian_agent_id,omitempty"`
-			Enabled          *bool   `json:"enabled,omitempty"`
-			AutoCollect      *bool   `json:"auto_collect,omitempty"`
+			ExpectedVersion int   `json:"expected_version"`
+			Enabled         *bool `json:"enabled,omitempty"`
+			AutoCollect     *bool `json:"auto_collect,omitempty"`
 		}
 		if err := decodeBody(r, &req); err != nil {
 			return problemBytes(err)
@@ -88,9 +89,6 @@ func (s *Server) handleKnowledgeConfigure(w http.ResponseWriter, r *http.Request
 		cfg := *current
 		cfg.WorkspaceID = ws
 		cfg.Version = req.ExpectedVersion
-		if req.LibrarianAgentID != nil {
-			cfg.LibrarianAgentID = *req.LibrarianAgentID
-		}
 		if req.Enabled != nil {
 			cfg.Enabled = *req.Enabled
 		}
@@ -263,6 +261,55 @@ func (s *Server) handleKnowledgeAgentSubmit(w http.ResponseWriter, r *http.Reque
 	}
 	req.ClientKey = "run:" + run.ID + ":" + req.ClientKey
 	out, err := s.svc.SubmitKnowledgeCandidate(r.Context(), req)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// knowledgeAgentRecordRequest deliberately has no identity or knowledge
+// structure fields. The current Run is the only source of workspace/Agent/Run
+// authority; the librarian owns the later structure and publication gates.
+type knowledgeAgentRecordRequest struct {
+	Content       string `json:"content,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Title         string `json:"title,omitempty"`
+	PublishIntent string `json:"publish_intent,omitempty"`
+	ClientKey     string `json:"client_key,omitempty"`
+}
+
+func (s *Server) handleKnowledgeAgentRecord(w http.ResponseWriter, r *http.Request) {
+	run, ok := s.knowledgeAgentRun(w, r)
+	if !ok {
+		return
+	}
+	var req knowledgeAgentRecordRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeProblem(w, r, Problem{Type: "https://workbench.example/problems/bad-request", Title: "Invalid request body", Status: http.StatusBadRequest, Code: "bad_request", Detail: err.Error()})
+		return
+	}
+	content := req.Content
+	text := req.Text
+	if strings.TrimSpace(content) != "" && strings.TrimSpace(text) != "" {
+		fail(w, r, fmt.Errorf("%w: provide exactly one of content or text", domain.ErrValidation))
+		return
+	}
+	if strings.TrimSpace(content) == "" {
+		content = text
+	}
+	clientKey := strings.TrimSpace(req.ClientKey)
+	if clientKey == "" {
+		clientKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+	if clientKey == "" {
+		fail(w, r, fmt.Errorf("%w: client_key required", domain.ErrValidation))
+		return
+	}
+	out, err := s.svc.SubmitKnowledgeAgentRecord(r.Context(), application.KnowledgeAgentRecordParams{
+		RunID: run.ID, Content: content, Title: req.Title,
+		PublishIntent: req.PublishIntent, ClientKey: clientKey,
+	})
 	if err != nil {
 		fail(w, r, err)
 		return

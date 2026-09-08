@@ -13,7 +13,7 @@ import (
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-func TestKnowledgeConfigReadRemainsRepairableWhenLibrarianDisabled(t *testing.T) {
+func TestKnowledgeConfigMigratesLegacyTargetToBuiltin(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
@@ -25,29 +25,26 @@ func TestKnowledgeConfigReadRemainsRepairableWhenLibrarianDisabled(t *testing.T)
 		t.Fatal(err)
 	}
 	seedCtx(t, store, ctx, ws.ID)
-	disabled := &domain.AgentProfile{ID: "agent_disabled_librarian", WorkspaceID: ws.ID, Name: "disabled", Role: "librarian", Availability: domain.AgentDisabled, Presence: domain.PresenceOffline, Version: 1, CreatedAt: now, UpdatedAt: now}
-	active := &domain.AgentProfile{ID: "agent_active_librarian", WorkspaceID: ws.ID, Name: "active", Role: "librarian", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: now, UpdatedAt: now}
-	for _, agent := range []*domain.AgentProfile{disabled, active} {
-		if err := store.Agents().Create(ctx, agent); err != nil {
-			t.Fatal(err)
-		}
+	legacy := &domain.AgentProfile{ID: "agent_disabled_librarian", WorkspaceID: ws.ID, Name: "disabled", Role: "librarian", Availability: domain.AgentDisabled, Presence: domain.PresenceOffline, Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Agents().Create(ctx, legacy); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.KnowledgeJobs().CreateConfig(ctx, &domain.KnowledgeLibrarianConfig{
-		WorkspaceID: ws.ID, LibrarianAgentID: disabled.ID, Enabled: true, Version: 1, CreatedAt: now, UpdatedAt: now,
+		WorkspaceID: ws.ID, LibrarianAgentID: legacy.ID, Enabled: true, Version: 1, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := svc.GetKnowledgeLibrarianConfig(ctx, ws.ID)
-	if err != nil || cfg.Version != 1 || cfg.LibrarianAgentID != disabled.ID {
-		t.Fatalf("stale config must remain readable for repair: cfg=%+v err=%v", cfg, err)
+	if err != nil || cfg.Version != 2 || cfg.LibrarianAgentID != domain.KnowledgeLibrarianAgentID(ws.ID) || !cfg.Enabled {
+		t.Fatalf("legacy config was not migrated to the builtin librarian: cfg=%+v err=%v", cfg, err)
 	}
-	cfg.LibrarianAgentID = active.ID
+	cfg.Enabled = false
 	updated, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, *cfg)
 	if err != nil {
-		t.Fatalf("valid replacement of disabled librarian rejected: %v", err)
+		t.Fatalf("builtin librarian config could not be disabled: %v", err)
 	}
-	if updated.Version != 2 || updated.LibrarianAgentID != active.ID {
-		t.Fatalf("replacement config = %+v, want active agent/version 2", updated)
+	if updated.Version != 3 || updated.LibrarianAgentID != domain.KnowledgeLibrarianAgentID(ws.ID) || updated.Enabled {
+		t.Fatalf("migrated config changed identity or enabled state: %+v", updated)
 	}
 }
 
@@ -70,9 +67,7 @@ func TestKnowledgeCandidateDefaultsOwnerAndEnforcesMaintenanceAuthority(t *testi
 			t.Fatal(err)
 		}
 	}
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, domain.KnowledgeLibrarianConfig{LibrarianAgentID: manager.ID, Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
+	librarianID := configureBuiltinKnowledgeLibrarianForTest(t, ctx, svc, ws.ID, "")
 	item := &domain.KnowledgeItem{ID: domain.NewID(domain.PrefixKnowledgeItem), WorkspaceID: ws.ID, OwnerAgentID: producer.ID, Visibility: domain.KnowledgeVisibilityWorkspace, Kind: "fact", Title: "owned fact", Version: 1, Status: domain.KnowledgeStatusCandidate, CreatedAt: now, UpdatedAt: now}
 	if err := store.Knowledge().CreateItem(ctx, item); err != nil {
 		t.Fatal(err)
@@ -89,7 +84,7 @@ func TestKnowledgeCandidateDefaultsOwnerAndEnforcesMaintenanceAuthority(t *testi
 	if len(result.Request.Changes) != 1 || result.Request.Changes[0].OwnerAgentID != producer.ID || result.Request.Changes[0].Visibility != domain.KnowledgeVisibilityWorkspace {
 		t.Fatalf("candidate defaults not sealed: %+v", result.Request.Changes)
 	}
-	modifyOtherOwner := domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: manager.ID, ClientKey: "candidate-manager-revision", Changes: []domain.KnowledgeChange{{ItemID: item.ID, OwnerAgentID: producer.ID, BaseVersion: 0, Title: "manager rewrite", Body: "body", Kind: "fact"}}}
+	modifyOtherOwner := domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: librarianID, ClientKey: "candidate-manager-revision", Changes: []domain.KnowledgeChange{{ItemID: item.ID, OwnerAgentID: producer.ID, BaseVersion: 0, Title: "manager rewrite", Body: "body", Kind: "fact"}}}
 	if _, err := svc.SubmitKnowledgeCandidate(ctx, modifyOtherOwner); err != nil {
 		t.Fatalf("configured librarian should be allowed to curate owner item: %v", err)
 	}
@@ -118,14 +113,12 @@ func TestKnowledgeCurationMovesSourceReceiptToProcessingAtomically(t *testing.T)
 	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{ID: "binding_knowledge_curation", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock", Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady, Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, domain.KnowledgeLibrarianConfig{LibrarianAgentID: manager.ID, Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
+	librarianID := configureBuiltinKnowledgeLibrarianForTest(t, ctx, svc, ws.ID, "mock")
 	submission, err := svc.SubmitKnowledgeCandidate(ctx, domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: producer.ID, ClientKey: "curation-source", Changes: []domain.KnowledgeChange{{Title: "candidate", Body: "candidate body", Kind: "fact", Sources: []domain.KnowledgeSourceInput{{Kind: domain.KnowledgeSourceDocument, Ref: "spec@v1", Excerpt: "provided source excerpt"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: manager.ID, SubmissionID: submission.ID, ClientKey: "curation-job"})
+	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: librarianID, SubmissionID: submission.ID, ClientKey: "curation-job"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,14 +171,12 @@ func TestKnowledgeCurationMalformedFinishDoesNotLeaveProcessingReceipt(t *testin
 	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{ID: "binding_knowledge_curation_failure", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock", Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady, Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, domain.KnowledgeLibrarianConfig{LibrarianAgentID: manager.ID, Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
+	librarianID := configureBuiltinKnowledgeLibrarianForTest(t, ctx, svc, ws.ID, "mock")
 	submission, err := svc.SubmitKnowledgeCandidate(ctx, domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: producer.ID, ClientKey: "curation-failure-source", Changes: []domain.KnowledgeChange{{Title: "candidate", Body: "candidate body", Kind: "fact"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: manager.ID, SubmissionID: submission.ID, ClientKey: "curation-failure-job"})
+	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: librarianID, SubmissionID: submission.ID, ClientKey: "curation-failure-job"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,14 +228,12 @@ func TestKnowledgeCurationMissingEvidenceWithoutProposalNeedsReview(t *testing.T
 	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{ID: "binding_knowledge_curation_missing", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock", Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady, Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, domain.KnowledgeLibrarianConfig{LibrarianAgentID: manager.ID, Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
+	librarianID := configureBuiltinKnowledgeLibrarianForTest(t, ctx, svc, ws.ID, "mock")
 	submission, err := svc.SubmitKnowledgeCandidate(ctx, domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: producer.ID, ClientKey: "curation-missing-source", Changes: []domain.KnowledgeChange{{Title: "candidate", Body: "candidate body", Kind: "fact"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: manager.ID, SubmissionID: submission.ID, ClientKey: "curation-missing-job"})
+	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: librarianID, SubmissionID: submission.ID, ClientKey: "curation-missing-job"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,14 +280,12 @@ func TestKnowledgeSemanticFailureAccountsRolledBackTerminalUsage(t *testing.T) {
 	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{ID: "binding_knowledge_curation_usage", WorkspaceID: ws.ID, RuntimeLabel: "mock", AdapterID: "mock", Capabilities: map[string]string{"resume": "supported"}, Status: domain.BindingReady, Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, ws.ID, domain.KnowledgeLibrarianConfig{LibrarianAgentID: manager.ID, Enabled: true, Version: 0}); err != nil {
-		t.Fatal(err)
-	}
+	librarianID := configureBuiltinKnowledgeLibrarianForTest(t, ctx, svc, ws.ID, "mock")
 	submission, err := svc.SubmitKnowledgeCandidate(ctx, domain.KnowledgeSubmitCandidate{WorkspaceID: ws.ID, AgentID: producer.ID, ClientKey: "curation-usage-source", Changes: []domain.KnowledgeChange{{Title: "candidate", Body: "candidate body", Kind: "fact", Sources: []domain.KnowledgeSourceInput{{Kind: domain.KnowledgeSourceDocument, Ref: "spec", Excerpt: "provided evidence"}}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: manager.ID, SubmissionID: submission.ID, ClientKey: "curation-usage-job"})
+	job, err := svc.StartKnowledgeCuration(ctx, application.StartKnowledgeCurationParams{WorkspaceID: ws.ID, RequestingAgentID: librarianID, SubmissionID: submission.ID, ClientKey: "curation-usage-job"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,4 +328,26 @@ func terminalizeKnowledgeRun(t *testing.T, ctx context.Context, svc *application
 			t.Fatal(err)
 		}
 	}
+}
+
+func configureBuiltinKnowledgeLibrarianForTest(t *testing.T, ctx context.Context, svc *application.Service, workspaceID, runtimeLabel string) string {
+	t.Helper()
+	librarian, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeLabel != "" {
+		if _, err := svc.UpdateAgent(ctx, librarian.ID, application.AgentPatch{
+			RuntimePreference: &domain.RuntimePreference{Preferred: runtimeLabel}, ExpectedVersion: librarian.Version,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configured, err := svc.ConfigureKnowledgeLibrarian(ctx, workspaceID, domain.KnowledgeLibrarianConfig{
+		LibrarianAgentID: librarian.ID, Enabled: true, Version: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return configured.LibrarianAgentID
 }

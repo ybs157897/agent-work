@@ -109,10 +109,10 @@ func (s *Service) maybeAdvanceKnowledgeLibrarian(ctx context.Context, run *domai
 			return nil // late/replayed terminal event
 		}
 		acted = true
-		if job.Mode == domain.KnowledgeJobInquiry && job.SourceRunID != "" {
-			if source, sourceErr := s.store.Runs().Get(txctx, job.SourceRunID); sourceErr == nil && source.Status.IsTerminal() {
+		if job.SourceRunID != "" {
+			if source, sourceErr := s.store.Runs().Get(txctx, job.SourceRunID); sourceErr == nil && knowledgeRecordSourceRunCancelled(source) {
 				return s.finishKnowledgeJobLocked(txctx, job, domain.KnowledgeJobCancelled,
-					"source Run 已终态，知识调查随调用方取消")
+					"source Run 已终态，知识作业随调用方取消")
 			} else if sourceErr != nil && !errors.Is(sourceErr, domain.ErrNotFound) {
 				return sourceErr
 			}
@@ -167,6 +167,11 @@ func (s *Service) maybeAdvanceKnowledgeLibrarian(ctx context.Context, run *domai
 		if err != nil {
 			return s.repairKnowledgeDecisionLocked(txctx, job, freshRun, err, &next)
 		}
+		if job.Mode == domain.KnowledgeJobInquiry && decision.Action == domain.KnowledgeJobActionFinish &&
+			decision.Finish != nil && (len(decision.Finish.Changes) > 0 || decision.Finish.NoChange) {
+			return s.repairKnowledgeDecisionLocked(txctx, job, freshRun,
+				fmt.Errorf("inquiry finish cannot contain curation changes"), &next)
+		}
 		return s.applyKnowledgeDecisionLocked(txctx, job, freshRun, decision, &next)
 	})
 	if err != nil {
@@ -185,6 +190,14 @@ func (s *Service) maybeAdvanceKnowledgeLibrarian(ctx context.Context, run *domai
 	if next != nil {
 		if err := s.dispatchCommittedRun(context.WithoutCancel(ctx), next); err != nil {
 			return true, err
+		}
+	} else if acted {
+		// A confirmed Agent record may have produced a reviewable candidate in
+		// the terminal curation turn. Try its narrow auto-publish policy only
+		// after the curation transaction commits; failures retain the candidate
+		// and are surfaced through the durable Job result.
+		if err := s.maybeAutoPublishKnowledgeRecord(context.WithoutCancel(ctx), marker.JobID); err != nil {
+			return acted, err
 		}
 	}
 	return acted, nil
@@ -864,7 +877,25 @@ func (s *Service) applyKnowledgeFinishLocked(ctx context.Context, job *domain.Kn
 	if job.Mode == domain.KnowledgeJobInquiry && (len(finish.Changes) > 0 || finish.NoChange) {
 		return nil, fmt.Errorf("%w: inquiry finish cannot contain curation changes", domain.ErrValidation)
 	}
-	if job.Mode == domain.KnowledgeJobCuration {
+	if job.Mode == domain.KnowledgeJobCuration && job.SubmissionID != "" {
+		origin, originErr := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+		if originErr != nil {
+			return nil, originErr
+		}
+		if knowledgeRecordIsAgentRecord(origin) {
+			switch {
+			case finish.NoChange && gate.Status == domain.KnowledgeCoverageComplete:
+				result["publication_status"] = "unchanged"
+				result["publication_feedback"] = "知识管理员确认没有需要新增的知识"
+			case finish.NoChange:
+				result["publication_status"] = "needs_review"
+			case len(finish.Changes) > 0:
+				// The post-commit record finalizer will replace pending with
+				// published or needs_review. Keeping the marker in the terminal
+				// Job lets a waiting Agent distinguish that short handoff window.
+				result["publication_status"] = "pending"
+			}
+		}
 		if gate.Status == domain.KnowledgeCoverageComplete && !finish.NoChange && len(finish.Changes) == 0 {
 			return nil, fmt.Errorf("%w: curation finish requires revised_changes or no_change", domain.ErrValidation)
 		}
@@ -948,6 +979,7 @@ func (s *Service) persistKnowledgeCurationSubmissionLocked(ctx context.Context, 
 	if err := s.validateKnowledgeCurationSources(ctx, job, finish.Changes); err != nil {
 		return nil, err
 	}
+	s.inheritKnowledgeCurationSourceProvenance(ctx, job, finish.Changes)
 	if err := s.validateKnowledgeCurationItemScope(ctx, job, finish.Changes); err != nil {
 		return nil, err
 	}
@@ -980,6 +1012,50 @@ func (s *Service) persistKnowledgeCurationSubmissionLocked(ctx context.Context, 
 		}
 	}
 	return prepared, nil
+}
+
+// inheritKnowledgeCurationSourceProvenance carries server-owned provenance
+// from a receipt seed into the librarian's candidate. The model may omit
+// metadata while copying an exact source, but it must not be able to replace
+// the Agent/Run that supplied a raw record.
+func (s *Service) inheritKnowledgeCurationSourceProvenance(ctx context.Context, job *domain.KnowledgeJob, changes []domain.KnowledgeChange) {
+	if s == nil || job == nil || job.SubmissionID == "" {
+		return
+	}
+	origin, err := s.store.Knowledge().GetSubmissionForWorkspace(ctx, job.WorkspaceID, job.SubmissionID)
+	if err != nil || origin == nil {
+		return
+	}
+	for changeIndex := range changes {
+		for sourceIndex := range changes[changeIndex].Sources {
+			candidate := &changes[changeIndex].Sources[sourceIndex]
+			matched := false
+			for _, originChange := range origin.Request.Changes {
+				for _, actual := range originChange.Sources {
+					if actual.Kind != candidate.Kind || actual.Ref != candidate.Ref ||
+						(actual.Locator != "" && candidate.Locator != actual.Locator) ||
+						(candidate.Excerpt != "" && !knowledgeEvidenceSubstring(actual.Excerpt, candidate.Excerpt)) {
+						continue
+					}
+					for _, key := range []string{"origin", "origin_user_id", "origin_agent_id", "origin_run_id", "record_intent"} {
+						if value, ok := actual.Metadata[key]; ok {
+							if candidate.Metadata == nil {
+								candidate.Metadata = map[string]any{}
+							}
+							candidate.Metadata[key] = value
+						} else if candidate.Metadata != nil {
+							delete(candidate.Metadata, key)
+						}
+					}
+					matched = true
+					break
+				}
+				if matched {
+					break
+				}
+			}
+		}
+	}
 }
 
 func (s *Service) validateKnowledgeCurationSources(ctx context.Context, job *domain.KnowledgeJob, changes []domain.KnowledgeChange) error {

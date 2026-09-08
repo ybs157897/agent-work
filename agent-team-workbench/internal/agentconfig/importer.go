@@ -482,7 +482,16 @@ func (im *Importer) Import(ctx context.Context, workspaceID string) (ImportResul
 	}
 	bySlug := map[string]*domain.AgentProfile{}
 	byName := map[string]*domain.AgentProfile{}
+	reservedSystemSlugs := map[string]struct{}{}
+	reservedSystemNames := map[string]struct{}{}
 	for _, a := range agents {
+		if a.Kind.IsSystem() {
+			if a.Slug != "" {
+				reservedSystemSlugs[a.Slug] = struct{}{}
+			}
+			reservedSystemNames[strings.ToLower(a.Name)] = struct{}{}
+			continue
+		}
 		if a.Slug != "" {
 			bySlug[a.Slug] = a
 		}
@@ -490,6 +499,14 @@ func (im *Importer) Import(ctx context.Context, workspaceID string) (ImportResul
 	}
 
 	for _, cfg := range configs {
+		if _, reserved := reservedSystemSlugs[cfg.Slug]; reserved {
+			res.Skipped++
+			continue
+		}
+		if _, reserved := reservedSystemNames[strings.ToLower(cfg.Name)]; reserved {
+			res.Skipped++
+			continue
+		}
 		existing := bySlug[cfg.Slug]
 		if existing == nil {
 			existing = byName[strings.ToLower(cfg.Name)]

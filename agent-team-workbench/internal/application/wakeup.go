@@ -129,7 +129,7 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 		}
 	}
 	agent, agentErr := s.store.Agents().Get(ctx, agentProfileID)
-	if agentErr == nil && agent.Kind.IsSystem() && governedState != nil {
+	if agentErr == nil && agent.Kind.IsTaskCoordinator() && governedState != nil {
 		// A settlement wake queued before a Handoff was accepted can still name
 		// the system Coordinator. Re-resolve the current claim owner here so the
 		// old durable wake is consumed by the delegated target instead of being
@@ -145,7 +145,7 @@ func (s *Service) CreateRunForWakeup(ctx context.Context, workspaceID, agentProf
 		}
 	}
 	switch {
-	case agentErr == nil && agent.Kind.IsSystem():
+	case agentErr == nil && agent.Kind.IsTaskCoordinator():
 		state := governedState
 		if state == nil {
 			return "", domain.ErrNotFound

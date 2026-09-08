@@ -157,6 +157,18 @@ func (c *restClient) abortSession(ctx context.Context, sessionID string) *kapErr
 	return kerr
 }
 
+// cancelTask 中止一个已由本 Run 观测到的 detached task；40406/40904 表示
+// task 已不在可取消状态，按取消幂等处理。调用方必须先用事件流建立 task
+// 归属，不能把会话中其他 task 的 ID 传入。
+func (c *restClient) cancelTask(ctx context.Context, sessionID, taskID string) *kapError {
+	path := "/api/v1/sessions/" + sessionID + "/tasks/" + taskID + ":cancel"
+	kerr := c.do(ctx, http.MethodPost, path, nil, nil, false)
+	if kerr != nil && (kerr.Code == codeTaskNotFound || kerr.Code == codeTaskAlreadyDone) {
+		return nil
+	}
+	return kerr
+}
+
 // resolveApproval 决议审批；40902（已决议）/40404（不存在）幂等吞掉。
 func (c *restClient) resolveApproval(ctx context.Context, sessionID, approvalID, decision, feedback string) *kapError {
 	path := "/api/v1/sessions/" + sessionID + "/approvals/" + approvalID

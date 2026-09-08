@@ -128,3 +128,154 @@ func (c *Client) Ask(ctx context.Context, input any, key string) (json.RawMessag
 		}
 	}
 }
+
+// Record submits raw Agent knowledge for the librarian and waits for the
+// bounded curation Job when one was created. The returned envelope retains the
+// original submission and replaces its initial Job projection with the final
+// Job result, including publication references for confirmed requirements.
+func (c *Client) Record(ctx context.Context, input any, key string) (json.RawMessage, error) {
+	raw, err := c.Do(ctx, http.MethodPost, "/records", input, key)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		Job struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"job"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("knowledge record response is invalid: %w", err)
+	}
+	if envelope.Job.ID == "" {
+		return raw, nil
+	}
+	jobPath := "/jobs/" + url.PathEscape(envelope.Job.ID)
+	latest, err := c.waitJob(ctx, jobPath, envelope.Job.ID, envelope.Job.Status, raw)
+	if err != nil {
+		return nil, err
+	}
+	if recordPublicationPending(latest) {
+		latest, err = c.waitRecordPublication(ctx, jobPath, latest)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return mergeRecordJob(raw, latest), nil
+}
+
+func (c *Client) waitJob(ctx context.Context, jobPath, jobID, status string, initial json.RawMessage) (json.RawMessage, error) {
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = c.Do(cancelCtx, http.MethodPost, jobPath+"/cancel", map[string]any{}, "cancel:"+jobID)
+	}()
+	interval := c.PollInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	current := initial
+	timer := time.NewTicker(interval)
+	defer timer.Stop()
+	for {
+		if knowledgeJobTerminal(status) {
+			return current, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			next, err := c.Do(ctx, http.MethodGet, jobPath, nil, "")
+			if err != nil {
+				return nil, err
+			}
+			var snapshot struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(next, &snapshot); err != nil {
+				return nil, err
+			}
+			current, status = next, snapshot.Status
+		}
+	}
+}
+
+func knowledgeJobTerminal(status string) bool {
+	switch status {
+	case "completed", "complete", "incomplete", "conflict", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func mergeRecordJob(envelope, job json.RawMessage) json.RawMessage {
+	var outer map[string]json.RawMessage
+	if err := json.Unmarshal(envelope, &outer); err != nil {
+		return envelope
+	}
+	outer["job"] = job
+	var snapshot struct {
+		Status string `json:"status"`
+		Result struct {
+			PublicationStatus   string          `json:"publication_status"`
+			PublishedReferences json.RawMessage `json:"published_references"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(job, &snapshot); err == nil && snapshot.Status != "" {
+		status, _ := json.Marshal(snapshot.Status)
+		outer["curation_status"] = status
+		if snapshot.Result.PublicationStatus != "" {
+			publication, _ := json.Marshal(snapshot.Result.PublicationStatus)
+			outer["publication_status"] = publication
+		}
+		if len(snapshot.Result.PublishedReferences) > 0 && string(snapshot.Result.PublishedReferences) != "null" {
+			outer["published_references"] = snapshot.Result.PublishedReferences
+		}
+	}
+	merged, err := json.Marshal(outer)
+	if err != nil {
+		return envelope
+	}
+	return merged
+}
+
+func recordPublicationPending(job json.RawMessage) bool {
+	var snapshot struct {
+		Result struct {
+			PublicationStatus string `json:"publication_status"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(job, &snapshot); err != nil {
+		return false
+	}
+	return snapshot.Result.PublicationStatus == "pending"
+}
+
+func (c *Client) waitRecordPublication(ctx context.Context, jobPath string, initial json.RawMessage) (json.RawMessage, error) {
+	interval := c.PollInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	timer := time.NewTicker(interval)
+	defer timer.Stop()
+	current := initial
+	for {
+		if !recordPublicationPending(current) {
+			return current, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			next, err := c.Do(ctx, http.MethodGet, jobPath, nil, "")
+			if err != nil {
+				return nil, err
+			}
+			current = next
+		}
+	}
+}

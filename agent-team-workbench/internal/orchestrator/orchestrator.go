@@ -144,6 +144,11 @@ func ConfigDigest(input map[string]any) string {
 		"policy":        input["policy"],
 		"mode":          input["mode"],
 	}
+	// Native tools are persisted by Codex with the provider thread. Rotate the
+	// session when the tool contract changes, but never for per-Run credentials.
+	if access, ok := input["knowledge_access"].(map[string]any); ok && access["transport"] == "codex_dynamic" {
+		stable["knowledge_tool"] = map[string]any{"transport": access["transport"], "schema": access["tool_schema"]}
+	}
 	if controlDecision, ok := input["control_decision"]; ok {
 		stable["control_decision"] = stableControlDecision(controlDecision)
 	}

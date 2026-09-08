@@ -33,6 +33,8 @@ const (
 	codeSessionBusy       = 40901 // 会话忙
 	codeApprovalResolved  = 40902 // 审批已决议（幂等）
 	codePromptAlreadyDone = 40903 // prompt 已完成（abort 幂等）
+	codeTaskNotFound      = 40406 // task 不存在（取消幂等）
+	codeTaskAlreadyDone   = 40904 // task 已完成（取消幂等）
 	codeInternalError     = 50001 // 服务端内部错误
 )
 
@@ -154,9 +156,17 @@ type pongPayload struct {
 // ---- 事件载荷（packages/protocol/src/events.ts）----
 
 type evTurnStarted struct {
-	TurnID   int64  `json:"turnId"`
-	AgentID  string `json:"agentId,omitempty"`
-	PromptID string `json:"promptId,omitempty"`
+	TurnID   int64         `json:"turnId"`
+	AgentID  string        `json:"agentId,omitempty"`
+	PromptID string        `json:"promptId,omitempty"`
+	Origin   *evTurnOrigin `json:"origin,omitempty"`
+}
+
+type evTurnOrigin struct {
+	Kind           string `json:"kind"`
+	TaskID         string `json:"taskId,omitempty"`
+	Status         string `json:"status,omitempty"`
+	NotificationID string `json:"notificationId,omitempty"`
 }
 
 // evTurnEnded：reason ∈ completed|cancelled|failed|blocked；error 为
@@ -222,6 +232,52 @@ type evToolProgress struct {
 		Text    string   `json:"text"`
 		Percent *float64 `json:"percent,omitempty"`
 	} `json:"update"`
+}
+
+// evTaskLifecycle is the KAP background-task envelope. Current v2 uses
+// task.started/task.terminated while the server also exposes the legacy
+// background.task.* aliases; both carry the task identity in info.taskId.
+type evTaskLifecycle struct {
+	AgentID string     `json:"agentId"`
+	Info    evTaskInfo `json:"info"`
+}
+
+type evTaskNotified struct {
+	AgentID          string `json:"agentId"`
+	NotificationType string `json:"notificationType"`
+	Title            string `json:"title"`
+	Body             string `json:"body"`
+	Severity         string `json:"severity"`
+	SourceKind       string `json:"sourceKind"`
+	SourceID         string `json:"sourceId"`
+}
+
+// evTaskWaitDelivered is emitted by KAP's wire task service when WaitFor has
+// delivered one or more terminal task results to the current agent. A key is
+// encoded as taskId\x00status\x00notificationId.
+type evTaskWaitDelivered struct {
+	AgentID string   `json:"agentId"`
+	Keys    []string `json:"keys"`
+}
+
+type evTaskInfo struct {
+	TaskID                         string `json:"taskId"`
+	Detached                       *bool  `json:"detached,omitempty"`
+	Status                         string `json:"status"`
+	TerminalNotificationSuppressed bool   `json:"terminalNotificationSuppressed,omitempty"`
+}
+
+func (e evTaskLifecycle) taskID() string {
+	return e.Info.TaskID
+}
+
+func isTerminalTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "killed", "timed_out", "cancelled", "stopped", "lost":
+		return true
+	default:
+		return false
+	}
 }
 
 // evApprovalRequested 对齐 toWireApproval 投影（蛇形命名）。

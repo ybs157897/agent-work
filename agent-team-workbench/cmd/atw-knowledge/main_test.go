@@ -1,10 +1,43 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/ybs/agent-team-workbench/internal/domain"
 )
+
+func TestParseCLIArgsAllowsFlagsAfterRecordContent(t *testing.T) {
+	fs := flag.NewFlagSet("atw-knowledge", flag.ContinueOnError)
+	intent := fs.String("publish-intent", "", "")
+	title := fs.String("title", "", "")
+	args, help, err := parseCLIArgs(fs, []string{"record", "用户确认的规则", "--publish-intent", "confirmed_requirement", "--title", "规则"})
+	if err != nil || help || len(args) != 2 || args[0] != "record" || args[1] != "用户确认的规则" {
+		t.Fatalf("record command/arguments were not preserved: args=%v help=%t err=%v", args, help, err)
+	}
+	if *intent != "confirmed_requirement" || *title != "规则" {
+		t.Fatalf("flags after record content were not parsed: intent=%q title=%q", *intent, *title)
+	}
+}
+
+func TestParseCLIArgsTreatsHelpAsLocalHelp(t *testing.T) {
+	fs := flag.NewFlagSet("atw-knowledge", flag.ContinueOnError)
+	fs.String("publish-intent", "", "")
+	args, help, err := parseCLIArgs(fs, []string{"record", "--help"})
+	if err != nil || !help || args != nil {
+		t.Fatalf("record --help was treated as content: args=%v help=%t err=%v", args, help, err)
+	}
+}
+
+func TestDefaultQueryTimeoutAllowsServerBudgetToFinish(t *testing.T) {
+	serverBudget := time.Duration((domain.KnowledgeJobBudget{}).Normalize().MaxDurationSeconds) * time.Second
+	if defaultQueryTimeout() <= serverBudget {
+		t.Fatal("the CLI must not abandon a query before the server's default Job budget ends")
+	}
+}
 
 func TestLoadAccessFileReadsCapabilityWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.json")

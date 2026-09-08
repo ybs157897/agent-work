@@ -6,7 +6,7 @@ import type { ChatMessage } from '../../stores/chat.store';
 import { tailTruncate } from '../../utils/output-truncate';
 import { toolActivityTitle } from '../../utils/tool-activity-copy';
 
-export type ToolFamily = 'bash' | 'read' | 'write' | 'edit' | 'search' | 'code' | 'others';
+export type ToolFamily = 'bash' | 'read' | 'write' | 'edit' | 'search' | 'code' | 'knowledge' | 'others';
 
 export type ToolRowState = 'running' | 'ok' | 'error' | 'stopped';
 
@@ -25,6 +25,7 @@ export const FAMILY_TITLES: Record<ToolFamily, string> = {
   edit: 'Edit',
   search: 'Search',
   code: 'Code',
+  knowledge: '知识库管理员',
   others: 'Tool call',
 };
 
@@ -51,6 +52,7 @@ export interface ToolRowModel {
 
 /** 精确工具名表（小写化后命中）。 */
 const EXACT_FAMILIES: Record<string, ToolFamily> = {
+  atw_knowledge: 'knowledge',
   bash: 'bash',
   shell: 'bash',
   pwsh: 'bash',

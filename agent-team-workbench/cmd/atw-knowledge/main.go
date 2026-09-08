@@ -14,9 +14,11 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/knowledgeclient"
 )
 
@@ -32,24 +34,39 @@ func main() {
 	}
 }
 
+func defaultQueryTimeout() time.Duration {
+	// The caller must wait long enough to receive the Job's own budget result.
+	budget := (domain.KnowledgeJobBudget{}).Normalize()
+	return time.Duration(budget.MaxDurationSeconds)*time.Second + time.Minute
+}
+
 func run() error {
 	fs := flag.NewFlagSet("atw-knowledge", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: atw-knowledge [flags] ask QUESTION | record CONTENT | read ID [VERSION] | submit < changes.json")
+		fs.PrintDefaults()
+	}
 	endpoint := fs.String("url", os.Getenv("ATW_KNOWLEDGE_URL"), "Run-bound knowledge endpoint")
 	accessFile := fs.String("access-file", "", "Run-bound capability file")
-	timeout := fs.Duration("timeout", 3*time.Minute, "maximum query duration")
+	timeout := fs.Duration("timeout", defaultQueryTimeout(), "maximum query duration")
 	key := fs.String("key", "", "stable idempotency key for retry")
-	if err := fs.Parse(os.Args[1:]); err != nil {
+	title := fs.String("title", "", "optional title for a raw Agent record")
+	publishIntent := fs.String("publish-intent", "", "optional raw record publish intent")
+	args, help, err := parseCLIArgs(fs, os.Args[1:])
+	if err != nil {
 		return err
 	}
-	args := fs.Args()
+	if help {
+		fs.Usage()
+		return nil
+	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: atw-knowledge [flags] ask QUESTION | read ID [VERSION] | submit < changes.json")
+		return fmt.Errorf("usage: atw-knowledge [flags] ask QUESTION | record CONTENT | read ID [VERSION] | submit < changes.json")
 	}
 	if *timeout <= 0 || *timeout > 30*time.Minute {
 		return fmt.Errorf("timeout must be between 0 and 30 minutes")
 	}
 	accessURL, accessToken := *endpoint, os.Getenv("ATW_KNOWLEDGE_TOKEN")
-	var err error
 	if *accessFile != "" {
 		accessURL, accessToken, err = loadAccessFile(*accessFile)
 		if err != nil {
@@ -78,6 +95,18 @@ func run() error {
 			return fmt.Errorf("ask requires one quoted question")
 		}
 		raw, err = client.Ask(ctx, map[string]any{"question": args[1], "client_key": *key}, *key)
+	case "record", "ingest":
+		if len(args) != 2 {
+			return fmt.Errorf("record requires one quoted natural-language content")
+		}
+		input := map[string]any{"content": args[1], "client_key": *key}
+		if *title != "" {
+			input["title"] = *title
+		}
+		if *publishIntent != "" {
+			input["publish_intent"] = *publishIntent
+		}
+		raw, err = client.Record(ctx, input, *key)
 	case "read":
 		if len(args) < 2 || len(args) > 3 {
 			return fmt.Errorf("read requires knowledge ID and optional version")
@@ -112,6 +141,79 @@ func run() error {
 	}
 	_, err = fmt.Fprintln(os.Stdout, string(raw))
 	return err
+}
+
+// parseCLIArgs accepts the command before or after any global flag. The Go
+// flag package stops at the first positional argument, while Agents naturally
+// emit commands such as `record 'text' --publish-intent ...`; normalize the
+// known flags before delegating value validation to flag.FlagSet.
+func parseCLIArgs(fs *flag.FlagSet, raw []string) ([]string, bool, error) {
+	normalized, help, err := normalizeCLIArgs(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	if help {
+		return nil, true, nil
+	}
+	if err := fs.Parse(normalized); err != nil {
+		if err == flag.ErrHelp {
+			return nil, true, nil
+		}
+		return nil, false, err
+	}
+	return fs.Args(), false, nil
+}
+
+func normalizeCLIArgs(raw []string) ([]string, bool, error) {
+	flags := make([]string, 0, len(raw))
+	positionals := make([]string, 0, len(raw))
+	for i := 0; i < len(raw); i++ {
+		arg := raw[i]
+		if arg == "--" {
+			positionals = append(positionals, raw[i+1:]...)
+			break
+		}
+		if arg == "-h" || arg == "-help" || arg == "--help" {
+			return nil, true, nil
+		}
+		if known, takesValue := knowledgeCLIFlag(arg); known {
+			flags = append(flags, arg)
+			if !takesValue {
+				continue
+			}
+			if i+1 >= len(raw) {
+				return nil, false, fmt.Errorf("flag %s requires a value", arg)
+			}
+			i++
+			flags = append(flags, raw[i])
+			continue
+		}
+		if len(arg) > 0 && arg[0] == '-' {
+			// Preserve unknown flags so FlagSet returns its canonical error.
+			// Their following token remains positional unless it is itself a
+			// known flag, matching the standard parser's fail-fast behavior.
+			flags = append(flags, arg)
+			continue
+		}
+		positionals = append(positionals, arg)
+	}
+	return append(flags, positionals...), false, nil
+}
+
+func knowledgeCLIFlag(arg string) (known, takesValue bool) {
+	name := arg
+	for len(name) > 0 && name[0] == '-' {
+		name = name[1:]
+	}
+	if eq := strings.IndexByte(name, '='); eq >= 0 {
+		name = name[:eq]
+	}
+	switch name {
+	case "url", "access-file", "timeout", "key", "title", "publish-intent":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 func loadAccessFile(path string) (string, string, error) {

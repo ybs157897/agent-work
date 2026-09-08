@@ -66,6 +66,7 @@ describe('suggestedPrompts', () => {
     expect(suggestedPrompts('developer')[0]).toContain('审查');
     expect(suggestedPrompts('ui')[0]).toContain('界面');
     expect(suggestedPrompts('reviewer')[0]).toContain('评审');
+    expect(suggestedPrompts('knowledge_librarian')[0]).toContain('需求和约定');
   });
 
   it('未知与空角色回落通用提示词', () => {

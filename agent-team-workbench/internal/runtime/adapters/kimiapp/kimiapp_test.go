@@ -217,6 +217,8 @@ func (f *fakeKap) serveREST(w http.ResponseWriter, r *http.Request) {
 		writeKap(w, http.StatusOK, 0, map[string]any{"prompt_id": pid, "status": "running"})
 	case r.Method == http.MethodPost && strings.HasSuffix(path, "/prompts::steer"):
 		writeKap(w, http.StatusOK, 0, map[string]any{"steered": true, "prompt_ids": []string{}})
+	case r.Method == http.MethodPost && strings.Contains(path, "/tasks/") && strings.HasSuffix(path, ":cancel"):
+		writeKap(w, http.StatusOK, 0, map[string]any{"cancelled": true})
 	case r.Method == http.MethodPost && strings.Contains(path, ":abort"):
 		writeKap(w, http.StatusOK, 0, map[string]any{"aborted": true})
 	case r.Method == http.MethodPost && strings.Contains(path, "/approvals/"):
@@ -676,6 +678,90 @@ func TestFreshTurnHappyPath(t *testing.T) {
 		if frames[i].ProviderReport == nil || frames[i].Canonical == nil {
 			t.Fatalf("OnUsage 第 %d 帧缺少 provider/canonical usage: %+v", i+1, frames[i])
 		}
+	}
+}
+
+func TestBackgroundTaskCompletionKeepsRunOpenForNotificationTurn(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := newRecordCallbacks()
+
+	done := make(chan runtime.ExecResult, 1)
+	ex := newTestExec(context.Background(), "", cb, make(chan runtime.Control, 8))
+	go func() { done <- m.Execute(ex) }()
+	var promptID string
+	select {
+	case promptID = <-f.promptsCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见 prompt 提交")
+	}
+	f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": promptID}, 1, false))
+	f.push(kapEvent("s_1", "assistant.delta", map[string]any{"turnId": 1, "delta": "后台启动"}, 2, true))
+	f.push(kapEvent("s_1", "tool.call.started", map[string]any{
+		"turnId": 1, "toolCallId": "tc_background", "name": "Bash",
+	}, 3, false))
+	f.push(kapEvent("s_1", "tool.result", map[string]any{
+		"turnId": 1, "toolCallId": "tc_background",
+		"output":  mustJSON("task_id: bash-1\nstatus: running\nautomatic_notification: true"),
+		"isError": false,
+	}, 4, false))
+	f.push(kapEvent("s_1", "task.started", map[string]any{
+		"turnId": 1,
+		"info": map[string]any{
+			"taskId": "bash-1", "description": "long knowledge query", "status": "running", "detached": true,
+		},
+	}, 5, false))
+	f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 6, false))
+
+	// A completed main turn is provisional while KAP reports a detached task.
+	// The old adapter returned here and closed the Run-bound capability before
+	// the task notification could start its follow-up turn.
+	select {
+	case res := <-done:
+		t.Fatalf("adapter returned before background notification turn: %+v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	f.push(kapEvent("s_1", "task.terminated", map[string]any{
+		"info": map[string]any{
+			"taskId": "bash-1", "description": "long knowledge query", "status": "completed", "detached": true,
+		},
+	}, 7, false))
+	f.push(kapEvent("s_1", "task.notified", map[string]any{
+		"notificationType": "task.completed", "title": "Background process completed",
+		"body": "long knowledge query completed", "severity": "info",
+		"sourceKind": "background_task", "sourceId": "bash-1",
+	}, 8, false))
+	f.push(kapEvent("s_1", "turn.started", map[string]any{
+		"turnId": 2,
+		"origin": map[string]any{
+			"kind": "task", "taskId": "bash-1", "status": "completed",
+			"notificationId": "task:bash-1:completed",
+		},
+	}, 9, false))
+	f.push(kapEvent("s_1", "assistant.delta", map[string]any{"turnId": 2, "delta": "查询完成"}, 10, true))
+	f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 2, "reason": "completed"}, 11, false))
+
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeSucceeded {
+			t.Fatalf("notification turn should complete the Run: %+v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("notification turn 后 Execute 未返回")
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	var completed []string
+	for _, event := range cb.events {
+		if event.kind == domain.EventMessageCompleted {
+			if text, ok := event.data["text"].(string); ok {
+				completed = append(completed, text)
+			}
+		}
+	}
+	if len(completed) != 2 || completed[0] != "后台启动" || completed[1] != "查询完成" {
+		t.Fatalf("notification turn 的两轮回答未完整投影: %v", completed)
 	}
 }
 
@@ -1229,6 +1315,71 @@ func TestCancelPostsAbortAndInterrupts(t *testing.T) {
 	}
 	if res.Session == nil || res.Session.Ref != "kimiapp://s_1" {
 		t.Fatalf("取消也应保留会话锚点: %+v", res.Session)
+	}
+}
+
+func TestCancelCancelsObservedBackgroundTasks(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cb := newRecordCallbacks()
+
+	done := make(chan runtime.ExecResult, 1)
+	ex := newTestExec(ctx, "", cb, make(chan runtime.Control, 8))
+	go func() { done <- m.Execute(ex) }()
+	var promptID string
+	select {
+	case promptID = <-f.promptsCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("未见 prompt 提交")
+	}
+	f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": promptID}, 1, false))
+	f.push(kapEvent("s_1", "task.started", map[string]any{
+		"info": map[string]any{"taskId": "bash-1", "status": "running", "detached": true},
+	}, 2, false))
+	// A task from another agent must not become a cancellation target.
+	f.push(kapEventForAgent("s_1", "task.started", map[string]any{
+		"info": map[string]any{"taskId": "child-task", "status": "running", "detached": true},
+	}, 3, false, "child-1"))
+	f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 4, false))
+
+	select {
+	case res := <-done:
+		t.Fatalf("detached task pending 时 Run 不应结束: %+v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cancel()
+	f.waitCall("/api/v1/sessions/s_1:abort")
+	f.waitCall("/api/v1/sessions/s_1/tasks/bash-1:cancel")
+	if got := f.callCount("/api/v1/sessions/s_1/tasks/"); got != 1 {
+		t.Fatalf("取消只能触达本 Run 的 detached task，调用数=%d calls=%+v", got, f.calls)
+	}
+
+	// Feed the task's terminal notification so the cancellation path can
+	// finish without waiting for its force timer. Context cancellation still
+	// wins over the server's terminal reason in the returned outcome.
+	f.push(kapEvent("s_1", "task.terminated", map[string]any{
+		"info": map[string]any{"taskId": "bash-1", "status": "cancelled", "detached": true},
+	}, 5, false))
+	f.push(kapEvent("s_1", "task.notified", map[string]any{
+		"sourceKind": "background_task", "sourceId": "bash-1",
+	}, 6, false))
+	f.push(kapEvent("s_1", "turn.started", map[string]any{
+		"turnId": 2,
+		"origin": map[string]any{
+			"kind": "task", "taskId": "bash-1", "status": "cancelled",
+			"notificationId": "task:bash-1:cancelled",
+		},
+	}, 7, false))
+	f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 2, "reason": "cancelled"}, 8, false))
+	select {
+	case res := <-done:
+		if res.Outcome != runtime.OutcomeInterrupted {
+			t.Fatalf("取消应按终态意图返回 interrupted: %+v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("取消后 Execute 未收尾")
 	}
 }
 

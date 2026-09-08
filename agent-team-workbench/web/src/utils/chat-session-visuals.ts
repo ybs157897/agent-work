@@ -27,6 +27,9 @@ export function conversationStatusDotClass(
 /** 按角色给空会话建议首条提示词；未知角色回落通用两条。 */
 export function suggestedPrompts(role?: string): string[] {
   const r = (role ?? '').toLowerCase();
+  if (r === 'knowledge_librarian') {
+    return ['团队已经确认了哪些需求和约定？', '帮我查找与当前问题相关的知识，并说明来源'];
+  }
   if (r.includes('pm') || r.includes('product')) {
     return ['评估当前项目质量，指出最需要改进的三点', '把当前阶段的目标拆成可执行的任务清单'];
   }

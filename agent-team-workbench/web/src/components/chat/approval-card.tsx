@@ -75,6 +75,12 @@ const KIND_ICON: Record<string, LucideIcon> = {
   question: MessageCircleQuestion,
 };
 
+const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'interrupted', 'lost']);
+
+export function isTerminalRunStatus(status?: string): boolean {
+  return status !== undefined && TERMINAL_RUN_STATUSES.has(status);
+}
+
 /** 审批卡主标题（按 kind 人话化）。 */
 export function approvalHeadline(kind: string): string {
   switch (kind) {
@@ -131,11 +137,21 @@ export function approvalReceipt(a: ApprovalRequest): ApprovalReceipt | null {
 /**
  * 消息流内的审批卡（tx 重设计）：pending 渲染交互卡（kind 图标芯片 + 变体正文 +
  * 低风险倒计时），决议后转左对齐回执行。决议状态以 runs store 的 listApprovals
- * 投影为权威——本地不缓存结果，重取成功即切换形态。
+ * 投影为权威——本地不缓存结果，重取成功即切换形态。Run 已进入终态时，
+ * 即使历史 approval 仍为 pending，也只展示结束说明，不能再提交决议。
  */
-export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+export function ApprovalCard({ approval, runStatus }: { approval: ApprovalRequest; runStatus?: string }) {
+  const storedRunStatus = useRunsStore((s) => s.runs[approval.run_id]?.status);
   const receipt = approvalReceipt(approval);
   if (receipt) return <ResolvedReceipt receipt={receipt} />;
+  const terminalRunStatus = isTerminalRunStatus(runStatus)
+    ? runStatus
+    : isTerminalRunStatus(storedRunStatus)
+      ? storedRunStatus
+      : undefined;
+  if (terminalRunStatus) {
+    return <EndedApprovalCard approval={approval} runStatus={terminalRunStatus} />;
+  }
   return <PendingApprovalCard approval={approval} />;
 }
 
@@ -153,6 +169,30 @@ function ResolvedReceipt({ receipt }: { receipt: ApprovalReceipt }) {
       {receipt.icon === 'expired' && <Clock className={`chat-approval-receipt-icon ${iconTone}`} aria-hidden />}
       <span className="min-w-0 flex-1 truncate text-text-secondary">{receipt.label}</span>
       {receipt.at && <span className="shrink-0 tabular-nums text-text-tertiary">{formatTime(receipt.at)}</span>}
+    </div>
+  );
+}
+
+function EndedApprovalCard({ approval, runStatus }: { approval: ApprovalRequest; runStatus?: string }) {
+  const kindLabel = KIND_LABEL[approval.kind] ?? approval.kind;
+  const Icon = KIND_ICON[approval.kind] ?? Wrench;
+  const detail = approvalDetailText(approval.summary);
+  return (
+    <div className="chat-approval-card" data-codex-approval-surface data-run-status={runStatus} data-run-terminal="true">
+      <div className="chat-approval-head">
+        <span className="chat-approval-chip" data-risk={approval.risk} aria-hidden>
+          <Icon />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="chat-approval-title">本次运行已结束</p>
+          <div className="chat-approval-sub">
+            <span>{kindLabel}</span>
+            <span>审批已不再可用</span>
+          </div>
+        </div>
+      </div>
+      {detail ? <p className="chat-approval-summary">{detail}</p> : null}
+      <p className="mt-3 text-caption text-text-tertiary">这次运行已经结束，无法继续处理这条审批请求。</p>
     </div>
   );
 }

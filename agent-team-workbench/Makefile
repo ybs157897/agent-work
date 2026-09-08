@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet fmt migrate run-control-plane run-runnerd
+.PHONY: build test test-race vet fmt migrate knowledge-client run-control-plane run-runnerd
 
 build:
 	go build ./...
@@ -28,7 +28,11 @@ web-dev:
 web-build:
 	cd web && pnpm build
 
-run-control-plane:
+knowledge-client:
+	mkdir -p bin
+	go build -o bin/atw-knowledge ./cmd/atw-knowledge
+
+run-control-plane: knowledge-client
 	go run ./cmd/control-plane
 
 run-runnerd:

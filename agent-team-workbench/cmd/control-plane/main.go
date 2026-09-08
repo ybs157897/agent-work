@@ -250,6 +250,9 @@ func run() error {
 	if err := ensureBuiltinRuntimeBindings(ctx, svc, store, registry); err != nil {
 		return fmt.Errorf("补齐内置 Runtime binding 失败: %w", err)
 	}
+	if err := svc.EnsureBuiltinAgents(ctx); err != nil {
+		return fmt.Errorf("补齐内置 Agent 失败: %w", err)
+	}
 
 	// 本机执行上下文 bootstrap（RFC §6.1）：EnsureLocalHost + 本机 mount 广告落库；
 	// 单 Workspace 且无 Location 才自动建默认 Location（多 Workspace 保持 unmapped）。
@@ -342,8 +345,7 @@ func run() error {
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)
 	server.SetWorkbenchRoot(workbenchRoot)
-	svc.KnowledgeEndpoint = env("ATW_KNOWLEDGE_ENDPOINT", "")
-	svc.KnowledgeCLIPath = env("ATW_KNOWLEDGE_CLIENT", "")
+	configureKnowledgeAccess(svc, addr, workbenchRoot)
 
 	// M2 consult_knowledge uses the published SQLite knowledge projection.  The
 	// legacy file retriever remains available to explicit import tooling/tests;

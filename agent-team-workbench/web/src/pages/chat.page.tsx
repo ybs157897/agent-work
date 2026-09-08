@@ -4,6 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
+import { SendErrorNotice } from '../components/chat/send-error-notice';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
@@ -21,7 +22,7 @@ import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-sess
 import { useRunsStore } from '../stores/runs.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
-import { isUserManagedAgent } from '../utils/agent-scope';
+import { isChatAgent, isKnowledgeLibrarianAgent } from '../utils/agent-scope';
 import { deriveChatDock } from '../utils/derive-chat-dock';
 import {
   buildTranscriptSegments,
@@ -137,7 +138,7 @@ function segmentTraceSnapshot(segments: readonly PresentedTranscriptSegment[]) {
 export default function ChatPage() {
   const allAgents = useAgentsStore((s) => s.agents);
   const agents = useMemo(
-    () => allAgents.filter(isUserManagedAgent),
+    () => allAgents.filter(isChatAgent),
     [allAgents],
   );
   const agentId = useChatStore((s) => s.agentId);
@@ -200,18 +201,20 @@ export default function ChatPage() {
       {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
-          <div className="mb-1 px-1 text-caption font-medium uppercase tracking-wide text-text-tertiary">Agent</div>
+          <div className="mb-1 px-1 text-caption font-medium text-text-tertiary">选择要咨询的智能体</div>
           <div className="flex flex-wrap gap-1">
             {agents.map((a) => (
               <button
                 key={a.id}
                 onClick={() => pick(a.id)}
-                title={`${a.name} · ${a.role}`}
-                aria-label={`${a.name}（${a.role}）`}
+                title={`${a.name} · ${isKnowledgeLibrarianAgent(a) ? '系统内置' : a.role}`}
+                aria-label={`${a.name}（${isKnowledgeLibrarianAgent(a) ? '系统内置' : a.role}）`}
                 aria-pressed={agentId === a.id}
-                className={`chat-agent-chip ${agentId === a.id ? 'chat-agent-chip-active' : ''}`}
+                className={`chat-agent-chip !w-auto max-w-full gap-tight px-tight ${agentId === a.id ? 'chat-agent-chip-active' : ''}`}
               >
                 <Avatar name={a.name} url={a.avatar} size={26} />
+                <span className="truncate text-caption text-text-primary">{a.name}</span>
+                {isKnowledgeLibrarianAgent(a) && <span className="text-caption text-text-tertiary">内置</span>}
                 {(a.presence === 'idle' || a.presence === 'busy') && (
                   <span className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-surface-sunken ${a.presence === 'busy' ? 'bg-status-warning' : 'bg-status-success'}`} aria-hidden />
                 )}
@@ -236,6 +239,9 @@ export default function ChatPage() {
             {sidebarView === 'apps' && <SidebarApps />}
           </>
         )}
+        <Link to="/knowledge" className="mt-auto flex shrink-0 items-center gap-tight border-t border-border-subtle px-snug py-base text-body text-text-secondary hover:text-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary/40">
+          <BookOpen className="h-4 w-4" aria-hidden />查看团队知识
+        </Link>
       </aside>
 
       {/* 右侧对话区 */}
@@ -249,8 +255,8 @@ export default function ChatPage() {
             <div className="flex flex-1 items-center justify-center">
               <EmptyState
                 icon={<MessageSquare className="w-5 h-5" />}
-                title="选择一个 Agent 开始对话"
-                description="每条消息创建独立 Chat 记录与执行 Run，全程可追溯"
+                title="选一位团队成员，说说你需要什么帮助"
+                description="咨询问题从这里开始；要交办一项工作，请打开任务对话。"
               />
             </div>
           </div>
@@ -498,9 +504,10 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   const retryRun = useChatStore((s) => s.retryRun);
   const runAlerts = useChatStore((s) => s.runAlerts);
   const pendingUsers = useChatStore((s) => s.pendingUsers);
+  const sendError = useChatStore((s) => s.sendError);
   const allAgents = useAgentsStore((s) => s.agents);
   const agents = useMemo(
-    () => allAgents.filter(isUserManagedAgent),
+    () => allAgents.filter(isChatAgent),
     [allAgents],
   );
   const showReasoning = useChatPreferencesStore((state) => state.showReasoning);
@@ -832,12 +839,12 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
   // failed/cancelled/lost/interrupted 不自动发（留给用户手动「继续发送」）。
   const drainedEdgeRef = useRef('');
   useEffect(() => {
-    if (!latestRun || latestRun.status !== 'succeeded' || sending || queue.length === 0) return;
+    if (!latestRun || latestRun.status !== 'succeeded' || sending || sendError || queue.length === 0) return;
     const edge = `${latestRun.id}:succeeded`;
     if (drainedEdgeRef.current === edge) return;
     drainedEdgeRef.current = edge;
     void drainQueue();
-  }, [latestRun, sending, queue.length, drainQueue]);
+  }, [latestRun, sending, sendError, queue.length, drainQueue]);
 
   // 最新 run 的累计输入用量；后端未上报（字段缺失）时不渲染。
   // 上下文窗口需另拉 /models 匹配 agent 模型--不值得为凑格式加请求，只显 used。
@@ -847,7 +854,9 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
     const text = draft.trim();
     if (!text) return;
     setDraft('');
-    void send(text);
+    void send(text).then((retained) => {
+      if (!retained) setDraft((current) => current ? `${text}\n\n${current}` : text);
+    });
   };
 
   const applyPrompt = (text: string) => {
@@ -915,7 +924,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
         {messages.length === 0 && presentedSegments.length === 0 && (
           <div className="chat-thread flex min-h-full flex-col items-center justify-center py-12">
             <p className="text-center text-caption text-text-tertiary">
-              输入第一条消息，为 {agent?.name ?? 'Agent'} 创建对话并开始运行；或从建议开始：
+              直接告诉 {agent?.name ?? '智能体'} 你想了解什么，也可以从下面的问题开始。
             </p>
             <div className="mt-3 flex flex-wrap justify-center gap-2">
               {suggestedPrompts(agent?.role).map((p) => (
@@ -952,6 +961,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
       {/* 底部固定：成果摘要 + 计划 / 目标 + 一体化输入卡 */}
       <div className="chat-bottom-region shrink-0 border-t border-border-subtle bg-surface-base px-6 pb-4 pt-2">
         <div className="chat-composer-stack">
+          {sendError && <SendErrorNotice message={sendError} agentId={agentId} />}
           {latestRunNotice?.code === 'reply_timeout' && (
             <div
               className="rounded-button border border-status-warning/30 bg-status-warning/5 px-snug py-tight text-caption text-status-warning"
@@ -981,7 +991,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
             inputRef={textareaRef}
             queue={queue}
             onRemoveQueued={removeQueued}
-            canDrainQueue={!!latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded'}
+            canDrainQueue={!runInFlight && (!!sendError || (!!latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded'))}
             onDrainQueue={() => void drainQueue()}
             sending={sending}
             runInFlight={runInFlight}

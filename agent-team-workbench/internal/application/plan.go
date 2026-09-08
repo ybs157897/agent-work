@@ -203,7 +203,7 @@ func (s *Service) SubmitPlan(ctx context.Context, workspaceID string, p SubmitPl
 				return err
 			}
 			if isSystemCoordinatorRun(source) {
-				if owner.ID != coordinator.CoordinatorAgentID || !owner.Kind.IsSystem() {
+				if owner.ID != coordinator.CoordinatorAgentID || !owner.Kind.IsTaskCoordinator() {
 					return markPlanSubmissionFailure(planSubmissionFailureAuthority,
 						fmt.Errorf("%w: system Coordinator owner identity mismatch", domain.ErrStateConflict))
 				}
@@ -819,7 +819,7 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if ownerErr != nil {
 				return ownerErr
 			}
-			if owner.Kind.IsSystem() {
+			if owner.Kind.IsTaskCoordinator() {
 				config, configErr := s.store.TaskCoordinators().GetConfig(ctx, wi.WorkspaceID)
 				if configErr != nil {
 					return configErr

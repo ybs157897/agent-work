@@ -232,6 +232,7 @@ function Item({
   timelineUpdatedAt,
   now,
   running,
+  runStatus,
   stoppedRuns,
   onSelectSwarmMember,
   selectedSwarmMemberKey,
@@ -241,6 +242,7 @@ function Item({
   timelineUpdatedAt: string;
   now: number;
   running: boolean;
+  runStatus?: string;
   stoppedRuns?: ReadonlySet<string>;
   onSelectSwarmMember?: (runId: string, swarmId: string, member: SwarmMemberProjection) => void;
   selectedSwarmMemberKey?: string;
@@ -275,7 +277,7 @@ function Item({
         </article>
       );
     case 'approval':
-      return <ApprovalCard approval={item.approval} />;
+      return <ApprovalCard approval={item.approval} runStatus={runStatus} />;
     case 'meta':
       return <div className={css.meta} data-error={item.msg.kind === 'error' || undefined}>{item.msg.text}</div>;
   }
@@ -400,6 +402,7 @@ export function WorkActivityTimeline({ segment, onSelectSwarmMember, selectedSwa
                 timelineUpdatedAt={segment.updatedAt}
                 now={now}
                 running={running}
+                runStatus={segment.status}
                 stoppedRuns={stoppedRuns}
                 onSelectSwarmMember={onSelectSwarmMember}
                 selectedSwarmMemberKey={selectedSwarmMemberKey}

@@ -1112,6 +1112,8 @@ interface ChatStore {
   /** 当前会话的 run 列表（创建时间正序）。 */
   runs: ExecutionRun[];
   sending: boolean;
+  sendError: string | null;
+  newConversationAttempt: { text: string; clientKey: string } | null;
   /**
    * 当前会话的待发送队列（Codex 式：运行中入队，本轮成功后自动续发）。
    * 内存级不落盘：刷新即弃、切换会话即清——持久化需要后端队列契约，暂以简单优先。
@@ -1129,7 +1131,8 @@ interface ChatStore {
   openConversation: (workItemId: string | null) => void;
   refreshConversations: () => Promise<void>;
   refreshRuns: () => Promise<void>;
-  send: (text: string) => Promise<void>;
+  /** true 表示原文已发送或保留在队列；false 时输入框应保留草稿。 */
+  send: (text: string) => Promise<boolean>;
   enqueue: (text: string) => void;
   removeQueued: (index: number) => void;
   /** 出队首条开新轮（自动续发与手动「继续发送」共用；复用 sending 闸防重）。 */
@@ -1150,6 +1153,9 @@ export const useChatStore = create<ChatStore>()((set, get) => {
   // instruction（description 原样保留在 work item 上不消费，仅本轮注入一次）。
   // clientKey 透传为 run 的实体级幂等键：同键重试由服务端查回既有 run（200 重放）。
   const startRun = async (conversationId: string, agentId: string, text: string, clientKey?: string): Promise<void> => {
+    const request = openConversationRequest;
+    const scope = captureScope();
+    const stillSelected = () => request === openConversationRequest && isCurrent(scope) && get().agentId === agentId;
     let instruction = text;
     if (get().runs.length === 0) {
       const conversation = get().conversations.find((c) => c.id === conversationId);
@@ -1163,11 +1169,13 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       input: { instruction },
       ...(clientKey ? { client_key: clientKey } : {}),
     });
+    if (!stillSelected()) return;
     set((s) => ({
       pendingUsers: { ...s.pendingUsers, [resp.run_id]: text.trim() },
     }));
     // 先刷新 run 列表再订阅，避免时间线已加载但 runIds 仍为空导致消息不渲染。
     await get().refreshRuns();
+    if (!stillSelected()) return;
     useRunsStore.getState().watchRun(resp.run_id);
     await get().refreshConversations();
     await get().refreshRuns();
@@ -1179,6 +1187,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     conversations: [],
     runs: [],
     sending: false,
+    sendError: null,
+    newConversationAttempt: null,
     queue: [],
     stoppingRunId: null,
     runAlerts: {},
@@ -1186,14 +1196,19 @@ export const useChatStore = create<ChatStore>()((set, get) => {
 
     selectAgent: (id) => {
       openConversationRequest += 1;
-      set({ agentId: id, conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
+      set({ agentId: id, conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       void get().refreshConversations();
     },
 
     openConversation: (workItemId) => {
+      const current = get().conversations.find((item) => item.id === workItemId);
+      if (workItemId && workItemId === get().conversationId && current?.record_kind === 'chat' && current.agent_profile_id === get().agentId) {
+        void get().refreshRuns();
+        return;
+      }
       const request = ++openConversationRequest;
       const agentId = get().agentId;
-      const reset = () => set({ conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
+      const reset = () => set({ conversationId: null, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       if (!workItemId) {
         reset();
         return;
@@ -1207,7 +1222,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
           reset();
           return;
         }
-        set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {} });
+        set({ conversationId: workItemId, runs: [], queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false });
         void get().refreshRuns();
         return;
       }
@@ -1286,7 +1301,11 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const trimmed = text.trim();
       const wsId = useWorkspaceStore.getState().workspace?.id;
       const agentId = get().agentId;
-      if (!wsId || !agentId || !trimmed) return;
+      if (!wsId || !agentId || !trimmed) return false;
+
+      const request = openConversationRequest;
+      const scope = captureScope();
+      const isCurrentSend = () => request === openConversationRequest && isCurrent(scope) && get().agentId === agentId;
 
       const runsStore = useRunsStore.getState();
       const latest = get().runs[get().runs.length - 1];
@@ -1295,42 +1314,56 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       // 不再走 sendRunInput 的 steering 追加。
       if ((latestSnapshot && !TERMINAL.has(latestSnapshot.status)) || get().sending) {
         get().enqueue(trimmed);
-        return;
+        return true;
       }
-      set({ sending: true });
+      set({ sending: true, sendError: null });
       let conversationId = get().conversationId;
+      let first: QueuedMessage | undefined;
       try {
         if (conversationId) {
           const conversation = get().conversations.find((item) => item.id === conversationId);
           if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== agentId) {
             toast.error('该记录不是当前 Agent 的 Chat 会话');
-            return;
+            return false;
           }
         }
         if (!conversationId) {
           // 首发消息：建会话（work item）+ 建 run；任务状态由控制平面推进。
           const title = trimmed.slice(0, 24) + (trimmed.length > 24 ? '…' : '');
+          const previous = get().newConversationAttempt;
+          const attempt = previous?.text === trimmed ? previous : { text: trimmed, clientKey: newQueueKey() };
+          set({ newConversationAttempt: attempt });
           const wi = await createWorkItem(wsId, {
             title,
             record_kind: 'chat',
             status: 'todo',
             priority: 'medium',
             agent_profile_id: agentId,
+            client_key: attempt.clientKey,
           });
+          if (!isCurrentSend()) return true;
           conversationId = wi.id;
-          set({ conversationId });
-          await get().refreshConversations();
+          set((state) => ({
+            conversationId,
+            newConversationAttempt: null,
+            conversations: [wi, ...state.conversations.filter((item) => item.id !== wi.id)],
+          }));
         }
         // 队列非空：先把本条入队再出队首条 createRun（FIFO——队头先发，本条排队尾）。
         const pending = [...get().queue, { text: trimmed, clientKey: newQueueKey() }];
-        const first = pending.shift();
-        if (!first) return; // 不可达（trimmed 非空）：类型收窄
+        first = pending.shift();
+        if (!first) return false;
         set({ queue: pending });
         await startRun(conversationId, agentId, first.text, first.clientKey);
+        return true;
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : '发送失败');
+        if (!isCurrentSend()) return true;
+        const message = err instanceof Error ? err.message : '发送失败';
+        const pending = first;
+        set((state) => ({ sendError: message, ...(pending ? { queue: [pending, ...state.queue] } : {}) }));
+        return !!pending;
       } finally {
-        set({ sending: false });
+        if (isCurrentSend()) set({ sending: false });
       }
     },
 
@@ -1344,13 +1377,16 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const conversationId = get().conversationId;
       const first = get().queue[0];
       if (!wsId || !agentId || !conversationId || !first || get().sending) return;
-      set({ sending: true, queue: get().queue.slice(1) });
+      const request = openConversationRequest;
+      const scope = captureScope();
+      const isCurrentSend = () => request === openConversationRequest && isCurrent(scope) && get().agentId === agentId;
+      set({ sending: true, sendError: null, queue: get().queue.slice(1) });
       try {
         await startRun(conversationId, agentId, first.text, first.clientKey);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : '发送失败');
+        if (isCurrentSend()) set((state) => ({ queue: [first, ...state.queue], sendError: err instanceof Error ? err.message : '发送失败' }));
       } finally {
-        set({ sending: false });
+        if (isCurrentSend()) set({ sending: false });
       }
     },
 
@@ -1433,6 +1469,8 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         conversations: [],
         runs: [],
         sending: false,
+        sendError: null,
+        newConversationAttempt: null,
         queue: [],
         stoppingRunId: null,
         runAlerts: {},

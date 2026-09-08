@@ -1,6 +1,7 @@
 import { CheckCircle2, LockKeyhole, Pencil, Plus, Radar, RefreshCw, ShieldCheck } from 'lucide-react';
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import {
   createRuntimeBinding,
@@ -11,12 +12,15 @@ import {
   patchWorkspace,
   probeRuntimeBinding,
 } from '../api/endpoints';
-import type { CoordinatorConfig, CoordinatorRuntime, ProbeResult, RuntimeBinding } from '../api/types';
+import type { AgentProfile, CoordinatorConfig, CoordinatorRuntime, ProbeResult, RuntimeBinding } from '../api/types';
 import { Drawer } from '../components/drawer';
+import { WorkspaceConnections } from '../components/workspace-connections';
 import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
 import { Toggle } from '../components/toggle';
 import { Button, Card, EmptyState, Input, Select, Skeleton } from '../components/ui';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
+import { useAgentsStore } from '../stores/agents.store';
+import { isKnowledgeLibrarianAgent } from '../utils/agent-scope';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { formatDateTime } from '../utils/format';
@@ -28,6 +32,7 @@ export default function SettingsPage() {
   const health = useWorkspaceStore((s) => s.health);
   const sseStatus = useWorkspaceStore((s) => s.sseStatus);
   const eventCursor = useWorkspaceStore((s) => s.eventCursor);
+  const librarian = useAgentsStore((s) => s.agents).find(isKnowledgeLibrarianAgent);
   const [editingWs, setEditingWs] = useState(false);
 
   return (
@@ -96,25 +101,47 @@ export default function SettingsPage() {
 
       {workspace && <WorkspaceEditModal open={editingWs} onClose={() => setEditingWs(false)} />}
 
-      <RuntimeBindingsSection workspaceId={workspace?.id} />
+      <WorkspaceConnections workspaceId={workspace?.id} />
 
-      <CoordinatorSettingsSection workspaceId={workspace?.id} />
+      <BuiltinKnowledgeSettings agent={librarian} />
 
-      <ChatDisplayPreferencesSection />
+      <details className="rounded-card border border-border-subtle bg-surface-raised">
+        <summary className="cursor-pointer px-comfortable py-base text-body text-text-primary focus-visible:ring-2 focus-visible:ring-brand-primary/40">模型连接与高级设置</summary>
+        <div className="space-y-comfortable border-t border-border-subtle p-comfortable">
+          <RuntimeBindingsSection workspaceId={workspace?.id} />
+          <CoordinatorSettingsSection workspaceId={workspace?.id} />
+          <ChatDisplayPreferencesSection />
 
-      <Card padded className="!p-base">
-        <div className="mb-snug flex items-center justify-between">
-          <h3 className="text-h3 text-text-primary">当前用户</h3>
-          <span className="text-caption text-text-tertiary">访问身份</span>
+          <Card padded className="!p-base">
+            <div className="mb-snug flex items-center justify-between">
+              <h3 className="text-h3 text-text-primary">当前用户</h3>
+              <span className="text-caption text-text-tertiary">访问身份</span>
+            </div>
+            <dl className="grid grid-cols-2 gap-x-comfortable gap-y-snug max-w-2xl text-body md:grid-cols-4">
+              <Field label="用户" value={me?.name} />
+              <Field label="角色" value={me?.role} />
+              <Field label="用户 ID" value={me?.user_id} mono />
+              <Field label="会话时间" value={formatDateTime(new Date().toISOString())} />
+            </dl>
+          </Card>
         </div>
-        <dl className="grid grid-cols-2 gap-x-comfortable gap-y-snug max-w-2xl text-body md:grid-cols-4">
-          <Field label="用户" value={me?.name} />
-          <Field label="角色" value={me?.role} />
-          <Field label="用户 ID" value={me?.user_id} mono />
-          <Field label="会话时间" value={formatDateTime(new Date().toISOString())} />
-        </dl>
-      </Card>
+      </details>
     </main>
+  );
+}
+
+export function BuiltinKnowledgeSettings({ agent }: { agent?: AgentProfile }) {
+  return (
+    <Card padded>
+      <h3 className="text-h3 text-text-primary">知识库管理员</h3>
+      <p className="mt-tight text-body text-text-secondary">系统内置的团队成员。其他智能体会调用它记录知识，你也可以直接与它对话。</p>
+      {agent ? (
+        <div className="mt-base flex flex-wrap gap-comfortable text-body">
+          <Link to={`/chat?agent=${encodeURIComponent(agent.id)}`} className="text-brand-primary underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-brand-primary/40">与知识库管理员对话</Link>
+          <Link to={`/agents?agent=${encodeURIComponent(agent.id)}`} className="text-text-secondary underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-brand-primary/40">设置模型与运行方式</Link>
+        </div>
+      ) : <p className="mt-base text-body text-text-secondary" role="status">内置管理员正在准备，工作区加载后会自动出现。</p>}
+    </Card>
   );
 }
 
