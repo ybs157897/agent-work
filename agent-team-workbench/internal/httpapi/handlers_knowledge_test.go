@@ -64,6 +64,56 @@ func TestKnowledgeHTTPSharedViewCannotSelectPrivateAgentAsViewer(t *testing.T) {
 	}
 }
 
+func TestKnowledgeHTTPItemsSearchUsesBodyProjectionAndStableCursor(t *testing.T) {
+	s := newPlanTestServer(t)
+	ws, owner, _ := seedPlanHTTPEnv(t, s)
+	first, _ := seedKnowledgeHTTPItem(t, s, ws, owner, "检索结果一", domain.KnowledgeVisibilityWorkspace)
+	second, _ := seedKnowledgeHTTPItem(t, s, ws, owner, "检索结果二", domain.KnowledgeVisibilityWorkspace)
+	_, _ = seedKnowledgeHTTPItem(t, s, ws, owner, "不应泄漏的私有结果", domain.KnowledgeVisibilityPrivate)
+	s.SetDemoRole(domain.RoleViewer)
+	path := "/api/v1/workspaces/" + ws + "/knowledge/items?q=检索结果&limit=1"
+	code, body := getSearchJSONWith(t, s.Routes(), path)
+	if code != http.StatusOK {
+		t.Fatalf("search list: %d %v", code, body)
+	}
+	items, _ := body["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("search limit not applied: %v", body)
+	}
+	firstPage := items[0].(map[string]any)
+	if firstPage["id"] != second.ID || firstPage["search_excerpt"] == "" {
+		t.Fatalf("search item missing stable order/excerpt: %v", firstPage)
+	}
+	cursor, ok := body["next_cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("search page did not return cursor: %v", body)
+	}
+	code, body = getSearchJSONWith(t, s.Routes(), path+"&cursor="+cursor)
+	if code != http.StatusOK {
+		t.Fatalf("search second page: %d %v", code, body)
+	}
+	items, _ = body["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != first.ID || body["next_cursor"] != nil {
+		t.Fatalf("search cursor page = %v", body)
+	}
+
+	for _, query := range []string{"@@@(*", "%22%20UNION%20SELECT%20*"} {
+		code, body = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?q="+query)
+		if code != http.StatusOK {
+			t.Fatalf("malicious query %q returned %d: %v", query, code, body)
+		}
+		if items, _ := body["items"].([]any); len(items) != 0 {
+			t.Fatalf("malicious query %q returned results: %v", query, body)
+		}
+	}
+	for _, limit := range []string{"0", "201"} {
+		code, _ = getSearchJSONWith(t, s.Routes(), "/api/v1/workspaces/"+ws+"/knowledge/items?q=检索&limit="+limit)
+		if code != http.StatusUnprocessableEntity {
+			t.Fatalf("invalid search limit %s returned %d", limit, code)
+		}
+	}
+}
+
 func TestKnowledgePrivateMaintenanceRequiresHumanManagementPermission(t *testing.T) {
 	s := newPlanTestServer(t)
 	ws, owner, _ := seedPlanHTTPEnv(t, s)

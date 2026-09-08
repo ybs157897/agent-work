@@ -34,6 +34,10 @@ const knowledgeItemCols = `id, workspace_id, owner_agent_id, visibility, kind, t
 	summary, tags, aliases, scope_json, current_version_id, current_version, status,
 	repeal_reason, version, created_at, updated_at`
 
+const knowledgeItemColsQualified = `i.id, i.workspace_id, i.owner_agent_id, i.visibility, i.kind, i.title,
+	i.summary, i.tags, i.aliases, i.scope_json, i.current_version_id, i.current_version, i.status,
+	i.repeal_reason, i.version, i.created_at, i.updated_at`
+
 const knowledgeVersionColsQualified = `v.id, v.item_id, v.version, v.base_version, v.status, v.kind, v.title,
 	v.summary, v.body_markdown, v.tags, v.aliases, v.scope_json, v.metadata_json, v.content_digest,
 	v.created_by_agent_id, v.created_by_run_id, v.created_by_work_item_id,
@@ -318,6 +322,9 @@ func (r *KnowledgeRepo) ListVisibleItemsPage(ctx context.Context, workspaceID, r
 	if options.Visibility != "" && !options.Visibility.Valid() {
 		return nil, "", fmt.Errorf("%w: invalid knowledge visibility %q", domain.ErrValidation, options.Visibility)
 	}
+	if strings.TrimSpace(options.Query) != "" {
+		return r.searchVisibleItemsPage(ctx, workspaceID, requesterAgentID, options)
+	}
 	args := []any{workspaceID}
 	q := `SELECT ` + knowledgeItemCols + ` FROM knowledge_items
 		WHERE workspace_id=? AND status=?`
@@ -370,6 +377,264 @@ func (r *KnowledgeRepo) ListVisibleItemsPage(ctx context.Context, workspaceID, r
 		out = out[:limit]
 	}
 	return out, nextCursor, nil
+}
+
+type knowledgeSearchItem struct {
+	item      *domain.KnowledgeItem
+	excerpt   string
+	matchText string
+}
+
+// searchVisibleItemsPage keeps the list response on the published SQLite
+// projection.  The keyset is item ID rather than FTS rank: ranking is useful
+// for the excerpt, but an ID order is stable when a caller follows a cursor
+// across multiple pages.
+func (r *KnowledgeRepo) searchVisibleItemsPage(ctx context.Context, workspaceID, requesterAgentID string,
+	options domain.KnowledgeListOptions) ([]*domain.KnowledgeItem, string, error) {
+	terms := knowledgeSearchTerms(options.Query)
+	if len(terms) == 0 {
+		return []*domain.KnowledgeItem{}, "", nil
+	}
+	if options.Status == domain.KnowledgeStatusEffective {
+		return r.searchEffectiveItemsPage(ctx, workspaceID, requesterAgentID, options, terms)
+	}
+	return r.searchNonEffectiveItemsPage(ctx, workspaceID, requesterAgentID, options, terms)
+}
+
+func (r *KnowledgeRepo) searchEffectiveItemsPage(ctx context.Context, workspaceID, requesterAgentID string,
+	options domain.KnowledgeListOptions, terms []string) ([]*domain.KnowledgeItem, string, error) {
+	q := `SELECT ` + knowledgeItemColsQualified + `,
+		snippet(knowledge_index, 8, '[', ']', '…', 16),
+		ki.title, ki.summary, ki.body, ki.aliases, ki.tags
+		FROM knowledge_index ki JOIN knowledge_items i ON i.id=ki.item_id
+			AND i.workspace_id=ki.workspace_id AND i.current_version_id=ki.version_id
+		WHERE 1=1`
+	args := make([]any, 0, len(terms)*2+12)
+	q, args = appendKnowledgeItemReadFilters(q, args, workspaceID, requesterAgentID, options)
+	q += ` AND knowledge_index MATCH ?`
+	args = append(args, strings.Join(quoteKnowledgeTokens(terms), " OR "))
+	if options.AfterID != "" {
+		q += ` AND i.id<?`
+		args = append(args, options.AfterID)
+	}
+	q += ` ORDER BY i.id DESC LIMIT ?`
+	limit := options.Limit
+	args = append(args, limit+1)
+	ftsRows, err := r.scanKnowledgeSearchRows(ctx, q, args, terms)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// SQLite FTS5 rejects MATCH when it is placed in an OR expression. Run the
+	// existing Chinese substring fallback as a second bounded query and merge
+	// the two sorted streams below. Each stream is limited to limit+1, so a
+	// large corpus is never materialized in memory.
+	var fallbackRows []*knowledgeSearchItem
+	if containsKnowledgeHan(terms) || len(knowledgeExactItemIDs(terms)) > 0 {
+		fallbackRows, err = r.searchEffectiveSubstringRows(ctx, workspaceID, requesterAgentID, options, terms)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	items, nextCursor := mergeKnowledgeSearchRows(ftsRows, fallbackRows, limit)
+	return items, nextCursor, nil
+}
+
+func (r *KnowledgeRepo) searchEffectiveSubstringRows(ctx context.Context, workspaceID, requesterAgentID string,
+	options domain.KnowledgeListOptions, terms []string) ([]*knowledgeSearchItem, error) {
+	q := `SELECT ` + knowledgeItemColsQualified + `,
+		'', ki.title, ki.summary, ki.body, ki.aliases, ki.tags
+		FROM knowledge_index ki JOIN knowledge_items i ON i.id=ki.item_id
+			AND i.workspace_id=ki.workspace_id AND i.current_version_id=ki.version_id
+		WHERE 1=1`
+	args := make([]any, 0, len(terms)+12)
+	q, args = appendKnowledgeItemReadFilters(q, args, workspaceID, requesterAgentID, options)
+	matchPredicates := make([]string, 0, len(terms)+1)
+	if containsKnowledgeHan(terms) {
+		for _, term := range terms {
+			matchPredicates = append(matchPredicates, `LOWER(COALESCE(ki.title,'') || ' ' || COALESCE(ki.summary,'') || ' ' ||
+				COALESCE(ki.body,'') || ' ' || COALESCE(ki.aliases,'') || ' ' || COALESCE(ki.tags,'')) LIKE ? ESCAPE '!'`)
+			args = append(args, knowledgeLikePattern(term))
+		}
+	}
+	if exactIDs := knowledgeExactItemIDs(terms); len(exactIDs) > 0 {
+		placeholders := make([]string, len(exactIDs))
+		for i, id := range exactIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		matchPredicates = append(matchPredicates, `LOWER(i.id) IN (`+strings.Join(placeholders, ",")+")")
+	}
+	if len(matchPredicates) == 0 {
+		return nil, nil
+	}
+	q += ` AND (` + strings.Join(matchPredicates, ` OR `) + `)`
+	if options.AfterID != "" {
+		q += ` AND i.id<?`
+		args = append(args, options.AfterID)
+	}
+	q += ` ORDER BY i.id DESC LIMIT ?`
+	args = append(args, options.Limit+1)
+	return r.scanKnowledgeSearchRows(ctx, q, args, terms)
+}
+
+func (r *KnowledgeRepo) searchNonEffectiveItemsPage(ctx context.Context, workspaceID, requesterAgentID string,
+	options domain.KnowledgeListOptions, terms []string) ([]*domain.KnowledgeItem, string, error) {
+	q := `SELECT ` + knowledgeItemColsQualified + `,
+		'', COALESCE(v.title, i.title), COALESCE(v.summary, i.summary),
+		COALESCE(v.body_markdown, ''), COALESCE(v.aliases, i.aliases), COALESCE(v.tags, i.tags)
+		FROM knowledge_items i
+		LEFT JOIN knowledge_versions v ON v.id=i.current_version_id AND v.item_id=i.id
+		WHERE 1=1`
+	args := make([]any, 0, len(terms)+12)
+	q, args = appendKnowledgeItemReadFilters(q, args, workspaceID, requesterAgentID, options)
+	textExpr := `LOWER(COALESCE(i.title,'') || ' ' || COALESCE(i.summary,'') || ' ' ||
+		COALESCE(v.title,'') || ' ' || COALESCE(v.summary,'') || ' ' || COALESCE(v.body_markdown,'') || ' ' ||
+		COALESCE(v.aliases,'') || ' ' || COALESCE(v.tags,''))`
+	matchPredicates := make([]string, 0, len(terms)+1)
+	for _, term := range terms {
+		matchPredicates = append(matchPredicates, textExpr+` LIKE ? ESCAPE '!'`)
+		args = append(args, knowledgeLikePattern(term))
+	}
+	if exactIDs := knowledgeExactItemIDs(terms); len(exactIDs) > 0 {
+		placeholders := make([]string, len(exactIDs))
+		for i, id := range exactIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		matchPredicates = append(matchPredicates, `LOWER(i.id) IN (`+strings.Join(placeholders, ",")+")")
+	}
+	q += ` AND (` + strings.Join(matchPredicates, ` OR `) + `)`
+	if options.AfterID != "" {
+		q += ` AND i.id<?`
+		args = append(args, options.AfterID)
+	}
+	q += ` ORDER BY i.id DESC LIMIT ?`
+	limit := options.Limit
+	args = append(args, limit+1)
+	rows, err := r.scanKnowledgeSearchRows(ctx, q, args, terms)
+	if err != nil {
+		return nil, "", err
+	}
+	items, nextCursor := mergeKnowledgeSearchRows(rows, nil, limit)
+	return items, nextCursor, nil
+}
+
+func appendKnowledgeItemReadFilters(sqlText string, args []any, workspaceID, requesterAgentID string,
+	options domain.KnowledgeListOptions) (string, []any) {
+	sqlText += ` AND i.workspace_id=? AND i.status=?`
+	args = append(args, workspaceID, options.Status)
+	switch options.Visibility {
+	case domain.KnowledgeVisibilityPrivate:
+		sqlText += ` AND i.visibility=? AND i.owner_agent_id=?`
+		args = append(args, domain.KnowledgeVisibilityPrivate, requesterAgentID)
+	case domain.KnowledgeVisibilityWorkspace:
+		sqlText += ` AND i.visibility=?`
+		args = append(args, domain.KnowledgeVisibilityWorkspace)
+	default:
+		sqlText += ` AND (i.visibility=? OR i.owner_agent_id=?)`
+		args = append(args, domain.KnowledgeVisibilityWorkspace, requesterAgentID)
+	}
+	if options.Kind != "" {
+		sqlText += ` AND i.kind=?`
+		args = append(args, options.Kind)
+	}
+	return appendKnowledgeScopeFilters(sqlText, args, "i.scope_json", options.Scope)
+}
+
+func (r *KnowledgeRepo) scanKnowledgeSearchRows(ctx context.Context, sqlText string, args []any,
+	terms []string) ([]*knowledgeSearchItem, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx), sqlText, args...)
+	if err != nil {
+		return nil, r.store.mapErr(err)
+	}
+	defer rows.Close()
+	out := make([]*knowledgeSearchItem, 0)
+	for rows.Next() {
+		result, scanErr := scanKnowledgeSearchItem(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		if result.excerpt == "" {
+			result.excerpt = knowledgeSubstringSnippet(result.matchText, terms)
+		}
+		result.item.SearchExcerpt = result.excerpt
+		out = append(out, result)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func mergeKnowledgeSearchRows(primary, fallback []*knowledgeSearchItem, limit int) ([]*domain.KnowledgeItem, string) {
+	merged := make([]*domain.KnowledgeItem, 0, min(limit+1, defaultKnowledgeLimit+1))
+	seen := make(map[string]*domain.KnowledgeItem, len(primary)+len(fallback))
+	for p, f := 0, 0; (p < len(primary) || f < len(fallback)) && len(merged) <= limit; {
+		var next *knowledgeSearchItem
+		if f >= len(fallback) || (p < len(primary) && primary[p].item.ID >= fallback[f].item.ID) {
+			next = primary[p]
+			p++
+		} else {
+			next = fallback[f]
+			f++
+		}
+		if existing, ok := seen[next.item.ID]; ok {
+			if existing.SearchExcerpt == "" && next.item.SearchExcerpt != "" {
+				existing.SearchExcerpt = next.item.SearchExcerpt
+			}
+			continue
+		}
+		seen[next.item.ID] = next.item
+		merged = append(merged, next.item)
+	}
+	nextCursor := ""
+	if len(merged) > limit {
+		nextCursor = merged[limit-1].ID
+		merged = merged[:limit]
+	}
+	return merged, nextCursor
+}
+
+func scanKnowledgeSearchItem(row interface{ Scan(...any) error }) (*knowledgeSearchItem, error) {
+	item := &domain.KnowledgeItem{}
+	var ownerID, currentID *string
+	var tags, aliases, scope string
+	var created, updated scanTime
+	var excerpt, title, summary, body, searchAliases, searchTags string
+	if err := row.Scan(&item.ID, &item.WorkspaceID, &ownerID, &item.Visibility, &item.Kind,
+		&item.Title, &item.Summary, &tags, &aliases, &scope, &currentID,
+		&item.CurrentVersion, &item.Status, &item.RepealReason, &item.Version, &created, &updated,
+		&excerpt, &title, &summary, &body, &searchAliases, &searchTags); err != nil {
+		return nil, err
+	}
+	if ownerID != nil {
+		item.OwnerAgentID = *ownerID
+	}
+	if currentID != nil {
+		item.CurrentVersionID = *currentID
+	}
+	if err := jsonInto(tags, &item.Tags); err != nil {
+		return nil, err
+	}
+	if err := jsonInto(aliases, &item.Aliases); err != nil {
+		return nil, err
+	}
+	if err := jsonInto(scope, &item.Scope); err != nil {
+		return nil, err
+	}
+	if item.Tags == nil {
+		item.Tags = []string{}
+	}
+	if item.Aliases == nil {
+		item.Aliases = []string{}
+	}
+	if item.Scope == nil {
+		item.Scope = domain.KnowledgeScope{}
+	}
+	item.CreatedAt, item.UpdatedAt = mustTime(created), mustTime(updated)
+	return &knowledgeSearchItem{item: item, excerpt: excerpt,
+		matchText: strings.Join([]string{title, summary, body, searchAliases, searchTags}, " ")}, nil
 }
 
 func (r *KnowledgeRepo) CreateVersion(ctx context.Context, version *domain.KnowledgeVersion) error {
@@ -1781,6 +2046,46 @@ func containsKnowledgeHan(tokens []string) bool {
 		}
 	}
 	return false
+}
+
+func knowledgeSearchTerms(query string) []string {
+	terms := domain.NormalizeKnowledgeTerms(strings.Fields(query))
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		var clean strings.Builder
+		for _, r := range term {
+			if !unicode.IsControl(r) {
+				clean.WriteRune(r)
+			}
+		}
+		term = strings.TrimSpace(clean.String())
+		if term == "" {
+			continue
+		}
+		for _, r := range term {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				out = append(out, term)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func knowledgeExactItemIDs(terms []string) []string {
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, term := range terms {
+		if !strings.HasPrefix(term, domain.PrefixKnowledgeItem) {
+			continue
+		}
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		ids = append(ids, term)
+	}
+	return ids
 }
 
 func knowledgeLikePattern(token string) string {

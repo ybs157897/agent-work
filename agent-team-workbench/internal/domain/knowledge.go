@@ -169,6 +169,9 @@ type KnowledgeItem struct {
 	Version          int                 `json:"version"`
 	CreatedAt        time.Time           `json:"created_at"`
 	UpdatedAt        time.Time           `json:"updated_at"`
+	// SearchExcerpt is populated only by a query-backed list response. It is
+	// deliberately not persisted with the item projection.
+	SearchExcerpt string `json:"search_excerpt,omitempty"`
 }
 
 // KnowledgeListOptions is the bounded, keyset-paginated read surface for the
@@ -181,6 +184,7 @@ type KnowledgeListOptions struct {
 	Visibility KnowledgeVisibility `json:"visibility,omitempty"`
 	AfterID    string              `json:"after_id,omitempty"`
 	Limit      int                 `json:"limit,omitempty"`
+	Query      string              `json:"query,omitempty"`
 }
 
 func (o KnowledgeListOptions) Normalize() KnowledgeListOptions {
