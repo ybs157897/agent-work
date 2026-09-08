@@ -139,6 +139,15 @@ type turnState struct {
 	endReason            string           // turn.ended.reason
 	failure              *runtime.Failure // turn.ended.error 权威失败
 	sessionUpdate        *runtime.SessionUpdate
+	// pendingBackgroundTasks tracks detached Bash/Agent tasks that KAP keeps
+	// alive after the main turn. Their completion is fed back through a native
+	// notification turn, so the enclosing ATW Run must remain open until that
+	// turn has ended as well.
+	pendingBackgroundTasks         map[string]struct{}
+	pendingBackgroundNotifications map[string]struct{}
+	terminatedBackgroundTasks      map[string]struct{}
+	backgroundMu                   sync.Mutex
+	awaitingBackgroundTurn         bool
 	// pendingTools tracks only identified tool calls. KAP can emit turn.ended
 	// before a result; those calls are closed synthetically at turn end.
 	pendingTools map[string]string
@@ -160,6 +169,51 @@ type childTurnState struct {
 	usageCached int64
 	pending     map[string]string
 	results     map[string]struct{}
+}
+
+// beginBackgroundNotificationTurn resets only per-turn output state. Usage,
+// session, child-agent and background-task state belong to the enclosing Run
+// and must survive the notification turn.
+func (s *turnState) beginBackgroundNotificationTurn(taskID string) {
+	s.setPromptID("")
+	s.answer.Reset()
+	s.endReason = ""
+	s.failure = nil
+	s.pendingTools = make(map[string]string)
+	s.toolResults = make(map[string]struct{})
+	s.fileSnapshots = make(map[string]fileSnapshot)
+	s.backgroundMu.Lock()
+	delete(s.pendingBackgroundNotifications, taskID)
+	s.awaitingBackgroundTurn = false
+	s.backgroundMu.Unlock()
+}
+
+func (s *turnState) backgroundTaskIDs() []string {
+	s.backgroundMu.Lock()
+	defer s.backgroundMu.Unlock()
+	ids := make([]string, 0, len(s.pendingBackgroundTasks))
+	for taskID := range s.pendingBackgroundTasks {
+		ids = append(ids, taskID)
+	}
+	return ids
+}
+
+func (s *turnState) hasPendingBackgroundWork() bool {
+	s.backgroundMu.Lock()
+	defer s.backgroundMu.Unlock()
+	return len(s.pendingBackgroundTasks) > 0 || len(s.pendingBackgroundNotifications) > 0
+}
+
+func (s *turnState) setPromptID(promptID string) {
+	s.backgroundMu.Lock()
+	s.promptID = promptID
+	s.backgroundMu.Unlock()
+}
+
+func (s *turnState) promptIDValue() string {
+	s.backgroundMu.Lock()
+	defer s.backgroundMu.Unlock()
+	return s.promptID
 }
 
 func tokenUsageValue(value *int64) (int64, bool) {
@@ -358,7 +412,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 			m.sup.recycle()
 		}
 	}
-	state := &turnState{pendingTools: make(map[string]string), toolResults: make(map[string]struct{}), fileSnapshots: make(map[string]fileSnapshot), subagents: make(map[string]map[string]any), subagentSeqs: make(map[int64]struct{}), children: make(map[string]*childTurnState)}
+	state := &turnState{pendingTools: make(map[string]string), toolResults: make(map[string]struct{}), fileSnapshots: make(map[string]fileSnapshot), pendingBackgroundTasks: make(map[string]struct{}), pendingBackgroundNotifications: make(map[string]struct{}), terminatedBackgroundTasks: make(map[string]struct{}), subagents: make(map[string]map[string]any), subagentSeqs: make(map[int64]struct{}), children: make(map[string]*childTurnState)}
 	// Ctx 取消（cancel/interrupt）不是网关故障：任何阶段的取消按终态意图返回，
 	// 不得误报成 gateway_unavailable/io 失败（否则终态会变成 failed）。
 	ep, err := m.sup.Ensure(ex.Ctx)
@@ -405,7 +459,7 @@ func (m *Module) Execute(ex *runtime.ExecContext) runtime.ExecResult {
 		}
 		return *res
 	}
-	state.promptID = prompt.PromptID // 先于泵启动写入，requestCancel 只读
+	state.setPromptID(prompt.PromptID) // 先于泵启动写入，requestCancel 只读
 	return m.pump(ex, client, ep, stream, sessionID, state)
 }
 
@@ -552,14 +606,20 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 			return
 		}
 		ctx := context.WithoutCancel(ex.Ctx)
-		if state.promptID != "" {
-			if kerr := client.abortPrompt(ctx, sessionID, state.promptID); kerr != nil {
-				log.Printf("kimiapp: run %s prompts/%s:abort: %v", ex.Run.ID, state.promptID, kerr)
+		promptID := state.promptIDValue()
+		if promptID != "" {
+			if kerr := client.abortPrompt(ctx, sessionID, promptID); kerr != nil {
+				log.Printf("kimiapp: run %s prompts/%s:abort: %v", ex.Run.ID, promptID, kerr)
 			}
-			return
-		}
-		if kerr := client.abortSession(ctx, sessionID); kerr != nil {
+		} else if kerr := client.abortSession(ctx, sessionID); kerr != nil {
 			log.Printf("kimiapp: run %s session abort: %v", ex.Run.ID, kerr)
+		}
+		// Session abort only cancels the active turn in KAP. Detached tasks
+		// survive that call, so cancel the IDs this Run has actually observed.
+		for _, taskID := range state.backgroundTaskIDs() {
+			if kerr := client.cancelTask(ctx, sessionID, taskID); kerr != nil {
+				log.Printf("kimiapp: run %s task %s cancel: %v", ex.Run.ID, taskID, kerr)
+			}
 		}
 	}
 
@@ -619,6 +679,15 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 		approvals: approvals, approvalsMu: &approvalsMu}
 	// 订阅握手期间缓存的先到帧（正常为空）先消费。
 	if done := p.drain(stream); done {
+		if p.holdForBackgroundTurn() {
+			// KAP may have ended the user turn while a detached task is still
+			// running. Keep the stream and Run alive for its notification turn.
+			// The normal frame loop below receives that turn's events.
+		} else {
+			return turnEndResult(ex, state)
+		}
+	}
+	if p.finishAfterBackgroundTurn() {
 		return turnEndResult(ex, state)
 	}
 
@@ -663,6 +732,11 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 				}
 				stream = s2
 				if done := p.drain(stream); done {
+					if !p.holdForBackgroundTurn() {
+						return turnEndResult(ex, state)
+					}
+				}
+				if p.finishAfterBackgroundTurn() {
 					return turnEndResult(ex, state)
 				}
 				continue
@@ -676,6 +750,11 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 				continue
 			}
 			if done := p.handle(frame); done {
+				if !p.holdForBackgroundTurn() {
+					return turnEndResult(ex, state)
+				}
+			}
+			if p.finishAfterBackgroundTurn() {
 				return turnEndResult(ex, state)
 			}
 		case <-idleTimer.C:
@@ -719,10 +798,49 @@ type eventPump struct {
 func (p *eventPump) drain(stream *wsStream) bool {
 	for _, frame := range stream.drainPending() {
 		if done := p.handle(frame); done {
+			// drainPending returns a whole snapshot. A completed main turn may
+			// still be followed by detached-task lifecycle and notification-turn
+			// frames in that same snapshot, so keep consuming while this Run is
+			// held for background work.
+			if p.holdForBackgroundTurn() {
+				continue
+			}
+			return true
+		}
+		if p.finishAfterBackgroundTurn() {
 			return true
 		}
 	}
 	return false
+}
+
+// holdForBackgroundTurn reports whether the completed main turn must stay
+// inside this Execute. KAP's detached task completion is delivered as a native
+// notification that starts another main turn; returning here would close the
+// Run-bound capability file before that turn can consume it.
+func (p *eventPump) holdForBackgroundTurn() bool {
+	if p == nil || p.state == nil || p.state.endReason != "completed" ||
+		p.state.failure != nil || p.ex == nil || p.ex.Ctx.Err() != nil ||
+		!p.state.hasPendingBackgroundWork() {
+		return false
+	}
+	// The prompt that just ended is no longer an abort target. A cancellation
+	// during the notification wait must use the session-level fallback.
+	p.state.setPromptID("")
+	p.state.backgroundMu.Lock()
+	p.state.awaitingBackgroundTurn = true
+	p.state.backgroundMu.Unlock()
+	return true
+}
+
+func (p *eventPump) finishAfterBackgroundTurn() bool {
+	if p == nil || p.state == nil || p.ex == nil || p.ex.Ctx.Err() != nil {
+		return false
+	}
+	p.state.backgroundMu.Lock()
+	defer p.state.backgroundMu.Unlock()
+	return p.state.awaitingBackgroundTurn && len(p.state.pendingBackgroundTasks) == 0 &&
+		len(p.state.pendingBackgroundNotifications) == 0
 }
 
 // handle 投影一帧到 canonical 事件/审批/状态；返回 true 表示本轮 turn.ended。
@@ -732,6 +850,12 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		return false
 	}
 	switch frame.Type {
+	case "task.started", "background.task.started", "task.terminated", "background.task.terminated":
+		p.handleTaskLifecycle(frame)
+	case "task.waitDelivered":
+		p.handleTaskWaitDelivered(frame)
+	case "task.notified":
+		p.handleTaskNotification(frame)
 	case "turn.started":
 		var ev evTurnStarted
 		_ = json.Unmarshal(frame.Payload, &ev)
@@ -749,8 +873,31 @@ func (p *eventPump) handle(frame wsFrame) bool {
 			}
 			return false
 		}
+		p.state.backgroundMu.Lock()
+		awaitingBackgroundTurn := p.state.awaitingBackgroundTurn
+		p.state.backgroundMu.Unlock()
+		if awaitingBackgroundTurn {
+			// Only a KAP task-origin turn for a task notification can continue
+			// this Run. Ignore unrelated main/child turns while waiting.
+			if ev.TurnID == p.state.activeTurn || ev.Origin == nil || ev.Origin.Kind != "task" || ev.Origin.TaskID == "" {
+				return false
+			}
+			p.state.backgroundMu.Lock()
+			_, pendingNotification := p.state.pendingBackgroundNotifications[ev.Origin.TaskID]
+			p.state.backgroundMu.Unlock()
+			if !pendingNotification {
+				return false
+			}
+			// A detached task completion is delivered by KAP as a new main turn
+			// with origin.kind=task and no promptId. Start a fresh per-turn
+			// accumulator while keeping the enclosing Run's usage/task state.
+			p.state.beginBackgroundNotificationTurn(ev.Origin.TaskID)
+			p.state.activeTurn, p.state.activeSeen = ev.TurnID, true
+			return false
+		}
+		promptID := p.state.promptIDValue()
 		switch {
-		case ev.PromptID != "" && ev.PromptID == p.state.promptID:
+		case ev.PromptID != "" && ev.PromptID == promptID:
 			p.state.activeTurn, p.state.activeSeen = ev.TurnID, true
 		case ev.PromptID == "" && !p.state.activeSeen:
 			// 回退：老服务端不回显 promptId 时，prompt 提交后的首个 turn 视为本轮。
@@ -794,6 +941,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 				"role": "assistant", "text": p.state.answer.String(),
 			})
 		}
+		p.state.activeSeen = false
 		return true
 	case "assistant.delta":
 		var ev evDelta
@@ -1000,6 +1148,139 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		p.ex.Callbacks.OnLog("kimiapp", frame.Type+" "+truncate(string(frame.Payload), 400))
 	}
 	return false
+}
+
+func (p *eventPump) handleTaskLifecycle(frame wsFrame) {
+	if p == nil || p.state == nil {
+		return
+	}
+	var ev evTaskLifecycle
+	if json.Unmarshal(frame.Payload, &ev) != nil {
+		return
+	}
+	if ev.AgentID != "main" {
+		return
+	}
+	taskID := ev.taskID()
+	if taskID == "" {
+		return
+	}
+	p.state.backgroundMu.Lock()
+	defer p.state.backgroundMu.Unlock()
+	if p.state.pendingBackgroundTasks == nil {
+		p.state.pendingBackgroundTasks = make(map[string]struct{})
+	}
+	if p.state.pendingBackgroundNotifications == nil {
+		p.state.pendingBackgroundNotifications = make(map[string]struct{})
+	}
+	if p.state.terminatedBackgroundTasks == nil {
+		p.state.terminatedBackgroundTasks = make(map[string]struct{})
+	}
+	switch frame.Type {
+	case "task.started", "background.task.started":
+		if _, terminated := p.state.terminatedBackgroundTasks[taskID]; terminated {
+			return
+		}
+		if ev.Info.Detached != nil && *ev.Info.Detached && !isTerminalTaskStatus(ev.Info.Status) {
+			p.state.pendingBackgroundTasks[taskID] = struct{}{}
+		}
+	case "task.terminated", "background.task.terminated":
+		// A terminal frame is meaningful to this Run only if its matching
+		// detached start was observed on the main agent. Synchronous tasks,
+		// child-agent tasks, and unrelated sessions must not hold the Run open.
+		if ev.Info.Detached == nil || !*ev.Info.Detached {
+			return
+		}
+		if _, pending := p.state.pendingBackgroundTasks[taskID]; !pending {
+			return
+		}
+		if _, seen := p.state.terminatedBackgroundTasks[taskID]; seen {
+			return
+		}
+		p.state.terminatedBackgroundTasks[taskID] = struct{}{}
+		delete(p.state.pendingBackgroundTasks, taskID)
+		if !ev.Info.TerminalNotificationSuppressed {
+			p.state.pendingBackgroundNotifications[taskID] = struct{}{}
+		}
+	}
+}
+
+func (p *eventPump) handleTaskNotification(frame wsFrame) {
+	if p == nil || p.state == nil {
+		return
+	}
+	var ev evTaskNotified
+	if json.Unmarshal(frame.Payload, &ev) != nil || ev.SourceID == "" {
+		return
+	}
+	if ev.AgentID != "main" || ev.SourceKind != "background_task" {
+		return
+	}
+	p.state.backgroundMu.Lock()
+	defer p.state.backgroundMu.Unlock()
+	if p.state.pendingBackgroundTasks == nil {
+		p.state.pendingBackgroundTasks = make(map[string]struct{})
+	}
+	if p.state.pendingBackgroundNotifications == nil {
+		p.state.pendingBackgroundNotifications = make(map[string]struct{})
+	}
+	if p.state.terminatedBackgroundTasks == nil {
+		p.state.terminatedBackgroundTasks = make(map[string]struct{})
+	}
+	if _, known := p.state.pendingBackgroundTasks[ev.SourceID]; !known {
+		if _, known = p.state.pendingBackgroundNotifications[ev.SourceID]; !known {
+			if _, known = p.state.terminatedBackgroundTasks[ev.SourceID]; !known {
+				return
+			}
+		}
+	}
+	delete(p.state.pendingBackgroundTasks, ev.SourceID)
+	if p.state.activeSeen && !p.state.awaitingBackgroundTurn {
+		// An active turn consumes its notification inline; no extra turn is
+		// expected for this task.
+		delete(p.state.pendingBackgroundNotifications, ev.SourceID)
+	}
+}
+
+func (p *eventPump) handleTaskWaitDelivered(frame wsFrame) {
+	if p == nil || p.state == nil {
+		return
+	}
+	var ev evTaskWaitDelivered
+	if json.Unmarshal(frame.Payload, &ev) != nil || ev.AgentID != "main" {
+		return
+	}
+	p.state.backgroundMu.Lock()
+	defer p.state.backgroundMu.Unlock()
+	if p.state.pendingBackgroundTasks == nil {
+		p.state.pendingBackgroundTasks = make(map[string]struct{})
+	}
+	if p.state.pendingBackgroundNotifications == nil {
+		p.state.pendingBackgroundNotifications = make(map[string]struct{})
+	}
+	if p.state.terminatedBackgroundTasks == nil {
+		p.state.terminatedBackgroundTasks = make(map[string]struct{})
+	}
+	for _, key := range ev.Keys {
+		parts := strings.Split(key, "\x00")
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" ||
+			!isTerminalTaskStatus(parts[1]) || parts[2] != "task:"+parts[0]+":"+parts[1] {
+			continue
+		}
+		taskID := parts[0]
+		if _, known := p.state.pendingBackgroundTasks[taskID]; !known {
+			if _, known = p.state.pendingBackgroundNotifications[taskID]; !known {
+				if _, known = p.state.terminatedBackgroundTasks[taskID]; !known {
+					continue
+				}
+			}
+		}
+		// WaitFor consumed this task's result in the current turn. No
+		// automatic task notification turn should be awaited afterwards.
+		delete(p.state.pendingBackgroundTasks, taskID)
+		delete(p.state.pendingBackgroundNotifications, taskID)
+		p.state.terminatedBackgroundTasks[taskID] = struct{}{}
+	}
 }
 
 func (p *eventPump) handleSubagent(frame wsFrame) {
