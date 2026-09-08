@@ -67,6 +67,52 @@ func TestAskCancellationCancelsDurableJob(t *testing.T) {
 	}
 }
 
+func TestRecordWaitsForCurationAndRetainsPublicationResult(t *testing.T) {
+	var polls atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer scoped-token" {
+			t.Error("missing scoped token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/records" {
+			if r.Header.Get("Idempotency-Key") != "record-1" {
+				t.Error("missing stable record key")
+			}
+			_, _ = w.Write([]byte(`{"submission":{"id":"kss-1"},"job":{"id":"job-1","status":"running"},"curation_status":"running"}`))
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/jobs/job-1" {
+			count := polls.Add(1)
+			if count == 1 {
+				_, _ = w.Write([]byte(`{"id":"job-1","status":"incomplete","result":{"publication_status":"pending"}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"id":"job-1","status":"incomplete","result":{"publication_status":"published","published_version_ids":["kbv-1"],"published_references":[{"version_id":"kbv-1"}]}}`))
+			}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer s.Close()
+	c, _ := New(s.URL, "scoped-token")
+	c.PollInterval = time.Millisecond
+	raw, err := c.Record(context.Background(), map[string]any{"content": "confirmed requirement", "publish_intent": "confirmed_requirement"}, "record-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	job, _ := out["job"].(map[string]any)
+	if polls.Load() != 2 || out["submission"] == nil || job["status"] != "incomplete" {
+		t.Fatalf("record lost durable curation result: %s", raw)
+	}
+	result, _ := job["result"].(map[string]any)
+	if result["published_version_ids"] == nil || out["curation_status"] != "incomplete" || out["publication_status"] != "published" || out["published_references"] == nil {
+		t.Fatalf("record lost publication reference: %s", raw)
+	}
+}
+
 func TestScopedTokenIsNotForwardedOnRedirect(t *testing.T) {
 	var leaked atomic.Bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Store(true) }))

@@ -22,6 +22,15 @@ def complete_turn(thread_id, status="completed", error=None):
     send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": turn}})
 
 
+def dynamic_arguments():
+    action = os.environ.get("CODEX_FAKE_DYNAMIC_ACTION", "record")
+    if action == "ask":
+        return {"action": "ask", "question": "fixture knowledge question"}
+    if action == "read":
+        return {"action": "read", "item_id": "kb_fixture", "version": 1}
+    return {"action": "record", "content": "fixture confirmed requirement", "title": "fixture requirement"}
+
+
 def main():
     thread_id = "th_fake_1"
     initialize_responded = False
@@ -81,11 +90,24 @@ def main():
             if os.environ.get("CODEX_EXPECT_RESUME") == "1":
                 rpc_error(rid, "expected thread/resume")
                 continue
+            if os.environ.get("CODEX_EXPECT_DYNAMIC") == "1":
+                tools = params.get("dynamicTools")
+                if not isinstance(tools, list) or len(tools) != 1:
+                    rpc_error(rid, "expected one dynamic tool")
+                    continue
+                tool = tools[0]
+                if (tool.get("type") != "function" or tool.get("name") != "atw_knowledge" or
+                        tool.get("inputSchema", {}).get("additionalProperties") is not False):
+                    rpc_error(rid, "invalid dynamic tool schema")
+                    continue
             send({"id": rid, "result": {
                 "thread": {"id": thread_id, "sessionId": thread_id},
                 "model": "gpt-fake", "modelProvider": "openai", "cwd": "/tmp"}})
             send({"method": "thread/started", "params": {"thread": {"id": thread_id}}})
         elif method == "thread/resume":
+            if os.environ.get("CODEX_EXPECT_NO_DYNAMIC_ON_RESUME") == "1" and "dynamicTools" in params:
+                rpc_error(rid, "dynamicTools must be persisted and omitted on resume")
+                continue
             if os.environ.get("CODEX_FAKE_RESUME_NOT_FOUND") == "1":
                 rpc_error(rid, "Thread not found: {}".format(params.get("threadId")))
                 continue
@@ -108,6 +130,24 @@ def main():
                 "turn": {"id": "turn_fake_1", "status": "inProgress", "items": []}}})
             if os.environ.get("CODEX_FAKE_HANG") == "1":
                 continue
+
+            if os.environ.get("CODEX_FAKE_DYNAMIC") == "1":
+                dynamic_args = dynamic_arguments()
+                dynamic_tool = os.environ.get("CODEX_FAKE_DYNAMIC_TOOL", "atw_knowledge")
+                send({"method": "item/started", "params": {"item": {
+                    "id": "dynamic_1", "type": "dynamicToolCall", "tool": dynamic_tool,
+                    "arguments": dynamic_args, "status": "inProgress"}}})
+                send({"id": 501, "method": "item/tool/call", "params": {
+                    "threadId": thread_id, "turnId": "turn_fake_1", "callId": "dynamic_1",
+                    "tool": dynamic_tool, "arguments": dynamic_args}})
+                response = json.loads(sys.stdin.readline())
+                result = response.get("result", {})
+                if response.get("id") != 501 or not result.get("success"):
+                    rpc_error(rid, "dynamic tool failed")
+                    continue
+                send({"method": "item/completed", "params": {"item": {
+                    "id": "dynamic_1", "type": "dynamicToolCall", "tool": dynamic_tool,
+                    "arguments": dynamic_args, "status": "completed", "result": result}}})
 
             if os.environ.get("CODEX_FAKE_CHILD") == "1":
                 send({"method": "item/started", "params": {"item": {

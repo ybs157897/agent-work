@@ -8,9 +8,9 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
-// KnowledgeJobRepo stores the durable controller state around ordinary Chat
-// Runs.  The Run and provider session remain the execution authority; this
-// repository only records which bounded decision should be applied next.
+// KnowledgeJobRepo stores the durable controller state around Knowledge
+// Librarian Runs. The Run and provider session remain the execution authority;
+// this repository only records which bounded decision should be applied next.
 type KnowledgeJobRepo struct{ store *Store }
 
 var _ application.KnowledgeJobRepo = (*KnowledgeJobRepo)(nil)
@@ -275,7 +275,7 @@ func (r *KnowledgeJobRepo) List(ctx context.Context, workspaceID, agentProfileID
 }
 
 // ListForRequester is deliberately separate from List: agentProfileID in
-// List identifies the ordinary Agent executing the librarian Run, while the
+// List identifies the built-in Agent executing the librarian Run, while the
 // caller-facing view must filter by requesting_agent_id before applying the
 // page limit. Filtering after a broad librarian list can hide a caller's own
 // older jobs behind unrelated requests.
@@ -321,9 +321,17 @@ func (r *KnowledgeJobRepo) ListRecoverable(ctx context.Context, workspaceID, aft
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// Terminal confirmed-record jobs with publication_status=pending still
+	// need the post-commit finalizer after a process restart. They share this
+	// recovery stream so no second job lifecycle is introduced.
 	query := `SELECT ` + knowledgeJobCols + ` FROM knowledge_jobs
-		WHERE workspace_id=? AND status IN (?,?,?)`
-	args := []any{workspaceID, domain.KnowledgeJobQueued, domain.KnowledgeJobRunning, domain.KnowledgeJobWaitingRetry}
+		WHERE workspace_id=? AND (
+			status IN (?,?,?)
+			OR (status IN (?,?,?,?,?) AND json_extract(result_json, '$.publication_status') = 'pending')
+		)`
+	args := []any{workspaceID, domain.KnowledgeJobQueued, domain.KnowledgeJobRunning, domain.KnowledgeJobWaitingRetry,
+		domain.KnowledgeJobCompleted, domain.KnowledgeJobIncomplete, domain.KnowledgeJobConflict,
+		domain.KnowledgeJobCancelled, domain.KnowledgeJobFailed}
 	if afterID != "" {
 		query += ` AND id>?`
 		args = append(args, afterID)

@@ -309,8 +309,16 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		if a.Availability != domain.AgentEnabled {
 			return nil, fmt.Errorf("%w: agent 已停用", domain.ErrValidation)
 		}
-		agent = a
-		if a.Kind.IsSystem() {
+		if !taskRecord && a.Kind.IsSystem() && !a.Kind.IsKnowledgeLibrarian() {
+			return nil, fmt.Errorf("%w: Chat 不能使用系统 Task Coordinator", domain.ErrValidation)
+		}
+		agent = currentKnowledgeLibrarianPresentation(a)
+		if a.Kind.IsKnowledgeLibrarian() &&
+			!runtimePreferenceConfigured(p.RuntimePreference) &&
+			!runtimePreferenceConfigured(&a.RuntimePreference) {
+			return nil, fmt.Errorf("%w: Knowledge Librarian runtime 未配置，请先选择运行方式", domain.ErrCapabilityMissing)
+		}
+		if a.Kind.IsTaskCoordinator() {
 			if p.CoordinatorContext == nil && p.WakeContext == nil {
 				return nil, fmt.Errorf("%w: system Task Coordinator 只能由控制面启动", domain.ErrValidation)
 			}
@@ -361,7 +369,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			if err := validateCoordinatedRootHealSource(parent); err != nil {
 				return nil, err
 			}
-		} else if agent == nil || !agent.Kind.IsSystem() || p.AgentProfileID != coordinatorState.CoordinatorAgentID {
+		} else if agent == nil || !agent.Kind.IsTaskCoordinator() || p.AgentProfileID != coordinatorState.CoordinatorAgentID {
 			return nil, fmt.Errorf("%w: coordinated root Task 只能由系统 Coordinator 或受证明的 Handoff target 创建 Run", domain.ErrValidation)
 		}
 	}
@@ -512,7 +520,7 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	// cost 配额 fail-closed（目标合同 R4）：启用 cost quota 的 Goal 要求 Run 固化
 	// 价格快照；audit/enforce 一律拒绝无价模型，杜绝结算期出现无法证明的成本。
 	costGoalID, _ := p.governanceContext["goal_id"].(string)
-	if costGoalID == "" && agent != nil && agent.Kind.IsSystem() && taskRecord {
+	if costGoalID == "" && agent != nil && agent.Kind.IsTaskCoordinator() && taskRecord {
 		costGoalID, err = rootGovernanceGoalID(ctx, s.store, wi.ID)
 		if err != nil {
 			return nil, err
@@ -564,8 +572,8 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	// charter over the strict schema/coverage contract. The prompt then enters
 	// run.Input and therefore the existing ConfigDigest/session fingerprint.
 	if p.knowledgeJobID != "" {
-		if agent == nil || agent.Kind.IsSystem() {
-			return nil, fmt.Errorf("%w: knowledge librarian Run requires an ordinary Agent", domain.ErrValidation)
+		if agent == nil || !agent.Kind.IsKnowledgeLibrarian() {
+			return nil, fmt.Errorf("%w: knowledge librarian Run requires the built-in Knowledge Librarian", domain.ErrValidation)
 		}
 		librarianAgent := *agent
 		librarianAgent.Instructions = knowledgeLibrarianPrompt()
@@ -855,6 +863,21 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	return r, nil
 }
 
+func runtimePreferenceConfigured(preference *domain.RuntimePreference) bool {
+	if preference == nil {
+		return false
+	}
+	if strings.TrimSpace(preference.Preferred) != "" {
+		return true
+	}
+	for _, fallback := range preference.Fallbacks {
+		if strings.TrimSpace(fallback) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // validateCoordinatorRunAdmission proves that a root Coordinator Run was
 // created by one of the in-process control paths. The persisted context is
 // useful audit data, but it is intentionally not sufficient authority by
@@ -950,12 +973,12 @@ func (s *Service) validateCoordinatorRunAdmission(ctx context.Context, root *dom
 		return fmt.Errorf("%w: Coordinator source_run_id proof mismatch", domain.ErrStateConflict)
 	}
 	if delegated {
-		if agent.Kind.IsSystem() {
+		if agent.Kind.IsTaskCoordinator() {
 			return fmt.Errorf("%w: delegated Coordinator must use an ordinary Agent", domain.ErrValidation)
 		}
 		return s.validateDelegatedCoordinatorContext(ctx, root, state, agent, contextData)
 	}
-	if !agent.Kind.IsSystem() || agent.ID != state.CoordinatorAgentID ||
+	if !agent.Kind.IsTaskCoordinator() || agent.ID != state.CoordinatorAgentID ||
 		p.AgentProfileID != state.CoordinatorAgentID {
 		return fmt.Errorf("%w: system Coordinator identity mismatch", domain.ErrValidation)
 	}

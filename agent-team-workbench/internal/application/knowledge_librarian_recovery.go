@@ -97,17 +97,22 @@ func (s *Service) RecoverKnowledgeLibrarianJobs(ctx context.Context) (int, error
 }
 
 func (s *Service) recoverKnowledgeJob(ctx context.Context, job *domain.KnowledgeJob, now time.Time) (bool, error) {
-	if job == nil || job.Status.IsTerminal() {
+	if job == nil {
 		return false, nil
 	}
-	// The caller's source Run is immutable. Once that Run has ended, an
-	// inquiry started from its bound CLI must not keep running in the
-	// background; cancellation goes through the same Run control path as an
-	// explicit user cancel, even if the source context is already gone.
-	if job.Mode == domain.KnowledgeJobInquiry && job.SourceRunID != "" {
-		if source, err := s.store.Runs().Get(ctx, job.SourceRunID); err == nil && source.Status.IsTerminal() {
+	if job.Status.IsTerminal() {
+		if status, _ := job.Result["publication_status"].(string); status == "pending" {
+			return s.recoverPendingKnowledgePublication(ctx, job)
+		}
+		return false, nil
+	}
+	// A successful source Run is not a cancellation signal for its durable
+	// knowledge job. Failed/cancelled/interrupted/lost callers still cancel the
+	// bound inquiry or Agent record through the normal control path.
+	if job.SourceRunID != "" {
+		if source, err := s.store.Runs().Get(ctx, job.SourceRunID); err == nil && knowledgeRecordSourceRunCancelled(source) {
 			return s.finishKnowledgeJobFromRecovery(ctx, job.ID, domain.KnowledgeJobCancelled,
-				"source Run 已终态，知识调查随调用方取消")
+				"source Run 已终态，知识作业随调用方取消")
 		} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
 			return false, err
 		}
@@ -153,6 +158,20 @@ func (s *Service) recoverKnowledgeJob(ctx context.Context, job *domain.Knowledge
 		return true, nil
 	}
 	return false, nil
+}
+
+func (s *Service) recoverPendingKnowledgePublication(ctx context.Context, job *domain.KnowledgeJob) (bool, error) {
+	if job == nil || job.Status == "" {
+		return false, nil
+	}
+	if err := s.maybeAutoPublishKnowledgeRecord(ctx, job.ID); err != nil {
+		return false, err
+	}
+	fresh, err := s.store.KnowledgeJobs().Get(ctx, job.ID)
+	if err != nil {
+		return false, err
+	}
+	return knowledgeRecordPublicationStatus(fresh) != "pending", nil
 }
 
 // finishKnowledgeJobFromRecovery closes a job first, then forwards cancel to

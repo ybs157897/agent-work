@@ -95,7 +95,7 @@ func (s *Service) DrainKnowledgeCaptures(ctx context.Context) (int, error) {
 					continue
 				}
 			}
-			_, err = s.StartKnowledgeCuration(ctx, StartKnowledgeCurationParams{WorkspaceID: workspaceID, RequestingAgentID: cfg.LibrarianAgentID, SubmissionID: sub.ID, ClientKey: "auto-curate:" + sub.ID})
+			_, err = s.StartKnowledgeCuration(ctx, StartKnowledgeCurationParams{WorkspaceID: workspaceID, RequestingAgentID: cfg.LibrarianAgentID, SubmissionID: sub.ID, ClientKey: knowledgeCurationClientKey(sub.ID)})
 			if err != nil {
 				// A malformed candidate or unavailable runtime is visible in the
 				// inbox. It must not consume model attempts on every scheduler tick.

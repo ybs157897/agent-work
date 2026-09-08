@@ -84,7 +84,7 @@ paths:
       tags: [knowledge-librarian]
       operationId: getKnowledgeLibrarianConfig
       summary: 读取 Workspace 的知识管理员配置
-      description: 未配置时返回 disabled、空 librarian_agent_id 和 version=0 的安全投影；不阻止读取共享知识。
+      description: 系统为每个 Workspace 自动提供唯一的内置 knowledge_librarian 身份；缺失配置会惰性创建为 enabled 默认值，不提供人工选择管理员身份。
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfig" } } } }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -93,7 +93,8 @@ paths:
     patch:
       tags: [knowledge-librarian]
       operationId: updateKnowledgeLibrarianConfig
-      summary: 选择已有 Agent 并更新 Enabled/AutoCollect
+      summary: 更新知识管理员的 Enabled/AutoCollect 开关
+      description: 管理员身份由系统固定；此处只更新启用和任务结束自动收集开关，运行方式与模型在内置 Agent Profile 上配置。
       parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
       requestBody:
         required: true
@@ -473,6 +474,31 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /knowledge-agent/runs/{run_id}/records:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    post:
+      security:
+        - bearerAuth: []
+      tags: [knowledge-librarian]
+      operationId: recordKnowledgeFromRun
+      summary: Run-bound 提交自然语言知识记录并请求管理员整理
+      description: |
+        请求身份完全由当前活动 Run 的 Bearer capability 推导；客户端不能指定 workspace_id、agent_id 或 user_id。
+        content/text 二选一。服务端创建既有 KnowledgeSubmission 和 curation KnowledgeJob。
+        publish_intent=confirmed_requirement 仅表示调用 Agent 已获得用户确认；管理员仍需结构化并通过来源、权限、版本和冲突校验，不能据此声称实现已验证。
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/KnowledgeAgentRecordRequest" }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeAgentRecordResult" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /knowledge-agent/runs/{run_id}/inquiries:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     post:
@@ -605,6 +631,7 @@ paths:
     patch:
       tags: [agent-profiles]
       operationId: updateAgentProfile
+      description: 对内置 knowledge_librarian 身份，只允许更新 runtime_preference 和 model_override；名称、角色、技能、提示词与策略由系统固定并会被拒绝。
       parameters: [{ $ref: "#/components/parameters/IfMatch" }]
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/AgentProfilePatch" } } } }
       responses:
@@ -2274,9 +2301,9 @@ components:
     KnowledgeLibrarianConfigPatch:
       type: object
       additionalProperties: false
+      description: 内置知识管理员身份不可替换；只允许更新 enabled、auto_collect 和 expected_version。
       required: [expected_version]
       properties:
-        librarian_agent_id: { type: string, nullable: true }
         enabled: { type: boolean }
         auto_collect: { type: boolean }
         expected_version: { type: integer, minimum: 0 }
@@ -2479,6 +2506,40 @@ components:
           minItems: 1
           items: { $ref: "#/components/schemas/KnowledgeChange" }
         no_change: { type: boolean }
+
+    KnowledgeAgentRecordRequest:
+      type: object
+      additionalProperties: false
+      description: content 和 text 必须二选一；身份由当前 Run 绑定，客户端不能指定 agent_id 或 user_id。
+      properties:
+        content: { type: string, minLength: 1, maxLength: 1048576 }
+        text: { type: string, minLength: 1, maxLength: 1048576 }
+        title: { type: string, maxLength: 400 }
+        publish_intent:
+          type: string
+          enum: [confirmed_requirement]
+          description: 仅表示调用 Agent 已取得用户对需求/约定的确认；不表示实现已验证。
+        client_key: { type: string, minLength: 1, maxLength: 256, description: 可选；缺省使用 Idempotency-Key }
+      oneOf:
+        - required: [content]
+        - required: [text]
+
+    KnowledgeAgentRecordResult:
+      type: object
+      additionalProperties: false
+      required: [submission, curation_status]
+      properties:
+        submission: { $ref: "#/components/schemas/KnowledgeSubmission" }
+        job: { $ref: "#/components/schemas/KnowledgeJob" }
+        curation_status:
+          type: string
+          enum: [received, queued, running, waiting_retry, completed, incomplete, conflict, cancelled, failed]
+          description: 作业存在时等于 Job.status；received 表示原始记录已保存但整理未启动。
+        curation_error: { type: string }
+        publication_status:
+          type: string
+          enum: [pending, published, needs_review, unchanged]
+          description: confirmed_requirement 的自动发布投影；unchanged 表示管理员确认没有需要新增的知识，needs_review 表示仍需补证据或解决冲突。
 
     KnowledgeAgentSubmitCandidateRequest:
       type: object
@@ -2753,6 +2814,30 @@ components:
           items: { $ref: "#/components/schemas/KnowledgeChange" }
         no_change: { type: boolean }
         submission_id: { type: string, pattern: "^kss_" }
+        curated_submission_id: { type: string, pattern: "^kss_" }
+        publication_status: { type: string, enum: [pending, published, needs_review, unchanged] }
+        publication_feedback: { type: string }
+        published_submission_id: { type: string, pattern: "^kss_" }
+        published_item_ids:
+          type: array
+          items: { type: string, pattern: "^kb_" }
+        published_version_ids:
+          type: array
+          items: { type: string, pattern: "^kbv_" }
+        published_references:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [item_id, version_id, title, status, source_ids]
+            properties:
+              item_id: { type: string, pattern: "^kb_" }
+              version_id: { type: string, pattern: "^kbv_" }
+              title: { type: string }
+              status: { $ref: "#/components/schemas/KnowledgeStatus" }
+              source_ids:
+                type: array
+                items: { type: string, pattern: "^kbs_" }
         _accounted_run_ids:
           type: array
           items: { type: string }
@@ -2935,14 +3020,15 @@ components:
 
     AgentProfilePatch:
       type: object
+      description: 普通 Agent 可更新全部适用字段；kind=knowledge_librarian 时只允许 runtime_preference、model_override 和 expected_version，系统身份与提示词不可修改。
       properties:
-        name: { type: string }
-        role: { type: string }
-        skills: { type: array, items: { type: string } }
-        instructions: { type: string }
+        name: { type: string, description: 普通 Agent 字段；knowledge_librarian 固定身份拒绝修改。 }
+        role: { type: string, description: 普通 Agent 字段；knowledge_librarian 固定身份拒绝修改。 }
+        skills: { type: array, items: { type: string }, description: 普通 Agent 字段；knowledge_librarian 固定身份拒绝修改。 }
+        instructions: { type: string, description: 普通 Agent 字段；knowledge_librarian 固定提示词拒绝修改。 }
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
         model_override: { $ref: "#/components/schemas/ModelRef" }
-        policy: { $ref: "#/components/schemas/AgentPolicy" }
+        policy: { allOf: [{ $ref: "#/components/schemas/AgentPolicy" }], description: 普通 Agent 字段；knowledge_librarian 固定策略拒绝修改。 }
         expected_version: { type: integer }
 
     DisableOptions:
@@ -2954,7 +3040,7 @@ components:
       type: object
       properties:
         id: { type: string }
-        kind: { type: string, enum: [user, task_coordinator] }
+        kind: { type: string, enum: [user, task_coordinator, knowledge_librarian] }
         is_system: { type: boolean }
         name: { type: string }
         role: { type: string }

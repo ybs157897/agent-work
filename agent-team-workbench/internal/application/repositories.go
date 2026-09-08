@@ -156,6 +156,9 @@ type AgentRepo interface {
 	Get(ctx context.Context, id string) (*domain.AgentProfile, error)
 	List(ctx context.Context, workspaceID string) ([]*domain.AgentProfile, error)
 	Update(ctx context.Context, a *domain.AgentProfile, expectedVersion int) error
+	// UpdateSystemRuntimeModel is the only mutable surface for the built-in
+	// Knowledge Librarian system profile.
+	UpdateSystemRuntimeModel(ctx context.Context, a *domain.AgentProfile, expectedVersion int) error
 	SetPresence(ctx context.Context, id string, presence domain.AgentPresence) error
 	// ListHeartbeatEnabled 心跳自主唤醒候选（timer 唤醒生产用）。
 	ListHeartbeatEnabled(ctx context.Context) ([]*domain.AgentProfile, error)

@@ -278,11 +278,22 @@ func (s *Service) SetAgentAvailability(ctx context.Context, agentID string, enab
 }
 
 func (s *Service) Agents(ctx context.Context, workspaceID string) ([]*domain.AgentProfile, error) {
-	return s.store.Agents().List(ctx, workspaceID)
+	agents, err := s.store.Agents().List(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for i, agent := range agents {
+		agents[i] = currentKnowledgeLibrarianPresentation(agent)
+	}
+	return agents, nil
 }
 
 func (s *Service) Agent(ctx context.Context, id string) (*domain.AgentProfile, error) {
-	return s.store.Agents().Get(ctx, id)
+	agent, err := s.store.Agents().Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return currentKnowledgeLibrarianPresentation(agent), nil
 }
 
 // UpdateWorkspace 更新名称与时区；Owner/Admin（RBAC 在 M4 全量化）。
@@ -359,6 +370,38 @@ func (s *Service) UpdateAgent(ctx context.Context, agentID string, patch AgentPa
 		a, err := s.store.Agents().Get(ctx, agentID)
 		if err != nil {
 			return err
+		}
+		if a.Kind.IsKnowledgeLibrarian() {
+			if patch.Name != nil || patch.Role != nil || patch.Skills != nil ||
+				patch.Instructions != nil || patch.Policy != nil {
+				return fmt.Errorf("%w: built-in Knowledge Librarian identity, role, prompt, skills, and policy are fixed", domain.ErrStateConflict)
+			}
+			if patch.RuntimePreference == nil && patch.ModelOverride == nil {
+				updated = currentKnowledgeLibrarianPresentation(a)
+				return nil
+			}
+			if err := checkVersion(patch.ExpectedVersion, a.Version); err != nil {
+				return err
+			}
+			candidate := *a
+			if patch.RuntimePreference != nil {
+				candidate.RuntimePreference = *patch.RuntimePreference
+			}
+			if patch.ModelOverride != nil {
+				candidate.ModelOverride = *patch.ModelOverride
+			}
+			candidate.UpdatedAt = time.Now().UTC()
+			if err := s.store.Agents().UpdateSystemRuntimeModel(ctx, &candidate, a.Version); err != nil {
+				return err
+			}
+			candidate.Version = a.Version + 1
+			if err := s.emit(ctx, a.WorkspaceID, domain.EventAgentProfileUpdated,
+				domain.AggregateAgentProfile, a.ID, candidate.Version, nil,
+				map[string]any{"name": candidate.Name, "role": candidate.Role, "system_runtime_model": true}); err != nil {
+				return err
+			}
+			updated = currentKnowledgeLibrarianPresentation(&candidate)
+			return nil
 		}
 		if a.Kind.IsSystem() {
 			return fmt.Errorf("%w: system Task Coordinator profile is configured through the Coordinator API", domain.ErrStateConflict)
@@ -799,6 +842,18 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			} else if !errors.Is(stateErr, domain.ErrNotFound) {
 				return nil, stateErr
 			}
+		}
+	}
+	if recordKind == domain.RecordKindChat && p.AgentProfileID != "" {
+		agent, err := s.store.Agents().Get(ctx, p.AgentProfileID)
+		if err != nil {
+			return nil, err
+		}
+		if agent.WorkspaceID != workspaceID {
+			return nil, fmt.Errorf("%w: chat agent 不属于当前 workspace", domain.ErrValidation)
+		}
+		if agent.Kind.IsSystem() && !agent.Kind.IsKnowledgeLibrarian() {
+			return nil, fmt.Errorf("%w: Chat 不能使用系统 Task Coordinator", domain.ErrValidation)
 		}
 	}
 	now := time.Now().UTC()
@@ -1559,6 +1614,23 @@ func (s *Service) WorkItems(ctx context.Context, workspaceID string, f WorkItemF
 
 func (s *Service) WorkItem(ctx context.Context, id string) (*domain.WorkItem, error) {
 	return s.store.WorkItems().Get(ctx, id)
+}
+
+// IsKnowledgeJobWorkItem reports whether a WorkItem is an internal knowledge
+// Harness Chat record. The relation is authoritative; titles, roles, and
+// display strings are never used to classify a public conversation.
+func (s *Service) IsKnowledgeJobWorkItem(ctx context.Context, workItemID string) (bool, error) {
+	if strings.TrimSpace(workItemID) == "" {
+		return false, fmt.Errorf("%w: work_item_id required", domain.ErrValidation)
+	}
+	_, err := s.store.KnowledgeJobs().GetByWorkItem(ctx, workItemID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // WorkItemFieldPatch 普通字段修改；status 不允许任意 PATCH（走 commands）。

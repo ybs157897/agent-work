@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
@@ -113,5 +115,97 @@ func TestKnowledgeRunAPIRequiresBearerEvenInOwnerDesktop(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("demo owner bypassed Run authorization: %d", rec.Code)
 		}
+	}
+}
+
+func TestKnowledgeAgentRecordBindsIdentityToCurrentRun(t *testing.T) {
+	s := newPlanTestServer(t)
+	ws, _, worker := seedPlanHTTPEnv(t, s)
+	builtin, err := s.svc.EnsureBuiltinKnowledgeLibrarian(context.Background(), ws)
+	if err != nil {
+		t.Fatalf("ensure builtin librarian: %v", err)
+	}
+	if _, err := s.svc.UpdateAgent(context.Background(), builtin.ID, application.AgentPatch{
+		RuntimePreference: &domain.RuntimePreference{Preferred: "mock"}, ExpectedVersion: builtin.Version,
+	}); err != nil {
+		t.Fatalf("configure builtin runtime: %v", err)
+	}
+	configuredBuiltin, err := s.svc.Agent(context.Background(), builtin.ID)
+	if err != nil {
+		t.Fatalf("read configured builtin runtime: %v", err)
+	}
+	if configuredBuiltin.RuntimePreference.Preferred != "mock" {
+		t.Fatalf("builtin runtime preference was not persisted: %+v", configuredBuiltin.RuntimePreference)
+	}
+	if _, err := s.svc.ConfigureKnowledgeLibrarian(context.Background(), ws, domain.KnowledgeLibrarianConfig{
+		LibrarianAgentID: builtin.ID, Enabled: true, Version: 0,
+	}); err != nil {
+		t.Fatalf("configure librarian: %v", err)
+	}
+	s.svc.KnowledgeEndpoint = "http://127.0.0.1"
+	s.svc.KnowledgeCLIPath = "/tmp/atw-knowledge"
+	s.svc.KnowledgeAccessDir = t.TempDir()
+	wi, err := s.svc.CreateWorkItem(context.Background(), ws, application.CreateWorkItemParams{Title: "Agent knowledge record", AgentProfileID: worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.svc.CreateRun(context.Background(), wi.ID, application.CreateRunParams{AgentProfileID: worker, Instruction: "record confirmed requirement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, ok := run.Input["knowledge_access"].(map[string]any)
+	if !ok {
+		t.Fatalf("ordinary Run did not receive knowledge capability: %+v", run.Input)
+	}
+	accessPath, _ := access["access_file"].(string)
+	raw, err := os.ReadFile(accessPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capability struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &capability); err != nil || capability.Token == "" {
+		t.Fatalf("invalid Run capability: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/knowledge-agent/runs/"+run.ID+"/records",
+		strings.NewReader(`{"content":"用户已确认退款必须附订单号。","title":"退款约定","publish_intent":"confirmed_requirement","client_key":"record-1"}`))
+	request.Header.Set("Authorization", "Bearer "+capability.Token)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	s.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("record status = %d: %s", response.Code, response.Body.String())
+	}
+	var result application.KnowledgeAgentRecordResult
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Submission == nil || result.Job == nil {
+		t.Fatalf("record response missing submission/job: err=%v body=%s", err, response.Body.String())
+	}
+	if result.Submission.AgentID != worker || result.Submission.Request.AgentID != worker || result.Submission.Request.RunID != run.ID || result.Submission.Request.WorkItemID != wi.ID {
+		t.Fatalf("record did not bind source identity to current Run: %+v", result.Submission)
+	}
+	source := result.Submission.Request.Changes[0].Sources[0]
+	if source.Kind != domain.KnowledgeSourceAgent || source.Ref != worker || source.Metadata["origin_agent_id"] != worker || source.Metadata["origin_run_id"] != run.ID || source.Metadata["record_intent"] != application.KnowledgeRecordPublishIntentConfirmedRequirement {
+		t.Fatalf("record source provenance is not Run-bound: %+v", source)
+	}
+	jobRequest := httptest.NewRequest(http.MethodGet, "/api/v1/knowledge-agent/runs/"+run.ID+"/jobs/"+result.Job.ID, nil)
+	jobRequest.Header.Set("Authorization", "Bearer "+capability.Token)
+	jobResponse := httptest.NewRecorder()
+	s.Routes().ServeHTTP(jobResponse, jobRequest)
+	if jobResponse.Code != http.StatusOK {
+		t.Fatalf("record Job cannot be read by its originating active Run: %d %s", jobResponse.Code, jobResponse.Body.String())
+	}
+
+	// Identity fields are not part of the raw record contract. The strict
+	// decoder rejects attempts to let a model or UI choose another Agent/user.
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/knowledge-agent/runs/"+run.ID+"/records",
+		strings.NewReader(`{"content":"forged","agent_id":"agent_other","user_id":"user_other","client_key":"record-forged"}`))
+	request.Header.Set("Authorization", "Bearer "+capability.Token)
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	s.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("forged identity fields returned %d: %s", response.Code, response.Body.String())
 	}
 }

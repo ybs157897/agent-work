@@ -26,7 +26,7 @@ type KnowledgeJobRepo interface {
 	// needs a forwarded cancel after a transient control-plane failure.
 	ListCancellationPending(ctx context.Context, workspaceID string, limit int) ([]*domain.KnowledgeJob, error)
 	// ListForRequester applies the requester predicate before LIMIT.  The
-	// ordinary List method's agentProfileID is the librarian executor and is
+	// ordinary List method's agentProfileID is the built-in librarian executor and is
 	// therefore unsuitable for caller-scoped job history.
 	ListForRequester(ctx context.Context, workspaceID, requestingAgentID string, status domain.KnowledgeJobStatus, limit int) ([]*domain.KnowledgeJob, error)
 	// Update is the only mutable job write.  Callers must pass the version read

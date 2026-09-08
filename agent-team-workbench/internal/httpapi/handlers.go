@@ -235,6 +235,13 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
+	if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), wi.ID); err != nil {
+		fail(w, r, err)
+		return
+	} else if internal {
+		fail(w, r, domain.ErrNotFound)
+		return
+	}
 	dto := s.enrichWorkItem(r, wi)
 	// 台账摘要只在详情响应携带（S2）：enrichWorkItem 被列表路径共用，
 	// 4KB 级摘要不得进列表/bootstrap 载荷。
@@ -451,6 +458,11 @@ func (s *Server) handleAcceptWorkItem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	wiID := r.PathValue("work_item_id")
 	s.idempotent(w, r, wiID, func() (int, []byte) {
+		if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), wiID); err != nil {
+			return problemBytes(err)
+		} else if internal {
+			return problemBytes(domain.ErrNotFound)
+		}
 		var req createRunRequest
 		if err := decodeBody(r, &req); err != nil {
 			return renderProblem(http.StatusBadRequest, "bad_request", "Invalid request body", err.Error())
@@ -528,7 +540,15 @@ func (s *Server) handleGetRunJournal(w http.ResponseWriter, r *http.Request) {
 
 // handleListWorkItemRuns 列出一个任务的全部 Run（对话轮次历史）。
 func (s *Server) handleListWorkItemRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.svc.RunsByWorkItem(r.Context(), r.PathValue("work_item_id"))
+	workItemID := r.PathValue("work_item_id")
+	if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), workItemID); err != nil {
+		fail(w, r, err)
+		return
+	} else if internal {
+		fail(w, r, domain.ErrNotFound)
+		return
+	}
+	runs, err := s.svc.RunsByWorkItem(r.Context(), workItemID)
 	if err != nil {
 		fail(w, r, err)
 		return
@@ -568,8 +588,9 @@ func (s *Server) handleListWorkItemDispatches(w http.ResponseWriter, r *http.Req
 	for _, a := range agentList {
 		agentNames[a.ID] = a.Name
 	}
-	// AgentRepo.List intentionally hides system identities from Chat and normal
-	// Agent management. Task dispatch cards still need the protected
+	// AgentRepo.List exposes the conversational librarian but hides the
+	// task-only system Coordinator from Chat and normal Agent management. Task
+	// dispatch cards still need the protected
 	// Coordinator's display name for an intelligible execution timeline.
 	if config, configErr := s.store.TaskCoordinators().GetConfig(ctx, wi.WorkspaceID); configErr == nil {
 		if coordinator, coordinatorErr := s.store.Agents().Get(ctx, config.AgentProfileID); coordinatorErr == nil {

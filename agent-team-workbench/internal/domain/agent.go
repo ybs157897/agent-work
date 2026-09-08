@@ -21,21 +21,49 @@ const (
 )
 
 // AgentProfileKind distinguishes ordinary, user-managed agents from the
-// system-owned Task Coordinator. System profiles are persisted so a task can
-// refer to a stable execution identity, but they are not part of the ordinary
-// agent roster and their instructions are immutable.
+// protected system identities. The Task Coordinator is task-control-only;
+// the Knowledge Librarian is also a first-class conversational Agent. System
+// profiles are persisted so runs can refer to stable execution identities,
+// while their instructions remain immutable.
 type AgentProfileKind string
 
 const (
-	AgentProfileKindUser            AgentProfileKind = "user"
-	AgentProfileKindTaskCoordinator AgentProfileKind = "task_coordinator"
+	AgentProfileKindUser               AgentProfileKind = "user"
+	AgentProfileKindTaskCoordinator    AgentProfileKind = "task_coordinator"
+	AgentProfileKindKnowledgeLibrarian AgentProfileKind = "knowledge_librarian"
 )
 
 func (k AgentProfileKind) Valid() bool {
-	return k == "" || k == AgentProfileKindUser || k == AgentProfileKindTaskCoordinator
+	return k == "" || k == AgentProfileKindUser || k == AgentProfileKindTaskCoordinator ||
+		k == AgentProfileKindKnowledgeLibrarian
 }
 
-func (k AgentProfileKind) IsSystem() bool { return k == AgentProfileKindTaskCoordinator }
+func (k AgentProfileKind) IsSystem() bool {
+	return k == AgentProfileKindTaskCoordinator || k == AgentProfileKindKnowledgeLibrarian
+}
+
+func (k AgentProfileKind) IsTaskCoordinator() bool { return k == AgentProfileKindTaskCoordinator }
+
+func (k AgentProfileKind) IsKnowledgeLibrarian() bool {
+	return k == AgentProfileKindKnowledgeLibrarian
+}
+
+const (
+	KnowledgeLibrarianAgentIDPrefix     = "agent_knowledge_librarian_"
+	KnowledgeLibrarianChatPromptVersion = "knowledge-librarian-chat/v1"
+	KnowledgeLibrarianDisplayName       = "知识库管理员"
+	KnowledgeLibrarianRole              = "knowledge_librarian"
+)
+
+// KnowledgeLibrarianAgentID is the deterministic workspace-scoped identity
+// of the built-in librarian. It is not derived from a user-visible role or
+// display name, so legacy ordinary Agents remain independent identities.
+func KnowledgeLibrarianAgentID(workspaceID string) string {
+	if workspaceID == "" {
+		return ""
+	}
+	return KnowledgeLibrarianAgentIDPrefix + workspaceID
+}
 
 // RuntimePreference：每次 Run 可选 preferred/fallback Runtime，角色与 Runtime 解耦。
 type RuntimePreference struct {
@@ -72,9 +100,9 @@ type ModelRef struct {
 type AgentProfile struct {
 	ID          string
 	WorkspaceID string
-	// Kind is user for normal editable agents and task_coordinator for the
-	// protected system coordinator profile. Empty means user for in-memory
-	// objects created before the discriminator was introduced.
+	// Kind is user for normal editable agents, task_coordinator for the protected
+	// task control line, and knowledge_librarian for the protected conversational
+	// librarian. Empty means user for pre-discriminator in-memory objects.
 	Kind                 AgentProfileKind
 	Slug                 string // 配置目录名；空表示尚未关联文件
 	Name                 string

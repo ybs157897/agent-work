@@ -22,9 +22,9 @@ const (
 )
 
 // StartKnowledgeInquiryParams is the trusted application input for a caller
-// asking the librarian to investigate a question.  RequestingAgentID belongs
+// asking the librarian to investigate a question. RequestingAgentID belongs
 // to the caller; AgentProfileID is resolved from the Workspace config and is
-// the ordinary Agent that executes the librarian Run.
+// the built-in Agent that executes the librarian Run.
 type StartKnowledgeInquiryParams struct {
 	WorkspaceID       string
 	RequestingAgentID string
@@ -39,11 +39,15 @@ type StartKnowledgeInquiryParams struct {
 type StartKnowledgeCurationParams struct {
 	WorkspaceID       string
 	RequestingAgentID string
-	SourceRunID       string
-	SubmissionID      string
-	Context           string
-	ClientKey         string
-	Budget            domain.KnowledgeJobBudget
+	// RequesterAgentID is the original Agent's read/result scope for an
+	// Agent-bound record. The configured librarian remains the executor and
+	// authorization actor; leaving this empty preserves management curation.
+	RequesterAgentID string
+	SourceRunID      string
+	SubmissionID     string
+	Context          string
+	ClientKey        string
+	Budget           domain.KnowledgeJobBudget
 }
 
 type knowledgeEvidenceSeed struct {
@@ -53,23 +57,77 @@ type knowledgeEvidenceSeed struct {
 	Source      domain.KnowledgeSourceInput `json:"source"`
 }
 
-// GetKnowledgeLibrarianConfig returns an explicit persisted config.  A
-// workspace without a row has the safe disabled/version-zero projection so a
-// PATCH can create it with expected_version=0.
+// GetKnowledgeLibrarianConfig returns the persisted config. The built-in
+// librarian is provisioned lazily as a safety net for embedded callers, then
+// any legacy ordinary-Agent target is CAS-repointed to that identity. Runtime
+// paths therefore have one librarian identity even when startup provisioning
+// was skipped.
 func (s *Service) GetKnowledgeLibrarianConfig(ctx context.Context, workspaceID string) (*domain.KnowledgeLibrarianConfig, error) {
 	if strings.TrimSpace(workspaceID) == "" {
 		return nil, fmt.Errorf("%w: workspace_id required", domain.ErrValidation)
 	}
-	cfg, err := s.store.KnowledgeJobs().GetConfig(ctx, workspaceID)
-	if errors.Is(err, domain.ErrNotFound) {
-		return &domain.KnowledgeLibrarianConfig{WorkspaceID: workspaceID}, nil
-	}
+	librarian, ok, err := s.builtinKnowledgeLibrarian(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	// Configuration reads remain repairable: a stale/deleted/disabled Agent
-	// must not hide the persisted version needed to replace it. Authorization
-	// paths call validateKnowledgeLibrarianConfig(requireEnabled=true).
+	if !ok {
+		librarian, err = s.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return s.ensureBuiltinKnowledgeConfig(ctx, workspaceID, librarian.ID)
+}
+
+func (s *Service) builtinKnowledgeLibrarian(ctx context.Context, workspaceID string) (*domain.AgentProfile, bool, error) {
+	id := domain.KnowledgeLibrarianAgentID(strings.TrimSpace(workspaceID))
+	librarian, err := s.store.Agents().Get(ctx, id)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if librarian.WorkspaceID != workspaceID || !librarian.Kind.IsKnowledgeLibrarian() {
+		return nil, false, fmt.Errorf("%w: built-in knowledge librarian identity conflict", domain.ErrStateConflict)
+	}
+	return librarian, true, nil
+}
+
+// ensureBuiltinKnowledgeConfig makes the provisioned librarian the sole
+// configuration target. A missing row gets the enabled default; an old row is
+// repointed with its existing enabled/auto_collect policy and a CAS bump.
+func (s *Service) ensureBuiltinKnowledgeConfig(ctx context.Context, workspaceID, librarianID string) (*domain.KnowledgeLibrarianConfig, error) {
+	var cfg *domain.KnowledgeLibrarianConfig
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		current, err := s.store.KnowledgeJobs().GetConfig(ctx, workspaceID)
+		if errors.Is(err, domain.ErrNotFound) {
+			now := time.Now().UTC()
+			cfg = &domain.KnowledgeLibrarianConfig{
+				WorkspaceID: workspaceID, LibrarianAgentID: librarianID,
+				Enabled: true, Version: 1, CreatedAt: now, UpdatedAt: now,
+			}
+			return s.store.KnowledgeJobs().CreateConfig(ctx, cfg)
+		}
+		if err != nil {
+			return err
+		}
+		if current.LibrarianAgentID == librarianID {
+			cfg = current
+			return nil
+		}
+		updated := *current
+		updated.LibrarianAgentID = librarianID
+		updated.UpdatedAt = time.Now().UTC()
+		if err := s.store.KnowledgeJobs().UpdateConfig(ctx, &updated, current.Version); err != nil {
+			return err
+		}
+		cfg = &updated
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -77,7 +135,7 @@ func (s *Service) GetKnowledgeLibrarianConfig(ctx context.Context, workspaceID s
 // names a deleted, cross-workspace, system, or disabled Agent must never grant
 // management/query authority merely because its ID equals the caller's ID.
 // Disabled configurations can still be read for settings display; an enabled
-// configuration always requires a live ordinary Agent.
+// configuration always requires the live built-in Knowledge Librarian Agent.
 func (s *Service) validateKnowledgeLibrarianConfig(ctx context.Context, cfg *domain.KnowledgeLibrarianConfig, requireEnabled bool) error {
 	if cfg == nil {
 		return fmt.Errorf("%w: knowledge librarian config required", domain.ErrValidation)
@@ -95,7 +153,7 @@ func (s *Service) validateKnowledgeLibrarianConfig(ctx context.Context, cfg *dom
 	if err != nil {
 		return fmt.Errorf("%w: configured knowledge librarian agent unavailable: %v", domain.ErrCapabilityMissing, err)
 	}
-	if agent.WorkspaceID != cfg.WorkspaceID || agent.Kind.IsSystem() {
+	if agent.WorkspaceID != cfg.WorkspaceID || (agent.Kind.IsSystem() && !agent.Kind.IsKnowledgeLibrarian()) {
 		return fmt.Errorf("%w: configured knowledge librarian agent is outside workspace", domain.ErrCapabilityMissing)
 	}
 	if requireEnabled && agent.Availability != domain.AgentEnabled {
@@ -115,6 +173,13 @@ func (s *Service) ConfigureKnowledgeLibrarian(ctx context.Context, workspaceID s
 		return nil, fmt.Errorf("%w: workspace_id required", domain.ErrValidation)
 	}
 	cfg.WorkspaceID = workspaceID
+	librarian, err := s.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	// The built-in identity is provisioned by the system; a client supplied
+	// ordinary Agent ID is never allowed to remain the workspace target.
+	cfg.LibrarianAgentID = librarian.ID
 	if cfg.Version < 0 {
 		return nil, fmt.Errorf("%w: config version must be non-negative", domain.ErrValidation)
 	}
@@ -123,8 +188,8 @@ func (s *Service) ConfigureKnowledgeLibrarian(ctx context.Context, workspaceID s
 		if err != nil {
 			return nil, err
 		}
-		if agent.WorkspaceID != workspaceID || agent.Kind.IsSystem() {
-			return nil, fmt.Errorf("%w: librarian agent must be an ordinary agent in this workspace", domain.ErrValidation)
+		if agent.WorkspaceID != workspaceID || !agent.Kind.IsKnowledgeLibrarian() {
+			return nil, fmt.Errorf("%w: librarian agent must be the built-in Knowledge Librarian in this workspace", domain.ErrValidation)
 		}
 	}
 	if err := cfg.Validate(); err != nil {
@@ -135,7 +200,7 @@ func (s *Service) ConfigureKnowledgeLibrarian(ctx context.Context, workspaceID s
 			return nil, err
 		}
 	}
-	err := s.store.InTx(ctx, func(ctx context.Context) error {
+	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		current, getErr := s.store.KnowledgeJobs().GetConfig(ctx, workspaceID)
 		if errors.Is(getErr, domain.ErrNotFound) {
 			if cfg.Version != 0 {
@@ -222,10 +287,29 @@ func (s *Service) StartKnowledgeCuration(ctx context.Context, p StartKnowledgeCu
 		return nil, err
 	}
 	if submission.Status == domain.KnowledgeSubmissionMerged || submission.Status == domain.KnowledgeSubmissionRejected {
+		lookupRequester := p.RequestingAgentID
+		if p.RequesterAgentID != "" {
+			lookupRequester = p.RequesterAgentID
+		}
+		if existing, getErr := s.store.KnowledgeJobs().GetByClientKey(ctx, p.WorkspaceID, lookupRequester, knowledgeCurationClientKey(submission.ID)); getErr == nil {
+			return existing, nil
+		} else if !errors.Is(getErr, domain.ErrNotFound) {
+			return nil, getErr
+		}
 		return nil, fmt.Errorf("%w: submission %s is already %s", domain.ErrStateConflict, submission.ID, submission.Status)
 	}
 	if err := submission.Validate(); err != nil {
 		return nil, err
+	}
+	requesterAgentID := p.RequestingAgentID
+	if p.RequesterAgentID != "" {
+		if err := s.validateKnowledgeRequester(ctx, p.WorkspaceID, p.RequesterAgentID); err != nil {
+			return nil, err
+		}
+		if submission.AgentID != p.RequesterAgentID {
+			return nil, fmt.Errorf("%w: curation requester must match source submission Agent", domain.ErrValidation)
+		}
+		requesterAgentID = p.RequesterAgentID
 	}
 	candidate := mustKnowledgeJSON(submission.Request)
 	contextText := strings.TrimSpace(p.Context)
@@ -238,7 +322,7 @@ func (s *Service) StartKnowledgeCuration(ctx context.Context, p StartKnowledgeCu
 		contextText += "\n\n已提交来源证据（仅代表原提交提供的摘录，不代表管理员已核验外部事实）：\n" + truncateKnowledgeRunes(mustKnowledgeJSON(seeds), 64000)
 	}
 	return s.startKnowledgeJob(ctx, knowledgeJobStart{
-		WorkspaceID: p.WorkspaceID, RequestingAgentID: p.RequestingAgentID,
+		WorkspaceID: p.WorkspaceID, RequestingAgentID: requesterAgentID,
 		SourceRunID: p.SourceRunID, SubmissionID: submission.ID,
 		AgentProfileID: cfg.LibrarianAgentID, Mode: domain.KnowledgeJobCuration,
 		Question: "核实并整理知识提交 " + submission.ID, Context: contextText,
@@ -633,7 +717,7 @@ func (s *Service) SubmitKnowledgeCandidate(ctx context.Context, req domain.Knowl
 	if err != nil {
 		return nil, err
 	}
-	if agent.WorkspaceID != req.WorkspaceID || agent.Kind.IsSystem() {
+	if agent.WorkspaceID != req.WorkspaceID || (agent.Kind.IsSystem() && !agent.Kind.IsKnowledgeLibrarian()) {
 		return nil, fmt.Errorf("%w: candidate Agent does not belong to workspace", domain.ErrValidation)
 	}
 	if req.RunID != "" {
@@ -697,7 +781,7 @@ func (s *Service) normalizeKnowledgeCandidate(ctx context.Context, req *domain.K
 			if err != nil {
 				return err
 			}
-			if owner.WorkspaceID != req.WorkspaceID || owner.Kind.IsSystem() {
+			if owner.WorkspaceID != req.WorkspaceID || (owner.Kind.IsSystem() && !owner.Kind.IsKnowledgeLibrarian()) {
 				return fmt.Errorf("%w: candidate change %d owner is outside workspace", domain.ErrValidation, i)
 			}
 		}

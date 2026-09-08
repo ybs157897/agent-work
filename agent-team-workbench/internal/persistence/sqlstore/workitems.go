@@ -139,6 +139,13 @@ func (r *WorkItemRepo) List(ctx context.Context, workspaceID string, f applicati
 		}
 		args = append(args, f.RecordKind)
 		where = append(where, "record_kind=?")
+		if f.RecordKind == domain.RecordKindChat {
+			// Knowledge inquiry/curation Runs use Chat WorkItems internally,
+			// but those records are not user conversations. Exclude them before
+			// LIMIT/cursor pagination so a busy knowledge inbox cannot starve
+			// public Chat history.
+			where = append(where, "NOT EXISTS (SELECT 1 FROM knowledge_jobs kj WHERE kj.work_item_id=work_items.id)")
+		}
 	}
 	if f.ParentID != "" {
 		if f.ParentID == "none" {

@@ -116,7 +116,11 @@ func (r *AgentRepo) Create(ctx context.Context, a *domain.AgentProfile) error {
 	if kind.IsSystem() {
 		a.InstructionsEditable = false
 		if a.PromptVersion == "" {
-			a.PromptVersion = domain.TaskCoordinatorPromptVersion
+			if kind == domain.AgentProfileKindKnowledgeLibrarian {
+				a.PromptVersion = domain.KnowledgeLibrarianChatPromptVersion
+			} else {
+				a.PromptVersion = domain.TaskCoordinatorPromptVersion
+			}
 		}
 	} else {
 		a.InstructionsEditable = true
@@ -143,8 +147,9 @@ func (r *AgentRepo) Get(ctx context.Context, id string) (*domain.AgentProfile, e
 
 func (r *AgentRepo) List(ctx context.Context, workspaceID string) ([]*domain.AgentProfile, error) {
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
-		`SELECT `+agentCols+` FROM agent_profiles WHERE workspace_id=? AND kind=? ORDER BY created_at`,
-		workspaceID, domain.AgentProfileKindUser)
+		`SELECT `+agentCols+` FROM agent_profiles
+		 WHERE workspace_id=? AND kind IN (?,?) ORDER BY created_at`,
+		workspaceID, domain.AgentProfileKindUser, domain.AgentProfileKindKnowledgeLibrarian)
 	if err != nil {
 		return nil, err
 	}
@@ -183,6 +188,35 @@ func (r *AgentRepo) Update(ctx context.Context, a *domain.AgentProfile, expected
 		a.HeartbeatEnabled, a.HeartbeatIntervalSec, a.WakeOnAssignment, a.WakeOnDemand,
 		a.WakeOnAutomation, a.PromptTemplate,
 		timeParam(a.UpdatedAt), a.ID, expectedVersion)
+	if err != nil {
+		return r.store.mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.ErrVersionConflict
+	}
+	return nil
+}
+
+// UpdateSystemRuntimeModel is the narrow mutable surface for the built-in
+// Knowledge Librarian. Identity, prompt, policy, and presentation fields are
+// protected by the application and SQLite triggers; only runtime/model
+// preferences may change through this method.
+func (r *AgentRepo) UpdateSystemRuntimeModel(ctx context.Context, a *domain.AgentProfile, expectedVersion int) error {
+	if a == nil || a.Kind != domain.AgentProfileKindKnowledgeLibrarian {
+		return fmt.Errorf("%w: only the Knowledge Librarian system profile may update runtime/model", domain.ErrValidation)
+	}
+	var kind string
+	if err := r.store.queryRow(ctx, r.store.exec(ctx), `SELECT kind FROM agent_profiles WHERE id=?`, a.ID).Scan(&kind); err != nil {
+		return r.store.mapErr(err)
+	}
+	if domain.AgentProfileKind(kind) != domain.AgentProfileKindKnowledgeLibrarian {
+		return fmt.Errorf("%w: system profile identity mismatch", domain.ErrValidation)
+	}
+	res, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE agent_profiles SET runtime_preference=?, model_override=?, version=version+1, updated_at=?
+		 WHERE id=? AND kind=? AND version=?`,
+		jsonText(a.RuntimePreference), jsonText(a.ModelOverride), timeParam(a.UpdatedAt), a.ID,
+		domain.AgentProfileKindKnowledgeLibrarian, expectedVersion)
 	if err != nil {
 		return r.store.mapErr(err)
 	}

@@ -289,3 +289,22 @@ func TestEffectiveModelReasoningEffort(t *testing.T) {
 		t.Fatalf("reasoning effort = %q", spec.ReasoningEffort)
 	}
 }
+
+func TestConfigDigestTracksKnowledgeToolContractButNotRunCredentials(t *testing.T) {
+	input := map[string]any{"system_prompt": "product"}
+	withoutTool := ConfigDigest(input)
+	access := map[string]any{"transport": "codex_dynamic", "tool_schema": "atw_knowledge/v1", "access_file": "/run-one.json", "token_digest": "first"}
+	input["knowledge_access"] = access
+	withTool := ConfigDigest(input)
+	if withTool == withoutTool {
+		t.Fatal("old sessions without native tools must rotate when knowledge tools are enabled")
+	}
+	access["access_file"], access["token_digest"] = "/run-two.json", "second"
+	if ConfigDigest(input) != withTool {
+		t.Fatal("per-Run credentials must not rotate the conversation")
+	}
+	access["tool_schema"] = "atw_knowledge/v2"
+	if ConfigDigest(input) == withTool {
+		t.Fatal("a changed native tool contract must rotate persisted provider tools")
+	}
+}

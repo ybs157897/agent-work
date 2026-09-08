@@ -46,6 +46,9 @@ func TestKnowledgeRunCapabilityCannotBeForgedOrUsedAfterCompletion(t *testing.T)
 	if !strings.Contains(instruction, "--access-file") {
 		t.Fatalf("instruction missing access-file bridge: %s", instruction)
 	}
+	if !strings.Contains(instruction, "record '自然语言") || strings.Contains(instruction, "changes 或 no_change") {
+		t.Fatalf("instruction must guide natural-language record intake through the librarian: %s", instruction)
+	}
 	access := run.Input["knowledge_access"].(map[string]any)
 	accessPath, _ := access["access_file"].(string)
 	if accessPath == "" || !strings.Contains(instruction, accessPath) {
@@ -191,5 +194,25 @@ func TestKnowledgeAccessRejectsPathTraversalRunID(t *testing.T) {
 	run := &domain.ExecutionRun{ID: "../escape", Input: map[string]any{"instruction": "task"}}
 	if err := svc.AttachKnowledgeRunAccess(run, domain.LocalHostID); !errors.Is(err, domain.ErrValidation) {
 		t.Fatalf("path traversal Run ID error = %v", err)
+	}
+}
+
+func TestCodexKnowledgeAccessUsesNativeToolWithoutShellOrCredentialPath(t *testing.T) {
+	run := &domain.ExecutionRun{ID: "run_native", AdapterID: "codex-appserver", Input: map[string]any{"instruction": "确认并保存需求"}}
+	svc := NewService(nil, nil, nil, nil)
+	svc.KnowledgeEndpoint = "http://127.0.0.1:12345"
+	svc.KnowledgeAccessDir = t.TempDir()
+	if err := svc.AttachKnowledgeRunAccess(run, domain.LocalHostID); err != nil {
+		t.Fatal(err)
+	}
+	access := run.Input["knowledge_access"].(map[string]any)
+	instruction := run.Input["instruction"].(string)
+	if access["transport"] != "codex_dynamic" || !strings.Contains(instruction, "atw_knowledge") || !strings.Contains(instruction, "action=record") {
+		t.Fatalf("Codex knowledge capability did not select native transport: %v", access)
+	}
+	for _, forbidden := range []string{"--access-file", access["access_file"].(string)} {
+		if strings.Contains(instruction, forbidden) {
+			t.Fatal("Codex instruction exposed a shell capability instead of native knowledge access")
+		}
 	}
 }

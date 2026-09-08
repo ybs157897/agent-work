@@ -68,6 +68,54 @@ func TestWorkItemRecordKindPersistenceAndFilter(t *testing.T) {
 	}
 }
 
+func TestWorkItemChatListExcludesKnowledgeJobRecordsBeforePagination(t *testing.T) {
+	ctx := context.Background()
+	db := openWakeupTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	seedWorkspace(t, db)
+	now := time.Now().UTC()
+	agent := &domain.AgentProfile{
+		ID: "agent_knowledge_executor", WorkspaceID: "ws_wk", Name: "executor", Role: "worker",
+		Availability: domain.AgentEnabled, Presence: domain.PresenceIdle,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.Agents().Create(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	chat := &domain.WorkItem{
+		ID: "wi_public_chat", WorkspaceID: "ws_wk", RecordKind: domain.RecordKindChat,
+		Title: "用户会话", Status: domain.WorkItemTodo, Priority: domain.PriorityMedium,
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	internal := &domain.WorkItem{
+		ID: "wi_knowledge_chat", WorkspaceID: "ws_wk", RecordKind: domain.RecordKindChat,
+		Title: "内部知识整理", Status: domain.WorkItemTodo, Priority: domain.PriorityMedium,
+		Version: 1, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+	}
+	for _, item := range []*domain.WorkItem{chat, internal} {
+		if err := store.WorkItems().Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.KnowledgeJobs().Create(ctx, &domain.KnowledgeJob{
+		WorkspaceID: "ws_wk", RequestingAgentID: "human:shared", AgentProfileID: agent.ID,
+		WorkItemID: internal.ID, Mode: domain.KnowledgeJobInquiry, Status: domain.KnowledgeJobQueued,
+		Question: "internal", ClientKey: "internal-chat",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := store.WorkItems().List(ctx, "ws_wk", application.WorkItemFilter{
+		RecordKind: domain.RecordKindChat, Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != chat.ID {
+		t.Fatalf("chat list must exclude knowledge job records before LIMIT: %+v", items)
+	}
+}
+
 func TestWorkItemTouchUpdatedAtDoesNotMutateTaskState(t *testing.T) {
 	ctx := context.Background()
 	db := openWakeupTestDB(t)

@@ -245,48 +245,80 @@ func (s *Service) knowledgePreparedVersion(ctx context.Context, submission *doma
 func (s *Service) PublishKnowledgeSubmission(ctx context.Context, workspaceID, actorAgentID, submissionID string) (*domain.KnowledgeSubmission, error) {
 	var out *domain.KnowledgeSubmission
 	err := s.store.InTx(ctx, func(ctx context.Context) error {
-		sub, err := s.GetKnowledgeSubmission(ctx, workspaceID, actorAgentID, submissionID)
+		var err error
+		out, err = s.publishKnowledgeSubmissionLocked(ctx, workspaceID, actorAgentID, submissionID,
+			map[string]any{"kind": "user", "id": "user_demo", "knowledge_owner_agent_id": actorAgentID})
+		return err
+	})
+	if err == nil && s.notifier != nil {
+		s.notifier.Notify(workspaceID)
+	}
+	return out, err
+}
+
+// publishKnowledgeSubmissionLocked is shared by explicit management publish
+// and the narrow Agent-confirmed requirement path. The caller owns the
+// transaction; all version, evidence, ownership and manager authorization
+// checks remain exactly the same for both paths.
+func (s *Service) publishKnowledgeSubmissionLocked(ctx context.Context, workspaceID, actorAgentID, submissionID string, auditActor map[string]any) (*domain.KnowledgeSubmission, error) {
+	sub, err := s.GetKnowledgeSubmission(ctx, workspaceID, actorAgentID, submissionID)
+	if err != nil {
+		return nil, err
+	}
+	if actorAgentID != sub.AgentID {
+		if _, err = s.knowledgeManager(ctx, workspaceID, actorAgentID); err != nil {
+			return nil, err
+		}
+	}
+	if sub.Status == domain.KnowledgeSubmissionAccepted || sub.Status == domain.KnowledgeSubmissionMerged {
+		return sub, nil
+	}
+	if sub.Status != domain.KnowledgeSubmissionNeedsReview || len(sub.ResultVersionIDs) == 0 || len(sub.ResultVersionIDs) != len(sub.ResultItemIDs) {
+		return nil, fmt.Errorf("%w: submission must be curated with evidence before publication", domain.ErrStateConflict)
+	}
+	for n, id := range sub.ResultVersionIDs {
+		version, owner, err := s.knowledgePreparedVersion(ctx, sub, id)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if actorAgentID != sub.AgentID {
-			if _, err = s.knowledgeManager(ctx, workspaceID, actorAgentID); err != nil {
-				return err
-			}
+		if version.ItemID != sub.ResultItemIDs[n] {
+			return nil, fmt.Errorf("%w: prepared publication item mismatch", domain.ErrValidation)
 		}
-		if sub.Status == domain.KnowledgeSubmissionAccepted || sub.Status == domain.KnowledgeSubmissionMerged {
-			out = sub
-			return nil
+		sources, err := s.store.Knowledge().ListVersionSources(ctx, workspaceID, owner, id)
+		if err != nil {
+			return nil, err
 		}
-		if sub.Status != domain.KnowledgeSubmissionNeedsReview || len(sub.ResultVersionIDs) == 0 || len(sub.ResultVersionIDs) != len(sub.ResultItemIDs) {
-			return fmt.Errorf("%w: submission must be curated with evidence before publication", domain.ErrStateConflict)
+		if len(sources) == 0 {
+			return nil, fmt.Errorf("%w: publication has no source evidence", domain.ErrValidation)
 		}
-		for n, id := range sub.ResultVersionIDs {
-			version, owner, err := s.knowledgePreparedVersion(ctx, sub, id)
-			if err != nil {
-				return err
-			}
-			if version.ItemID != sub.ResultItemIDs[n] {
-				return fmt.Errorf("%w: prepared publication item mismatch", domain.ErrValidation)
-			}
-			sources, err := s.store.Knowledge().ListVersionSources(ctx, workspaceID, owner, id)
-			if err != nil {
-				return err
-			}
-			if len(sources) == 0 {
-				return fmt.Errorf("%w: publication has no source evidence", domain.ErrValidation)
-			}
-			if err = s.store.Knowledge().PublishVersion(ctx, version.ItemID, id, version.BaseVersion, time.Now().UTC()); err != nil {
-				return err
-			}
+		if err = s.store.Knowledge().PublishVersion(ctx, version.ItemID, id, version.BaseVersion, time.Now().UTC()); err != nil {
+			return nil, err
 		}
-		if err = s.store.Knowledge().UpdateSubmissionStatus(ctx, sub.ID, domain.KnowledgeSubmissionAccepted, sub.ResultItemIDs, sub.ResultVersionIDs, "", sub.Version); err != nil {
-			return err
-		}
-		if err = s.store.Audit().Append(ctx, workspaceID, map[string]any{"kind": "user", "id": "user_demo", "knowledge_owner_agent_id": actorAgentID}, "knowledge.publish", submissionID, map[string]any{"version_ids": sub.ResultVersionIDs}); err != nil {
-			return err
-		}
-		out, err = s.store.Knowledge().GetSubmission(ctx, workspaceID, sub.AgentID, sub.ID)
+	}
+	if err = s.store.Knowledge().UpdateSubmissionStatus(ctx, sub.ID, domain.KnowledgeSubmissionAccepted, sub.ResultItemIDs, sub.ResultVersionIDs, "", sub.Version); err != nil {
+		return nil, err
+	}
+	if auditActor == nil {
+		auditActor = map[string]any{"kind": "user", "id": "user_demo", "knowledge_owner_agent_id": actorAgentID}
+	}
+	if err = s.store.Audit().Append(ctx, workspaceID, auditActor, "knowledge.publish", submissionID, map[string]any{"version_ids": sub.ResultVersionIDs}); err != nil {
+		return nil, err
+	}
+	return s.store.Knowledge().GetSubmission(ctx, workspaceID, sub.AgentID, sub.ID)
+}
+
+// publishKnowledgeSubmissionForAgent is the only automatic publication entry
+// point. Its audit identity is the original Agent/Run, while the configured
+// librarian remains the manager that executes the normal publication checks.
+func (s *Service) publishKnowledgeSubmissionForAgent(ctx context.Context, workspaceID, managerAgentID, originAgentID, originRunID, recordIntent, submissionID string) (*domain.KnowledgeSubmission, error) {
+	var out *domain.KnowledgeSubmission
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		out, err = s.publishKnowledgeSubmissionLocked(ctx, workspaceID, managerAgentID, submissionID, map[string]any{
+			"kind": "agent", "id": originAgentID, "run_id": originRunID,
+			"knowledge_owner_agent_id": managerAgentID,
+			"record_intent":            recordIntent,
+		})
 		return err
 	})
 	if err == nil && s.notifier != nil {

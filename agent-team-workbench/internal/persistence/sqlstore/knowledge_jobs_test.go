@@ -39,12 +39,24 @@ func TestKnowledgeJobListRecoverableFiltersBeforePageLimit(t *testing.T) {
 	if err := store.KnowledgeJobs().Create(ctx, active); err != nil {
 		t.Fatal(err)
 	}
+	pendingPublication := newJob("kbj_pending_publication", domain.KnowledgeJobIncomplete)
+	pendingPublication.Result = map[string]any{"publication_status": "pending"}
+	if err := store.KnowledgeJobs().Create(ctx, pendingPublication); err != nil {
+		t.Fatal(err)
+	}
 	got, err := store.KnowledgeJobs().ListRecoverable(ctx, ws.ID, "", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].ID != active.ID {
 		t.Fatalf("recoverable page = %+v, want active job despite terminal history", got)
+	}
+	got, err = store.KnowledgeJobs().ListRecoverable(ctx, ws.ID, active.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != pendingPublication.ID {
+		t.Fatalf("pending publication was not recoverable after active page: %+v", got)
 	}
 	pending := newJob("kbj_pending_cancel", domain.KnowledgeJobIncomplete)
 	pending.LastError = "cancel_pending:run_pending: transient control error"
