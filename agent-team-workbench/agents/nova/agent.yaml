@@ -7,7 +7,7 @@ runtime:
     preferred: kimi_local
     mode: default
 model:
-    ref: deepseek-v4-flash
+    ref: kimi-2-7
 permissions:
     approval_policy: auto
     sandbox: danger-full-access
