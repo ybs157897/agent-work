@@ -3,8 +3,21 @@ import { describe, expect, it } from 'vitest';
 import { AgentTranscriptReader } from './transcript-view';
 import { shouldAutoCollapseReasoning, WorkActivityTimeline, workElapsed } from './work-activity-timeline';
 import type { PresentedTranscriptSegment, WorkTimelineSegment } from '../../utils/work-activity-timeline';
+import { buildCanvasMessage } from '../../utils/agent-knowledge-canvas';
 
 describe('production chat LanguageGUI skin', () => {
+  it('shows sent knowledge as a compact versioned citation without exposing transport metadata', () => {
+    const text = buildCanvasMessage('请评审退款规则。', { workspaceId: 'ws_private', agentId: 'agent_pm', itemId: 'kb_private', version: 2, title: '退款规则', quote: '退款期限为 14 天。' });
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={[{ kind: 'user', msg: { key: 'quoted-user', runId: 'run-quoted', kind: 'user', text, at: '' } }]} />);
+    expect(html).toContain('请评审退款规则。');
+    expect(html).toContain('已发送的知识引用');
+    expect(html).toContain('退款规则 · 第 2 版');
+    expect(html).toContain('退款期限为 14 天。');
+    expect(html).not.toContain('atw-knowledge-reference-v1');
+    expect(html).not.toContain('ws_private');
+    expect(html).not.toContain('kb_private');
+  });
+
   it('keeps a settled same-millisecond child timeline below one second', () => {
     const at = '2026-08-30T01:49:35.460Z';
     expect(workElapsed(at, at, Date.parse(at) + 180_000, false)).toBe('<1 秒');

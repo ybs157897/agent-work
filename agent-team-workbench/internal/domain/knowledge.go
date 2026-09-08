@@ -178,13 +178,14 @@ type KnowledgeItem struct {
 // librarian inbox/UI.  Filters are applied before limit+1 pagination so a
 // private or out-of-scope row can never consume a visible page slot.
 type KnowledgeListOptions struct {
-	Status     KnowledgeStatus     `json:"status,omitempty"`
-	Scope      KnowledgeScope      `json:"scope,omitempty"`
-	Kind       string              `json:"kind,omitempty"`
-	Visibility KnowledgeVisibility `json:"visibility,omitempty"`
-	AfterID    string              `json:"after_id,omitempty"`
-	Limit      int                 `json:"limit,omitempty"`
-	Query      string              `json:"query,omitempty"`
+	Status       KnowledgeStatus     `json:"status,omitempty"`
+	OwnerAgentID string              `json:"owner_agent_id,omitempty"`
+	Scope        KnowledgeScope      `json:"scope,omitempty"`
+	Kind         string              `json:"kind,omitempty"`
+	Visibility   KnowledgeVisibility `json:"visibility,omitempty"`
+	AfterID      string              `json:"after_id,omitempty"`
+	Limit        int                 `json:"limit,omitempty"`
+	Query        string              `json:"query,omitempty"`
 }
 
 func (o KnowledgeListOptions) Normalize() KnowledgeListOptions {
@@ -195,6 +196,13 @@ func (o KnowledgeListOptions) Normalize() KnowledgeListOptions {
 		o.Limit = 20
 	}
 	return o
+}
+
+func (o KnowledgeListOptions) Validate() error {
+	if o.OwnerAgentID == "" {
+		return nil
+	}
+	return validateTypedID("knowledge_list.owner_agent_id", o.OwnerAgentID, PrefixAgent)
 }
 
 type KnowledgeVersion struct {

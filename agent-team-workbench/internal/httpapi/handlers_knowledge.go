@@ -63,7 +63,7 @@ func (s *Server) handleKnowledgeItems(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, domain.ErrNotFound)
 		return
 	}
-	options := domain.KnowledgeListOptions{Status: status, Kind: r.URL.Query().Get("kind"), Visibility: domain.KnowledgeVisibility(r.URL.Query().Get("visibility")), AfterID: r.URL.Query().Get("cursor"), Limit: 100, Query: r.URL.Query().Get("q")}
+	options := domain.KnowledgeListOptions{Status: status, OwnerAgentID: strings.TrimSpace(r.URL.Query().Get("owner_agent_id")), Kind: r.URL.Query().Get("kind"), Visibility: domain.KnowledgeVisibility(r.URL.Query().Get("visibility")), AfterID: r.URL.Query().Get("cursor"), Limit: 100, Query: r.URL.Query().Get("q")}
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, parseErr := strconv.Atoi(raw)
 		if parseErr != nil || n < 1 || n > 200 {

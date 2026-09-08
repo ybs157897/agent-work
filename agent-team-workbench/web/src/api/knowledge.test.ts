@@ -30,6 +30,19 @@ describe('只读知识库 API', () => {
     expect(fetch.mock.calls[0][0]).toBe('/api/v1/workspaces/ws_1/knowledge/items?q=%E6%98%9F%E6%B2%B3%E9%80%80%E6%AC%BE%E7%AA%97%E5%8F%A3&status=effective&kind=rule&limit=200');
   });
 
+  it('归属筛选独立于读取身份，搜索和分页保留同一 owner', async () => {
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetch);
+    await listKnowledgeItems('ws_1', { q: '退款', owner_agent_id: 'agent/pm', agent_id: 'agent_reader', cursor: 'kb_3', limit: 40 });
+    const url = new URL(fetch.mock.calls[0][0], 'https://workbench.test');
+    expect(url.searchParams.get('owner_agent_id')).toBe('agent/pm');
+    expect(url.searchParams.get('agent_id')).toBe('agent_reader');
+    expect(url.searchParams.get('q')).toBe('退款');
+    expect(url.searchParams.get('cursor')).toBe('kb_3');
+    await listKnowledgeItems('ws_1', { owner_agent_id: 'agent/pm' });
+    expect(fetch.mock.calls[1][0]).toBe('/api/v1/workspaces/ws_1/knowledge/items?owner_agent_id=agent%2Fpm');
+  });
+
   it('正文、历史版本及双向关系始终读取同一工作区和条目', async () => {
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(json({ items: [] })));
     vi.stubGlobal('fetch', fetch);
