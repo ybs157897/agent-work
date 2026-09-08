@@ -1,0 +1,17 @@
+.DS_Store
+*.swp
+.env
+.env.*
+!.env.example
+var/
+dist/
+build/
+node_modules/
+.pnpm-store/
+coverage/
+*.log
+.idea/
+.vscode/
+apps/gateway/bin/
+apps/web/dist/
+**/.vite/

@@ -159,9 +159,23 @@ func normalizeRoutePattern(pattern string) (string, bool) {
 	for i, seg := range segs {
 		if strings.HasPrefix(seg, ":") && len(seg) > 1 {
 			segs[i] = "{" + seg[1:] + "}"
+			continue
+		}
+		// Go 1.22 ServeMux uses {name...} for a remainder wildcard. The
+		// OpenAPI contract expresses the same path parameter as {name}; the
+		// ellipsis is routing syntax, not a different public parameter.
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "...}") {
+			segs[i] = strings.TrimSuffix(seg, "...}") + "}"
 		}
 	}
 	return method + " " + strings.Join(segs, "/"), true
+}
+
+func TestNormalizeRoutePatternCollapsesGoCatchAll(t *testing.T) {
+	got, ok := normalizeRoutePattern("GET /api/v1/code-workspaces/{session_id}/view/{asset_path...}")
+	if !ok || got != "GET /api/v1/code-workspaces/{session_id}/view/{asset_path}" {
+		t.Fatalf("catch-all route normalization = %q, %v", got, ok)
+	}
 }
 
 // extractEventNameConstants 提取 internal/domain/events.go 中所有

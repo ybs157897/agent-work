@@ -33,8 +33,99 @@ tags:
   - name: governance
   - name: knowledge-librarian
     description: 知识管理员 Agent 的 workspace 管理面与 Run-bound Harness 面
+  - name: code-workspaces
+    description: 开发 Agent 的瞬态 Java 阅读会话；受限同源代理，无宿主路径或上游凭据
 
 paths:
+  /workspaces/{workspace_id}/agent-profiles/{agent_id}/code-workspaces:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: agent_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [code-workspaces]
+      operationId: openCodeWorkspace
+      summary: 为开发 Agent 打开绑定仓库的只读代码会话
+      description: |
+        仅允许已启用、用户管理的 developer Agent。服务端验证 Workspace、Conversation、Run 归属，
+        用可信 HostRegistry 解析实际目录；不接收绝对路径。历史 Run 可用于阅读；无 Run 时使用工作区默认位置。
+        这是有过期时间的进程内阅读资源，不创建 Run，不取得 checkout 写锁。
+        复用当前工作台用户权限模型，并非新增用户登录或 Agent 工具鉴权协议。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                conversation_id: { type: string }
+                run_id: { type: string }
+      responses:
+        "201":
+          description: 已创建阅读会话；浏览器使用 frame_url 打开代码画布
+          content: { application/json: { schema: { $ref: "#/components/schemas/CodeWorkspaceSession" } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503":
+          description: Gateway 尚未构建、启动失败或目标 Host 的阅读通道不可用
+          content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+
+  /code-workspaces/{session_id}:
+    parameters: [{ $ref: "#/components/parameters/CodeWorkspaceSessionId" }]
+    delete:
+      tags: [code-workspaces]
+      operationId: closeCodeWorkspace
+      summary: 释放阅读工作区与 Java 语义连接
+      responses:
+        "204": { description: 已关闭；重复关闭安全 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /code-workspaces/{session_id}/bootstrap:
+    parameters: [{ $ref: "#/components/parameters/CodeWorkspaceSessionId" }]
+    get:
+      tags: [code-workspaces]
+      operationId: bootstrapCodeWorkspace
+      summary: 嵌入页面读取固定的上游工作区配置
+      responses:
+        "200":
+          description: 仅含同源代理路径和受限工作区元数据
+          content: { application/json: { schema: { $ref: "#/components/schemas/CodeWorkspaceBootstrap" } } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /code-workspaces/{session_id}/view/{asset_path}:
+    parameters:
+      - { $ref: "#/components/parameters/CodeWorkspaceSessionId" }
+      - { name: asset_path, in: path, required: true, schema: { type: string }, description: 相对静态资源路径；空路径返回嵌入应用入口 }
+    get:
+      tags: [code-workspaces]
+      operationId: readCodeWorkspaceAsset
+      summary: 按会话权限提供 Java 阅读界面与相对静态资源
+      responses:
+        "200": { description: HTML、JavaScript、CSS 或字体资源 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /code-workspaces/{session_id}/gateway/{gateway_path}:
+    parameters:
+      - { $ref: "#/components/parameters/CodeWorkspaceSessionId" }
+      - { name: gateway_path, in: path, required: true, schema: { type: string }, description: 仅接受此会话已绑定 workspace 的 Gateway 阅读路径 }
+    get:
+      tags: [code-workspaces]
+      operationId: proxyCodeWorkspaceRead
+      summary: 受限文件、搜索、工程信息与 Java LSP WebSocket 代理
+      description: |
+        上游路径限于 /api/v1/workspaces/{固定上游ID} 下的已知阅读端点。
+        LSP 使用 WebSocket 升级，仍受工作区 URI jail 和只读方法限制。
+        客户端不能创建其他上游工作区、发送写入请求或传入上游服务凭据。
+      responses:
+        "200": { description: 工作区阅读响应 }
+        "101": { description: Java LSP WebSocket 已升级 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { description: 上游服务退出或不可达，需重新打开会话 }
+
   /me:
     get:
       tags: [workspace]
@@ -2164,6 +2255,7 @@ components:
       description: 仅由活动 Run 注入的知识访问凭据；Run 终态后立即失效
 
   parameters:
+    CodeWorkspaceSessionId: { name: session_id, in: path, required: true, schema: { type: string }, description: 随机的短期阅读会话标识 }
     WorkspaceId: { name: workspace_id, in: path, required: true, schema: { type: string } }
     AgentProfileId: { name: agent_profile_id, in: path, required: true, schema: { type: string } }
     WorkItemId: { name: work_item_id, in: path, required: true, schema: { type: string } }
@@ -2249,6 +2341,35 @@ components:
       content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
 
   schemas:
+    CodeWorkspaceSession:
+      type: object
+      required: [id, frame_url, repository_identity, read_only, expires_at]
+      properties:
+        id: { type: string }
+        frame_url: { type: string, description: 当前服务内的相对 iframe URL }
+        repository_identity: { type: string }
+        branch: { type: string }
+        worktree_ref: { type: string }
+        read_only: { type: boolean, const: true }
+        expires_at: { type: string, format: date-time }
+
+    CodeWorkspaceBootstrap:
+      type: object
+      required: [gateway_base_url, workspace, read_only, embedded]
+      properties:
+        gateway_base_url: { type: string, description: 当前会话的同源 Gateway 代理前缀 }
+        read_only: { type: boolean, const: true }
+        embedded: { type: boolean, const: true }
+        workspace:
+          type: object
+          required: [id, status]
+          properties:
+            id: { type: string }
+            status: { type: string }
+            root_display: { type: string, description: 逻辑仓库显示名称，不是宿主绝对路径 }
+            lsp_enabled: { type: boolean }
+            lsp_status: { type: string }
+
     KnowledgeStatus:
       type: string
       enum: [candidate, draft, effective, superseded, repealed]

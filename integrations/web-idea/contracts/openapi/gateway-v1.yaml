@@ -1,0 +1,475 @@
+# web-idea Gateway FS & Workspace API (P1)
+openapi: 3.0.3
+info:
+  title: web-idea Gateway API
+  version: 0.1.0
+  description: |
+    P1+P2 contract: workspaces + readonly FS + optional LSP WebSocket (jdtls).
+    Behavior also described in docs/architecture/components.md and
+    docs/architecture/workspace-fs.md.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Liveness
+      responses:
+        "200":
+          description: OK
+  /api/v1/workspaces:
+    post:
+      summary: Create workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [root]
+              properties:
+                root:
+                  type: string
+                  description: Absolute path on gateway host
+                read_only:
+                  type: boolean
+                  default: false
+                  description: Reject file writes and mutating LSP methods when true
+                client_key:
+                  type: string
+                  maxLength: 256
+                  description: Optional in-memory entity idempotency key; repeat requests replay the same workspace
+                ttl_seconds:
+                  type: integer
+                  minimum: 0
+                  description: Optional fixed lease duration. Read-only workspaces default to 1800 seconds and are capped by the Gateway safety limit.
+      parameters:
+        - name: X-ATW-Code-Workspace-Create-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 256
+          description: Optional retry key; when present it must match client_key.
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+        "200":
+          description: Existing workspace replayed for the same client_key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+        "400":
+          description: Invalid root
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: client_key conflicts with a different root or read_only payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Workspace session limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+  /api/v1/workspaces/{id}:
+    get:
+      summary: Get workspace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+    delete:
+      summary: Stop workspace and release jdtls
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Workspace not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /api/v1/workspaces/{id}/fs/tree:
+    get:
+      summary: List directory
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: path
+          in: query
+          schema:
+            type: string
+            default: ""
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 3
+            default: 1
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TreeResponse"
+        "400":
+          description: Invalid path
+        "403":
+          description: Path outside workspace
+        "404":
+          description: Not found
+  /api/v1/workspaces/{id}/fs/file:
+    get:
+      summary: Read file text
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File body
+          content:
+            text/plain:
+              schema:
+                type: string
+        "413":
+          description: Too large
+        "415":
+          description: Not a text preview
+    put:
+      summary: Write UTF-8 file text (create or overwrite; parent dir must exist)
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "204":
+          description: Saved
+        "403":
+          description: Workspace is read-only
+        "400":
+          description: Invalid path or directory target
+        "403":
+          description: Path outside workspace
+        "404":
+          description: Parent missing / not found
+        "413":
+          description: Too large
+        "415":
+          description: Not UTF-8 text
+  /api/v1/workspaces/{id}/fs/stat:
+    get:
+      summary: Stat path
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stat"
+  /api/v1/workspaces/{id}/fs/search:
+    get:
+      summary: Find in Files (substring search under workspace root)
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Case-insensitive substring
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Missing query
+  /api/v1/workspaces/{id}/fs/files:
+    get:
+      summary: Find files by path (IDEA Quick Open)
+      description: Case-insensitive basename/path substring or subsequence search. The gateway never reads file contents for this endpoint; traversal is bounded and skips generated, dependency, and symlink entries.
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: File name or path query
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 60
+      responses:
+        "200":
+          description: Matching file paths, sorted by relevance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FilesResponse"
+        "400":
+          description: Missing query or invalid limit
+        "404":
+          description: Workspace not found
+  /api/v1/workspaces/{id}/project:
+    get:
+      summary: Project model (Maven modules, declared deps, host JDK)
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectInfo"
+        "404":
+          description: Workspace not found
+  /api/v1/workspaces/{id}/lsp:
+    get:
+      summary: LSP WebSocket upgrade
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "101":
+          description: Switching Protocols
+        "409":
+          description: Workspace already has an active LSP connection
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    WorkspaceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    Workspace:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [created, browsing, indexing, ready, failed, stopped]
+          description: P1 create/get returns browsing; other values reserved for P2+
+        root_display:
+          type: string
+          description: Optional sanitized label; never required for clients
+        lsp_enabled:
+          type: boolean
+          description: True when WEBIDEA_JDTLS_LAUNCH is configured on gateway
+        lsp_status:
+          type: string
+          description: Per-workspace jdtls status (off|starting|ready|failed)
+        read_only:
+          type: boolean
+          description: True when the workspace is a browsing-only session
+        expires_at:
+          type: string
+          format: date-time
+          description: Fixed in-memory lease deadline; omitted for non-read-only workspaces without an explicit TTL
+    TreeResponse:
+      type: object
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+        truncated:
+          type: boolean
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DirEntry"
+    DirEntry:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [file, dir]
+        size:
+          type: integer
+        modified_at:
+          type: string
+          format: date-time
+    Stat:
+      type: object
+      required: [path, type]
+      properties:
+        path:
+          type: string
+        type:
+          type: string
+          enum: [file, dir]
+        size:
+          type: integer
+        modified_at:
+          type: string
+          format: date-time
+    SearchResponse:
+      type: object
+      required: [query, hits]
+      properties:
+        query:
+          type: string
+        hits:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchHit"
+        truncated:
+          type: boolean
+    SearchHit:
+      type: object
+      required: [path, line, column, preview]
+      properties:
+        path:
+          type: string
+        line:
+          type: integer
+        column:
+          type: integer
+        preview:
+          type: string
+    FilesResponse:
+      type: object
+      required: [query, paths]
+      properties:
+        query:
+          type: string
+        paths:
+          type: array
+          items:
+            type: string
+          description: POSIX relative paths of matching regular files
+        truncated:
+          type: boolean
+          description: True when the bounded walk or result limit omitted additional matches
+    ProjectInfo:
+      type: object
+      required: [build, jdk]
+      properties:
+        build:
+          type: string
+          enum: [maven, gradle, none]
+        jdk:
+          type: object
+          properties:
+            home:
+              type: string
+            version:
+              type: string
+            vendor:
+              type: string
+        language_level:
+          type: string
+        root_module:
+          $ref: "#/components/schemas/ModuleInfo"
+        modules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModuleInfo"
+        dependencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/DependencyInfo"
+        dependencies_truncated:
+          type: boolean
+    ModuleInfo:
+      type: object
+      required: [path]
+      properties:
+        path:
+          type: string
+        artifact_id:
+          type: string
+        group_id:
+          type: string
+        version:
+          type: string
+        packaging:
+          type: string
+        name:
+          type: string
+    DependencyInfo:
+      type: object
+      required: [group_id, artifact_id, coord]
+      properties:
+        group_id:
+          type: string
+        artifact_id:
+          type: string
+        version:
+          type: string
+        scope:
+          type: string
+        coord:
+          type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

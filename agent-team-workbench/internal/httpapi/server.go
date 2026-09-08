@@ -17,6 +17,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/hostregistry"
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 	"github.com/ybs/agent-team-workbench/internal/security"
 	"github.com/ybs/agent-team-workbench/internal/sse"
@@ -57,6 +58,7 @@ type Server struct {
 	credentials      *modelconfig.CredentialsStore
 	workbenchRoot    string
 	taskIntakeClient *taskintake.Client
+	codeWorkspaces   *application.CodeWorkspaceService
 }
 
 func NewServer(svc *application.Service, store application.Store, hub *sse.Hub) *Server {
@@ -88,6 +90,28 @@ func (s *Server) SetWorkbenchRoot(root string) { s.workbenchRoot = root }
 // the default HTTP client; tests can inject a client with an httptest transport.
 func (s *Server) SetTaskIntakeClient(client *taskintake.Client) { s.taskIntakeClient = client }
 
+// SetCodeWorkspaceGateway mounts the server-side web-idea Gateway endpoint.
+// The Gateway token is retained only by the application proxy; browser routes
+// receive a same-origin URL and never receive the upstream credential.
+func (s *Server) SetCodeWorkspaceGateway(endpoint application.CodeWorkspaceGateway, registry *hostregistry.Registry) {
+	if s.codeWorkspaces != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.codeWorkspaces.Close(ctx)
+		cancel()
+	}
+	s.codeWorkspaces = application.NewCodeWorkspaceService(s.svc, s.store, endpoint, registry)
+}
+
+// CloseCodeWorkspaces releases in-memory reading sessions and their Gateway
+// workspaces. The control-plane main owns the Gateway process itself.
+func (s *Server) CloseCodeWorkspaces() {
+	if s.codeWorkspaces != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.codeWorkspaces.Close(ctx)
+		cancel()
+	}
+}
+
 // guard 按权限点拦截命令；拒绝时不泄漏资源是否存在（统一 403）。
 func (s *Server) guard(perm string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +130,7 @@ func (s *Server) guard(perm string, next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	s.registerKnowledgeRoutes(mux)
+	s.registerCodeWorkspaceRoutes(mux)
 
 	mux.HandleFunc("GET /api/v1/me", s.guard(security.PermRead, s.handleMe))
 	// /health 与 /runtimes/dsh/catalog 在 openapi 中声明为公开端点（security: []），不挂守卫。

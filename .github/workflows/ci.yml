@@ -43,7 +43,7 @@ jobs:
         working-directory: agent-team-workbench
         run: |
           pip install --quiet pyyaml
-          python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['contracts/web/openapi.yaml','contracts/events/asyncapi.yaml']]"
+          python3 -c "import yaml; [yaml.safe_load(open(f)) for f in ['contracts/web/openapi.yaml','contracts/events/asyncapi.yaml','../integrations/web-idea/contracts/openapi/gateway-v1.yaml']]"
 
   migrations:
     runs-on: ubuntu-latest
@@ -87,3 +87,33 @@ jobs:
       - name: build
         working-directory: agent-team-workbench/web
         run: pnpm build
+
+  java-code-workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: integrations/web-idea/apps/gateway/go.sum
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: integrations/web-idea/apps/web/pnpm-lock.yaml
+      - name: Gateway formatting, vet, build and race tests
+        working-directory: integrations/web-idea/apps/gateway
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go build -o bin/web-idea-gateway .
+          go test -race ./...
+      - name: Java reader install, tests and build
+        working-directory: integrations/web-idea/apps/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm build

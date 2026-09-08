@@ -1,0 +1,108 @@
+.code-workspace-shell {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  background: hsl(var(--color-surface-base));
+}
+
+.code-workspace-header {
+  display: flex;
+  min-height: 48px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid hsl(var(--color-border-subtle));
+  background: hsl(var(--color-surface-raised) / 0.92);
+  padding: 8px 16px;
+}
+
+.code-workspace-mark {
+  display: inline-flex;
+  height: 28px;
+  width: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid hsl(var(--color-brand-primary) / 0.24);
+  border-radius: 6px;
+  background: hsl(var(--color-brand-muted));
+  color: hsl(var(--color-brand-primary));
+}
+
+.code-workspace-readonly {
+  display: inline-flex;
+  min-height: 26px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid hsl(var(--color-status-success) / 0.25);
+  border-radius: 9999px;
+  background: hsl(var(--color-status-success) / 0.08);
+  padding: 2px 8px;
+  color: hsl(var(--color-status-success));
+  font-size: 12px;
+}
+
+.code-workspace-reconnect {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid hsl(var(--color-border-subtle));
+  border-radius: 6px;
+  background: hsl(var(--color-surface-raised));
+  padding: 4px 8px;
+  color: hsl(var(--color-text-secondary));
+  font-size: 12px;
+}
+
+.code-workspace-reconnect:hover {
+  border-color: hsl(var(--color-brand-primary) / 0.45);
+  color: hsl(var(--color-brand-primary));
+}
+
+.code-workspace-reconnect:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary));
+  outline-offset: 2px;
+}
+
+.code-workspace-frame {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: hsl(var(--color-surface-base));
+}
+
+.code-workspace-frame iframe {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border: 0;
+  background: hsl(var(--color-surface-base));
+}
+
+.code-workspace-state {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: left;
+}
+
+@media (max-width: 639px) {
+  .code-workspace-header {
+    padding-inline: 12px;
+  }
+
+  .code-workspace-state {
+    padding: 24px 16px;
+  }
+}

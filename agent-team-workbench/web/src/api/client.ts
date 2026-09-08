@@ -43,6 +43,8 @@ interface FetchOptions {
   /** 写命令必须携带；缺省时自动生成（协议 §5.1）。 */
   idempotencyKey?: string;
   headers?: Record<string, string>;
+  /** Allow a best-effort DELETE to survive page teardown. */
+  keepalive?: boolean;
 }
 
 /**
@@ -64,7 +66,7 @@ export async function apiFetch<T>(path: string, opts: FetchOptions = {}): Promis
     headers['Idempotency-Key'] = opts.idempotencyKey ?? newIdempotencyKey();
   }
 
-  const resp = await fetch(`${BASE}${path}`, { method, headers, body });
+  const resp = await fetch(`${BASE}${path}`, { method, headers, body, ...(opts.keepalive ? { keepalive: true } : {}) });
 
   if (resp.ok) {
     if (resp.status === 204) return undefined as T;

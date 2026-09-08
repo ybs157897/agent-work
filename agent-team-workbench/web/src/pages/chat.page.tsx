@@ -1,9 +1,10 @@
-import { BookOpen, Boxes, Columns2, GitBranch, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
+import { BookOpen, Boxes, Code2, Columns2, GitBranch, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
 import { KnowledgeChatHandoff, type KnowledgeChatSeed } from '../components/chat/knowledge-chat-handoff';
 import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas';
+import { CodeWorkspace } from '../components/code-workspace/code-workspace';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
 import { SendErrorNotice } from '../components/chat/send-error-notice';
@@ -149,6 +150,7 @@ export default function ChatPage() {
   );
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
+  const runsLoadedConversationId = useChatStore((s) => s.runsLoadedConversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
   const openConversation = useChatStore((s) => s.openConversation);
 
@@ -162,20 +164,45 @@ export default function ChatPage() {
   const generation = useWorkspaceStore((state) => state.generation);
   const currentAgent = agents.find((agent) => agent.id === agentId);
   const [canvasOverrides, setCanvasOverrides] = useState<Record<string, boolean>>({});
+  const [codeOverrides, setCodeOverrides] = useState<Record<string, boolean>>({});
   const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
   const [narrowPanel, setNarrowPanel] = useState<'document' | 'chat'>('document');
   const canvasKey = `${workspaceId ?? ''}:${agentId ?? ''}`;
+  const codeKey = `${workspaceId ?? ''}:${agentId ?? ''}:${conversationId ?? 'new'}`;
   const canvasAvailable = !!currentAgent && isUserManagedAgent(currentAgent);
-  const canvasEnabled = canvasAvailable && !!workspaceId && (canvasOverrides[canvasKey]
+  const codeAvailable = !!currentAgent && currentAgent.role === 'developer' && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
+  const codeEnabled = codeAvailable && !!workspaceId && (codeOverrides[codeKey]
+    ?? (searchParams.get('canvas') === 'code' && searchParams.get('agent') === agentId ? true : false));
+  const canvasEnabled = canvasAvailable && !!workspaceId && !codeEnabled && (canvasOverrides[canvasKey]
     ?? (searchParams.get('canvas') === 'knowledge' && searchParams.get('agent') === agentId
       ? true : readCanvasPreference(workspaceId, currentAgent)));
+  const codeRunsLoaded = !conversationId || runsLoadedConversationId === conversationId;
   const toggleCanvas = () => {
     if (!workspaceId || !agentId) return;
     const enabled = !canvasEnabled;
     setCanvasOverrides((current) => ({ ...current, [canvasKey]: enabled }));
+    setCodeOverrides((current) => ({ ...current, [codeKey]: false }));
     writeCanvasPreference(workspaceId, agentId, enabled);
     const params = new URLSearchParams(searchParams);
     params.delete('canvas');
+    setSearchParams(params, { replace: true });
+    setCanvasNavigationOpen(false);
+    setNarrowPanel('document');
+  };
+  const toggleCode = () => {
+    if (!workspaceId || !agentId || !codeAvailable) return;
+    const enabled = !codeEnabled;
+    setCodeOverrides((current) => ({ ...current, [codeKey]: enabled }));
+    if (enabled) {
+      setCanvasOverrides((current) => ({ ...current, [canvasKey]: false }));
+    }
+    const params = new URLSearchParams(searchParams);
+    if (enabled) {
+      params.set('agent', agentId);
+      params.set('canvas', 'code');
+    } else {
+      params.delete('canvas');
+    }
     setSearchParams(params, { replace: true });
     setCanvasNavigationOpen(false);
     setNarrowPanel('document');
@@ -237,7 +264,7 @@ export default function ChatPage() {
     setSearchParams({ agent: id }, { replace: true });
   };
   return (
-    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${canvasEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={canvasNavigationOpen}>
+    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${canvasEnabled ? ' chat-knowledge-page' : codeEnabled ? ' chat-code-page' : ''}`} data-theme={chatTheme} data-navigation-open={canvasNavigationOpen}>
       {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
@@ -290,7 +317,7 @@ export default function ChatPage() {
         {knowledgeQuery !== null && <KnowledgeChatHandoff query={searchParams.toString()} onReady={prepareKnowledge} />}
         {knowledgeQuery !== null && preparedKnowledge !== knowledgeKey ? (
           <div className="flex flex-1 items-center justify-center p-comfortable text-body text-text-secondary">知识引用读取完成后，可以在此编辑问题。</div>
-        ) : agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} canvasAvailable={canvasAvailable} canvasEnabled={canvasEnabled} onToggleCanvas={toggleCanvas} navigationOpen={canvasNavigationOpen} onToggleNavigation={() => setCanvasNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
+        ) : agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} canvasAvailable={canvasAvailable} canvasEnabled={canvasEnabled} onToggleCanvas={toggleCanvas} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} navigationOpen={canvasNavigationOpen} onToggleNavigation={() => setCanvasNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
@@ -525,13 +552,17 @@ function ConversationGroup({
   );
 }
 
-function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvailable, canvasEnabled, onToggleCanvas, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvailable, canvasEnabled, onToggleCanvas, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
   initialPrompt: string;
   chatTheme: WorkbenchTheme;
   onToggleTheme: () => void;
   canvasAvailable: boolean;
   canvasEnabled: boolean;
   onToggleCanvas: () => void;
+  codeAvailable: boolean;
+  codeEnabled: boolean;
+  onToggleCode: () => void;
+  codeRunsLoaded: boolean;
   navigationOpen: boolean;
   onToggleNavigation: () => void;
   narrowPanel: 'document' | 'chat';
@@ -939,7 +970,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     if (!text) return;
     const reference = knowledgeReference && workspaceId && agentId && referenceBelongsTo(knowledgeReference, workspaceId, agentId) ? knowledgeReference : null;
     const message = buildCanvasMessage(text, reference);
-    if (canvasEnabled) onNarrowPanelChange('chat');
+    if (canvasEnabled || codeEnabled) onNarrowPanelChange('chat');
     setComposer({ draft: '', reference: null });
     void send(message).then((retained) => {
       if (!retained) setComposer((current) => restoreCanvasComposer(current, { draft: text, reference }));
@@ -953,18 +984,23 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
 
   return (
     <div className="knowledge-chat-workspace flex min-h-0 flex-1 flex-col overflow-hidden">
-      {canvasEnabled && (
-        <div className="knowledge-chat-mobile-tabs" role="group" aria-label="产品工作区视图">
-          <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>
-          <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}><BookOpen className="h-4 w-4" aria-hidden />文档</button>
+      {(canvasEnabled || codeEnabled) && (
+        <div className="knowledge-chat-mobile-tabs" role="group" aria-label={codeEnabled ? '代码工作区视图' : '产品工作区视图'}>
+          {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
+          <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}>{codeEnabled ? <Code2 className="h-4 w-4" aria-hidden /> : <BookOpen className="h-4 w-4" aria-hidden />}{codeEnabled ? '代码' : '文档'}</button>
           <button type="button" aria-pressed={narrowPanel === 'chat'} onClick={() => onNarrowPanelChange('chat')}><MessageSquare className="h-4 w-4" aria-hidden />对话</button>
-          <button type="button" onClick={onToggleCanvas}>关闭画布</button>
+          <button type="button" onClick={codeEnabled ? onToggleCode : onToggleCanvas}>{codeEnabled ? '关闭代码' : '关闭画布'}</button>
         </div>
       )}
-    <div className={`knowledge-chat-layout flex flex-1 min-h-0 overflow-hidden${canvasEnabled ? ' knowledge-chat-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
+    <div className={`knowledge-chat-layout flex flex-1 min-h-0 overflow-hidden${canvasEnabled || codeEnabled ? ' knowledge-chat-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
       {canvasEnabled && workspaceId && agentId && (
         <section className="knowledge-chat-document" aria-label="Agent 知识画布">
           <KnowledgeCanvas workspaceId={workspaceId} agentId={agentId} agentName={agent?.name ?? 'Agent'} requesterAgentId={canReadAgentKnowledge(userRole) ? agentId : undefined} onReference={onKnowledgeReference} refreshKey={latestRun && TERMINAL.has(latestRun.status) ? `${latestRun.id}:${latestRun.status}` : ''} />
+        </section>
+      )}
+      {codeEnabled && workspaceId && agentId && (
+        <section className="knowledge-chat-document code-workspace-document" aria-label="Java 代码工作台">
+          <CodeWorkspace workspaceId={workspaceId} agentId={agentId} conversationId={conversationId} latestRunId={latestRunId} runsLoaded={codeRunsLoaded} theme={chatTheme} />
         </section>
       )}
       <div className="chat-languagegui-main knowledge-chat-conversation flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -982,7 +1018,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
         )}
         right={(
           <>
-            {canvasEnabled && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="knowledge-chat-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
+            {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="knowledge-chat-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
+            {codeAvailable && <button type="button" onClick={onToggleCode} aria-pressed={codeEnabled} aria-label={codeEnabled ? '关闭代码工作台' : '打开代码工作台'} className="knowledge-chat-code-toggle"><Code2 className="h-4 w-4" aria-hidden />代码</button>}
             {canvasAvailable && <button type="button" onClick={onToggleCanvas} aria-pressed={canvasEnabled} aria-label={canvasEnabled ? '关闭知识画布' : '打开知识画布'} className="knowledge-chat-canvas-toggle"><Columns2 className="h-4 w-4" aria-hidden />画布</button>}
             <ChatThemeToggle theme={chatTheme} onToggle={onToggleTheme} />
             {conversationArtifacts.length > 0 && (
