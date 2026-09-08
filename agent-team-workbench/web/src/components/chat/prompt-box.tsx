@@ -25,7 +25,7 @@ import {
 import type { QueuedMessage } from '../../stores/chat.store';
 import { useAgentsStore } from '../../stores/agents.store';
 import { formatBytes } from '../../utils/artifact-visuals';
-import { isUserManagedAgent } from '../../utils/agent-scope';
+import { isChatAgent } from '../../utils/agent-scope';
 import { activeMention, applyMention, mentionableAgents, type MentionState } from '../../utils/mention';
 import { Avatar } from '../avatar';
 import { Button } from '../ui';
@@ -116,7 +116,7 @@ export function PromptBox({
   const [mentionIndex, setMentionIndex] = useState(0);
   const allAgents = useAgentsStore((s) => s.agents);
   const agents = useMemo(
-    () => (mentionsEnabled ? allAgents.filter(isUserManagedAgent) : []),
+    () => (mentionsEnabled ? allAgents.filter(isChatAgent) : []),
     [allAgents, mentionsEnabled],
   );
   const fileInputRef = useRef<HTMLInputElement>(null);

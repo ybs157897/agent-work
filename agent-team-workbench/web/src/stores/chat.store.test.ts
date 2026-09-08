@@ -1590,6 +1590,86 @@ describe('send 队列语义（不再 steering）', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('首发 createRun 失败保留原文、幂等键和常驻错误，继续发送复用同一键', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockRejectedValueOnce(new Error('runtime unavailable'));
+    const retained = await useChatStore.getState().send('当前知识库有什么东西');
+    expect(retained).toBe(true);
+    expect(useChatStore.getState().sendError).toBe('runtime unavailable');
+    const queued = useChatStore.getState().queue[0];
+    expect(queued.text).toBe('当前知识库有什么东西');
+    expect(queued.clientKey).toBeTruthy();
+    await useChatStore.getState().drainQueue();
+    expect(createRunCalls(fetchMock).map((call) => JSON.parse(String(call[1]?.body)).client_key)).toEqual([queued.clientKey, queued.clientKey]);
+    expect(useChatStore.getState().queue).toEqual([]);
+    expect(useChatStore.getState().sendError).toBeNull();
+  });
+
+  it('队列续发失败把同一条放回队首，后续消息不会越过它', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockRejectedValueOnce(new Error('连接失败'));
+    const queue = [{ text: '第一条', clientKey: 'first' }, { text: '第二条', clientKey: 'second' }];
+    useChatStore.setState({ queue });
+    await useChatStore.getState().drainQueue();
+    expect(useChatStore.getState().queue).toEqual(queue);
+    expect(useChatStore.getState().sendError).toBe('连接失败');
+    expect(useChatStore.getState().sending).toBe(false);
+  });
+
+  it('从配置页返回同一对话时保留失败原文和重试状态', () => {
+    stubFetch();
+    const queue = [{ text: '待重试原文', clientKey: 'same-key' }];
+    useChatStore.setState({ queue, sendError: '需要重连' });
+    useChatStore.getState().openConversation('wi_1');
+    expect(useChatStore.getState().queue).toEqual(queue);
+    expect(useChatStore.getState().sendError).toBe('需要重连');
+  });
+
+  it('创建对话失败要求输入框保留草稿，不制造待发 Run', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockRejectedValueOnce(new Error('连接失败'));
+    useChatStore.setState({ conversationId: null });
+    expect(await useChatStore.getState().send('不能丢失的原文')).toBe(false);
+    expect(useChatStore.getState().sendError).toBe('连接失败');
+    expect(useChatStore.getState().runs).toEqual([]);
+  });
+
+  it('首发会话响应丢失后以同一实体键重试，不创建第二个空会话', async () => {
+    const fetchMock = stubFetch();
+    fetchMock.mockRejectedValueOnce(new Error('响应丢失')).mockRejectedValueOnce(new Error('仍不可达'));
+    useChatStore.setState({ conversationId: null, newConversationAttempt: null });
+    await useChatStore.getState().send('同一首发');
+    await useChatStore.getState().send('同一首发');
+    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+    expect(bodies[0].client_key).toBeTruthy();
+    expect(bodies[1].client_key).toBe(bodies[0].client_key);
+  });
+
+  it('创建会话成功后直接用已返回的会话启动，列表读取失败仍可保留并重试', async () => {
+    const fetchMock = stubFetch();
+    const wi = { ...useChatStore.getState().conversations[0], id: 'created-chat' };
+    fetchMock.mockResolvedValueOnce(json(wi)).mockRejectedValueOnce(new Error('启动失败'));
+    useChatStore.setState({ conversationId: null, conversations: [] });
+    await useChatStore.getState().send('不丢原文');
+    expect(useChatStore.getState().conversations).toEqual([wi]);
+    expect(useChatStore.getState().conversationId).toBe('created-chat');
+    expect(useChatStore.getState().queue[0].text).toBe('不丢原文');
+    expect(createRunCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it('切换会话后旧发送失败不会把原文或错误注入新会话', async () => {
+    const fetchMock = stubFetch();
+    let rejectSend!: (reason: Error) => void;
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((_resolve, reject) => { rejectSend = reject; }));
+    const pending = useChatStore.getState().send('旧会话消息');
+    useChatStore.getState().openConversation(null);
+    rejectSend(new Error('旧连接失败'));
+    await pending;
+    expect(useChatStore.getState().queue).toEqual([]);
+    expect(useChatStore.getState().sendError).toBeNull();
+    expect(useChatStore.getState().conversationId).toBeNull();
+  });
+
   it('分叉会话首发：description 上下文包拼进首条 instruction', async () => {
     const fetchMock = stubFetch();
     const description = `${FORK_CONTEXT_MARKER}以下是此前对话的记录（用户/助手交替）：\n\n用户：第一问\n助手：第一答`;

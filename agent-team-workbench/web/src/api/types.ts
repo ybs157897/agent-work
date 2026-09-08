@@ -41,7 +41,7 @@ export interface AgentProfile {
   slug?: string;
   name: string;
   role: string;
-  skills: string[];
+  skills: string[] | null;
   instructions?: string;
   availability: AgentAvailability;
   presence: AgentPresence;
@@ -49,9 +49,9 @@ export interface AgentProfile {
   runtime_preference?: { preferred?: string; fallbacks?: string[]; mode?: 'default' | 'plan'; agent_preset?: string };
   model_override?: { ref?: string; provider?: string; model?: string; reasoning_effort?: string };
   policy?: AgentPolicy;
-  /** 系统内置 Agent（例如 Task Coordinator）；普通 Agent 配置页不得暴露或编辑。 */
+  /** 系统内置身份；允许的聊天与配置能力由 kind 决定。 */
   is_system?: boolean;
-  /** 系统 Agent 类型；当前内置类型为 task_coordinator。 */
+  /** 系统 Agent 类型：task_coordinator 或 knowledge_librarian。 */
   kind?: 'task_coordinator' | string;
   /** 系统提示词是否允许修改；Coordinator 固定为 false。 */
   instructions_editable?: boolean;

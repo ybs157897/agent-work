@@ -1,6 +1,6 @@
 import { BellRing, Bot, History, MessageSquare, Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import {
   createAgent,
@@ -40,7 +40,7 @@ import { Button, Select } from '../components/ui';
 import { useAgentsStore } from '../stores/agents.store';
 import { toast } from '../stores/toast.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
-import { isUserManagedAgent } from '../utils/agent-scope';
+import { isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
 
 const ROLE_OPTIONS = [
   { value: 'pm', label: '产品 PM' },
@@ -50,7 +50,7 @@ const ROLE_OPTIONS = [
   { value: 'reviewer', label: 'Reviewer' },
 ];
 
-const ROLE_LABEL: Record<string, string> = Object.fromEntries(ROLE_OPTIONS.map((r) => [r.value, r.label]));
+const ROLE_LABEL: Record<string, string> = { ...Object.fromEntries(ROLE_OPTIONS.map((r) => [r.value, r.label])), knowledge_librarian: '知识库管理员', librarian: '资料整理（自定义角色）' };
 
 const REASONING_EFFORT_OPTIONS = [
   { value: 'minimal', label: '最低' },
@@ -101,7 +101,12 @@ export function isCodexRuntime(preferred: string, binding: RuntimeBinding | null
 }
 
 /** 系统 Coordinator 只在专属设置面出现；普通 Agent 配置列表必须过滤它。 */
-export const isConfigurableAgent = isUserManagedAgent;
+export const isConfigurableAgent = (agent: AgentProfile) => isUserManagedAgent(agent) || isKnowledgeLibrarianAgent(agent);
+
+export function editableAgentPatch(agent: AgentProfile, patch: Parameters<typeof patchAgent>[1]): Parameters<typeof patchAgent>[1] {
+  if (!isKnowledgeLibrarianAgent(agent)) return patch;
+  return { runtime_preference: patch.runtime_preference, model_override: patch.model_override, expected_version: patch.expected_version };
+}
 
 /** 组装唤醒请求体：instruction 修剪后为空则省略（服务端回退心跳模板渲染）。 */
 export function buildWakePayload(taskKey: string, instruction: string): { task_key: string; instruction?: string } {
@@ -153,7 +158,8 @@ export default function AgentsPage() {
   );
   const refresh = useAgentsStore((s) => s.refresh);
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = searchParams.get('agent');
   const [addOpen, setAddOpen] = useState(false);
   const [reloading, setReloading] = useState(false);
 
@@ -161,14 +167,15 @@ export default function AgentsPage() {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    setSelectedId((prev) => {
-      if (prev && configurableAgents.some((a) => a.id === prev)) return prev;
-      return configurableAgents[0]?.id ?? null;
-    });
-  }, [configurableAgents]);
+  const selected = configurableAgents.find((a) => a.id === selectedId) ?? configurableAgents[0] ?? null;
 
-  const selected = configurableAgents.find((a) => a.id === selectedId) ?? null;
+  const selectAgent = (id: string) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set('agent', id);
+      return next;
+    }, { replace: true });
+  };
 
   const reloadConfigs = async () => {
     if (!workspace) return;
@@ -188,7 +195,7 @@ export default function AgentsPage() {
     <ConfigPage>
       <ConfigPageHeader
         title="智能体配置"
-        subtitle="提示词、模型、执行模式与权限统一配置；由 Runtime Adapter 映射到 DSH、Codex、Kimi、Claude"
+        subtitle="设置团队成员使用的模型与职责。需求讨论和知识整理都通过对话完成。"
         actions={
           <>
             <Button type="button" onClick={() => void reloadConfigs()} disabled={reloading}>
@@ -219,7 +226,7 @@ export default function AgentsPage() {
                 key={agent.id}
                 active={selected?.id === agent.id}
                 disabled={disabled}
-                onClick={() => setSelectedId(agent.id)}
+                onClick={() => selectAgent(agent.id)}
                 leading={
                   <div className="relative shrink-0">
                     <ConfigAvatar label={agent.name} tone={disabled ? 'muted' : 'brand'} />
@@ -232,7 +239,7 @@ export default function AgentsPage() {
                   </div>
                 }
                 title={agent.name}
-                subtitle={`${ROLE_LABEL[agent.role] ?? agent.role}${agent.slug ? ` · ${agent.slug}` : ''}`}
+                subtitle={isKnowledgeLibrarianAgent(agent) ? '系统内置 · 知识库管理员' : `${ROLE_LABEL[agent.role] ?? agent.role}${agent.slug ? ` · ${agent.slug}` : ''}`}
               />
             );
           })}
@@ -253,6 +260,7 @@ export default function AgentsPage() {
 }
 
 function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
+  const builtinLibrarian = isKnowledgeLibrarianAgent(agent);
   const workspace = useWorkspaceStore((s) => s.workspace);
   const upsert = useAgentsStore((s) => s.upsert);
   const setAvailability = useAgentsStore((s) => s.setAvailability);
@@ -271,7 +279,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
   const [mode, setMode] = useState<'default' | 'plan'>(agent.runtime_preference?.mode ?? 'default');
   const [agentPreset, setAgentPreset] = useState(agent.runtime_preference?.agent_preset ?? DEFAULT_AGENT_PRESET);
   const [permissionPreset, setPermissionPreset] = useState(agent.policy?.permission_preset ?? DEFAULT_PERMISSION_PRESET);
-  const [descriptionText, setDescriptionText] = useState(agent.skills.join('，'));
+  const [descriptionText, setDescriptionText] = useState((agent.skills ?? []).join('，'));
   const [bindings, setBindings] = useState<RuntimeBinding[]>([]);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [agentPresets, setAgentPresets] = useState<AgentPresetEntry[]>([]);
@@ -291,12 +299,12 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
     setProvider(agent.model_override?.provider ?? '');
     setModel(agent.model_override?.model ?? '');
     setReasoningEffort(normalizeReasoningEffort(agent.model_override?.reasoning_effort));
-    setPreferred(normalizePreferred(agent.runtime_preference?.preferred));
+    setPreferred(builtinLibrarian ? agent.runtime_preference?.preferred ?? '' : normalizePreferred(agent.runtime_preference?.preferred));
     setMode(agent.runtime_preference?.mode ?? 'default');
     setAgentPreset(agent.runtime_preference?.agent_preset ?? DEFAULT_AGENT_PRESET);
     setPermissionPreset(agent.policy?.permission_preset ?? DEFAULT_PERMISSION_PRESET);
-    setDescriptionText(agent.skills.join('，'));
-  }, [agent]);
+    setDescriptionText((agent.skills ?? []).join('，'));
+  }, [agent, builtinLibrarian]);
 
   useEffect(() => {
     resetForm();
@@ -389,6 +397,10 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
   };
 
   const save = async () => {
+    if (builtinLibrarian && !preferred) {
+      toast.error('请先选择知识库管理员的运行方式');
+      return;
+    }
     setSaving(true);
     try {
       const policy: AgentPolicy = {
@@ -397,12 +409,12 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
         approval_policy: permissionPreset === 'danger-full-access' ? 'auto' : 'approve_high_risk',
       };
       const skills = descriptionText.trim() ? [descriptionText.trim()] : [];
-      const updated = await patchAgent(agent.id, {
+      const updated = await patchAgent(agent.id, editableAgentPatch(agent, {
         name: name.trim() || agent.name,
         role,
         instructions,
         skills,
-        runtime_preference: {
+        runtime_preference: builtinLibrarian ? { ...agent.runtime_preference, preferred } : {
           preferred,
           fallbacks: [],
           mode,
@@ -413,7 +425,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           : { provider, model, reasoning_effort: codexRuntime ? reasoningEffort : undefined },
         policy,
         expected_version: agent.version,
-      });
+      }));
       upsert(updated);
       toast.success('配置已保存');
     } catch (err) {
@@ -430,17 +442,24 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
   return (
     <ConfigPanel>
       <ConfigFormCard>
+        {builtinLibrarian && (
+          <div className="border-b border-border-subtle px-comfortable py-base text-body text-text-secondary">
+            系统内置的知识库管理员，负责接收团队成员的记录请求、整理知识并回答问题。这里只设置它使用的模型；
+            <Link to={`/chat?agent=${encodeURIComponent(agent.id)}`} className="text-brand-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary">与知识库管理员对话</Link>。
+          </div>
+        )}
         <ConfigToolbar>
           <div className="flex items-center gap-3 min-w-0 flex-wrap">
             <div className="flex items-center gap-2 text-caption text-text-secondary">
               <PresenceDot presence={enabled ? agent.presence : 'offline'} />
               <span>{enabled ? presenceText(agent.presence) : '调度已停用'}</span>
             </div>
-            {agent.slug ? (
+            {agent.slug && !builtinLibrarian ? (
               <span className="text-caption text-text-tertiary font-mono truncate">agents/{agent.slug}/</span>
             ) : null}
           </div>
           <div className="flex items-center gap-3 shrink-0">
+            {!builtinLibrarian && <>
             <span className="text-caption text-text-secondary">启用</span>
             <Toggle checked={enabled} onChange={onToggle} disabled={toggling} />
             <Button type="button" onClick={() => setSessionsOpen(true)} title="查看/重置该 Agent 的 Task 会话锚点">
@@ -456,6 +475,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
               <BellRing className="w-4 h-4" />
               唤醒
             </Button>
+            </>}
             <Button type="button" onClick={() => navigate(`/chat?agent=${agent.id}`)}>
               <MessageSquare className="w-4 h-4" />
               对话
@@ -467,16 +487,17 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-12 gap-x-5 gap-y-4">
             <label className="min-w-0 xl:col-span-4">
               <span className={configLabelCls}>名称</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} className={configInputCls} />
+              <input value={name} readOnly={builtinLibrarian} onChange={(e) => setName(e.target.value)} className={configInputCls} />
             </label>
             <label className="min-w-0 xl:col-span-3">
               <span className={configLabelCls}>角色</span>
-              <Select value={role} onChange={(e) => setRole(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
+              <Select value={role} disabled={builtinLibrarian} onChange={(e) => setRole(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
                 {ROLE_OPTIONS.map((r) => (
                   <option key={r.value} value={r.value}>
                     {r.label}
                   </option>
                 ))}
+                {!ROLE_OPTIONS.some((option) => option.value === role) && <option value={role}>{ROLE_LABEL[role] ?? role}</option>}
               </Select>
             </label>
             <label className="min-w-0 xl:col-span-5">
@@ -514,6 +535,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
             <label className="min-w-0 xl:col-span-8">
               <span className={configLabelCls}>Runtime</span>
               <Select value={preferred} onChange={(e) => changeRuntime(e.target.value)} className={configInputCls} wrapperClassName="mt-0">
+                {builtinLibrarian && !preferred && <option value="" disabled>请选择运行方式</option>}
                 {realBindings.map((b) => (
                   <option key={b.id} value={b.runtime_label}>
                     {runtimeDisplayLabel(b.runtime_label)}
@@ -546,6 +568,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
             <span className={configLabelCls}>描述</span>
             <input
               value={descriptionText}
+              readOnly={builtinLibrarian}
               onChange={(e) => setDescriptionText(e.target.value)}
               placeholder="简要说明该智能体的职责、专长与协作方式"
               className={configInputCls}
@@ -553,7 +576,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
           </label>
         </ConfigSection>
 
-        <ConfigSection title="运行策略" hint="统一策略会固化进每个 Run；切换策略后下一轮会创建新 provider 会话，避免污染旧上下文">
+        {!builtinLibrarian && <ConfigSection title="运行策略" hint="统一策略会固化进每个 Run；切换策略后下一轮会创建新 provider 会话，避免污染旧上下文">
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
             <label>
               <span className={configLabelCls}>执行模式</span>
@@ -609,13 +632,14 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
               </label>
             ) : null}
           </div>
-        </ConfigSection>
+        </ConfigSection>}
 
-        <ConfigSection title="系统提示词">
+        <ConfigSection title={builtinLibrarian ? '内置职责（由系统维护）' : '系统提示词'}>
           <label className="block">
             <span className={configLabelCls}>prompt.md</span>
             <textarea
               value={instructions}
+              readOnly={builtinLibrarian}
               onChange={(e) => setInstructions(e.target.value)}
               rows={16}
               className={`${configInputCls} resize-y font-mono text-caption leading-relaxed min-h-[280px]`}

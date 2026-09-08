@@ -9,6 +9,7 @@ describe('classifyTool', () => {
   it('精确表命中（大小写不敏感）', () => {
     expect(classifyTool('bash')).toBe('bash');
     expect(classifyTool('Bash')).toBe('bash');
+    expect(classifyTool('atw_knowledge')).toBe('knowledge');
     expect(classifyTool('SHELL')).toBe('bash');
     expect(classifyTool('pwsh')).toBe('bash');
     expect(classifyTool('zsh')).toBe('bash');
@@ -52,7 +53,7 @@ describe('classifyTool', () => {
   });
 
   it('FAMILY_TITLES 覆盖全族', () => {
-    expect(Object.keys(FAMILY_TITLES).sort()).toEqual(['bash', 'code', 'edit', 'others', 'read', 'search', 'write']);
+    expect(Object.keys(FAMILY_TITLES).sort()).toEqual(['bash', 'code', 'edit', 'knowledge', 'others', 'read', 'search', 'write']);
   });
 });
 

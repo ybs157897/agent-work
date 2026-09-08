@@ -1,3 +1,5 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import type { ApprovalRequest } from '../../api/types';
 import {
@@ -7,6 +9,8 @@ import {
   approvalReceipt,
   autoApproveEligible,
   cardAllowChoices,
+  ApprovalCard,
+  isTerminalRunStatus,
 } from './approval-card';
 
 const base: ApprovalRequest = {
@@ -48,6 +52,31 @@ describe('approvalReceipt', () => {
     const low = approvalReceipt({ ...base, risk: 'low', status: 'approved' });
     expect(low?.label).toBe('已批准 · bash');
   });
+});
+
+describe('terminal Run approval presentation', () => {
+  it('终态 Run 的历史 pending 审批只读，不再渲染允许或拒绝按钮', () => {
+    const html = renderToStaticMarkup(createElement(ApprovalCard, { approval: base, runStatus: 'cancelled' }));
+    expect(html).toContain('本次运行已结束');
+    expect(html).toContain('审批已不再可用');
+    expect(html).toContain('这次运行已经结束，无法继续处理这条审批请求。');
+    expect(html).not.toContain('允许一次');
+    expect(html).not.toContain('拒绝');
+    expect(html).not.toContain('<button');
+    expect(html).toContain('data-run-terminal="true"');
+  });
+
+  it('只把真实终态视为结束，过渡态仍保留审批资格', () => {
+    expect(isTerminalRunStatus('succeeded')).toBe(true);
+    expect(isTerminalRunStatus('failed')).toBe(true);
+    expect(isTerminalRunStatus('cancelled')).toBe(true);
+    expect(isTerminalRunStatus('interrupted')).toBe(true);
+    expect(isTerminalRunStatus('lost')).toBe(true);
+    expect(isTerminalRunStatus('cancelling')).toBe(false);
+    expect(isTerminalRunStatus('waiting_approval')).toBe(false);
+    expect(isTerminalRunStatus(undefined)).toBe(false);
+  });
+
 });
 
 describe('autoApproveEligible（低风险倒计时资格）', () => {

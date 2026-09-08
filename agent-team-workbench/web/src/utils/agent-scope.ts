@@ -1,10 +1,18 @@
 import type { AgentProfile } from '../api/types';
 
-/** 系统 Task Coordinator 不属于普通 Agent 列表、Chat 选人或 @ 候选。 */
+/** Coordinator 没有直接聊天入口；未知旧系统身份也保持受保护。 */
 export function isTaskCoordinatorAgent(agent: Pick<AgentProfile, 'is_system' | 'kind'>): boolean {
-  return agent.is_system === true || agent.kind === 'task_coordinator';
+  return agent.kind === 'task_coordinator' || (agent.is_system === true && !agent.kind);
+}
+
+export function isKnowledgeLibrarianAgent(agent: Pick<AgentProfile, 'kind'>): boolean {
+  return agent.kind === 'knowledge_librarian';
 }
 
 export function isUserManagedAgent(agent: Pick<AgentProfile, 'is_system' | 'kind'>): boolean {
-  return !isTaskCoordinatorAgent(agent);
+  return !agent.is_system && !isTaskCoordinatorAgent(agent) && !isKnowledgeLibrarianAgent(agent);
+}
+
+export function isChatAgent(agent: Pick<AgentProfile, 'is_system' | 'kind'>): boolean {
+  return isUserManagedAgent(agent) || isKnowledgeLibrarianAgent(agent);
 }

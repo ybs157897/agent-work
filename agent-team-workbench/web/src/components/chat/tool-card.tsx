@@ -39,6 +39,7 @@ export function toolIcon(tool?: string): LucideIcon {
 /** ToolCallStrip 标题：工具名转为可扫描的人类标题，缺失时回退到工具族标题。 */
 export function humanizeToolName(tool: string | undefined, family?: ToolFamily): string {
   const raw = tool?.trim();
+  if (raw?.toLowerCase() === 'atw_knowledge') return '知识库管理员';
   if (!raw) return FAMILY_TITLES[family ?? 'others'];
   return raw
     .split(/[_-]+/)

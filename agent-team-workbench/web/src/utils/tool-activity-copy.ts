@@ -16,6 +16,12 @@ function target(input: ToolActivityCopyInput): string {
 export function toolActivityTitle(input: ToolActivityCopyInput): string {
   const { family, state } = input;
   const tgt = target(input);
+  if (family === 'knowledge') {
+    if (state === 'running') return '知识库管理员正在处理';
+    if (state === 'error') return '知识处理未完成';
+    if (state === 'stopped') return '知识处理已停止';
+    return '知识库管理员已返回结果';
+  }
 
   if (state === 'running') {
     switch (family) {

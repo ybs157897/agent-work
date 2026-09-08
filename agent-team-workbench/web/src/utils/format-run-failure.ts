@@ -1,8 +1,30 @@
 /** 从 run.failure 原始 message 提取可读文案（OpenRouter/Codex 常嵌套 JSON）。 */
 export function formatRunFailureMessage(code?: string, message?: string): string {
-  const detail = extractFailureDetail(message);
+  const detail = isUpstreamInterface404(message)
+    ? '模型服务没有找到请求的接口（404）。请检查模型的接口地址和协议是否匹配。'
+    : extractFailureDetail(message);
   if (!detail) return code ? `${code}: 运行失败` : '运行失败';
   return code ? `${code}: ${detail}` : detail;
+}
+
+function isUpstreamInterface404(message?: string): boolean {
+  if (!message?.trim()) return false;
+  if (/unexpected\s+status\s+404\s+Not\s+Found/i.test(message)) return true;
+  if (/responseStreamDisconnected[\s\S]{0,240}(?:httpStatusCode|http_status_code)\s*[=:]\s*["']?404\b/i.test(message)) return true;
+  const parsed = tryParseJSON(message);
+  return parsed ? containsResponseStream404(parsed) : false;
+}
+
+function containsResponseStream404(value: unknown, streamDisconnected = false): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const streamContext = streamDisconnected
+    || record.type === 'responseStreamDisconnected'
+    || record.name === 'responseStreamDisconnected';
+  if (streamContext && (record.httpStatusCode === 404 || record.http_status_code === 404)) return true;
+  return Object.entries(record).some(([key, child]) =>
+    containsResponseStream404(child, streamContext || key === 'responseStreamDisconnected'),
+  );
 }
 
 function extractFailureDetail(message?: string): string | undefined {
