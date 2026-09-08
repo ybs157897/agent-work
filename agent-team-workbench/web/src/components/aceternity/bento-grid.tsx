@@ -28,14 +28,14 @@ export function BentoGridItem({
   return (
     <div
       className={cn(
-        'group/bento row-span-1 flex flex-col justify-between space-y-base rounded-card border border-border-subtle bg-surface-raised/90 p-base shadow-card transition duration-ink hover:-translate-y-0.5 hover:border-border-strong hover:shadow-level-2',
+        'group/bento row-span-1 flex flex-col justify-between space-y-base rounded-card border border-border-subtle bg-surface-raised/90 p-base shadow-card transition duration-motion hover:-translate-y-0.5 hover:border-border-strong hover:shadow-level-2',
         className,
       )}
     >
       {header}
-      <div className="relative z-[1] transition-transform duration-ink group-hover/bento:translate-x-0.5">
+      <div className="relative z-[1] transition-transform duration-motion group-hover/bento:translate-x-0.5">
         {icon}
-        {title != null && <div className="mb-tight mt-tight font-display text-h3 text-text-primary">{title}</div>}
+        {title != null && <div className="mb-tight mt-tight font-zh text-h3 text-text-primary">{title}</div>}
         {description != null && <div className={cn('text-body text-text-secondary', contentClassName)}>{description}</div>}
       </div>
     </div>

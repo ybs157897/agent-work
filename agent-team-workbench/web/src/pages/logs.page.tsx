@@ -18,7 +18,7 @@ export default function LogsPage() {
     <main className="page-shell">
       <header className="page-header">
         <div>
-          <p className="text-caption font-medium uppercase tracking-wider text-brand-primary">运行案牍</p>
+          <p className="text-caption font-medium uppercase tracking-wider text-brand-primary">运行记录</p>
           <h2 className="page-title">日志</h2>
         </div>
         <Button onClick={() => void refresh()}>
@@ -27,7 +27,7 @@ export default function LogsPage() {
         </Button>
       </header>
 
-      <section className="ink-paper-panel overflow-hidden rounded-card" aria-labelledby="log-register-title">
+      <section className="workbench-panel overflow-hidden rounded-card" aria-labelledby="log-register-title">
         <div className="flex items-end justify-between gap-base border-b border-border-subtle bg-surface-sunken/45 px-comfortable py-base">
           <div>
             <h3 id="log-register-title" className="text-h3 text-text-primary">活动登记簿</h3>
@@ -62,7 +62,7 @@ export default function LogsPage() {
                   <div
                     key={log.id}
                     role="row"
-                    className="grid grid-cols-[10rem_12rem_minmax(0,1fr)] gap-base border-b border-border-subtle/75 px-comfortable py-snug transition-colors duration-inkFast last:border-b-0 hover:bg-surface-base/70"
+                    className="grid grid-cols-[10rem_12rem_minmax(0,1fr)] gap-base border-b border-border-subtle/75 px-comfortable py-snug transition-colors duration-motionFast last:border-b-0 hover:bg-surface-base/70"
                   >
                     <time
                       role="cell"

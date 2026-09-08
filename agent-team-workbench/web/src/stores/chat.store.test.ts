@@ -1195,6 +1195,65 @@ describe('chat.store refresh 请求序号守卫', () => {
     vi.unstubAllGlobals();
   });
 
+  it('知识引用恢复历史时只在会话验证完成后报告成功，慢请求期间不创建新会话', async () => {
+    let resolveRecord: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => { resolveRecord = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).endsWith('/work-items/wi_deep')
+      ? pending : Promise.resolve(json({ items: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+    let settled = false;
+    const opened = useChatStore.getState().openConversation('wi_deep').then((value) => { settled = true; return value; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(useChatStore.getState().conversationId).toBeNull();
+    resolveRecord(json({ id: 'wi_deep', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: '知识追问', updated_at: '' }));
+    expect(await opened).toBe(true);
+    expect(useChatStore.getState().conversationId).toBe('wi_deep');
+    expect(fetchMock.mock.calls.every((call) => String(call[0]).includes('/work-items'))).toBe(true);
+  });
+
+  it('历史引用不可访问时返回失败而不把空白会话报告为成功', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 404 }))));
+    expect(await useChatStore.getState().openConversation('wi_missing')).toBe(false);
+    expect(useChatStore.getState().conversationId).toBeNull();
+    expect(useChatStore.getState().runs).toEqual([]);
+  });
+
+  it('历史会话必须等运行列表加载完成，活动Run才能参与后续发送判断', async () => {
+    let resolveRuns: (response: Response) => void = () => {};
+    const pendingRuns = new Promise<Response>((resolve) => { resolveRuns = resolve; });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('/runs')
+      ? pendingRuns : Promise.resolve(json({ id: 'wi_live', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: '运行中的会话', updated_at: '' }))));
+    let settled = false;
+    const opened = useChatStore.getState().openConversation('wi_live').then((value) => { settled = true; return value; });
+    await vi.waitFor(() => expect(useChatStore.getState().conversationId).toBe('wi_live'));
+    expect(settled).toBe(false);
+    resolveRuns(json({ items: [{ id: 'run_live', work_item_id: 'wi_live', status: 'running', created_at: '2026-09-08T00:00:00Z' }] }));
+    expect(await opened).toBe(true);
+    expect(useChatStore.getState().runs[0]?.status).toBe('running');
+  });
+
+  it('运行历史读取失败时不报告会话已就绪', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('/runs')
+      ? Promise.resolve(new Response('', { status: 503 }))
+      : Promise.resolve(json({ id: 'wi_history', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: '知识追问', updated_at: '' }))));
+    expect(await useChatStore.getState().openConversation('wi_history')).toBe(false);
+    expect(useChatStore.getState().runs).toEqual([]);
+  });
+
+  it('历史读取期间切换Agent会使旧恢复结果失效', async () => {
+    let resolveRecord: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => { resolveRecord = resolve; });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith('/work-items/wi_old')
+      ? pending : Promise.resolve(json({ items: [] }))));
+    const opened = useChatStore.getState().openConversation('wi_old');
+    useChatStore.getState().selectAgent('agent_2');
+    resolveRecord(json({ id: 'wi_old', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1', title: '旧引用' }));
+    expect(await opened).toBe(false);
+    expect(useChatStore.getState().agentId).toBe('agent_2');
+    expect(useChatStore.getState().conversationId).toBeNull();
+  });
+
   it('快速切换会话：慢返回的旧 refreshRuns 响应不覆盖新会话 runs', async () => {
     const runA = { id: 'run_a', work_item_id: 'wi_a', created_at: '2026-08-22T00:00:01Z' } as ExecutionRun;
     const runB = { id: 'run_b', work_item_id: 'wi_b', created_at: '2026-08-22T00:00:01Z' } as ExecutionRun;

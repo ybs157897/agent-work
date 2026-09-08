@@ -9,12 +9,12 @@ export function isChatPath(pathname: string): boolean {
   return pathname === '/chat' || pathname === '/task-chat' || pathname === '/task-chat/';
 }
 
-/** Task 列表与详情共用 Plane 白底工作面，不挂宣纸 mesh / 山水层。 */
+/** Task 列表与详情共用工作台全高工作面。 */
 export function isTasksPath(pathname: string): boolean {
   return pathname === '/tasks' || pathname.startsWith('/tasks/');
 }
 
-/** `<main>` 的滚动与皮肤：对话页挂 tx-scope；Task 工作区挂 plane-board-shell；其余保留宣纸 mesh。 */
+/** `<main>` 只负责路由滚动边界；主题由 LayoutShell 的 workbench-theme 提供。 */
 export function mainContentClassName(pathname: string): string {
   const tasksPath = isTasksPath(pathname);
   const fullBleed = isFullBleedPath(pathname) || tasksPath;
@@ -22,6 +22,6 @@ export function mainContentClassName(pathname: string): string {
   return [
     'relative isolate min-h-0 flex-1 focus:outline-none',
     fullBleed ? 'flex flex-col overflow-hidden' : 'overflow-y-auto',
-    chat ? 'tx-scope' : tasksPath ? 'plane-board-shell' : 'mesh-bg',
+    tasksPath ? 'plane-board-shell' : chat ? 'workbench-chat-surface' : 'workbench-main-surface',
   ].join(' ');
 }

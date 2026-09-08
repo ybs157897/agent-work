@@ -37,7 +37,7 @@ function ToastCard({ toast }: { toast: Toast }) {
     toast.kind === 'error' ? (
       <AlertCircle className="w-4 h-4 text-status-error shrink-0" />
     ) : toast.kind === 'success' ? (
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border border-status-success/45 font-display text-caption text-status-success">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm border border-status-success/45 font-zh text-caption text-status-success">
         成
       </span>
     ) : toast.kind === 'warning' ? (
@@ -48,7 +48,7 @@ function ToastCard({ toast }: { toast: Toast }) {
 
   return (
     <div
-      className="ink-paper-panel flex items-start gap-snug rounded-card p-snug shadow-level-3"
+      className="workbench-panel flex items-start gap-snug rounded-card p-snug shadow-level-3"
       role={toast.kind === 'error' ? 'alert' : 'status'}
     >
       {icon}

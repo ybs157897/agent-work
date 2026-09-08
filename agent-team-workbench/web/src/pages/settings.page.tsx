@@ -15,7 +15,7 @@ import {
 import type { AgentProfile, CoordinatorConfig, CoordinatorRuntime, ProbeResult, RuntimeBinding } from '../api/types';
 import { Drawer } from '../components/drawer';
 import { WorkspaceConnections } from '../components/workspace-connections';
-import { InkBentoGrid, InkBentoItem } from '../components/ink/ink-bento';
+import { BentoGrid, BentoGridItem } from '../components/aceternity/bento-grid';
 import { Toggle } from '../components/toggle';
 import { Button, Card, EmptyState, Input, Select, Skeleton } from '../components/ui';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
@@ -41,14 +41,14 @@ export default function SettingsPage() {
         <h2 className="page-title">设置</h2>
       </header>
 
-      <InkBentoGrid className="grid-cols-1 gap-snug md:auto-rows-auto md:grid-cols-2">
-        <InkBentoItem
+      <BentoGrid className="grid-cols-1 gap-snug md:auto-rows-auto md:grid-cols-2">
+        <BentoGridItem
           className="!justify-start !space-y-snug p-comfortable"
           title={
             <div className="flex items-start justify-between gap-snug">
               <div>
-                <p className="text-caption uppercase tracking-widest text-text-tertiary">卷宗 · Workspace</p>
-                <h3 className="mt-1 font-display text-h3 text-text-primary">{workspace?.name ?? '未加载'}</h3>
+                <p className="text-caption uppercase tracking-widest text-text-tertiary">工作区</p>
+                <h3 className="mt-1 font-zh text-h3 text-text-primary">{workspace?.name ?? '未加载'}</h3>
               </div>
               <Button size="sm" onClick={() => setEditingWs(true)}>
                 <Pencil className="w-3.5 h-3.5" />
@@ -65,13 +65,13 @@ export default function SettingsPage() {
           }
         />
 
-        <InkBentoItem
+        <BentoGridItem
           className="!justify-start !space-y-snug p-comfortable"
           title={
             <div className="flex items-start justify-between gap-snug">
               <div>
-                <p className="text-caption uppercase tracking-widest text-text-tertiary">脉象 · System Health</p>
-                <h3 className="mt-1 font-display text-h3 text-text-primary">系统健康</h3>
+                <p className="text-caption uppercase tracking-widest text-text-tertiary">系统状态</p>
+                <h3 className="mt-1 font-zh text-h3 text-text-primary">系统健康</h3>
               </div>
               <span className="text-caption text-text-tertiary tabular-nums">游标 {eventCursor}</span>
             </div>
@@ -97,7 +97,7 @@ export default function SettingsPage() {
             </div>
           }
         />
-      </InkBentoGrid>
+      </BentoGrid>
 
       {workspace && <WorkspaceEditModal open={editingWs} onClose={() => setEditingWs(false)} />}
 

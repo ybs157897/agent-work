@@ -33,7 +33,7 @@ export function Avatar({
   }
   return (
     <div
-      className={`${pickColor(name)} text-text-inverse flex items-center justify-center font-display shrink-0 rounded-button ${
+      className={`${pickColor(name)} text-text-inverse flex items-center justify-center font-zh shrink-0 rounded-button ${
         ring ? 'ring-2 ring-surface-raised shadow-sm' : ''
       }`}
       style={{ width: size, height: size, fontSize: size * 0.42 }}

@@ -18,9 +18,12 @@ describe('task conversation navigation', () => {
     expect(html).toContain('任务对话');
     expect(html).toContain('href="/tasks"');
     expect(html).toContain('href="/chat"');
-    expect(html).toMatch(/<main(?=[^>]*id="main-content")(?=[^>]*class="[^"]*tx-scope)[^>]*>/);
+    expect(html).toMatch(/<main(?=[^>]*id="main-content")(?=[^>]*class="[^"]*workbench-chat-surface)[^>]*>/);
     expect(html).not.toContain('<header');
     expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain('打开主导航');
+    expect(html).not.toContain('关闭主导航');
+    expect(html).toContain('data-theme="light"');
   });
 
   it('keeps the board as a separate destination', () => {
@@ -34,6 +37,7 @@ describe('task conversation navigation', () => {
     const html = renderShell('/knowledge');
     expect(html).toMatch(/<a(?=[^>]*href="\/knowledge")(?=[^>]*aria-current="page")[^>]*>/);
     expect(html).toContain('知识库');
-    expect(html).toContain('mesh-bg');
+    expect(html).toContain('workbench-main-surface');
+    expect(html).not.toContain('mesh-bg');
   });
 });

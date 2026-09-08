@@ -15,7 +15,6 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
         workspaces={workspaces}
         selectedWorkspaceId="ws_a"
         disabled={false}
-        expanded
         announcement=""
         onChange={() => undefined}
       />,
@@ -33,7 +32,6 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
         workspaces={workspaces}
         selectedWorkspaceId="ws_a"
         disabled
-        expanded
         announcement=""
         onChange={() => undefined}
       />,
@@ -41,20 +39,19 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
     expect(html).toContain('disabled');
   });
 
-  it('折叠态整壳 sr-only：select 保留在可访问树中（键盘入口），另有 tooltip', () => {
+  it('固定展开：select 与工作区标签始终保持可见', () => {
     const html = renderToStaticMarkup(
       <WorkspaceSelectorView
         workspaces={workspaces}
         selectedWorkspaceId="ws_a"
         disabled={false}
-        expanded={false}
         announcement=""
         onChange={() => undefined}
       />,
     );
-    expect(html).toContain('sr-only');
     expect(html).toContain('aria-label="切换工作区"');
     expect(html).toContain('<select');
+    expect(html).not.toMatch(/<select[^>]*sr-only/);
   });
 
   it('role=status + aria-live 播报区常驻，切换文案可被屏幕阅读器播报', () => {
@@ -63,7 +60,6 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
         workspaces={workspaces}
         selectedWorkspaceId="ws_b"
         disabled
-        expanded
         announcement="正在切换工作区…"
         onChange={() => undefined}
       />,

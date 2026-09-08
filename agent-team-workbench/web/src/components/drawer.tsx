@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { closeDialogOnEscape, useDialogInteraction } from './dialog-interaction';
-import { inkMotion } from '../design/motion';
+import { workbenchMotion } from '../design/motion';
 
 /**
  * 右侧滑入面板。带 title 时提供标准头行；自由内容形态保留独立关闭钮，
@@ -41,7 +41,7 @@ export function Drawer({
   };
 
   const { panelRef, closeButtonRef } = useDialogInteraction(dialogOpen, onClose);
-  const exitTransition = reducedMotion ? { duration: 0 } : { duration: inkMotion.duration.fast, ease: inkMotion.easeOut };
+  const exitTransition = reducedMotion ? { duration: 0 } : { duration: workbenchMotion.duration.fast, ease: workbenchMotion.easeOut };
   const taskSkin = skin === 'task' ? 'plane-board min-h-0 bg-surface-raised' : '';
 
   return createPortal(
@@ -54,7 +54,7 @@ export function Drawer({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                transition={{ duration: reducedMotion ? 0 : inkMotion.duration.fast, ease: inkMotion.easeOut }}
+                transition={{ duration: reducedMotion ? 0 : workbenchMotion.duration.fast, ease: workbenchMotion.easeOut }}
                 onClick={onClose}
                 aria-hidden="true"
                 className="fixed inset-0 z-40 bg-sidebar/30 backdrop-blur-sm"

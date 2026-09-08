@@ -36,7 +36,7 @@ export function TextGenerateEffect({
   }, [animate, duration, reduceMotion, words]);
 
   return (
-    <Tag className={cn('font-display text-text-primary', className)}>
+    <Tag className={cn('font-zh text-text-primary', className)}>
       <motion.span ref={scope}>
         {tokens.map((token, index) => (
           <Fragment key={`${token}-${index}`}>

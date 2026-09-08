@@ -3,7 +3,7 @@
  * 复刻 Tonki Labs LanguageGUI（MIT）的设计语言：浅蓝底、白色大圆角卡、
  * 亮蓝 accent、渐变球头像、slate 正文、拟物 widget 卡。
  * 色值只允许出现在本 CSS 层（design-tokens 门禁扫 TS/TSX），全部挂在
- * .lgui 作用域下，不污染工作台既有语义 token——与 tx-scope 同一手法。
+ * .lgui 作用域下，不污染工作台既有语义 token。
  */
 
 .lgui {
@@ -16,7 +16,7 @@
   --lg-accent: #2e7cf6;
   --lg-accent-deep: #1d5fd0;
   --lg-accent-soft: #dce8fe;
-  --lg-ink: #16233f;
+  --lg-text-strong: #16233f;
   --lg-text: #4a5a78;
   --lg-muted: #8b98b3;
   --lg-success: #1f9d61;
@@ -81,7 +81,7 @@
 }
 
 .lgui-brand-name {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 15px;
   font-weight: 650;
   letter-spacing: 0.01em;
@@ -149,7 +149,7 @@
 }
 
 .lgui-thread-title {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 13.5px;
   font-weight: 550;
   overflow: hidden;
@@ -185,7 +185,7 @@
 }
 
 .lgui-user-name {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 13px;
   font-weight: 600;
 }
@@ -226,7 +226,7 @@
 }
 
 .lgui-topbar-title {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 15px;
   font-weight: 650;
 }
@@ -318,7 +318,7 @@
 
 .lgui-tool-showcase h2 {
   margin-top: 3px;
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 20px;
   font-weight: 650;
   letter-spacing: -0.01em;
@@ -368,7 +368,7 @@
 }
 
 .lgui-prose strong {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-weight: 640;
 }
 
@@ -386,7 +386,7 @@
 .lgui-markdown h2,
 .lgui-markdown h3,
 .lgui-markdown h4 {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-family: inherit;
   line-height: 1.3;
   margin: 1.35em 0 0.45em;
@@ -402,7 +402,7 @@
 .lgui-markdown ol { padding-left: 1.55em; }
 .lgui-markdown li + li { margin-top: 0.25em; }
 .lgui-markdown a { color: var(--lg-accent-deep); text-decoration: underline; text-decoration-color: var(--lg-border-active); text-underline-offset: 3px; }
-.lgui-markdown strong { color: var(--lg-ink); font-weight: 650; }
+.lgui-markdown strong { color: var(--lg-text-strong); font-weight: 650; }
 .lgui-markdown blockquote { border-left: 3px solid var(--lg-border-active); color: var(--lg-text); padding: 8px 16px; }
 .lgui-markdown .chat-callout { border: 1px solid var(--lg-border-active); border-radius: 12px; background: var(--lg-surface-tint); padding: 10px 14px; }
 .lgui-markdown .chat-callout-title { color: var(--lg-accent-deep); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; margin: 0 0 2px; text-transform: uppercase; }
@@ -410,7 +410,7 @@
 .lgui-markdown :not(pre) > code { border: 1px solid var(--lg-border); border-radius: 5px; background: var(--lg-surface-tint); color: var(--lg-accent-deep); font-size: 0.9em; padding: 0.12em 0.35em; }
 .lgui-markdown .chat-table-wrap { border: 1px solid var(--lg-border); border-radius: 12px; box-shadow: var(--lg-shadow-card); margin: 1em 0; overflow-x: auto; }
 .lgui-markdown table { border-collapse: collapse; min-width: 100%; }
-.lgui-markdown th { background: var(--lg-surface-tint); color: var(--lg-ink); font-size: 12px; font-weight: 650; padding: 9px 12px; text-align: left; }
+.lgui-markdown th { background: var(--lg-surface-tint); color: var(--lg-text-strong); font-size: 12px; font-weight: 650; padding: 9px 12px; text-align: left; }
 .lgui-markdown td { border-top: 1px solid var(--lg-border); padding: 9px 12px; }
 
 /* ── widget 卡（回答即界面） ───────────────────────────────── */
@@ -442,7 +442,7 @@
 }
 
 .lgui-widget-title h4 {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 13px;
   font-weight: 650;
   letter-spacing: 0.02em;
@@ -465,7 +465,7 @@
 }
 
 .lgui-clock-city b {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 19px;
   font-weight: 680;
 }
@@ -487,7 +487,7 @@
 }
 
 .lgui-clock-time b {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   display: block;
   font-size: 34px;
   font-weight: 700;
@@ -501,7 +501,7 @@
 }
 
 .lgui-clock-dim b {
-  color: color-mix(in srgb, var(--lg-ink) 55%, var(--lg-muted));
+  color: color-mix(in srgb, var(--lg-text-strong) 55%, var(--lg-muted));
 }
 
 .lgui-clock-face {
@@ -518,7 +518,7 @@
 }
 
 .lgui-amount {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 36px;
   font-weight: 720;
   letter-spacing: -0.015em;
@@ -578,7 +578,7 @@
 }
 
 .lgui-fx-code b {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 14.5px;
 }
 
@@ -588,7 +588,7 @@
 }
 
 .lgui-fx-value {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 16px;
   font-weight: 660;
   font-variant-numeric: tabular-nums;
@@ -618,7 +618,7 @@
 }
 
 .lgui-table td:first-child {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-weight: 600;
 }
 
@@ -682,7 +682,7 @@
 .lgui-star:focus-visible { color: var(--lg-accent); outline: 2px solid var(--lg-border-active); outline-offset: 2px; }
 
 .lgui-rating-text b {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   display: block;
   font-size: 15px;
 }
@@ -813,7 +813,7 @@
   border: 1px solid var(--lg-border);
   border-radius: 13px;
   background: transparent;
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-family: inherit;
   font-size: 15px;
   outline: none;
@@ -875,7 +875,7 @@
 
 .lgui ::selection {
   background: var(--lg-accent-soft);
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
 }
 
 /* ── 真模型版新增：模型菜单/生成中/柱图/错误 ─────────────────── */
@@ -913,7 +913,7 @@
   border: none;
   border-radius: 10px;
   background: transparent;
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   cursor: pointer;
   font-family: inherit;
   font-size: 13px;
@@ -1014,7 +1014,7 @@
 }
 
 .lgui-chart-value {
-  color: var(--lg-ink);
+  color: var(--lg-text-strong);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   font-weight: 640;

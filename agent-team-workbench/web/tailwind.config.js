@@ -1,8 +1,4 @@
-/**
- * 主题 token 静态移植自原型 prototype/src/data/theme.json（单主题）。
- * 颜色以 CSS 变量通道形式定义（--color-* 在 index.css :root），
- * 与原型 tailwind.config.ts 生成的 hsl(var(--color-*) / <alpha-value>) 等价。
- */
+/** Theme tokens are defined as CSS HSL channels and shared by light/dark modes. */
 const withVar = (name) => `hsl(var(--color-${name}) / <alpha-value>)`;
 
 /** @type {import('tailwindcss').Config} */
@@ -55,7 +51,6 @@ export default {
         display: ['42px', { lineHeight: '1.05', letterSpacing: '-0.02em', fontWeight: '700' }],
       },
       fontFamily: {
-        display: ['FZKai-Z03', 'STKaiti', 'Kaiti SC', 'KaiTi', 'serif'],
         body: ['chironHeiHK', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
         zh: ['chironHeiHK', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
       },
@@ -83,16 +78,16 @@ export default {
         input: '6px',
       },
       boxShadow: {
-        'level-1': '0 1px 0 rgba(61,55,45,0.08), 0 8px 24px rgba(66,56,42,0.06)',
-        'level-2': '0 2px 0 rgba(61,55,45,0.10), 0 14px 34px rgba(66,56,42,0.11)',
-        'level-3': '0 18px 46px rgba(54,47,38,0.18)',
-        'level-4': '0 28px 64px rgba(48,42,34,0.24)',
-        card: '0 1px 0 rgba(61,55,45,0.08), 0 8px 24px rgba(66,56,42,0.06)',
+        'level-1': 'var(--shadow-level-1)',
+        'level-2': 'var(--shadow-level-2)',
+        'level-3': 'var(--shadow-level-3)',
+        'level-4': 'var(--shadow-level-4)',
+        card: 'var(--shadow-level-1)',
       },
       transitionDuration: {
-        inkFast: '140ms',
-        ink: '220ms',
-        inkSlow: '360ms',
+        motionFast: '140ms',
+        motion: '220ms',
+        motionSlow: '360ms',
       },
     },
   },

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc">
+  <title id="title">Weekly delivery preview</title>
+  <desc id="desc">A neutral bar chart showing delivery volume from Monday to Friday.</desc>
+  <rect width="960" height="540" fill="#f2f5fc"/>
+  <rect x="72" y="64" width="816" height="404" rx="20" fill="#ffffff" stroke="#e4eaf6"/>
+  <path d="M152 396H824M152 332H824M152 268H824M152 204H824M152 140H824" stroke="#e4eaf6"/>
+  <path d="M152 396V108" stroke="#b9ccf2"/>
+  <rect x="220" y="300" width="72" height="96" rx="8" fill="#9db8ff"/>
+  <rect x="340" y="252" width="72" height="144" rx="8" fill="#6d96fb"/>
+  <rect x="460" y="284" width="72" height="112" rx="8" fill="#4d7df7"/>
+  <rect x="580" y="204" width="72" height="192" rx="8" fill="#2e7cf6"/>
+  <rect x="700" y="220" width="72" height="176" rx="8" fill="#1d5fd0"/>
+  <g fill="#4a5a78" font-family="sans-serif" font-size="22" text-anchor="middle">
+    <text x="256" y="432">Mon</text><text x="376" y="432">Tue</text><text x="496" y="432">Wed</text><text x="616" y="432">Thu</text><text x="736" y="432">Fri</text>
+  </g>
+</svg>

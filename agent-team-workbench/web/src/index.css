@@ -7,44 +7,46 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
-    /* 主题色通道（theme.json → tailwind.config.js 的 hsl(var()) 引用） */
-    --color-brand-primary: 4 55% 38%;
-    --color-brand-accent: 4 60% 30%;
-    --color-brand-muted: 8 35% 91%;
-    --color-surface-base: 42 28% 94%;
-    --color-surface-warm: 40 26% 97%;
-    --color-surface-sunken: 38 18% 89%;
-    --color-surface-raised: 43 28% 98%;
-    --color-surface-glass: 42 24% 96%;
-    --color-sidebar: 150 8% 13%;
-    --color-sidebar-hover: 40 10% 19%;
-    --color-sidebar-border: 38 10% 25%;
-    --color-text-primary: 150 7% 16%;
-    --color-text-secondary: 90 5% 34%;
-    --color-text-tertiary: 60 4% 41%;
-    --color-text-muted: 60 4% 41%;
-    --color-text-inverse: 42 32% 96%;
-    --color-text-on-sidebar: 42 16% 72%;
-    --color-text-on-sidebar-active: 42 28% 94%;
-    --color-border-subtle: 38 13% 82%;
-    --color-border-strong: 34 12% 69%;
-    --color-status-success: 145 30% 34%;
-    --color-status-warning: 36 65% 42%;
-    --color-status-error: 2 58% 44%;
-    --color-status-info: 190 25% 38%;
-    --color-status-standby: 50 4% 56%;
-
-    /* 身份色阶：仅头像/归属标记（DESIGN.md Identity 条），值冻结自原 avatar 调色板 */
-    --color-identity-1: 4 55% 38%;
-    --color-identity-2: 190 25% 38%;
-    --color-identity-3: 145 30% 34%;
-    --color-identity-4: 94 22% 38%;
-    --color-identity-5: 215 18% 42%;
-    --color-identity-6: 36 55% 42%;
-    --color-identity-7: 60 6% 43%;
-    --color-identity-8: 345 28% 48%;
-
+  :root,
+  :root[data-workbench-theme='light'] {
+    /* LanguageGUI light palette. Values are HSL channels for Tailwind semantic utilities. */
+    --color-brand-primary: 217 91% 57%;
+    --color-brand-accent: 217 76% 44%;
+    --color-brand-muted: 217 86% 94%;
+    --color-surface-base: 220 50% 97%;
+    --color-surface-warm: 220 45% 99%;
+    --color-surface-sunken: 220 42% 94%;
+    --color-surface-raised: 0 0% 100%;
+    --color-surface-glass: 0 0% 100%;
+    --color-sidebar: 0 0% 100%;
+    --color-sidebar-hover: 220 48% 97%;
+    --color-sidebar-border: 220 38% 91%;
+    --color-text-primary: 222 48% 17%;
+    --color-text-secondary: 218 25% 38%;
+    --color-text-tertiary: 218 20% 46%;
+    --color-text-muted: 218 20% 46%;
+    --color-text-inverse: 0 0% 100%;
+    --color-text-on-sidebar: 218 25% 38%;
+    --color-text-on-sidebar-active: 222 48% 17%;
+    --color-border-subtle: 220 38% 91%;
+    --color-border-strong: 220 34% 79%;
+    --color-status-success: 152 55% 40%;
+    --color-status-warning: 36 86% 46%;
+    --color-status-error: 2 70% 50%;
+    --color-status-info: 199 75% 43%;
+    --color-status-standby: 218 12% 58%;
+    --color-identity-1: 217 91% 57%;
+    --color-identity-2: 199 75% 43%;
+    --color-identity-3: 152 55% 40%;
+    --color-identity-4: 142 64% 36%;
+    --color-identity-5: 260 60% 58%;
+    --color-identity-6: 30 78% 42%;
+    --color-identity-7: 218 20% 46%;
+    --color-identity-8: 330 60% 48%;
+    --shadow-level-1: 0 1px 2px hsl(221 45% 30% / 0.06), 0 10px 26px -12px hsl(221 45% 30% / 0.18), inset 0 1px 0 hsl(0 0% 100% / 0.8);
+    --shadow-level-2: 0 2px 6px hsl(221 45% 30% / 0.08), 0 16px 36px -14px hsl(221 45% 30% / 0.2), inset 0 1px 0 hsl(0 0% 100% / 0.86);
+    --shadow-level-3: 0 16px 40px -16px hsl(221 45% 30% / 0.2), inset 0 1px 0 hsl(0 0% 100% / 0.86);
+    --shadow-level-4: 0 24px 64px -22px hsl(221 45% 30% / 0.28), inset 0 1px 0 hsl(0 0% 100% / 0.86);
     --layout-safe-width: 1440px;
     --space-micro: 4px;
     --space-tight: 8px;
@@ -58,14 +60,55 @@
     --motion-normal: 220ms;
     --motion-slow: 360ms;
     --motion-atmospheric: 900ms;
-    --ease-ink-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-workbench-out: cubic-bezier(0.16, 1, 0.3, 1);
+    color-scheme: light;
+  }
+
+  :root[data-workbench-theme='dark'] {
+    --color-brand-primary: 214 94% 68%;
+    --color-brand-accent: 214 90% 61%;
+    --color-brand-muted: 217 55% 21%;
+    --color-surface-base: 222 28% 10%;
+    --color-surface-warm: 222 25% 12%;
+    --color-surface-sunken: 220 22% 16%;
+    --color-surface-raised: 221 24% 13%;
+    --color-surface-glass: 221 24% 13%;
+    --color-sidebar: 221 24% 13%;
+    --color-sidebar-hover: 220 22% 17%;
+    --color-sidebar-border: 220 18% 24%;
+    --color-text-primary: 214 34% 92%;
+    --color-text-secondary: 216 18% 73%;
+    --color-text-tertiary: 216 15% 63%;
+    --color-text-muted: 216 15% 63%;
+    --color-text-inverse: 222 42% 12%;
+    --color-text-on-sidebar: 216 18% 73%;
+    --color-text-on-sidebar-active: 214 34% 92%;
+    --color-border-subtle: 220 18% 24%;
+    --color-border-strong: 220 18% 34%;
+    --color-status-success: 152 55% 55%;
+    --color-status-warning: 38 90% 62%;
+    --color-status-error: 2 78% 68%;
+    --color-status-info: 199 80% 62%;
+    --color-status-standby: 218 14% 52%;
+    --color-identity-1: 214 94% 68%;
+    --color-identity-2: 199 80% 62%;
+    --color-identity-3: 152 55% 55%;
+    --color-identity-4: 142 64% 55%;
+    --color-identity-5: 260 70% 72%;
+    --color-identity-6: 30 85% 65%;
+    --color-identity-7: 216 18% 63%;
+    --color-identity-8: 330 70% 70%;
+    --shadow-level-1: 0 1px 2px hsl(222 45% 3% / 0.3), 0 14px 32px -18px hsl(222 55% 2% / 0.8), inset 0 1px 0 hsl(214 35% 92% / 0.04);
+    --shadow-level-2: 0 3px 10px hsl(222 45% 3% / 0.38), 0 20px 42px -20px hsl(222 55% 2% / 0.9), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    --shadow-level-3: 0 20px 52px -18px hsl(222 55% 2% / 0.9), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    --shadow-level-4: 0 28px 72px -24px hsl(222 55% 2% / 0.95), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    color-scheme: dark;
   }
 
   html,
   body {
     @apply h-full antialiased font-zh text-text-primary bg-surface-base;
-    background-image: url('./assets/ink/xuan-paper.webp');
-    background-size: 720px 720px;
+    background-image: none;
   }
 
   #root {
@@ -75,8 +118,8 @@
   h1,
   h2,
   h3 {
-    @apply font-display;
-    letter-spacing: 0.025em;
+    @apply font-zh;
+    letter-spacing: -0.011em;
   }
 
   :focus-visible {
@@ -106,54 +149,126 @@
     @apply text-body text-text-secondary max-w-2xl;
   }
 
-  .mesh-bg {
-    background-color: hsl(var(--color-surface-base) / 0.88);
-    background-image: url('./assets/ink/xuan-paper.webp');
-    background-size: 720px 720px;
+  .workbench-theme {
+    min-height: 100%;
+    background-color: hsl(var(--color-surface-base));
+    color: hsl(var(--color-text-primary));
   }
 
-  .ink-mountain-layer {
-    @apply pointer-events-none absolute inset-x-0 top-0 overflow-hidden;
-    height: 360px;
-    opacity: 0.2;
-    mix-blend-mode: multiply;
-    mask-image: linear-gradient(to bottom, black 0%, black 52%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, black 0%, black 52%, transparent 100%);
+  .workbench-theme[data-theme='light'] {
+    --color-brand-primary: 217 91% 57%;
+    --color-brand-accent: 217 76% 44%;
+    --color-brand-muted: 217 86% 94%;
+    --color-surface-base: 220 50% 97%;
+    --color-surface-warm: 220 45% 99%;
+    --color-surface-sunken: 220 42% 94%;
+    --color-surface-raised: 0 0% 100%;
+    --color-surface-glass: 0 0% 100%;
+    --color-sidebar: 0 0% 100%;
+    --color-sidebar-hover: 220 48% 97%;
+    --color-sidebar-border: 220 38% 91%;
+    --color-text-primary: 222 48% 17%;
+    --color-text-secondary: 218 25% 38%;
+    --color-text-tertiary: 218 20% 46%;
+    --color-text-muted: 218 20% 46%;
+    --color-text-inverse: 0 0% 100%;
+    --color-text-on-sidebar: 218 25% 38%;
+    --color-text-on-sidebar-active: 222 48% 17%;
+    --color-border-subtle: 220 38% 91%;
+    --color-border-strong: 220 34% 79%;
+    --color-status-success: 152 55% 40%;
+    --color-status-warning: 36 86% 46%;
+    --color-status-error: 2 70% 50%;
+    --color-status-info: 199 75% 43%;
+    --color-status-standby: 218 12% 58%;
+    --color-identity-1: 217 91% 57%;
+    --color-identity-2: 199 75% 43%;
+    --color-identity-3: 152 55% 40%;
+    --color-identity-4: 142 64% 36%;
+    --color-identity-5: 260 60% 58%;
+    --color-identity-6: 30 78% 42%;
+    --color-identity-7: 218 20% 46%;
+    --color-identity-8: 330 60% 48%;
+    --shadow-level-1: 0 1px 2px hsl(221 45% 30% / 0.06), 0 10px 26px -12px hsl(221 45% 30% / 0.18), inset 0 1px 0 hsl(0 0% 100% / 0.8);
+    --shadow-level-2: 0 2px 6px hsl(221 45% 30% / 0.08), 0 16px 36px -14px hsl(221 45% 30% / 0.2), inset 0 1px 0 hsl(0 0% 100% / 0.86);
+    --shadow-level-3: 0 16px 40px -16px hsl(221 45% 30% / 0.2), inset 0 1px 0 hsl(0 0% 100% / 0.86);
+    --shadow-level-4: 0 24px 64px -22px hsl(221 45% 30% / 0.28), inset 0 1px 0 hsl(0 0% 100% / 0.86);
+    color-scheme: light;
   }
 
-  .ink-mountain-layer img {
-    @apply absolute right-0 top-0 h-full w-auto max-w-none select-none object-contain object-right-top;
-    filter: grayscale(1) sepia(0.08) contrast(0.9);
+  .workbench-theme[data-theme='dark'] {
+    --color-brand-primary: 214 94% 68%;
+    --color-brand-accent: 214 90% 61%;
+    --color-brand-muted: 217 55% 21%;
+    --color-surface-base: 222 28% 10%;
+    --color-surface-warm: 222 25% 12%;
+    --color-surface-sunken: 220 22% 16%;
+    --color-surface-raised: 221 24% 13%;
+    --color-surface-glass: 221 24% 13%;
+    --color-sidebar: 221 24% 13%;
+    --color-sidebar-hover: 220 22% 17%;
+    --color-sidebar-border: 220 18% 24%;
+    --color-text-primary: 214 34% 92%;
+    --color-text-secondary: 216 18% 73%;
+    --color-text-tertiary: 216 15% 63%;
+    --color-text-muted: 216 15% 63%;
+    --color-text-inverse: 222 42% 12%;
+    --color-text-on-sidebar: 216 18% 73%;
+    --color-text-on-sidebar-active: 214 34% 92%;
+    --color-border-subtle: 220 18% 24%;
+    --color-border-strong: 220 18% 34%;
+    --color-status-success: 152 55% 55%;
+    --color-status-warning: 38 90% 62%;
+    --color-status-error: 2 78% 68%;
+    --color-status-info: 199 80% 62%;
+    --color-status-standby: 218 14% 52%;
+    --color-identity-1: 214 94% 68%;
+    --color-identity-2: 199 80% 62%;
+    --color-identity-3: 152 55% 55%;
+    --color-identity-4: 142 64% 55%;
+    --color-identity-5: 260 70% 72%;
+    --color-identity-6: 30 85% 65%;
+    --color-identity-7: 216 18% 63%;
+    --color-identity-8: 330 70% 70%;
+    --shadow-level-1: 0 1px 2px hsl(222 45% 3% / 0.3), 0 14px 32px -18px hsl(222 55% 2% / 0.8), inset 0 1px 0 hsl(214 35% 92% / 0.04);
+    --shadow-level-2: 0 3px 10px hsl(222 45% 3% / 0.38), 0 20px 42px -20px hsl(222 55% 2% / 0.9), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    --shadow-level-3: 0 20px 52px -18px hsl(222 55% 2% / 0.9), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    --shadow-level-4: 0 28px 72px -24px hsl(222 55% 2% / 0.95), inset 0 1px 0 hsl(214 35% 92% / 0.05);
+    color-scheme: dark;
+    background-color: hsl(var(--color-surface-base));
   }
 
-  #main-content > :not(.ink-mountain-layer) {
-    position: relative;
-    z-index: 1;
+  .workbench-main-surface,
+  .workbench-chat-surface {
+    background-color: hsl(var(--color-surface-base));
+    background-image: none;
   }
 
-  .ink-paper-panel {
-    @apply border border-border-subtle bg-surface-raised/90 shadow-card;
-    backdrop-filter: blur(2px);
+  .workbench-panel {
+    @apply border border-border-subtle bg-surface-raised shadow-card;
   }
 
-  .ink-hero-landscape {
-    @apply pointer-events-none absolute right-0 top-1/2 w-auto max-w-none -translate-y-1/2 select-none object-contain object-right;
-    height: 230px;
-    opacity: 0.2;
-    mix-blend-mode: multiply;
-    filter: grayscale(1) sepia(0.08) contrast(0.92);
-    mask-image: linear-gradient(to left, black 0%, black 62%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to left, black 0%, black 62%, transparent 100%);
+  .workbench-sidebar {
+    width: 240px;
+    background-color: hsl(var(--color-sidebar));
+    color: hsl(var(--color-text-on-sidebar));
   }
 
-  .ink-rule {
-    @apply h-px bg-border-subtle;
-    background-image: linear-gradient(to right, transparent, hsl(var(--color-text-primary) / 0.32), transparent);
+  @media (max-width: 1023px) {
+    .workbench-sidebar {
+      width: 208px;
+    }
+  }
+
+  @media (max-width: 639px) {
+    .workbench-sidebar {
+      width: 160px;
+    }
   }
 
   /*
-   * Plane 任务工作区皮肤：白/浅灰 SaaS 工作面，盖住宣纸山水。
-   * 颜色写在 CSS（design-tokens 门禁只扫 TS/TSX）；子树内语义 token 被局部覆盖。
+   * Task board layout keeps its own geometry, while its colors come from the
+   * same workbench theme as every other route.
    */
   .plane-board-shell {
     background-color: hsl(var(--color-surface-sunken));
@@ -184,33 +299,6 @@
   }
 
   .plane-board {
-    /* 局部覆盖语义色通道，使 Tailwind 语义 utility 在本页读成 Plane 白底 SaaS */
-    --color-brand-primary: 221 83% 53%;
-    --color-brand-accent: 221 70% 42%;
-    --color-brand-muted: 214 95% 93%;
-    --color-surface-base: 0 0% 100%;
-    --color-surface-warm: 210 20% 98%;
-    --color-surface-sunken: 220 14% 96%;
-    --color-surface-raised: 0 0% 100%;
-    --color-surface-glass: 0 0% 100%;
-    --color-text-primary: 220 13% 18%;
-    --color-text-secondary: 220 9% 40%;
-    --color-text-tertiary: 220 9% 44%;
-    --color-text-muted: 220 9% 44%;
-    --color-text-inverse: 0 0% 100%;
-    --color-border-subtle: 220 13% 91%;
-    --color-border-strong: 220 13% 84%;
-    --color-status-success: 142 64% 30%;
-    --color-status-warning: 38 92% 30%;
-    --color-status-error: 0 72% 51%;
-    --color-status-info: 199 89% 40%;
-    --color-status-standby: 220 9% 60%;
-    --radius-card: 6px;
-    --radius-control: 5px;
-    --plane-shadow-level-1: 0 1px 0 hsl(var(--color-text-primary) / 0.08), 0 8px 24px hsl(var(--color-text-primary) / 0.06);
-    --plane-shadow-level-2: 0 2px 0 hsl(var(--color-text-primary) / 0.1), 0 14px 34px hsl(var(--color-text-primary) / 0.11);
-    --plane-shadow-level-3: 0 18px 46px hsl(var(--color-text-primary) / 0.18);
-
     background-color: hsl(var(--color-surface-sunken));
     background-image: none;
     color: hsl(var(--color-text-primary));
@@ -224,18 +312,6 @@
   .plane-board h4 {
     font-family: theme('fontFamily.zh');
     letter-spacing: -0.01em;
-  }
-
-  .plane-board .shadow-level-1 {
-    box-shadow: var(--plane-shadow-level-1);
-  }
-
-  .plane-board .shadow-level-2 {
-    box-shadow: var(--plane-shadow-level-2);
-  }
-
-  .plane-board .shadow-level-3 {
-    box-shadow: var(--plane-shadow-level-3);
   }
 
   .plane-board-toolbar {
@@ -946,7 +1022,7 @@
 
 .chat-msg-actions {
   opacity: 0.72;
-  transition: opacity var(--motion-fast) var(--ease-ink-out);
+  transition: opacity var(--motion-fast) var(--ease-workbench-out);
 }
 
 .group:hover .chat-msg-actions,
@@ -1087,7 +1163,7 @@
   text-decoration: underline;
   text-decoration-color: hsl(var(--color-brand-primary) / 0.4);
   text-underline-offset: 2px;
-  transition: text-decoration-color var(--motion-fast) var(--ease-ink-out);
+  transition: text-decoration-color var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-prose a:hover {
@@ -1231,7 +1307,7 @@
 }
 
 .chat-table-wrap tbody tr {
-  transition: background-color var(--motion-fast) var(--ease-ink-out);
+  transition: background-color var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-table-wrap tbody tr:nth-child(even) {
@@ -1586,7 +1662,7 @@
 /* ---- Chat 审批卡（approval-card.tsx；tx 重设计：图标芯片/变体正文/倒计时/回执行） ---- */
 .chat-approval-card {
   @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised;
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
   container-type: inline-size;
   container-name: approval-card;
 }
@@ -2328,7 +2404,7 @@
   width: 14px;
   height: 14px;
   color: hsl(var(--color-text-tertiary));
-  transition: transform var(--motion-fast) var(--ease-ink-out);
+  transition: transform var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-review-finding[open] .chat-review-finding-chevron {
@@ -2609,7 +2685,7 @@ a.chat-review-location:hover,
   background: transparent;
   color: hsl(var(--color-text-tertiary));
   cursor: pointer;
-  transition: background-color var(--motion-fast) var(--ease-ink-out), color var(--motion-fast) var(--ease-ink-out);
+  transition: background-color var(--motion-fast) var(--ease-workbench-out), color var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-code-panel__action:hover {
@@ -2631,7 +2707,7 @@ a.chat-review-location:hover,
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
-  transition: background-color var(--motion-fast) var(--ease-ink-out), transform var(--motion-fast) var(--ease-ink-out);
+  transition: background-color var(--motion-fast) var(--ease-workbench-out), transform var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-code-panel__export:hover {
@@ -2752,114 +2828,7 @@ a.chat-review-location:hover,
   color: hsl(var(--color-text-secondary));
 }
 
-/* ---- tx：正文独立暗色皮肤（纸墨倒置；决策见 notes/implemented/feature/2026-08-26-tx-transcript-standalone-skin.md） ----
-   作用域覆写 --color-* 语义层：Tailwind hsl(var(--color-*)/<alpha>) 通道让正文内
-   全部语义工具类与 chat-* 组件类自动换肤；色字面量只允许出现在本 CSS 层
-   （design-tokens 门禁扫 TS/TSX，不放宽）。
-   挂载：/chat 上 layout-shell 的 <main> + ChatPage 根；壳/面边界见
-   notes/implemented/feature/2026-08-27-tx-shell-surface-adapt.md。 */
-.tx-scope {
-  /* 松烟墨三阶层深：stream 面 → 卡面 → 凹陷 */
-  --color-surface-base: 224 16% 7%;
-  --color-surface-warm: 225 15% 9%;
-  --color-surface-sunken: 226 18% 5%;
-  --color-surface-raised: 225 14% 11%;
-  --color-surface-glass: 225 16% 10%;
-
-  --color-text-primary: 220 22% 93%;
-  --color-text-secondary: 220 13% 72%;
-  --color-text-tertiary: 220 10% 56%;
-  --color-text-muted: 220 10% 56%;
-  --color-text-inverse: 224 18% 8%;
-  --color-text-on-sidebar: 220 12% 62%;
-  --color-text-on-sidebar-active: 220 22% 93%;
-
-  --color-border-subtle: 222 13% 17%;
-  --color-border-strong: 222 12% 25%;
-
-  /* 正文唯一强调色 = 行动绿（批准 CTA / 运行态）。 */
-  --color-brand-primary: 152 55% 46%;
-  --color-brand-accent: 152 50% 38%;
-  --color-brand-muted: 152 38% 16%;
-
-  --color-status-success: 152 55% 48%;
-  --color-status-warning: 38 85% 56%;
-  --color-status-error: 2 70% 60%;
-  --color-status-info: 199 75% 58%;
-  --color-status-standby: 220 10% 44%;
-
-  /* 身份色阶：保留原色相，亮度抬到暗底可读区间 */
-  --color-identity-1: 8 65% 60%;
-  --color-identity-2: 195 55% 60%;
-  --color-identity-3: 145 45% 55%;
-  --color-identity-4: 90 40% 58%;
-  --color-identity-5: 215 55% 65%;
-  --color-identity-6: 36 70% 58%;
-  --color-identity-7: 60 6% 55%;
-  --color-identity-8: 345 55% 62%;
-
-  /* 壳层 token 在正文内不可达，给暗色兜底防光值渗入 */
-  --color-sidebar: 225 16% 8%;
-  --color-sidebar-hover: 225 14% 14%;
-  --color-sidebar-border: 222 13% 20%;
-
-  /* tx 阴影 */
-  --tx-shadow-card:
-    0 1px 2px hsl(226 30% 2% / 0.6),
-    0 8px 24px -12px hsl(226 40% 2% / 0.7),
-    inset 0 1px 0 hsl(220 30% 96% / 0.04);
-  --tx-shadow-pop:
-    0 12px 40px -12px hsl(226 40% 2% / 0.8),
-    inset 0 1px 0 hsl(220 30% 96% / 0.05);
-
-  background-color: hsl(var(--color-surface-base));
-  background-image: none;
-  color: hsl(var(--color-text-primary));
-}
-
-/* 暗面选区与滚动条 */
-.tx-scope ::selection {
-  background-color: hsl(var(--color-brand-primary) / 0.28);
-  color: hsl(var(--color-text-primary));
-}
-
-.tx-scope * {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--color-border-strong) / 0.6) transparent;
-}
-
-.tx-scope ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.tx-scope ::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
-  border-radius: 9999px;
-  background-clip: padding-box;
-  background-color: hsl(var(--color-border-strong) / 0.6);
-}
-
-.tx-scope ::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-/* 水墨暖影工具类在暗面上失真：正文内统一换 tx 暗影 */
-.tx-scope .shadow-card {
-  box-shadow: var(--tx-shadow-card);
-}
-
-.tx-scope .shadow-level-1,
-.tx-scope .shadow-level-2 {
-  box-shadow: var(--tx-shadow-card);
-}
-
-.tx-scope .shadow-level-3,
-.tx-scope .shadow-level-4 {
-  box-shadow: var(--tx-shadow-pop);
-}
-
-/* ---- tx 布局刀：紧凑任务列表 / 一体化输入卡 ---- */
+/* ---- LanguageGUI layout primitives: compact controls and reading surfaces ---- */
 
 /* 左栏 Agent 切换排：头像 chip，选中用品牌微剂量描边 */
 .chat-agent-chip {
@@ -2951,13 +2920,13 @@ a.chat-review-location:hover,
    input 显式透明底——压掉 Chrome 表单默认 Field 白（bg utility 失效时的兜底）。 */
 .chat-composer {
   @apply relative rounded-xl border border-border-strong bg-surface-raised;
-  box-shadow: var(--tx-shadow-card);
-  transition: border-color var(--motion-fast) var(--ease-ink-out), box-shadow var(--motion-fast) var(--ease-ink-out);
+  box-shadow: var(--shadow-level-1);
+  transition: border-color var(--motion-fast) var(--ease-workbench-out), box-shadow var(--motion-fast) var(--ease-workbench-out);
 }
 
 .chat-composer:focus-within {
   border-color: hsl(var(--color-brand-primary) / 0.45);
-  box-shadow: 0 0 0 3px hsl(var(--color-brand-primary) / 0.15), var(--tx-shadow-card);
+  box-shadow: 0 0 0 3px hsl(var(--color-brand-primary) / 0.15), var(--shadow-level-1);
 }
 
 .chat-composer-input {
@@ -3068,268 +3037,173 @@ a.chat-review-location:hover,
   @apply text-status-success;
 }
 
-/* 代码语法五色板（克制的暗色高亮；全局 github 亮色主题在暗底失明，作用域内覆写） */
-.tx-scope {
-  --tx-syntax-key: 199 70% 62%;  /* 关键字/标签：青 */
-  --tx-syntax-str: 152 38% 60%;  /* 字符串/正则：灰绿 */
-  --tx-syntax-num: 36 75% 62%;   /* 数字/字面量：琥珀 */
-  --tx-syntax-fn: 220 25% 88%;   /* 函数/类型名：亮 */
-  --tx-syntax-comment: 220 10% 56%;
+/* Dark syntax values are scoped to the shared workbench theme. */
+.workbench-theme[data-theme='dark'] {
+  --syntax-key: 210 92% 72%;
+  --syntax-str: 152 52% 66%;
+  --syntax-num: 38 90% 68%;
+  --syntax-fn: 220 35% 86%;
+  --syntax-comment: 216 14% 58%;
 }
 
-.tx-scope .hljs {
+.workbench-theme[data-theme='dark'] .hljs {
   color: hsl(var(--color-text-primary));
   background: transparent;
 }
 
-.tx-scope .hljs-comment,
-.tx-scope .hljs-quote {
-  color: hsl(var(--tx-syntax-comment));
+.workbench-theme[data-theme='dark'] .hljs-comment,
+.workbench-theme[data-theme='dark'] .hljs-quote {
+  color: hsl(var(--syntax-comment));
   font-style: italic;
 }
 
-.tx-scope .hljs-keyword,
-.tx-scope .hljs-selector-tag,
-.tx-scope .hljs-doctag,
-.tx-scope .hljs-tag,
-.tx-scope .hljs-name,
-.tx-scope .hljs-meta .hljs-keyword {
-  color: hsl(var(--tx-syntax-key));
+.workbench-theme[data-theme='dark'] .hljs-keyword,
+.workbench-theme[data-theme='dark'] .hljs-selector-tag,
+.workbench-theme[data-theme='dark'] .hljs-doctag,
+.workbench-theme[data-theme='dark'] .hljs-tag,
+.workbench-theme[data-theme='dark'] .hljs-name,
+.workbench-theme[data-theme='dark'] .hljs-meta .hljs-keyword {
+  color: hsl(var(--syntax-key));
 }
 
-.tx-scope .hljs-string,
-.tx-scope .hljs-regexp,
-.tx-scope .hljs-char.escape_,
-.tx-scope .hljs-meta .hljs-string {
-  color: hsl(var(--tx-syntax-str));
+.workbench-theme[data-theme='dark'] .hljs-string,
+.workbench-theme[data-theme='dark'] .hljs-regexp,
+.workbench-theme[data-theme='dark'] .hljs-char.escape_,
+.workbench-theme[data-theme='dark'] .hljs-meta .hljs-string {
+  color: hsl(var(--syntax-str));
 }
 
-.tx-scope .hljs-number,
-.tx-scope .hljs-literal,
-.tx-scope .hljs-symbol,
-.tx-scope .hljs-bullet,
-.tx-scope .hljs-variable.constant_,
-.tx-scope .hljs-attribute {
-  color: hsl(var(--tx-syntax-num));
+.workbench-theme[data-theme='dark'] .hljs-number,
+.workbench-theme[data-theme='dark'] .hljs-literal,
+.workbench-theme[data-theme='dark'] .hljs-symbol,
+.workbench-theme[data-theme='dark'] .hljs-bullet,
+.workbench-theme[data-theme='dark'] .hljs-variable.constant_,
+.workbench-theme[data-theme='dark'] .hljs-attribute {
+  color: hsl(var(--syntax-num));
 }
 
-.tx-scope .hljs-title,
-.tx-scope .hljs-title.function_,
-.tx-scope .hljs-title.class_,
-.tx-scope .hljs-title.class_.inherited__,
-.tx-scope .hljs-built_in,
-.tx-scope .hljs-type,
-.tx-scope .hljs-selector-id,
-.tx-scope .hljs-selector-class,
-.tx-scope .hljs-section {
-  color: hsl(var(--tx-syntax-fn));
+.workbench-theme[data-theme='dark'] .hljs-title,
+.workbench-theme[data-theme='dark'] .hljs-title.function_,
+.workbench-theme[data-theme='dark'] .hljs-title.class_,
+.workbench-theme[data-theme='dark'] .hljs-title.class_.inherited__,
+.workbench-theme[data-theme='dark'] .hljs-built_in,
+.workbench-theme[data-theme='dark'] .hljs-type,
+.workbench-theme[data-theme='dark'] .hljs-selector-id,
+.workbench-theme[data-theme='dark'] .hljs-selector-class,
+.workbench-theme[data-theme='dark'] .hljs-section {
+  color: hsl(var(--syntax-fn));
 }
 
-.tx-scope .hljs-attr,
-.tx-scope .hljs-property,
-.tx-scope .hljs-params,
-.tx-scope .hljs-variable,
-.tx-scope .hljs-variable.language_ {
+.workbench-theme[data-theme='dark'] .hljs-attr,
+.workbench-theme[data-theme='dark'] .hljs-property,
+.workbench-theme[data-theme='dark'] .hljs-params,
+.workbench-theme[data-theme='dark'] .hljs-variable,
+.workbench-theme[data-theme='dark'] .hljs-variable.language_ {
   color: hsl(var(--color-text-secondary));
 }
 
-.tx-scope .hljs-emphasis {
+.workbench-theme[data-theme='dark'] .hljs-emphasis {
   font-style: italic;
 }
 
-.tx-scope .hljs-strong {
+.workbench-theme[data-theme='dark'] .hljs-strong {
   font-weight: 600;
 }
 
-.tx-scope .hljs-addition {
+.workbench-theme[data-theme='dark'] .hljs-addition {
   color: hsl(var(--color-status-success));
   background: hsl(var(--color-status-success) / 0.12);
 }
 
-.tx-scope .hljs-deletion {
+.workbench-theme[data-theme='dark'] .hljs-deletion {
   color: hsl(var(--color-status-error));
   background: hsl(var(--color-status-error) / 0.12);
 }
 
-/* ---- LanguageGUI production chat skin ----------------------------------
-   ChatPage keeps the tx-scope boundary for the existing route layout. This
-   narrower selector remaps only the real chat surface to the accepted
-   LanguageGUI light palette; all transcript segment behavior remains intact. */
-.tx-scope.chat-languagegui-skin {
-  --color-surface-base: 220 50% 97%;
-  --color-surface-warm: 220 45% 99%;
-  --color-surface-sunken: 220 42% 94%;
-  --color-surface-raised: 0 0% 100%;
-  --color-surface-glass: 0 0% 100%;
-
-  --color-text-primary: 222 48% 17%;
-  --color-text-secondary: 218 25% 38%;
-  --color-text-tertiary: 218 20% 46%;
-  --color-text-muted: 218 20% 46%;
-  --color-text-inverse: 0 0% 100%;
-  --color-text-on-sidebar: 218 25% 38%;
-  --color-text-on-sidebar-active: 222 48% 17%;
-
-  --color-border-subtle: 220 38% 91%;
-  --color-border-strong: 220 34% 79%;
-
-  --color-brand-primary: 217 91% 57%;
-  --color-brand-accent: 217 76% 44%;
-  --color-brand-muted: 217 86% 94%;
-
-  /* Status hues retain their meaning while the decorative brand becomes blue. */
-  --color-status-success: 152 55% 40%;
-  --color-status-warning: 36 86% 46%;
-  --color-status-error: 2 70% 50%;
-  --color-status-info: 199 75% 43%;
-  --color-status-standby: 218 12% 58%;
-
-  --color-sidebar: 0 0% 100%;
-  --color-sidebar-hover: 220 48% 97%;
-  --color-sidebar-border: 220 38% 91%;
-
-  --tx-shadow-card:
-    0 1px 2px hsl(221 45% 30% / 0.06),
-    0 10px 26px -12px hsl(221 45% 30% / 0.18),
-    inset 0 1px 0 hsl(0 0% 100% / 0.8);
-  --tx-shadow-pop:
-    0 16px 40px -16px hsl(221 45% 30% / 0.2),
-    inset 0 1px 0 hsl(0 0% 100% / 0.86);
-
-  /* Light syntax values consumed by the existing scoped .hljs rules above. */
-  --tx-syntax-key: 217 75% 40%;
-  --tx-syntax-str: 152 55% 32%;
-  --tx-syntax-num: 30 78% 39%;
-  --tx-syntax-fn: 222 48% 27%;
-  --tx-syntax-comment: 218 16% 50%;
-
+/* ---- LanguageGUI production chat layout --------------------------------
+   Chat owns the transcript geometry while semantic colors come from the
+   shared workbench theme. */
+.chat-languagegui-skin {
   background-color: hsl(var(--color-surface-base));
   background-image: none;
   color: hsl(var(--color-text-primary));
 }
 
-.tx-scope.chat-languagegui-skin[data-theme='dark'] {
-  --color-surface-base: 222 28% 10%;
-  --color-surface-warm: 222 25% 12%;
-  --color-surface-sunken: 220 22% 16%;
-  --color-surface-raised: 221 24% 13%;
-  --color-surface-glass: 221 24% 13%;
-
-  --color-text-primary: 214 34% 92%;
-  --color-text-secondary: 216 18% 73%;
-  --color-text-tertiary: 216 15% 63%;
-  --color-text-muted: 216 15% 63%;
-  --color-text-inverse: 222 42% 12%;
-  --color-text-on-sidebar: 216 18% 73%;
-  --color-text-on-sidebar-active: 214 34% 92%;
-
-  --color-border-subtle: 220 18% 24%;
-  --color-border-strong: 220 18% 34%;
-
-  --color-brand-primary: 214 94% 68%;
-  --color-brand-accent: 214 90% 61%;
-  --color-brand-muted: 217 55% 21%;
-
-  --color-status-success: 152 55% 55%;
-  --color-status-warning: 38 90% 62%;
-  --color-status-error: 2 78% 68%;
-  --color-status-info: 199 80% 62%;
-  --color-status-standby: 218 14% 52%;
-
-  --color-sidebar: 221 24% 13%;
-  --color-sidebar-hover: 220 22% 17%;
-  --color-sidebar-border: 220 18% 24%;
-
-  --tx-shadow-card:
-    0 1px 2px hsl(222 45% 3% / 0.3),
-    0 14px 32px -18px hsl(222 55% 2% / 0.8),
-    inset 0 1px 0 hsl(214 35% 92% / 0.04);
-  --tx-shadow-pop:
-    0 20px 52px -18px hsl(222 55% 2% / 0.9),
-    inset 0 1px 0 hsl(214 35% 92% / 0.05);
-
-  --tx-syntax-key: 210 92% 72%;
-  --tx-syntax-str: 152 52% 66%;
-  --tx-syntax-num: 38 90% 68%;
-  --tx-syntax-fn: 220 35% 86%;
-  --tx-syntax-comment: 216 14% 58%;
-}
-
-.tx-scope.chat-languagegui-skin .chat-languagegui-sidebar {
+.chat-languagegui-skin .chat-languagegui-sidebar {
   border-color: hsl(var(--color-border-subtle));
   background: hsl(var(--color-surface-raised));
 }
 
-.tx-scope.chat-languagegui-skin .chat-languagegui-main {
+.chat-languagegui-skin .chat-languagegui-main {
   min-width: 0;
   background: hsl(var(--color-surface-base));
 }
 
-.tx-scope.chat-languagegui-skin .chat-chrome {
+.chat-languagegui-skin .chat-chrome {
   border-color: hsl(var(--color-border-subtle));
   background: hsl(var(--color-surface-raised) / 0.92);
 }
 
-.tx-scope.chat-languagegui-skin .chat-languagegui-transcript {
+.chat-languagegui-skin .chat-languagegui-transcript {
   background: hsl(var(--color-surface-base));
 }
 
-.tx-scope.chat-languagegui-skin .chat-thread,
-.tx-scope.chat-languagegui-skin .chat-composer-stack {
+.chat-languagegui-skin .chat-thread,
+.chat-languagegui-skin .chat-composer-stack {
   width: 100%;
   max-width: 920px;
   margin-inline: auto;
 }
 
-.tx-scope.chat-languagegui-skin .chat-user-turn {
+.chat-languagegui-skin .chat-user-turn {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
 }
 
-.tx-scope.chat-languagegui-skin .chat-user-card {
+.chat-languagegui-skin .chat-user-card {
   width: fit-content;
   max-width: min(520px, 68%);
   padding: 12px 16px;
   border: 1px solid hsl(var(--color-border-subtle));
   border-radius: 20px;
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
   color: hsl(var(--color-text-primary));
 }
 
-.tx-scope.chat-languagegui-skin .chat-user-turn .chat-msg-actions {
+.chat-languagegui-skin .chat-user-turn .chat-msg-actions {
   align-self: flex-end;
 }
 
-.tx-scope.chat-languagegui-skin .chat-assistant-turn .chat-prose {
+.chat-languagegui-skin .chat-assistant-turn .chat-prose {
   font-size: 15.5px;
   line-height: 1.72;
 }
 
-.tx-scope.chat-languagegui-skin .chat-assistant-turn .chat-msg-actions {
+.chat-languagegui-skin .chat-assistant-turn .chat-msg-actions {
   justify-content: flex-start;
 }
 
-.tx-scope.chat-languagegui-skin .chat-bottom-region {
+.chat-languagegui-skin .chat-bottom-region {
   border-top: 0;
   background: hsl(var(--color-surface-base) / 0.9);
   padding-top: 8px;
 }
 
-.tx-scope.chat-languagegui-skin .chat-composer {
+.chat-languagegui-skin .chat-composer {
   border-color: hsl(var(--color-border-subtle));
   border-radius: 22px;
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-pop);
+  box-shadow: var(--shadow-level-3);
 }
 
-.tx-scope.chat-languagegui-skin .chat-composer:focus-within {
+.chat-languagegui-skin .chat-composer:focus-within {
   border-color: hsl(var(--color-brand-primary) / 0.5);
-  box-shadow: var(--tx-shadow-pop);
+  box-shadow: var(--shadow-level-3);
 }
 
-.tx-scope.chat-languagegui-skin .chat-composer-input {
+.chat-languagegui-skin .chat-composer-input {
   box-sizing: border-box;
   min-height: 2.75rem;
   margin: 8px 12px 0;
@@ -3340,50 +3214,102 @@ a.chat-review-location:hover,
   padding: 10px 12px 8px;
 }
 
-.tx-scope.chat-languagegui-skin .chat-composer-input:focus-visible {
+.chat-languagegui-skin .chat-composer-input:focus-visible {
   border-color: hsl(var(--color-brand-primary) / 0.55);
   box-shadow: 0 0 0 3px hsl(var(--color-brand-primary) / 0.13);
 }
 
-.tx-scope.chat-languagegui-skin .chat-composer-queue {
+.chat-languagegui-skin .chat-composer-queue {
   border-bottom-color: hsl(var(--color-border-subtle));
   background: hsl(var(--color-surface-sunken) / 0.62);
 }
 
-.tx-scope.chat-languagegui-skin .chat-activity,
-.tx-scope.chat-languagegui-skin .chat-reasoning-panel,
-.tx-scope.chat-languagegui-skin .chat-workflow,
-.tx-scope.chat-languagegui-skin .chat-diff,
-.tx-scope.chat-languagegui-skin .chat-approval-card {
+.chat-languagegui-skin .chat-activity,
+.chat-languagegui-skin .chat-reasoning-panel,
+.chat-languagegui-skin .chat-workflow,
+.chat-languagegui-skin .chat-diff,
+.chat-languagegui-skin .chat-approval-card {
   border-color: hsl(var(--color-border-subtle));
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
 }
 
-.tx-scope.chat-languagegui-skin .chat-code-panel,
-.tx-scope.chat-languagegui-skin .chat-mermaid,
-.tx-scope.chat-languagegui-skin .chat-mermaid-loading,
-.tx-scope.chat-languagegui-skin .chat-mermaid-fallback,
-.tx-scope.chat-languagegui-skin .chat-table-wrap {
+.chat-languagegui-skin .chat-code-panel,
+.chat-languagegui-skin .chat-mermaid,
+.chat-languagegui-skin .chat-mermaid-loading,
+.chat-languagegui-skin .chat-mermaid-fallback,
+.chat-languagegui-skin .chat-table-wrap {
   border-color: hsl(var(--color-border-subtle));
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
 }
 
-.tx-scope.chat-languagegui-skin .chat-code-panel__toolbar,
-.tx-scope.chat-languagegui-skin .chat-diff-head,
-.tx-scope.chat-languagegui-skin .chat-diff-file-head,
-.tx-scope.chat-languagegui-skin .chat-table-wrap thead {
+.chat-languagegui-skin .chat-code-panel__toolbar,
+.chat-languagegui-skin .chat-diff-head,
+.chat-languagegui-skin .chat-diff-file-head,
+.chat-languagegui-skin .chat-table-wrap thead {
   background: hsl(var(--color-surface-sunken) / 0.62);
 }
 
-.tx-scope.chat-languagegui-skin .chat-code-panel__pre {
+.chat-languagegui-skin .chat-code-panel__pre {
   background: hsl(var(--color-surface-raised));
   color: hsl(var(--color-text-primary));
 }
 
-.tx-scope.chat-languagegui-skin .chat-workflow-proposal-head:hover,
-.tx-scope.chat-languagegui-skin .chat-activity-head:hover,
-.tx-scope.chat-languagegui-skin .chat-reasoning-panel-head:hover {
+.chat-languagegui-skin .chat-workflow-proposal-head:hover,
+.chat-languagegui-skin .chat-activity-head:hover,
+.chat-languagegui-skin .chat-reasoning-panel-head:hover {
   background: hsl(var(--color-surface-base));
+}
+
+/* Keep the shell navigation visible while giving Chat's inner rail a usable
+   narrow layout. The inner rail becomes a bounded scroll area above the
+   reading pane instead of squeezing the transcript into a sliver. */
+@media (max-width: 1023px) {
+  .chat-languagegui-skin {
+    flex-direction: column;
+  }
+
+  .chat-languagegui-skin > .chat-languagegui-sidebar {
+    width: 100%;
+    max-height: 14rem;
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--color-border-subtle));
+  }
+
+  .chat-languagegui-skin > .chat-languagegui-sidebar > div:first-child {
+    flex-shrink: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 639px) {
+  .chat-languagegui-skin > .chat-languagegui-sidebar {
+    max-height: 11rem;
+  }
+
+  .chat-languagegui-skin .chat-chrome {
+    min-height: 4rem;
+    height: auto;
+    align-content: center;
+    flex-wrap: wrap;
+    gap: 2px 4px;
+    padding-inline: 8px;
+    padding-block: 6px;
+  }
+
+  .chat-languagegui-skin .chat-chrome > div:first-child {
+    flex: 1 0 100%;
+    min-width: 0;
+  }
+
+  .chat-languagegui-skin .chat-chrome > div:last-child {
+    margin-left: auto;
+  }
+
+  .chat-languagegui-skin .chat-chrome > div:first-child > * {
+    white-space: nowrap;
+  }
 }

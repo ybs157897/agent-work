@@ -1,7 +1,8 @@
 import { BookOpen, Boxes, GitBranch, MessageSquare, Moon, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
-import { useEffect, useInsertionEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
+import { KnowledgeChatHandoff, type KnowledgeChatSeed } from '../components/chat/knowledge-chat-handoff';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
 import { SendErrorNotice } from '../components/chat/send-error-notice';
@@ -15,6 +16,8 @@ import { EmptyState } from '../components/ui';
 import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
+import { useWorkspaceStore } from '../stores/workspace.store';
+import { useWorkbenchThemeStore, type WorkbenchTheme } from '../stores/workbench-theme.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
@@ -149,34 +152,59 @@ export default function ChatPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
   const [promptSeed, setPromptSeed] = useState<{ id: number; text: string } | null>(null);
-  const [chatTheme, setChatTheme] = useState<ChatTheme>(readInitialChatTheme);
+  const chatTheme = useWorkbenchThemeStore((state) => state.theme);
+  const changeChatTheme = useWorkbenchThemeStore((state) => state.toggleTheme);
   const urlBooted = useRef(false);
+  const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
+  const generation = useWorkspaceStore((state) => state.generation);
+  const knowledgeQuery = searchParams.get('knowledge');
+  const requestedConversation = searchParams.get('c');
+  const knowledgeKey = `${workspaceId ?? ''}:${generation}:${searchParams.get('agent') ?? ''}:${knowledgeQuery ?? ''}:${searchParams.get('version') ?? ''}:${requestedConversation ?? ''}`;
+  const knowledgeKeyRef = useRef(knowledgeKey);
+  useLayoutEffect(() => { knowledgeKeyRef.current = knowledgeKey; }, [knowledgeKey]);
+  const [preparedKnowledge, setPreparedKnowledge] = useState('');
+  const prepareKnowledge = useCallback(async (seed: KnowledgeChatSeed) => {
+    if (useChatStore.getState().agentId !== seed.agentId) selectAgent(seed.agentId);
+    const opened = await openConversation(requestedConversation);
+    if (knowledgeKeyRef.current !== knowledgeKey) return;
+    if (!opened) throw new Error('历史对话或运行记录暂时无法读取。请重试，或返回知识库重新打开。');
+    setSidebarView('chats');
+    setPromptSeed(requestedConversation ? null : { id: Date.now(), text: seed.text });
+    setPreparedKnowledge(knowledgeKey);
+    urlBooted.current = true;
+  }, [selectAgent, openConversation, knowledgeKey, requestedConversation]);
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
-    if (urlBooted.current) return;
+    if (urlBooted.current || knowledgeQuery !== null) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
+    if (qAgent && agents.length === 0) return;
     if (qAgent && agents.some((agent) => agent.id === qAgent) && qAgent !== agentId) selectAgent(qAgent);
     if (qConv) openConversation(qConv);
     urlBooted.current = true;
-    // The URL is only bootstrapped once; subsequent selection is handled by pick().
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [knowledgeQuery, searchParams, agents, agentId, selectAgent, openConversation]);
 
   // 新会话创建时同步 ?c=，便于刷新后恢复。
   useEffect(() => {
-    if (!urlBooted.current || !agentId) return;
+    if (!urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
+    const current = useChatStore.getState();
+    if (current.agentId !== agentId || current.conversationId !== conversationId) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
+    const next = new URLSearchParams(searchParams);
+    next.set('agent', agentId);
     if (conversationId) {
       if (qAgent === agentId && qConv === conversationId) return;
-      setSearchParams({ agent: agentId, c: conversationId }, { replace: true });
+      next.set('c', conversationId);
+      setSearchParams(next, { replace: true });
       return;
     }
     if (qAgent === agentId && !qConv) return;
-    setSearchParams({ agent: agentId }, { replace: true });
-  }, [agentId, conversationId, searchParams, setSearchParams]);
+    if (knowledgeQuery !== null && qConv) return;
+    next.delete('c');
+    setSearchParams(next, { replace: true });
+  }, [agentId, conversationId, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey]);
 
   const pick = (id: string) => {
     selectAgent(id);
@@ -184,20 +212,8 @@ export default function ChatPage() {
     setPromptSeed(null);
     setSearchParams({ agent: id }, { replace: true });
   };
-  const changeChatTheme = () => {
-    const next = chatTheme === 'light' ? 'dark' : 'light';
-    setChatTheme(next);
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage.setItem('chat:theme', next);
-      } catch {
-        // 存储不可用时仍保留本次页面状态。
-      }
-    }
-  };
-
   return (
-    <div className="tx-scope chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden" data-theme={chatTheme}>
+    <div className="chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden" data-theme={chatTheme}>
       {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
@@ -246,7 +262,10 @@ export default function ChatPage() {
 
       {/* 右侧对话区 */}
       <div className="chat-languagegui-main flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {agentId ? <ConversationPane key={`${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} /> : (
+        {knowledgeQuery !== null && <KnowledgeChatHandoff query={searchParams.toString()} onReady={prepareKnowledge} />}
+        {knowledgeQuery !== null && preparedKnowledge !== knowledgeKey ? (
+          <div className="flex flex-1 items-center justify-center p-comfortable text-body text-text-secondary">知识引用读取完成后，可以在此编辑问题。</div>
+        ) : agentId ? <ConversationPane key={`${agentId}:${conversationId ?? 'new'}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
@@ -275,14 +294,7 @@ function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
   );
 }
 
-type ChatTheme = 'light' | 'dark';
-
-function readInitialChatTheme(): ChatTheme {
-  if (typeof window === 'undefined') return 'light';
-  return window.localStorage.getItem('chat:theme') === 'dark' ? 'dark' : 'light';
-}
-
-function ChatThemeToggle({ theme, onToggle }: { theme: ChatTheme; onToggle: () => void }) {
+function ChatThemeToggle({ theme, onToggle }: { theme: WorkbenchTheme; onToggle: () => void }) {
   const dark = theme === 'dark';
   return (
     <button type="button" onClick={onToggle} className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary" aria-label={dark ? '切换到浅色模式' : '切换到暗色模式'} title={dark ? '浅色模式' : '暗色模式'} aria-pressed={dark}>
@@ -488,7 +500,7 @@ function ConversationGroup({
   );
 }
 
-function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initialPrompt: string; chatTheme: ChatTheme; onToggleTheme: () => void }) {
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initialPrompt: string; chatTheme: WorkbenchTheme; onToggleTheme: () => void }) {
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
   const conversations = useChatStore((s) => s.conversations);
@@ -932,7 +944,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme }: { initial
                   key={p}
                   type="button"
                   onClick={() => applyPrompt(p)}
-                  className="rounded-button border border-border-subtle bg-surface-raised/85 px-snug py-tight text-caption text-text-secondary shadow-card transition-all duration-ink hover:-translate-y-0.5 hover:border-brand-primary/35 hover:text-brand-primary"
+                  className="rounded-button border border-border-subtle bg-surface-raised/85 px-snug py-tight text-caption text-text-secondary shadow-card transition-all duration-motion hover:-translate-y-0.5 hover:border-brand-primary/35 hover:text-brand-primary"
                 >
                   {p}
                 </button>

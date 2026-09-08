@@ -29,7 +29,7 @@ describe('production chat LanguageGUI skin', () => {
       },
     ];
     const html = renderToStaticMarkup(
-      <div className="tx-scope chat-languagegui-skin">
+      <div className="chat-languagegui-skin">
         <div className="chat-thread">
           <AgentTranscriptReader segments={segments} onFork={() => undefined} agent={{ name: 'Atlas' }} />
         </div>
@@ -37,7 +37,7 @@ describe('production chat LanguageGUI skin', () => {
       </div>,
     );
 
-    expect(html).toContain('tx-scope chat-languagegui-skin');
+    expect(html).toContain('chat-languagegui-skin');
     expect(html).toContain('chat-composer-stack');
     expect(html).toContain('chat-user-turn');
     expect(html).toContain('chat-assistant-turn');

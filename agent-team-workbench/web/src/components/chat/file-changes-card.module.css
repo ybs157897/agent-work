@@ -3,7 +3,7 @@
   border: 1px solid hsl(var(--color-border-subtle));
   border-radius: 14px;
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
 }
 
 .head {

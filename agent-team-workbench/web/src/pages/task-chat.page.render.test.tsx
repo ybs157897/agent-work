@@ -16,7 +16,7 @@ describe('TaskChatPage', () => {
   it('keeps the existing task draft and question surfaces in the independent page', () => {
     const question = { id: 'scope', title: '覆盖哪些端？', options: ['Web', '移动端'], multiple: true };
     const html = renderToStaticMarkup(
-      <div className="tx-scope chat-languagegui-skin">
+      <div className="chat-languagegui-skin">
         <TaskIntakeQuestionGroup
           messageId="assistant-1"
           questions={[question]}

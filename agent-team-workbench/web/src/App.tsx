@@ -9,7 +9,7 @@ import DashboardPage from './pages/dashboard.page';
 import NotFoundPage from './pages/not-found.page';
 import { bootstrap } from './stores/bootstrap';
 import { useWorkspaceStore } from './stores/workspace.store';
-import { inkMotion } from './design/motion';
+import { workbenchMotion } from './design/motion';
 import { isChatPath, isFullBleedPath, isTasksPath } from './utils/route-layout';
 import { taskPeekBackground } from './utils/task-peek';
 
@@ -77,7 +77,7 @@ function AnimatedRoutes() {
           initial={reduceMotion ? false : { opacity: 0, y: 4 }}
           animate={{ opacity: 1, y: 0 }}
           exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -4 }}
-          transition={{ duration: reduceMotion ? 0 : inkMotion.duration.normal, ease: inkMotion.easeOut }}
+          transition={{ duration: reduceMotion ? 0 : workbenchMotion.duration.normal, ease: workbenchMotion.easeOut }}
           className={
             isFullBleed
               ? 'h-full min-h-0 flex flex-col overflow-hidden'

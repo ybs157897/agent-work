@@ -82,7 +82,7 @@ export function ReviewQueueSummaryView({
       <div className="flex flex-wrap items-center gap-snug px-base py-snug">
         <div className="flex items-center gap-snug">
           <ShieldCheck className="h-5 w-5 text-brand-primary" aria-hidden />
-          <h3 className="font-display text-h3 text-text-primary">复审队列</h3>
+          <h3 className="font-zh text-h3 text-text-primary">复审队列</h3>
           <span
             title="服务端权威计数：进入评审/待验收的任务总数"
             aria-label={`复审队列共 ${loaded ? totalCount : '…'} 个任务`}

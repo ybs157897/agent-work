@@ -5,7 +5,7 @@
   border: 1px solid hsl(var(--color-border-subtle));
   border-radius: 10px;
   background: hsl(var(--color-surface-raised));
-  box-shadow: var(--tx-shadow-card);
+  box-shadow: var(--shadow-level-1);
   container-type: inline-size;
 }
 

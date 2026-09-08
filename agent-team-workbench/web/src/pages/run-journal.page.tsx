@@ -150,7 +150,7 @@ export default function RunJournalPage() {
     <main className="page-shell">
       <header className="page-header">
         <div>
-          <p className="text-caption font-medium uppercase tracking-wider text-brand-primary">运行案牍</p>
+          <p className="text-caption font-medium uppercase tracking-wider text-brand-primary">运行记录</p>
           <h2 className="page-title">运行环节</h2>
           {runId && <p className="mt-1 break-all font-mono text-caption text-text-tertiary">{runId}</p>}
         </div>
@@ -168,14 +168,14 @@ export default function RunJournalPage() {
 export function RunJournalView({ state, onRetry }: { state: RunJournalViewState; onRetry: () => void }) {
   if (state.kind === 'loading') {
     return (
-      <section className="ink-paper-panel overflow-hidden rounded-card" aria-label="环节时间线加载中">
+      <section className="workbench-panel overflow-hidden rounded-card" aria-label="环节时间线加载中">
         <ListSkeleton padded={false} />
       </section>
     );
   }
   if (state.kind === 'not-found') {
     return (
-      <section className="ink-paper-panel rounded-card p-comfortable">
+      <section className="workbench-panel rounded-card p-comfortable">
         <EmptyState
           icon={<CircleOff className="h-5 w-5" />}
           title="没有该运行的环节记录"
@@ -197,7 +197,7 @@ export function RunJournalView({ state, onRetry }: { state: RunJournalViewState;
   return (
     <div className="space-y-base">
       {journal.phases.length === 0 ? (
-        <section className="ink-paper-panel rounded-card p-comfortable">
+        <section className="workbench-panel rounded-card p-comfortable">
           <EmptyState
             icon={<CircleOff className="h-5 w-5" />}
             title="该运行还没有环节记录"
@@ -209,7 +209,7 @@ export function RunJournalView({ state, onRetry }: { state: RunJournalViewState;
       )}
 
       {journal.phases.length > 0 && (
-        <section className="ink-paper-panel rounded-card p-comfortable" aria-label="运行环节时间线">
+        <section className="workbench-panel rounded-card p-comfortable" aria-label="运行环节时间线">
           <ol className="relative ml-3 space-y-snug border-l border-border-subtle pl-comfortable">
             {groupJournalPhases(journal.phases).map((group, groupIndex) => {
               const meta = phaseMeta(group.name);
@@ -247,7 +247,7 @@ export function RunJournalView({ state, onRetry }: { state: RunJournalViewState;
       )}
 
       <div className="grid gap-snug sm:grid-cols-2">
-        <section className="ink-paper-panel rounded-card p-comfortable" aria-label="进程输出摘要">
+        <section className="workbench-panel rounded-card p-comfortable" aria-label="进程输出摘要">
           <h3 className="text-h3 text-text-primary">进程输出</h3>
           <p className="mt-tight text-body text-text-secondary">
             共 {journal.log.chunks} 条
@@ -255,7 +255,7 @@ export function RunJournalView({ state, onRetry }: { state: RunJournalViewState;
           </p>
         </section>
         {journal.governance && (
-          <section className="ink-paper-panel rounded-card p-comfortable" aria-label="治理回合">
+          <section className="workbench-panel rounded-card p-comfortable" aria-label="治理回合">
             <h3 className="text-h3 text-text-primary">治理回合</h3>
             <dl className="mt-tight space-y-micro text-caption">
               <div className="flex gap-snug">
@@ -374,7 +374,7 @@ function DetailDisclosure({ detail }: { detail: Record<string, unknown> }) {
         className="inline-flex items-center gap-1 rounded-button px-1 py-0.5 text-caption text-text-tertiary transition-colors hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
       >
         <ChevronRight
-          className={`h-3 w-3 transition-transform duration-inkFast ${open ? 'rotate-90' : ''}`}
+          className={`h-3 w-3 transition-transform duration-motionFast ${open ? 'rotate-90' : ''}`}
           aria-hidden="true"
         />
         详情（{entries.length} 项）

@@ -13,17 +13,18 @@ function classNames(node: unknown): string {
 }
 
 describe('AppShellSkeleton', () => {
-  it('/chat 启动骨架挂 tx-scope，不画宣纸顶栏', () => {
+  it('/chat 启动骨架挂统一主题，不画旧顶栏', () => {
     const tree = classNames(AppShellSkeleton({ chat: true }));
-    expect(tree).toContain('tx-scope');
+    expect(tree).toContain('workbench-theme');
+    expect(tree).toContain('workbench-chat-surface');
     expect(tree).not.toContain('bg-surface-raised/80');
     expect(tree).toContain('bg-sidebar');
   });
 
-  it('非对话页启动骨架保留宣纸顶栏', () => {
+  it('非对话页启动骨架保留统一主题顶栏', () => {
     const tree = classNames(AppShellSkeleton({}));
     expect(tree).toContain('bg-surface-raised/80');
-    expect(tree).not.toContain('tx-scope');
+    expect(tree).not.toContain('workbench-chat-surface');
     expect(tree).toContain('bg-surface-base');
   });
 });
