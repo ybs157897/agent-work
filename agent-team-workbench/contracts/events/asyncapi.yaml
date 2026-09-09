@@ -32,6 +32,17 @@ components:
       payload:
         $ref: "#/components/schemas/CanonicalEventEnvelope"
 
+    MessageDelta:
+      x-lifecycle: live
+      x-event-name: message.delta
+      x-aggregate-type: execution_run
+      x-producer-status: present
+      description: |
+        助手文本增量：答案通道（text-delta）与推理通道（reasoning-delta）共用同一
+        事件名，通道由 data.raw.chunk.type 区分。推理通道只服务实时流，永不进入
+        助手正文与对话回放。
+      payload: { $ref: "#/components/schemas/MessageDeltaData" }
+
     GovernanceQuotaReservationChanged:
       x-lifecycle: live
       x-event-name: quota.reservation_changed
@@ -278,6 +289,28 @@ components:
             id: { type: string }
         correlation_id: { type: string, description: 触发命令 id }
         data: { type: object, description: 事件负载，按 type 区分 }
+
+    MessageDeltaData:
+      x-lifecycle: live
+      x-event-name: message.delta
+      x-producer-status: present
+      type: object
+      description: |
+        message.delta 载荷。raw.chunk 是 canonical 线形（前端 web/src/stores/delta-chunk.ts
+        与后端 internal/domain/message_delta.go 同源）：type=text-delta 是答案通道，
+        可作助手正文与对话回放；type=reasoning-delta 是过程推理，只服务实时流。
+        未知 chunk type 与缺 raw.chunk 的载荷按答案通道兜底。
+      properties:
+        role: { type: string, enum: [assistant, user] }
+        agent_id: { type: string, description: "缺省或 main 表示主 Agent" }
+        raw:
+          type: object
+          properties:
+            chunk:
+              type: object
+              properties:
+                type: { type: string, description: "text-delta | reasoning-delta" }
+                text: { type: string }
 
     TaskCommentCreatedData:
       type: object

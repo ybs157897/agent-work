@@ -264,3 +264,58 @@ func TestMainAgentEventsExcludesChildTranscript(t *testing.T) {
 		t.Fatalf("history text must not include child transcript: %q", text)
 	}
 }
+
+// TestCompletedOrDeltaTextExcludesReasoningChannel 防回归：run 没有
+// message.completed（中断/崩溃）时，delta 兜底只能收答案通道——推理链一旦
+// 冒充助手正文，会经回放灌进下一轮 prompt，并经 runFinalText 污染提取类消费方。
+func TestCompletedOrDeltaTextExcludesReasoningChannel(t *testing.T) {
+	delta := func(seq int64, chunkType, text string) RunEvent {
+		return RunEvent{RunSeq: seq, EventType: domain.EventMessageDelta, Payload: map[string]any{
+			"role": "assistant",
+			"raw":  map[string]any{"chunk": map[string]any{"type": chunkType, "text": text}},
+		}}
+	}
+	cases := []struct {
+		name   string
+		events []RunEvent
+		want   string
+	}{
+		{
+			name: "中断 run：只收答案通道，推理链丢弃",
+			events: []RunEvent{
+				delta(1, domain.DeltaChunkTypeReasoning, "先盘算要不要拆子代理"),
+				delta(2, domain.DeltaChunkTypeText, "看板搜索我确认了三点"),
+				delta(3, domain.DeltaChunkTypeReasoning, "再核对一遍"),
+			},
+			want: "看板搜索我确认了三点",
+		},
+		{
+			name:   "中断 run：只有推理链时助手正文为空",
+			events: []RunEvent{delta(1, domain.DeltaChunkTypeReasoning, "只有过程")},
+			want:   "",
+		},
+		{
+			name: "completed 存在时以 completed 为准，推理链不叠加",
+			events: []RunEvent{
+				delta(1, domain.DeltaChunkTypeReasoning, "过程"),
+				delta(2, domain.DeltaChunkTypeText, "残存正文"),
+				{RunSeq: 3, EventType: domain.EventMessageCompleted, Payload: map[string]any{"role": "assistant", "text": "最终回答"}},
+			},
+			want: "最终回答",
+		},
+		{
+			name: "无 raw.chunk 的旧线形仍按答案通道兜底",
+			events: []RunEvent{
+				{RunSeq: 1, EventType: domain.EventMessageDelta, Payload: map[string]any{"role": "assistant", "text": "扁平正文"}},
+			},
+			want: "扁平正文",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := completedOrDeltaText(tc.events); got != tc.want {
+				t.Fatalf("completedOrDeltaText = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
