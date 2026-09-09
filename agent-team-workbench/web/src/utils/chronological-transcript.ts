@@ -292,6 +292,7 @@ function appendLiveTail(
           text: reasoning,
           at: new Date().toISOString(),
           ...(liveStream?.phaseStartedAt ? { startedAt: liveStream.phaseStartedAt } : {}),
+          ...(!reasoningStreaming && liveStream?.reasoningCompletedAt ? { completedAt: liveStream.reasoningCompletedAt } : {}),
           ...(liveStream?.phaseId ? { phaseId: liveStream.phaseId } : {}),
         },
         streaming: reasoningStreaming,
