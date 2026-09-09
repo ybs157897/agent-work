@@ -187,6 +187,7 @@ export default function ChatPage() {
   const conversationId = useChatStore((s) => s.conversationId);
   const runsLoadedConversationId = useChatStore((s) => s.runsLoadedConversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
+  const startConversation = useChatStore((s) => s.startConversation);
   const openConversation = useChatStore((s) => s.openConversation);
   const restoreWorkspace = useChatStore((s) => s.restoreWorkspace);
 
@@ -293,6 +294,7 @@ export default function ChatPage() {
       next.set('ws', workspaceId);
       next.delete('agent');
       next.delete('c');
+      next.delete('new');
       next.delete('knowledge');
       next.delete('version');
       next.delete('canvas');
@@ -332,6 +334,7 @@ export default function ChatPage() {
     setNarrowPanel('document');
   };
   const knowledgeQuery = searchParams.get('knowledge');
+  const freshConversation = searchParams.get('new') === '1';
   const requestedConversation = searchParams.get('c');
   const knowledgeKey = `${workspaceId ?? ''}:${generation}:${searchParams.get('agent') ?? ''}:${knowledgeQuery ?? ''}:${searchParams.get('version') ?? ''}:${requestedConversation ?? ''}`;
   const knowledgeKeyRef = useRef(knowledgeKey);
@@ -350,7 +353,7 @@ export default function ChatPage() {
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
-    if (!ownsChatScope || urlBooted.current || knowledgeQuery !== null) return;
+    if (!ownsChatScope || urlBooted.current || (knowledgeQuery !== null && !freshConversation)) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
     if (qAgent && agents.length === 0) return;
@@ -359,9 +362,22 @@ export default function ChatPage() {
       if (workspaceId) next.set('ws', workspaceId);
       next.delete('agent');
       next.delete('c');
+      next.delete('new');
       next.delete('knowledge');
       next.delete('version');
       next.delete('canvas');
+      setSearchParams(next, { replace: true });
+      urlBooted.current = true;
+      return;
+    }
+    if (freshConversation && qAgent) {
+      pendingUrlConversationRef.current = null;
+      startConversation(qAgent);
+      setPromptSeed({ id: Date.now(), text: '' });
+      setSidebarView('chats');
+      const next = new URLSearchParams(searchParams);
+      next.delete('new');
+      next.delete('c');
       setSearchParams(next, { replace: true });
       urlBooted.current = true;
       return;
@@ -381,11 +397,11 @@ export default function ChatPage() {
       });
     }
     urlBooted.current = true;
-  }, [knowledgeQuery, searchParams, agents, agentId, selectAgent, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
+  }, [knowledgeQuery, freshConversation, searchParams, agents, agentId, selectAgent, startConversation, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
 
   // 新会话创建时同步 ?c=，便于刷新后恢复。
   useEffect(() => {
-    if (!ownsChatScope || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
+    if (!ownsChatScope || freshConversation || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
     const current = useChatStore.getState();
     if (current.agentId !== agentId || current.conversationId !== conversationId) return;
     const qAgent = searchParams.get('agent');
@@ -404,7 +420,7 @@ export default function ChatPage() {
     if (knowledgeQuery !== null && qConv) return;
     next.delete('c');
     setSearchParams(next, { replace: true });
-  }, [agentId, conversationId, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
+  }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
 
   const pick = (id: string) => {
     selectAgent(id);

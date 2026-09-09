@@ -1151,6 +1151,8 @@ interface ChatStore {
   sourcesErrorByConversation: Record<string, string | undefined>;
 
   selectAgent: (id: string | null) => void;
+  /** Start an independent draft without interrupting the previously selected Run. */
+  startConversation: (agentId: string) => void;
   /** Restore the last Agent/conversation for one Workspace after bootstrap. */
   restoreWorkspace: (workspaceId: string) => void;
   /** Resolves only after the requested record has been validated and selected. */
@@ -1278,6 +1280,17 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       set({ workspaceId, agentId: id, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       if (workspaceId && id) writeChatSelection(workspaceId, id, null);
       void get().refreshConversations();
+    },
+
+    startConversation: (agentId) => {
+      const workspaceId = useWorkspaceStore.getState().workspace?.id ?? get().workspaceId;
+      if (!workspaceId) return;
+      writeChatWorkspaceState(workspaceId, agentId, null, {
+        composer: { draft: '', reference: null }, queue: [],
+        analysisDraft: null, decisionDraft: null, publicationDraft: null,
+      });
+      // Even the same Agent must invalidate pending history and send responses.
+      get().selectAgent(agentId);
     },
 
     openConversation: async (workItemId) => {
