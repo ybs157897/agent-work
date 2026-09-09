@@ -110,6 +110,11 @@ const (
 	EventApprovalRequested = "approval.requested"
 	EventApprovalResolved  = "approval.resolved"
 	EventApprovalExpired   = "approval.expired"
+	EventQuestionRequested = "question.requested"
+	EventQuestionAnswered  = "question.answered"
+	EventQuestionResolved  = "question.resolved"
+	EventQuestionDismissed = "question.dismissed"
+	EventQuestionExpired   = "question.expired"
 
 	EventArtifactCreated = "artifact.created"
 	EventArtifactUpdated = "artifact.updated"
@@ -176,6 +181,7 @@ var eventNameWhitelist = map[string]struct{}{
 	EventSubagentUpdated:     {},
 	EventFileChangesReverted: {},
 	EventApprovalRequested:   {}, EventApprovalResolved: {}, EventApprovalExpired: {},
+	EventQuestionRequested: {}, EventQuestionAnswered: {}, EventQuestionResolved: {}, EventQuestionDismissed: {}, EventQuestionExpired: {},
 	EventArtifactCreated: {}, EventArtifactUpdated: {}, EventUsageUpdated: {},
 	EventRuntimeHealthChanged: {},
 	EventRunRecoveryStarted:   {}, EventRunRecoveryCompleted: {}, EventRunRecoveryFailed: {},

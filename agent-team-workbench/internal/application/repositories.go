@@ -78,6 +78,17 @@ type Store interface {
 	ChatSources() ChatSourceRepo
 	ChatAnalyses() ChatAnalysisRepo
 	ChatAnalysisDecisions() ChatAnalysisDecisionRepo
+	Questions() QuestionRepo
+}
+
+// QuestionRepo stores native AskUserQuestion interactions independently from
+// approvals and steering. Reads are always scoped by the durable Run.
+type QuestionRepo interface {
+	Create(ctx context.Context, question *domain.QuestionRequest) error
+	Get(ctx context.Context, id string) (*domain.QuestionRequest, error)
+	GetByProviderKey(ctx context.Context, runID, sessionRef, providerID string) (*domain.QuestionRequest, error)
+	ListPending(ctx context.Context, runID string) ([]*domain.QuestionRequest, error)
+	Update(ctx context.Context, question *domain.QuestionRequest) error
 }
 
 type ChatSourceRepo interface {

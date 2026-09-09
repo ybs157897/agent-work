@@ -12,6 +12,7 @@ import { useGovernanceStore } from './governance.store';
 import { usePlansStore } from './plans.store';
 import { useReviewQueueStore } from './review-queue.store';
 import { useRunsStore } from './runs.store';
+import { useNativeQuestionsStore } from './questions.store';
 import { useTasksStore } from './tasks.store';
 
 /** trailing-edge 合并窗口（ms）：SSE 事件风暴下同一类刷新在窗口内只执行最后一次。 */
@@ -54,7 +55,15 @@ function eventRecordKind(ev: CanonicalEvent): 'chat' | 'task' | undefined {
  */
 export function routeEvent(ev: CanonicalEvent): void {
   const logs = useLogsStore.getState();
-  const runs = useRunsStore.getState();
+	const runs = useRunsStore.getState();
+	if (ev.type === 'question.requested' || ev.type === 'question.answered' || ev.type === 'question.resolved' || ev.type === 'question.dismissed' || ev.type === 'question.expired') {
+		useNativeQuestionsStore.getState().applyEvent(ev);
+		return;
+	}
+	if (ev.type === 'run.completed' || ev.type === 'run.failed' || ev.type === 'run.cancelled' || ev.type === 'run.lost'
+		|| (ev.type === 'run.status_changed' && ['succeeded', 'failed', 'interrupted', 'cancelled', 'lost'].includes(String(ev.data?.status)))) {
+		useNativeQuestionsStore.getState().applyEvent(ev);
+	}
 
   // Brief 是缓存的服务端聚合读模型：相关 SSE 已由 bootstrap 层推进 eventCursor，
   // 这里必须把事件交给 Brief store 置 stale 并合并补拉。不能只更新 Queue，

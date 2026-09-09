@@ -11,6 +11,7 @@ import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas
 import { CodeWorkspace } from '../components/code-workspace/code-workspace';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
+import { NativeQuestionCard } from '../components/chat/native-question-card';
 import { SendErrorNotice } from '../components/chat/send-error-notice';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
@@ -33,6 +34,7 @@ import { readChatWorkspaceState, readLegacyTaskIntakeRecovery, useChatWorkspaceS
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
+import { useNativeQuestionsStore } from '../stores/questions.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
@@ -948,6 +950,21 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const latestRunId = runIds[runIds.length - 1];
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
   const latestRunNotice = latestRunId ? runAlerts[latestRunId] : undefined;
+  const nativeQuestionItems = useNativeQuestionsStore((state) => latestRunId ? state.itemsByRun[latestRunId] : undefined);
+  const nativeQuestions = latestRun && ACTIVE.has(latestRun.status) ? nativeQuestionItems ?? [] : [];
+  const nativeQuestionError = useNativeQuestionsStore((state) => latestRunId && latestRun && ACTIVE.has(latestRun.status) ? state.errorByRun[latestRunId] : undefined);
+  const nativeQuestionSubmitting = useNativeQuestionsStore((state) => state.submittingByQuestion);
+  const refreshNativeQuestions = useNativeQuestionsStore((state) => state.refresh);
+  const resolveNativeQuestion = useNativeQuestionsStore((state) => state.resolve);
+  const clearNativeQuestions = useNativeQuestionsStore((state) => state.clear);
+
+  useEffect(() => {
+    if (!latestRunId) {
+      clearNativeQuestions();
+      return;
+    }
+    void refreshNativeQuestions(latestRunId);
+  }, [clearNativeQuestions, latestRunId, refreshNativeQuestions]);
 
   useEffect(() => {
     if (!workspaceId || !agentId || !conversationId) {
@@ -1542,7 +1559,16 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
               const next = { runId, swarmId, memberId: member.id };
               setSelectedSwarmMember((current) => isSameSwarmMemberSelection(current, next) ? null : next);
             }}
-          />
+            />
+          {nativeQuestions.map((question) => (
+            <NativeQuestionCard
+              key={question.id}
+              question={question}
+              submitting={nativeQuestionSubmitting[question.id] === true}
+              onResolve={(response) => resolveNativeQuestion(question.run_id, question.id, response)}
+            />
+          ))}
+          {nativeQuestionError && latestRunId && <div className="flex items-center gap-tight text-caption text-status-error" role="alert"><span>{nativeQuestionError}</span><Button type="button" size="sm" onClick={() => void refreshNativeQuestions(latestRunId)}>重试读取问题</Button></div>}
           {latestRunId && latestRun && TERMINAL.has(latestRun.status) && (
             <FileChangesCard runId={latestRunId} />
           )}

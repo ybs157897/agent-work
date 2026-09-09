@@ -167,13 +167,17 @@ const (
 	ControlCancel    ControlKind = "cancel"
 	ControlInput     ControlKind = "input"
 	ControlApproval  ControlKind = "approval"
+	ControlQuestion  ControlKind = "question"
 )
 
 type Control struct {
 	Kind        ControlKind
-	Instruction string // ControlInput
-	ApprovalID  string // ControlApproval
-	Approved    bool   // ControlApproval
+	Instruction string                   // ControlInput
+	ApprovalID  string                   // ControlApproval
+	Approved    bool                     // ControlApproval
+	QuestionID  string                   // ControlQuestion
+	Question    *domain.QuestionResponse // ControlQuestion
+	Ack         chan error               // ControlQuestion delivery acknowledgement
 }
 
 // Callbacks 是 adapter 上报执行进展的唯一通道；实现必须非阻塞或快速返回。
@@ -191,6 +195,19 @@ type Callbacks interface {
 	OnSession(update SessionUpdate)
 	// RequestApproval 发起审批（Run 进入 waiting_approval）；决定经 Controls 送达。
 	RequestApproval(kind, risk, summary string) string
+}
+
+// QuestionCallbacks is an optional extension to keep existing third-party and
+// test callback implementations source compatible while native questions are
+// rolled out. Kimi uses it when the control plane provides the typed sink.
+type QuestionCallbacks interface {
+	RequestQuestion(request domain.QuestionRequest) string
+}
+
+// QuestionSink is the application-side persistence port for native questions.
+// It is intentionally optional on EngineSink for old embedders.
+type QuestionSink interface {
+	RequestQuestion(ctx context.Context, runID string, request domain.QuestionRequest) (*domain.QuestionRequest, error)
 }
 
 // ExecContext 是一次 Run 执行的完整输入；adapter 不得越界直写存储。

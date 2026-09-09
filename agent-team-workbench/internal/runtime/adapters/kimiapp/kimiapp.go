@@ -78,6 +78,7 @@ func (m *Module) Manifest(ctx context.Context) (runtime.AdapterManifest, error) 
 			"resume":                                  runtime.CapSupported, // 会话原生续会 + 40401 探测
 			"steering":                                runtime.CapSupported, // prompts + prompts::steer
 			"approval":                                runtime.CapSupported, // event.approval.requested + approvals REST
+			"question":                                runtime.CapSupported, // event.question.requested + questions REST
 			"subagents":                               runtime.CapSupported, // Kimi AgentSwarm 与普通 Agent 子 Agent
 			"swarm":                                   runtime.CapSupported, // session profile swarm_mode + AgentSwarm
 			// REST abort（WS 无 abort 帧）：turn 级精确取消，非进程级。
@@ -596,7 +597,9 @@ func (m *Module) submitPrompt(ex *runtime.ExecContext, client *restClient, sessi
 // 允许丢失（增量语义）。
 func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint, stream *wsStream, sessionID string, state *turnState) runtime.ExecResult {
 	approvals := map[string]string{} // engine 审批 id → kap approval_id
+	questions := map[string]string{} // durable question id → kap question_id
 	var approvalsMu sync.Mutex
+	var questionsMu sync.Mutex
 	var cancelSent atomic.Bool
 
 	// 取消只走 REST（WS 侧 switch 不处理 abort）：优先本 prompt 精确 abort，
@@ -670,13 +673,32 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 					if kerr := client.resolveApproval(context.WithoutCancel(ex.Ctx), sessionID, wireID, decision, ""); kerr != nil {
 						log.Printf("kimiapp: run %s approval resolve: %v", ex.Run.ID, kerr)
 					}
+				case runtime.ControlQuestion:
+					questionsMu.Lock()
+					wireID := questions[c.QuestionID]
+					questionsMu.Unlock()
+					var resolveErr error
+					if wireID == "" || c.Question == nil {
+						resolveErr = fmt.Errorf("question control has no provider mapping")
+					} else if kerr := client.resolveQuestion(context.WithoutCancel(ex.Ctx), sessionID, wireID, *c.Question); kerr != nil {
+						resolveErr = kerr
+						log.Printf("kimiapp: run %s question resolve: %v", ex.Run.ID, kerr)
+					} else {
+						questionsMu.Lock()
+						delete(questions, c.QuestionID)
+						questionsMu.Unlock()
+					}
+					if c.Ack != nil {
+						c.Ack <- resolveErr
+					}
 				}
 			}
 		}
 	}()
 
 	p := &eventPump{m: m, ex: ex, client: client, sessionID: sessionID, state: state,
-		approvals: approvals, approvalsMu: &approvalsMu}
+		approvals: approvals, approvalsMu: &approvalsMu, questions: questions, questionsMu: &questionsMu}
+	p.restorePendingQuestions()
 	// 订阅握手期间缓存的先到帧（正常为空）先消费。
 	if done := p.drain(stream); done {
 		if p.holdForBackgroundTurn() {
@@ -783,6 +805,17 @@ func (m *Module) pump(ex *runtime.ExecContext, client *restClient, ep *endpoint,
 	}
 }
 
+func (p *eventPump) restorePendingQuestions() {
+	items, err := p.client.listPendingQuestions(context.WithoutCancel(p.ex.Ctx), p.sessionID)
+	if err != nil {
+		log.Printf("kimiapp: run %s pending questions restore failed: %v", p.ex.Run.ID, err)
+		return
+	}
+	for _, item := range items {
+		p.acceptQuestion(item, true)
+	}
+}
+
 // eventPump 收敛事件帧处理所需的执行上下文。
 type eventPump struct {
 	m           *Module
@@ -792,6 +825,8 @@ type eventPump struct {
 	state       *turnState
 	approvals   map[string]string
 	approvalsMu *sync.Mutex
+	questions   map[string]string
+	questionsMu *sync.Mutex
 }
 
 // drain 消费 subscribe 期间缓存的先到帧。
@@ -1136,6 +1171,12 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		p.ex.Callbacks.OnEvent(domain.EventToolProgress, payload)
 	case "event.approval.requested":
 		p.handleApproval(frame)
+	case "event.question.requested":
+		p.handleQuestion(frame)
+	case "event.question.answered":
+		p.handleQuestionAnswered(frame)
+	case "event.question.dismissed":
+		p.handleQuestionDismissed(frame)
 	case "event.approval.resolved":
 		// 服务端终局投影：canonical 事件留给 engine 审批状态机，这里只观测。
 		log.Printf("kimiapp: run %s 审批终局 %s", p.ex.Run.ID, truncate(string(frame.Payload), 120))
@@ -1551,6 +1592,122 @@ func (p *eventPump) handleApproval(frame wsFrame) {
 	p.approvalsMu.Lock()
 	p.approvals[engineID] = ev.ApprovalID
 	p.approvalsMu.Unlock()
+}
+
+func (p *eventPump) handleQuestion(frame wsFrame) {
+	var ev evQuestionRequested
+	if err := json.Unmarshal(frame.Payload, &ev); err != nil || ev.QuestionID == "" || len(ev.Questions) == 0 {
+		return
+	}
+	if ev.SessionID == "" {
+		ev.SessionID = ev.SessionIDWire
+	}
+	if ev.AgentID == "" {
+		ev.AgentID = ev.AgentIDWire
+	}
+	p.acceptQuestion(ev, false)
+}
+
+func (p *eventPump) acceptQuestion(ev evQuestionRequested, restored bool) {
+	if ev.QuestionID == "" || len(ev.Questions) == 0 {
+		return
+	}
+	if !restored {
+		if isMainAgent(ev.AgentID) {
+			if !p.state.activeSeen || (ev.TurnID != 0 && ev.TurnID != p.state.activeTurn) {
+				return
+			}
+		} else if ev.AgentID != "" {
+			if ev.TurnID != 0 {
+				if p.childIfActive(ev.AgentID, ev.TurnID) == nil {
+					return
+				}
+			} else if p.state.children == nil || p.state.children[ev.AgentID] == nil {
+				return
+			}
+		}
+	}
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		sessionID = p.sessionID
+	}
+	req := domain.QuestionRequest{
+		ProviderID: ev.QuestionID, SessionRef: sessionID, AgentID: ev.AgentID,
+		TurnID: ev.TurnID, ToolCallID: ev.ToolCallID, Status: domain.QuestionPending,
+		CreatedAt: time.Now().UTC(),
+		Questions: make([]domain.QuestionItem, 0, len(ev.Questions)),
+	}
+	if req.AgentID == "" {
+		req.AgentID = "main"
+	}
+	for itemIndex, item := range ev.Questions {
+		itemID := item.ID
+		if itemID == "" {
+			itemID = fmt.Sprintf("q_%d", itemIndex)
+		}
+		out := domain.QuestionItem{ID: itemID, Question: item.Question, Header: item.Header, Body: item.Body,
+			MultiSelect: item.MultiSelect, AllowOther: item.AllowOther, OtherLabel: item.OtherLabel, OtherDescription: item.OtherDescription,
+			Options: make([]domain.QuestionOption, 0, len(item.Options))}
+		for optionIndex, option := range item.Options {
+			optionID := option.ID
+			if optionID == "" {
+				optionID = fmt.Sprintf("opt_%d_%d", itemIndex, optionIndex)
+			}
+			out.Options = append(out.Options, domain.QuestionOption{ID: optionID, Label: option.Label, Description: option.Description})
+		}
+		req.Questions = append(req.Questions, out)
+	}
+	requester, ok := p.ex.Callbacks.(runtime.QuestionCallbacks)
+	if !ok {
+		_ = p.client.dismissQuestion(context.WithoutCancel(p.ex.Ctx), p.sessionID, ev.QuestionID)
+		return
+	}
+	engineID := requester.RequestQuestion(req)
+	if engineID == "" {
+		if kerr := p.client.dismissQuestion(context.WithoutCancel(p.ex.Ctx), p.sessionID, ev.QuestionID); kerr != nil {
+			log.Printf("kimiapp: run %s question %s fallback dismiss: %v", p.ex.Run.ID, ev.QuestionID, kerr)
+		}
+		return
+	}
+	p.questionsMu.Lock()
+	p.questions[engineID] = ev.QuestionID
+	p.questionsMu.Unlock()
+}
+
+func (p *eventPump) handleQuestionAnswered(frame wsFrame) {
+	var ev evQuestionAnswered
+	if json.Unmarshal(frame.Payload, &ev) != nil || ev.QuestionID == "" {
+		return
+	}
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		sessionID = p.sessionID
+	}
+	if ev.AgentID == "" {
+		ev.AgentID = ev.AgentIDWire
+	}
+	p.ex.Callbacks.OnEvent(domain.EventQuestionAnswered, map[string]any{
+		"provider_question_id": ev.QuestionID, "session_ref": sessionID, "answers": ev.Answers,
+		"resolved_at": ev.ResolvedAt, "agent_id": ev.AgentID,
+	})
+}
+
+func (p *eventPump) handleQuestionDismissed(frame wsFrame) {
+	var ev evQuestionDismissed
+	if json.Unmarshal(frame.Payload, &ev) != nil || ev.QuestionID == "" {
+		return
+	}
+	sessionID := ev.SessionID
+	if sessionID == "" {
+		sessionID = p.sessionID
+	}
+	if ev.AgentID == "" {
+		ev.AgentID = ev.AgentIDWire
+	}
+	p.ex.Callbacks.OnEvent(domain.EventQuestionDismissed, map[string]any{
+		"provider_question_id": ev.QuestionID, "session_ref": sessionID,
+		"dismissed_at": ev.DismissedAt, "agent_id": ev.AgentID,
+	})
 }
 
 // turnEndResult turn.ended 后的统一收尾：usage（per_run 增量）+ 会话句柄 +

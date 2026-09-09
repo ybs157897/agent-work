@@ -30,8 +30,10 @@ const (
 	codeSessionNotFound   = 40401 // 会话不存在
 	codePromptNotFound    = 40402 // prompt 不存在
 	codeApprovalNotFound  = 40404 // 审批不存在
+	codeQuestionNotFound  = 40405 // 提问不存在
 	codeSessionBusy       = 40901 // 会话忙
 	codeApprovalResolved  = 40902 // 审批已决议（幂等）
+	codeQuestionResolved  = 40902 // 提问已决议（与 KAP 共用 already-resolved）
 	codePromptAlreadyDone = 40903 // prompt 已完成（abort 幂等）
 	codeTaskNotFound      = 40406 // task 不存在（取消幂等）
 	codeTaskAlreadyDone   = 40904 // task 已完成（取消幂等）
@@ -102,6 +104,20 @@ type steerRequest struct {
 type approvalResolveRequest struct {
 	Decision string `json:"decision"` // approved|rejected|cancelled
 	Feedback string `json:"feedback,omitempty"`
+}
+
+type questionResolveRequest struct {
+	Answers map[string]questionAnswer `json:"answers"`
+	Method  string                    `json:"method,omitempty"`
+	Note    string                    `json:"note,omitempty"`
+}
+
+type questionAnswer struct {
+	Kind      string   `json:"kind"`
+	OptionID  string   `json:"option_id,omitempty"`
+	OptionIDs []string `json:"option_ids,omitempty"`
+	Text      string   `json:"text,omitempty"`
+	OtherText string   `json:"other_text,omitempty"`
 }
 
 // ---- WS 帧（packages/protocol/src/ws-control.ts）----
@@ -288,6 +304,53 @@ type evApprovalRequested struct {
 	ToolCallID string `json:"tool_call_id"`
 	ToolName   string `json:"tool_name"`
 	Action     string `json:"action"`
+}
+
+type evQuestionRequested struct {
+	QuestionID    string             `json:"question_id"`
+	SessionID     string             `json:"session_id"`
+	AgentID       string             `json:"agent_id,omitempty"`
+	SessionIDWire string             `json:"sessionId,omitempty"`
+	AgentIDWire   string             `json:"agentId,omitempty"`
+	TurnID        int64              `json:"turn_id,omitempty"`
+	ToolCallID    string             `json:"tool_call_id,omitempty"`
+	Questions     []wireQuestionItem `json:"questions"`
+	CreatedAt     string             `json:"created_at,omitempty"`
+}
+
+type evQuestionAnswered struct {
+	QuestionID  string         `json:"question_id"`
+	SessionID   string         `json:"session_id,omitempty"`
+	AgentID     string         `json:"agent_id,omitempty"`
+	AgentIDWire string         `json:"agentId,omitempty"`
+	Answers     map[string]any `json:"answers"`
+	ResolvedAt  string         `json:"resolved_at,omitempty"`
+}
+
+type evQuestionDismissed struct {
+	QuestionID  string `json:"question_id"`
+	SessionID   string `json:"session_id,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	AgentIDWire string `json:"agentId,omitempty"`
+	DismissedAt string `json:"dismissed_at,omitempty"`
+}
+
+type wireQuestionItem struct {
+	ID               string               `json:"id"`
+	Question         string               `json:"question"`
+	Header           string               `json:"header,omitempty"`
+	Body             string               `json:"body,omitempty"`
+	Options          []wireQuestionOption `json:"options"`
+	MultiSelect      bool                 `json:"multi_select,omitempty"`
+	AllowOther       bool                 `json:"allow_other,omitempty"`
+	OtherLabel       string               `json:"other_label,omitempty"`
+	OtherDescription string               `json:"other_description,omitempty"`
+}
+
+type wireQuestionOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // ---- 错误模型 ----
