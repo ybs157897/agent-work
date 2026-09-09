@@ -1,0 +1,48 @@
+[
+  {
+    "name": "changed expected_version",
+    "status": 200,
+    "expected_status": 409,
+    "response_task": "wi_01M22MT7KT4BKF82ZM69NR75ZB",
+    "response": null
+  },
+  {
+    "name": "blank client key",
+    "status": 409,
+    "expected_status": 409,
+    "response_task": null,
+    "response": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "different client key",
+    "status": 409,
+    "expected_status": 409,
+    "response_task": null,
+    "response": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "same publish key different draft",
+    "status": 409,
+    "expected_status": 409,
+    "response_task": null,
+    "response": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  }
+]

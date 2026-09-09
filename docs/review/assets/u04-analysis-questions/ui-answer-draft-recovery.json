@@ -1,0 +1,22 @@
+{
+  "before": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489&c=wi_01M2293P91XY36SRV9MAX6C750",
+    "question": "首期交付范围是只读还是包含编辑写盘能力？",
+    "selected": [
+      "a"
+    ],
+    "text": "U04 未提交草稿验收：先以只读范围讨论，尚未回填产品结论。"
+  },
+  "beta": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJ2901NZW6AA30P2XJ7G",
+    "body": "选择要咨询的智能体\nF\nForge\nP\nPixel\nA\nAtlas\nN\nNova\nW\nWorkspace Owner\nS\nSentinel\n知\n知识库管理员\n内置\n查看团队知识\n对话\n实时连接\n\n选一位团队成员，说说你需要什么帮助\n\n咨询和需求整理都从这里开始；选择团队成员后直接说明目标、范围和限制。"
+  },
+  "restored": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489&c=wi_01M2293P91XY36SRV9MAX6C750",
+    "question": "首期交付范围是只读还是包含编辑写盘能力？",
+    "selected": [
+      "a"
+    ],
+    "text": "U04 未提交草稿验收：先以只读范围讨论，尚未回填产品结论。"
+  }
+}

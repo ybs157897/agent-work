@@ -1,0 +1,14 @@
+{
+  "runtime": "mock; no real model",
+  "viewing_workspace": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+  "run": {
+    "id": "run_01M21TE7KV1BN0PF9J7SJF877G",
+    "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+    "status": "waiting_approval",
+    "work_item_id": "wi_01M21TDB0TVWZE12VRPQATNQ2X"
+  },
+  "passed": true,
+  "queue_restored_after_return": true,
+  "queue_not_visible_in_beta": true,
+  "test_run_cleanup_status": "cancelled"
+}

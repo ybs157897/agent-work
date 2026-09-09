@@ -1,0 +1,37 @@
+{
+  "run": {
+    "id": "run_01M22RPGQ4N8BM7NQPF5ZB5BK5",
+    "status": "succeeded",
+    "runtime_label": "dsh_local",
+    "provider": "deepseek",
+    "session_before": "dsh://session-b3bd51f1-f1a4-4f6a-ae2c-bc4f911ca068",
+    "session_after": "dsh://session-b3bd51f1-f1a4-4f6a-ae2c-bc4f911ca068",
+    "usage_in": 171013,
+    "usage_out": 4616
+  },
+  "analysis_attempt": {
+    "status": "succeeded",
+    "revision": 3,
+    "error": ""
+  },
+  "checks": {
+    "nonce_absent_from_run_input": true,
+    "nonce_present_in_tool_result": true,
+    "nonce_in_model_report": true,
+    "accepted_revision": true,
+    "all_12_items_preserved": true,
+    "all_4_questions_preserved": true,
+    "all_3_product_decisions_valid": true,
+    "legacy_recovery_created_no_run": true,
+    "legacy_recovery_created_no_task": true
+  },
+  "tool_starts": 10,
+  "coverage": {
+    "office": "DOCX document/header/footer text; PPTX slides and speaker-note text",
+    "markdown": "3 originals, including new nonce readback note",
+    "code": "session.ts read limit=60; client.ts read offset=175, limit=30; whole-file SHA256 for both (not fresh full-file reading)",
+    "knowledge": "authorized read of kb_01M222X97MVQ0MB9Z9GJAQYR8F version1 succeeded",
+    "not_claimed": "Office layout/graphics and fresh full-file code reading; knowledge ask used Mock librarian and failed validation before successful direct read"
+  },
+  "business_publications": 3
+}

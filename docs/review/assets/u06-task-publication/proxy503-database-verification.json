@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "task_id": "wi_01M22QF6H77D7KBXPSWMYA0DER",
+  "same_key_and_exact_payload": true,
+  "publication_count": 1,
+  "context_head": "2bbfb37ae0ba5f70c8a6092533119f239dce1458",
+  "all_runtime_labels": [
+    "mock"
+  ]
+}

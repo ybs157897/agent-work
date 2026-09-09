@@ -1,0 +1,18 @@
+{
+  "preserved": "产品结论回填\n已确认\n当前事项\n切换分析事项\n选择事项\n代码现状（已纠正）：Web 端已有本地 LSP 会话与经 Gateway 的保存链路\n外部依赖只读展示：新增只读标识与来源路径提示（变更提议）\n已确认的工作方式（不再提问）\n首期范围建议（Word）：只读 + Java 定义/引用\n冲突：首期是否含编辑写盘能力\n正常路径：Workspace Root 内文件阅读\n架构红线：Gateway 唯一信任边界，语义只接 Java\n异常：索引未就绪\n异常：JDK 缺失\n异常：跳转零结果或多结果\n未决：写入相关交互细节\n未决：JDK 版本范围\n异常：JDK 缺失\n\n模拟建议与知识条目一致：JDK 缺失时保留文件阅读，明确提示 Java 语义服务不可用（ErrNotConfigured 对应 jdtls 未配置分支）。知识条目与 Word 无冲突。\n\n本次回填\n确认\n否决\n待澄清\n结论\n沟通依据\n产品版本\n补充变更并复核\n保存产品结论\n查看历史与已答记录（12）",
+  "before": {
+    "url": "http://127.0.0.1:49754/chat?agent=agent_01M21SVJVS3900FYJY71V5K489&ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&c=wi_01M2293P91XY36SRV9MAX6C750",
+    "values": [
+      "U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。",
+      "模拟产品沟通；依据实际 session.ts、client.ts 和 App.tsx 代码读取。",
+      "U05-P2"
+    ]
+  },
+  "restored": {
+    "values": [
+      "U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。",
+      "模拟产品沟通；依据实际 session.ts、client.ts 和 App.tsx 代码读取。",
+      "U05-P2"
+    ]
+  }
+}

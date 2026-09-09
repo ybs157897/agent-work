@@ -1,0 +1,121 @@
+[
+  {
+    "name": "decision entity replay survives a different HTTP key",
+    "passed": true,
+    "detail": {
+      "status": 200
+    }
+  },
+  {
+    "name": "same key rejects changed revision",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "same key rejects changed outcome",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "same key rejects changed conclusion",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "reject old aggregate",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/version_conflict",
+      "title": "Resource version conflict",
+      "status": 409,
+      "code": "version_conflict",
+      "detail": "资源版本已变化"
+    }
+  },
+  {
+    "name": "reject blank basis",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/validation_failed",
+      "title": "Validation failed",
+      "status": 422,
+      "code": "validation_failed",
+      "detail": "domain validation failed: decision outcome, conclusion, basis and product_version are required"
+    }
+  },
+  {
+    "name": "reject blank product version",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/validation_failed",
+      "title": "Validation failed",
+      "status": 422,
+      "code": "validation_failed",
+      "detail": "domain validation failed: decision outcome, conclusion, basis and product_version are required"
+    }
+  },
+  {
+    "name": "reject caller actor",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/bad_request",
+      "title": "Invalid request body",
+      "status": 400,
+      "code": "bad_request",
+      "detail": "json: unknown field \"actor_id\""
+    }
+  },
+  {
+    "name": "foreign Workspace cannot fetch product history",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/workspace-scope-mismatch",
+      "title": "Workspace scope mismatch",
+      "status": 409,
+      "code": "workspace_scope_mismatch",
+      "detail": "请求实体不属于当前 Workspace",
+      "instance": "/api/v1/work-items/wi_01M2293P91XY36SRV9MAX6C750/analysis/history",
+      "request_id": "req_01M22DJNMBDKEP2YZ4XKP09RAZ"
+    }
+  },
+  {
+    "name": "immutable history includes three distinct decisions and developer identity",
+    "passed": true,
+    "detail": {
+      "count": 3
+    }
+  },
+  {
+    "name": "immutable source snapshots for exc-deps",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "immutable source snapshots for exc-jdk",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "immutable source snapshots for normal-jdtls",
+    "passed": true,
+    "detail": null
+  }
+]

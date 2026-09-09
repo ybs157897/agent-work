@@ -1,0 +1,13 @@
+{
+  "revision": 2,
+  "version": 19,
+  "immutable_decisions": 7,
+  "reopens": 2,
+  "lost_response_final_version": "U05-P2S",
+  "lost_response_decision_count": 1,
+  "valid_items": [
+    "exc-deps",
+    "exc-jdk",
+    "normal-jdtls"
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "attempts": [
+    {
+      "url": "/api/v1/work-items/wi_01M2293P91XY36SRV9MAX6C750/analysis/drafts/pubdraft_01M22QF5XCGDHPXHJ204RTFCPZ/publish",
+      "status": 200,
+      "body": {
+        "draft": {
+          "draft_id": "pubdraft_01M22QF5XCGDHPXHJ204RTFCPZ",
+          "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+          "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+          "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+          "analysis_revision": 2,
+          "item_ids": [
+            "normal-jdtls"
+          ],
+          "confirmation_ids": [
+            "cad_01M22H7FEA9Y09D6FVBY8CY21Q"
+          ],
+          "source_dependencies": [
+            {
+              "id": "s-session",
+              "kind": "code",
+              "ref": "apps/web/src/lsp/session.ts",
+              "sha256": "49918225ac98098ac59fe7785defba41a9fdc01be7b2269652628d7b6b6cce75",
+              "version": 0
+            },
+            {
+              "id": "s-client",
+              "kind": "code",
+              "ref": "apps/web/src/api/client.ts",
+              "sha256": "c2d57f495d457b7a9fd5be2bbdff859ef0f528dc401b81ef5a4073056d2f5e22",
+              "version": 0
+            },
+            {
+              "id": "s-app",
+              "kind": "code",
+              "ref": "apps/web/src/App.tsx",
+              "sha256": "e63332f2622607eedcdd71166ce7dc05505d0b8652cc42a95565c083d6d2af6a",
+              "version": 0
+            },
+            {
+              "id": "s-change",
+              "kind": "attachment",
+              "ref": "src_01M22FTB44CZQ2RZ6AZZCBS3PG",
+              "sha256": "a40d0974bf36faade9fa060b887ba7e5a25f84ec2ee59532e2c8281d4d635806",
+              "version": 0
+            },
+            {
+              "id": "s-pkg",
+              "kind": "code",
+              "ref": "apps/web/package.json",
+              "sha256": "3214cdb9467a2f5c31db22f0e1f16e83dd5d36e711dff24ccb6c05e1e8a32747",
+              "version": 0
+            }
+          ],
+          "title": "U06 503恢复隔离验收：LSP 现状核对",
+          "description": "结论：U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n依据：模拟产品沟通；依据实际 session.ts、client.ts 和 App.tsx 代码读取。\n产品版本：U05-P2\n背景（仅供核对，不构成批准）：纠正上一版推断：原结论仅凭 package.json 无第三方 LSP 依赖即断言 Web 端无 LSP/保存能力，被产品回填驳回，经实际读码证实不充分并撤回。实际实现：lsp/session.ts 为本地 JavaLspSession（WebSocket JSON-RPC 经 Gateway /lsp 端点、initialize、didOpen/didChange/didSave/didClose、references/definition/completion、ServiceReady 等待与索引进度上报）；api/client.ts:186 writeFile 经 PUT /fs/file 写盘；App.tsx:245 saveFile 带 dirty 跟踪、失败时显示含 Retry save 的错误条，并在多处导航/打开前自动保存。服务端 manager.go 的 jdtls 生命周期与此前观察一致。",
+          "acceptance_criteria": [
+            "U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。"
+          ],
+          "context_snapshot_id": "ctxsnap_01M22GXZ9E6BA5MDWQ0NP8J2S1",
+          "project_baseline": {
+            "branch_name": "codex/idea-navigation-reading",
+            "checkout_ref": "root",
+            "content_digest": "37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25",
+            "head": "2bbfb37ae0ba5f70c8a6092533119f239dce1458",
+            "ref_kind": "root",
+            "repository_identity": "repo-web-idea",
+            "staged_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "unstaged_digest": "0a123ad089714fe750052a8b7d28afef05870133b4222ed62ca2f7ac8f2aa43e",
+            "untracked_digest": "b277349b2188be130acabfe9b0555ea7473067c4fca33054eb29f17524bed3ee"
+          },
+          "fingerprint": "399ef9e840639c4e3113ef814e3281e5251df5779c5cd28dc8421329128c064d",
+          "status": "published",
+          "task_id": "wi_01M22QF6H77D7KBXPSWMYA0DER",
+          "client_key": "draft:wi_01M2293P91XY36SRV9MAX6C750:2:cc40b626-a478-4eb2-ba10-969f8c4b06ee",
+          "version": 2
+        },
+        "task": {
+          "id": "wi_01M22QF6H77D7KBXPSWMYA0DER",
+          "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+          "record_kind": "task",
+          "title": "U06 503恢复隔离验收：LSP 现状核对",
+          "description": "结论：U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n依据：模拟产品沟通；依据实际 session.ts、client.ts 和 App.tsx 代码读取。\n产品版本：U05-P2\n背景（仅供核对，不构成批准）：纠正上一版推断：原结论仅凭 package.json 无第三方 LSP 依赖即断言 Web 端无 LSP/保存能力，被产品回填驳回，经实际读码证实不充分并撤回。实际实现：lsp/session.ts 为本地 JavaLspSession（WebSocket JSON-RPC 经 Gateway /lsp 端点、initialize、didOpen/didChange/didSave/didClose、references/definition/completion、ServiceReady 等待与索引进度上报）；api/client.ts:186 writeFile 经 PUT /fs/file 写盘；App.tsx:245 saveFile 带 dirty 跟踪、失败时显示含 Retry save 的错误条，并在多处导航/打开前自动保存。服务端 manager.go 的 jdtls 生命周期与此前观察一致。",
+          "status": "todo",
+          "priority": "medium",
+          "due_date": null,
+          "agent_profile_id": "agent_coordinator_ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+          "review": {
+            "ready": false,
+            "can_accept": false,
+            "can_return": false,
+            "accept_reason": "任务尚未进入待验收阶段",
+            "return_reason": "任务尚未进入待验收阶段"
+          },
+          "runs_count": 1,
+          "latest_run_id": "run_01M22QF6T9ZVFEC1NPB3CB2VKS",
+          "version": 1,
+          "created_at": "2026-09-09T09:20:03.111495Z",
+          "updated_at": "2026-09-09T09:20:03.111495Z"
+        }
+      },
+      "request": {
+        "expected_version": 1,
+        "client_key": "publish:pubdraft_01M22QF5XCGDHPXHJ204RTFCPZ:2:08c18e0d-ef07-4acb-9335-6f53479739db"
+      }
+    }
+  ],
+  "panel": "任务草案预览\n\n只使用当前有效的明确产品确认；保存草案不会创建任务，发布需要单独确认。\n\n上次操作失败\n发布结果暂未确认，请使用同一请求重试。\n重试\n选择要进入任务的已确认事项（1）\n代码现状（已纠正）：Web 端已有本地 LSP 会话与经 Gateway 的保存链路\nU05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n产品版本：U05-P2\n外部依赖只读展示：新增只读标识与来源路径提示（变更提议）\nU05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n产品版本：U05-P2S\n异常：JDK 缺失\n模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。\n产品版本：U05-P1\n任务标题\n服务端草案内容与基线\n\n结论：U05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n依据：模拟产品沟通；依据实际 session.ts、client.ts 和 App.tsx 代码读取。\n产品版本：U05-P2\n背景（仅供核对，不构成批准）：纠正上一版推断：原结论仅凭 package.json 无第三方 LSP 依赖即断言 Web 端无 LSP/保存能力，被产品回填驳回，经实际读码证实不充分并撤回。实际实现：lsp/session.ts 为本地 JavaLspSession（WebSocket JSON-RPC 经 Gateway /lsp 端点、initialize、didOpen/didChange/didSave/didClose、references/definition/completion、ServiceReady 等待与索引进度上报）；api/client.ts:186 writeFile 经 PUT /fs/file 写盘；App.tsx:245 saveFile 带 dirty 跟踪、失败时显示含 Retry save 的错误条，并在多处导航/打开前自动保存。服务端 manager.go 的 jdtls 生命周期与此前观察一致。\n\nU05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n\n代码基线：repo-web-idea · HEAD 2bbfb37ae0ba5f70c8a6092533119f239dce1458\n\n内容摘要：37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25\n\n来源依赖：5 项 · 确认记录：1 条\n\n发布结果尚未确认，重试会复用同一请求。\n\n保存任务草案\n重试发布",
+  "fieldsetDisabled": true,
+  "titleDisabled": true,
+  "buttons": [
+    {
+      "text": "重试",
+      "disabled": false
+    },
+    {
+      "text": "保存任务草案",
+      "disabled": true
+    },
+    {
+      "text": "重试发布",
+      "disabled": false
+    }
+  ]
+}

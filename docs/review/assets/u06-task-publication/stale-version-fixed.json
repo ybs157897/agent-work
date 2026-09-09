@@ -1,0 +1,20 @@
+{
+  "expected_status": 409,
+  "actual_status": 409,
+  "request": {
+    "expected_version": 18,
+    "revision": 2,
+    "item_ids": [
+      "exc-jdk"
+    ],
+    "title": "U06 过期版本拒绝回归",
+    "client_key": "09fe7a5d-3bdf-46b3-817a-9ff6db93abe6"
+  },
+  "response": {
+    "type": "https://workbench.example/problems/version_conflict",
+    "title": "Resource version conflict",
+    "status": 409,
+    "code": "version_conflict",
+    "detail": "资源版本已变化"
+  }
+}

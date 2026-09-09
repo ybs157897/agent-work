@@ -1,0 +1,12 @@
+{
+  "afterSwitch": {
+    "workspace": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+    "url": "http://127.0.0.1:56037/chat?ws=ws_01M21SV92ZD5EZN02ERM3M7V82&agent=agent_01M21SV95WPMQJ30V994J0YEZC&c=wi_01M21TDB0TVWZE12VRPQATNQ2X",
+    "draft": "已有会话 A 的持久草稿，切换和刷新都必须保留。"
+  },
+  "afterReload": {
+    "workspace": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+    "url": "http://127.0.0.1:56037/chat?ws=ws_01M21SV92ZD5EZN02ERM3M7V82&agent=agent_01M21SV95WPMQJ30V994J0YEZC&c=wi_01M21TDB0TVWZE12VRPQATNQ2X",
+    "draft": "已有会话 A 的持久草稿，切换和刷新都必须保留。"
+  }
+}

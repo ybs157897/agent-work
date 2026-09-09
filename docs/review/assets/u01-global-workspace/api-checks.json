@@ -1,0 +1,351 @@
+[
+  {
+    "name": "workspace list loads",
+    "passed": true,
+    "details": 200
+  },
+  {
+    "name": "source ordinary Agent fixture exists",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "create new project workspace",
+    "passed": true,
+    "details": {
+      "status": 201,
+      "response": {
+        "id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+        "name": "验收 beta",
+        "timezone": "Asia/Shanghai",
+        "version": 1,
+        "project": {
+          "execution_host_id": "host_local",
+          "mount_alias": "beta",
+          "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+          "repository_identity": "u01-beta",
+          "canonical_key": "host_local:project:9d38ff1b1b68296ca995d5a768592b1f9ff581515136aba28ac389d2e92c5c8b",
+          "location_id": "wsloc_01M21SVJ290KBH3DMFY62B4D3P",
+          "status": "ready",
+          "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+          "version": 2
+        },
+        "setup": {
+          "status": "ready",
+          "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+          "agent_count": 6
+        }
+      }
+    }
+  },
+  {
+    "name": "workspace ready only after setup",
+    "passed": true,
+    "details": {
+      "id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+      "name": "验收 beta",
+      "timezone": "Asia/Shanghai",
+      "version": 1,
+      "project": {
+        "execution_host_id": "host_local",
+        "mount_alias": "beta",
+        "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+        "repository_identity": "u01-beta",
+        "canonical_key": "host_local:project:9d38ff1b1b68296ca995d5a768592b1f9ff581515136aba28ac389d2e92c5c8b",
+        "location_id": "wsloc_01M21SVJ290KBH3DMFY62B4D3P",
+        "status": "ready",
+        "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+        "version": 2
+      },
+      "setup": {
+        "status": "ready",
+        "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+        "agent_count": 6
+      }
+    }
+  },
+  {
+    "name": "same create key replays same workspace",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "open same directory returns existing workspace",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "same key different body rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/idempotency-conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体",
+      "instance": "/api/v1/workspaces",
+      "request_id": "req_01M21SVJA9PSYC4ACMT3ZT39S5"
+    }
+  },
+  {
+    "name": "ordinary Agent roster copied once",
+    "passed": true,
+    "details": {
+      "source": 6,
+      "target": 6
+    }
+  },
+  {
+    "name": "new independent Agent Forge",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Forge",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2A7X42816CRHTX20MC"
+    }
+  },
+  {
+    "name": "new independent Agent Pixel",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Pixel",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2ADHK0BNEJJYSB514V"
+    }
+  },
+  {
+    "name": "new independent Agent Atlas",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Atlas",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2ANM1Q0SP4ERZE0QZ0"
+    }
+  },
+  {
+    "name": "new independent Agent Nova",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Nova",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2AY3R6KAC825E225V7"
+    }
+  },
+  {
+    "name": "new independent Agent Workspace Owner",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Workspace Owner",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2B166PTTYW7GK6GNR2"
+    }
+  },
+  {
+    "name": "new independent Agent Sentinel",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "Agent configuration copied Sentinel",
+    "passed": true,
+    "details": {
+      "target_id": "agent_01M21SVJ2BSN14R91TW3JEBQF0"
+    }
+  },
+  {
+    "name": "new space has no copied work_items",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "new space has no copied execution_runs",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "new space has no copied knowledge_items",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "new space has one default project root",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "cloned prompt persisted to target configuration",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "legacy root bundle relocated",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "target Agent reload succeeds",
+    "passed": true,
+    "details": {
+      "created": 0,
+      "updated": 6,
+      "skipped": 0
+    }
+  },
+  {
+    "name": "reload retains cloned identities",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "open alpha directory",
+    "passed": true,
+    "details": {
+      "id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "name": "Agent Team Demo",
+      "timezone": "UTC",
+      "version": 1,
+      "project": {
+        "execution_host_id": "host_local",
+        "mount_alias": "alpha",
+        "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+        "repository_identity": "u01-alpha",
+        "canonical_key": "host_local:project:44cd18fdde1325db96e560cf415291290b202a9fb4759f119de229591623d878",
+        "location_id": "wsloc_01M21SV95V8MRBQ2AMYVK8RPBQ",
+        "status": "ready",
+        "version": 1
+      },
+      "setup": {
+        "status": "ready",
+        "agent_count": 6
+      },
+      "reused": true
+    }
+  },
+  {
+    "name": "sole legacy default directory reuses original workspace",
+    "passed": true,
+    "details": {
+      "source": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "opened": "ws_01M21SV92ZD5EZN02ERM3M7V82"
+    }
+  },
+  {
+    "name": "symlink alias resolves same workspace",
+    "passed": true,
+    "details": {
+      "id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "name": "Agent Team Demo",
+      "timezone": "UTC",
+      "version": 1,
+      "project": {
+        "execution_host_id": "host_local",
+        "mount_alias": "alpha",
+        "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+        "repository_identity": "u01-alpha",
+        "canonical_key": "host_local:project:44cd18fdde1325db96e560cf415291290b202a9fb4759f119de229591623d878",
+        "location_id": "wsloc_01M21SV95V8MRBQ2AMYVK8RPBQ",
+        "status": "ready",
+        "version": 1
+      },
+      "setup": {
+        "status": "ready",
+        "agent_count": 6
+      },
+      "reused": true
+    }
+  },
+  {
+    "name": "stale mount generation rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/workspace_mount_generation_changed",
+      "title": "Project mount changed",
+      "status": 409,
+      "code": "workspace_mount_generation_changed",
+      "detail": "project mount identity or generation is stale"
+    }
+  },
+  {
+    "name": "forged mount repository rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/workspace_mount_generation_changed",
+      "title": "Project mount changed",
+      "status": 409,
+      "code": "workspace_mount_generation_changed",
+      "detail": "project mount identity or generation is stale"
+    }
+  },
+  {
+    "name": "concurrent same directory creates at most one identity",
+    "passed": true,
+    "details": [
+      [
+        200,
+        {
+          "id": "ws_01M21SVJGDR2VE9HX2TDM0441N",
+          "name": "验收 gamma",
+          "timezone": "Asia/Shanghai",
+          "version": 1,
+          "project": {
+            "execution_host_id": "host_local",
+            "mount_alias": "gamma",
+            "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+            "repository_identity": "u01-gamma",
+            "canonical_key": "host_local:project:a1cc3dfc0cc900b8ef106a6ba8403d82aa6a2b9b9f62faf2f8970795aaeed9eb",
+            "location_id": "wsloc_01M21SVJGDVPHTAX5FB0YKTB82",
+            "status": "pending",
+            "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "version": 1
+          },
+          "setup": {
+            "status": "pending",
+            "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "agent_count": 6
+          },
+          "reused": true
+        }
+      ],
+      [
+        201,
+        {
+          "id": "ws_01M21SVJGDR2VE9HX2TDM0441N",
+          "name": "验收 gamma",
+          "timezone": "Asia/Shanghai",
+          "version": 1,
+          "project": {
+            "execution_host_id": "host_local",
+            "mount_alias": "gamma",
+            "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+            "repository_identity": "u01-gamma",
+            "canonical_key": "host_local:project:a1cc3dfc0cc900b8ef106a6ba8403d82aa6a2b9b9f62faf2f8970795aaeed9eb",
+            "location_id": "wsloc_01M21SVJGDVPHTAX5FB0YKTB82",
+            "status": "ready",
+            "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "version": 2
+          },
+          "setup": {
+            "status": "ready",
+            "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "agent_count": 6
+          }
+        }
+      ]
+    ]
+  }
+]

@@ -1,0 +1,21 @@
+{
+  "unit": "U01",
+  "status": "complete",
+  "backend_http_sqlite_checks": 48,
+  "ui_cases": [
+    "A-B-A draft/File/queue recovery",
+    "existing conversation draft survives reload",
+    "per-workspace last route restore",
+    "switch503 keeps previous workspace and unsent content",
+    "single global open-project entry with explicit directory selection",
+    "old task-chat redirect and scoped legacy recovery",
+    "background mock run stays in origin workspace",
+    "light/dark and desktop viewport checks"
+  ],
+  "model_acceptance": "not applicable to U01; mock used only for Run lifecycle; U03/U07 real model pending",
+  "test_limitations": [
+    "application full-package race exceeded600s; isolated timed-out test passed",
+    "640px inherited chat navigation remains crowded; global selector visibility checked"
+  ],
+  "code_delivery": "uncommitted isolated unit branch; no merge/push"
+}

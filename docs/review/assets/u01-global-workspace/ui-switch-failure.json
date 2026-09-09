@@ -1,0 +1,17 @@
+{
+  "workspace": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+  "draft": "A 切换失败时仍应保留的草稿。",
+  "fileRetained": true,
+  "url": "http://127.0.0.1:56037/chat?ws=ws_01M21SV92ZD5EZN02ERM3M7V82&agent=agent_01M21SV95WPMQJ30V994J0YEZC&c=wi_01M21TDB0TVWZE12VRPQATNQ2X",
+  "text": "跳到主要内容\nAgent Team\n团队工作台\nAgent Team Demo\n验收 beta\n验收 gamma\nweb-idea 配置恢复验收\n打开或创建工作区…\n\n切换到「验收 beta」失败，已保留当前工作区：U01 intentional target bootstrap failure\n\n总览\n智能体配置\n任务看板\n对话\n模型\n知识库\n日志\n设置\nD\nDemo User\nowner\n选择要咨询的智能体\nN\nNova\nA\nAtlas\nP\nPixel\nF\nForge\nS\nSentinel\n知\n知识库管理员\n内置\nW\nWorkspace Owner\n对话\nLibrary\nApps\n⌘K\n对话（2）\n历史\nU01 mock lifecycle check…\n2 轮 · 待开始\nA scope entity probe\n0 轮 · 待开始\n查看团队知识\nW\nWorkspace Owner\nU01 mock lifecycle check…\n代码\n画布\n环节\n已取消\n实时连接\nU01 mock lifecycle check: keep this run in workspace A while switching to B.\n已工作 6 秒\n工作已完成\n\n任务执行完成，产物已生成\n\nU01 approval fixture: pause this simulated run so workspace switching can be verified.\n已中断 · 9 分 29 秒\n工作已中断\n已拒绝 · shell · 高风险\n09:02:12\n已生成 1 个成果\n最新：result.md\n查看成果\noriginal-request.md\n720 B\n附件已在本地暂存，尚未发送；当前输入框会保留原件，移除附件后才能发送文字。\n发送",
+  "requests": [
+    {
+      "url": "/api/v1/workspaces/ws_01M21SVJ2901NZW6AA30P2XJ7G/bootstrap",
+      "scope": "ws_01M21SVJ2901NZW6AA30P2XJ7G"
+    },
+    {
+      "url": "/api/v1/workspaces/ws_01M21SVJ2901NZW6AA30P2XJ7G",
+      "scope": "ws_01M21SVJ2901NZW6AA30P2XJ7G"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "url": "http://127.0.0.1:49754/api/v1/workspaces/ws_01M21SVJVR9PGEA7E5DQR2XC0X/task-intake/analyze",
+  "status": 404,
+  "body": "404 page not found\n",
+  "direct_provider_route_removed": true
+}

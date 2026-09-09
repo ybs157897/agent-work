@@ -1,0 +1,55 @@
+[
+  {
+    "name": "bootstrap carries same project and setup as workspace",
+    "passed": true,
+    "detail": {
+      "setup": {
+        "status": "ready",
+        "source_workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+        "agent_count": 6
+      }
+    }
+  },
+  {
+    "name": "fixed project rejects second location",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/workspace_location_ambiguous",
+      "title": "Workspace location ambiguous",
+      "status": 409,
+      "code": "workspace_location_ambiguous",
+      "detail": "workspace_location_ambiguous: Workspace 已固定项目目录，不能再添加第二个 Location"
+    }
+  },
+  {
+    "name": "fixed project default cannot be unset",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/workspace_location_ambiguous",
+      "title": "Workspace location ambiguous",
+      "status": 409,
+      "code": "workspace_location_ambiguous",
+      "detail": "workspace_location_ambiguous: Workspace 固定项目 Location 必须保持默认"
+    }
+  },
+  {
+    "name": "foreign workspace cannot update location",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/workspace-scope-mismatch",
+      "title": "Workspace scope mismatch",
+      "status": 409,
+      "code": "workspace_scope_mismatch",
+      "detail": "请求实体不属于当前 Workspace",
+      "instance": "/api/v1/workspace-locations/wsloc_01M21SVJ290KBH3DMFY62B4D3P",
+      "request_id": "req_01M21X50D3HPCEDVG0JWHXGCCK"
+    }
+  },
+  {
+    "name": "failed location operations preserve one default root",
+    "passed": true,
+    "detail": {
+      "count": 1
+    }
+  }
+]

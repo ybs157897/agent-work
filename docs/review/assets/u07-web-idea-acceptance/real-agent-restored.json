@@ -1,0 +1,10 @@
+{
+  "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+  "runtime_preference": {
+    "preferred": "dsh_local"
+  },
+  "model_override": {
+    "ref": "kimi-2-7"
+  },
+  "scope": "isolated U07 Chat Agent only; Coordinator remains Mock"
+}

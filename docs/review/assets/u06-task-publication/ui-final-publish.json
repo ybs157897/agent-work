@@ -1,0 +1,19 @@
+{
+  "result": {
+    "url": "/api/v1/work-items/wi_01M2293P91XY36SRV9MAX6C750/analysis/drafts/pubdraft_01M22NMZZBQ2KQ08X0XVG6YXZH/publish",
+    "status": 422,
+    "body": {
+      "type": "https://workbench.example/problems/domain_error",
+      "title": "Command rejected",
+      "status": 422,
+      "code": "domain_error",
+      "detail": "SQL logic error: table task_publications has no column named expected_version (1)"
+    },
+    "request": {
+      "expected_version": 1,
+      "client_key": "publish:pubdraft_01M22NMZZBQ2KQ08X0XVG6YXZH:2:43386eed-28dd-465e-8cdb-5347ccdff276"
+    }
+  },
+  "links": [],
+  "panel": "任务草案预览\n\n只使用当前有效的明确产品确认；保存草案不会创建任务，发布需要单独确认。\n\n上次操作失败\nSQL logic error: table task_publications has no column named expected_version (1)\n重试\n选择要进入任务的已确认事项（1）\n代码现状（已纠正）：Web 端已有本地 LSP 会话与经 Gateway 的保存链路\nU05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n产品版本：U05-P2\n外部依赖只读展示：新增只读标识与来源路径提示（变更提议）\nU05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n产品版本：U05-P2S\n异常：JDK 缺失\n模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。\n产品版本：U05-P1\n任务标题\n服务端草案内容与基线\n\n结论：模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。\n依据：隔离验收中的模拟产品沟通记录；并非真实产品批准。\n产品版本：U05-P1\n背景（仅供核对，不构成批准）：模拟建议与知识条目一致：JDK 缺失时保留文件阅读，明确提示 Java 语义服务不可用（ErrNotConfigured 对应 jdtls 未配置分支）。知识条目与 Word 无冲突。\n\n模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。\n\n代码基线：repo-web-idea · HEAD 2bbfb37ae0ba5f70c8a6092533119f239dce1458\n\n内容摘要：37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25\n\n来源依赖：3 项 · 确认记录：1 条\n\n保存草案后仍需点击“发布任务”。\n\n保存任务草案\n发布任务"
+}

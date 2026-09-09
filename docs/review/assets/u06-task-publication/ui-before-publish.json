@@ -1,0 +1,71 @@
+{
+  "counts": {
+    "tasks": 3,
+    "runs": 26
+  },
+  "draft": {
+    "id": "pubdraft_01M22MQHA36XW6APZ4RWKQCP0Y",
+    "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+    "chat_work_item_id": "wi_01M2293P91XY36SRV9MAX6C750",
+    "agent_profile_id": "agent_01M21SVJVS3900FYJY71V5K489",
+    "analysis_revision": 2,
+    "item_ids_json": "[\"exc-deps\"]",
+    "confirmation_ids_json": "[\"cad_01M22JAY13RAYHNPEFDX9NK853\"]",
+    "source_dependencies_json": "[{\"id\":\"s-change\",\"kind\":\"attachment\",\"ref\":\"src_01M22FTB44CZQ2RZ6AZZCBS3PG\",\"sha256\":\"a40d0974bf36faade9fa060b887ba7e5a25f84ec2ee59532e2c8281d4d635806\",\"version\":0},{\"id\":\"s-peek\",\"kind\":\"code\",\"ref\":\"apps/web/src/components/ReferencesPeek.tsx\",\"sha256\":\"57639fefcaff2904bbe0e1b07cff68f7ab9ab1d2b615acbe3487194a01d2124d\",\"version\":0},{\"id\":\"s-usagehits\",\"kind\":\"code\",\"ref\":\"apps/web/src/lsp/usageHits.ts\",\"sha256\":\"92594d079686a3b85ed3dcaaac37eb7e7a88ccdef2d3865ebba80c2bce483c51\",\"version\":0},{\"id\":\"s-gtdu\",\"kind\":\"code\",\"ref\":\"apps/web/src/lsp/gtdu.ts\",\"sha256\":\"1332731d1eac28e03095551865be2bf588835395042fdb6ca9265cb071a113e1\",\"version\":0}]",
+    "title": "U06 UI 隔离验收：外部依赖只读提示",
+    "description": "结论：U05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n依据：模拟产品沟通；依据原 Word 范围与变更 Markdown，JDK 缺失降级规则不变。\n产品版本：U05-P2S\n背景（仅供核对，不构成批准）：外部依赖按只读展示、不提供写入入口的约束保留。change-and-correction.md 提议新增：当定义/引用结果来自外部依赖时，展示明确的只读标识与来源路径提示，避免误以为可直接编辑；该新增部分为未确认提议，变更材料自声明不代表产品批准。代码复核现状：ReferencesPeek 对 workspace 之外的 URI（pathFromClientUri 返回 null，如 jdt://）已显示 external 徽标、禁用打开并以 tooltip 说明不可打开；但无来源路径提示；definition 流程（gtdu.ts locToTarget）直接丢弃外部目标，全部目标为外部时提示 'Cannot find declaration to go to'。变更方向与只读约束一致，仅扩展展示/跳转交互。",
+    "acceptance_criteria_json": "[\"U05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\"]",
+    "context_snapshot_id": "ctxsnap_01M22GXZ9E6BA5MDWQ0NP8J2S1",
+    "baseline_json": "{\"repository_identity\":\"repo-web-idea\",\"ref_kind\":\"root\",\"branch_name\":\"codex/idea-navigation-reading\",\"checkout_ref\":\"root\",\"head\":\"2bbfb37ae0ba5f70c8a6092533119f239dce1458\",\"staged_digest\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"unstaged_digest\":\"0a123ad089714fe750052a8b7d28afef05870133b4222ed62ca2f7ac8f2aa43e\",\"untracked_digest\":\"b277349b2188be130acabfe9b0555ea7473067c4fca33054eb29f17524bed3ee\",\"content_digest\":\"37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25\"}",
+    "fingerprint": "1581e26ac10edaa1ca37c8c56f616e68a1deb836012617e62062693a7c1d5ea3",
+    "status": "ready",
+    "task_id": null,
+    "client_key": "draft:wi_01M2293P91XY36SRV9MAX6C750:2:887d7d2e-1570-4bb7-a744-3d9456e50771",
+    "version": 1,
+    "created_at": "2026-09-09T08:32:10.563969Z",
+    "updated_at": "2026-09-09T08:32:10.563969Z"
+  },
+  "worker_runtimes": [
+    {
+      "id": "agent_coordinator_ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+      "kind": "task_coordinator",
+      "runtime_preference": "{}"
+    },
+    {
+      "id": "agent_01M21SVJVR0YNVHHPR73HQ6TWV",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_01M21SVJVR14K47YCNGV0TTA45",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_01M21SVJVR233FT9H51YFXSGTJ",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_01M21SVJVS3900FYJY71V5K489",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_01M21SVJVSEA8RHRD2G6S7F9RT",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_01M21SVJVSZ63KQCVAWHP8ERZS",
+      "kind": "user",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    },
+    {
+      "id": "agent_knowledge_librarian_ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+      "kind": "knowledge_librarian",
+      "runtime_preference": "{\"preferred\":\"mock\"}"
+    }
+  ],
+  "coordinator_runtime": "mock"
+}

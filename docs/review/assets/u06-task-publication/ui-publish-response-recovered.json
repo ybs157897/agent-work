@@ -1,0 +1,26 @@
+{
+  "panel": "任务草案预览\n\n只使用当前有效的明确产品确认；保存草案不会创建任务，发布需要单独确认。\n\n已发布\n选择要进入任务的已确认事项（1）\n代码现状（已纠正）：Web 端已有本地 LSP 会话与经 Gateway 的保存链路\nU05-P2 隔离验收：已核对本地 JavaLspSession 与 writeFile/saveFile，接受实现证据的纠正；不再采用旧的能力缺失推断。\n产品版本：U05-P2\n外部依赖只读展示：新增只读标识与来源路径提示（变更提议）\nU05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n产品版本：U05-P2S\n异常：JDK 缺失\n模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。\n产品版本：U05-P1\n任务标题\n服务端草案内容与基线\n\n结论：U05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n依据：模拟产品沟通；依据原 Word 范围与变更 Markdown，JDK 缺失降级规则不变。\n产品版本：U05-P2S\n背景（仅供核对，不构成批准）：外部依赖按只读展示、不提供写入入口的约束保留。change-and-correction.md 提议新增：当定义/引用结果来自外部依赖时，展示明确的只读标识与来源路径提示，避免误以为可直接编辑；该新增部分为未确认提议，变更材料自声明不代表产品批准。代码复核现状：ReferencesPeek 对 workspace 之外的 URI（pathFromClientUri 返回 null，如 jdt://）已显示 external 徽标、禁用打开并以 tooltip 说明不可打开；但无来源路径提示；definition 流程（gtdu.ts locToTarget）直接丢弃外部目标，全部目标为外部时提示 'Cannot find declaration to go to'。变更方向与只读约束一致，仅扩展展示/跳转交互。\n\nU05-P2S 隔离最终回归：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。\n\n代码基线：repo-web-idea · HEAD 2bbfb37ae0ba5f70c8a6092533119f239dce1458\n\n内容摘要：37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25\n\n来源依赖：4 项 · 确认记录：1 条\n\n任务已创建，可从任务详情继续。\n\n保存任务草案\n发布任务\n查看任务",
+  "links": [
+    {
+      "text": "查看任务",
+      "url": "http://127.0.0.1:49754/tasks/wi_01M22MT7KT4BKF82ZM69NR75ZB"
+    }
+  ],
+  "buttons": [
+    {
+      "text": "保存任务草案",
+      "disabled": false
+    },
+    {
+      "text": "发布任务",
+      "disabled": true
+    }
+  ],
+  "pending": [
+    {
+      "status": "published",
+      "taskId": "wi_01M22MT7KT4BKF82ZM69NR75ZB",
+      "publishClientKey": "publish:pubdraft_01M22MQHA36XW6APZ4RWKQCP0Y:2:199629e5-ccf3-4c58-aa99-9328d9ab62b6"
+    }
+  ]
+}

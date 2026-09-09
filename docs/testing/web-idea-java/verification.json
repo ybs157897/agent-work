@@ -1,0 +1,43 @@
+{
+  "verified_at": "2026-09-08T14:00:18.237518+00:00",
+  "worktree_branch": "codex/web-idea-requirement-fixture",
+  "base_commit": "651056c1cc7112013009b327f826b983249c15a6",
+  "checks": {
+    "fixture_integrity": {
+      "status": "passed",
+      "sources": 12,
+      "stages": 7,
+      "cases": 8
+    },
+    "reader_regressions": {
+      "status": "passed",
+      "tests": 13,
+      "command": "python3 -B testdata/requirements/web-idea-java/test_assemble.py"
+    },
+    "source_sha256": {
+      "status": "passed",
+      "files": 12
+    },
+    "initial_and_changed_assembly": {
+      "status": "passed",
+      "future_sources_absent_from_initial": true,
+      "oracle_examples_excluded": true
+    },
+    "local_markdown_links": {
+      "status": "passed"
+    },
+    "office_render": {
+      "status": "passed",
+      "docx_pages": 2,
+      "pptx_slides": 2,
+      "record": "office-fixture-qa.md"
+    }
+  },
+  "not_verified": [
+    "ATW application end-to-end",
+    "real model requirements analysis",
+    "production knowledge import",
+    "IntelliJ Java feature implementation"
+  ],
+  "source_authority": "source snapshots and fixture data only; simulated confirmations never authorize real product changes"
+}

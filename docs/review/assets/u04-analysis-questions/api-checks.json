@@ -1,0 +1,764 @@
+{
+  "kind": "actual HTTP/SQLite against real model validated revision; answers are synthetic developer context",
+  "checks": [
+    {
+      "name": "real model document persisted with validated source kinds",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "one current question from declared backlog",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "wrong global Workspace cannot load analysis by Chat ID",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/workspace-scope-mismatch",
+        "title": "Workspace scope mismatch",
+        "status": 409,
+        "code": "workspace_scope_mismatch",
+        "detail": "请求实体不属于当前 Workspace",
+        "instance": "/api/v1/work-items/wi_01M227K0WQD0Z3X6784FC4E1WV/analysis",
+        "request_id": "req_01M22996G00X8ASX0TF48AWJPM"
+      }
+    },
+    {
+      "name": "reject old version",
+      "passed": true,
+      "detail": {
+        "status": 409,
+        "code": "version_conflict"
+      }
+    },
+    {
+      "name": "reject old revision",
+      "passed": true,
+      "detail": {
+        "status": 409,
+        "code": "version_conflict"
+      }
+    },
+    {
+      "name": "reject unknown question",
+      "passed": true,
+      "detail": {
+        "status": 409,
+        "code": "version_conflict"
+      }
+    },
+    {
+      "name": "reject unknown option",
+      "passed": true,
+      "detail": {
+        "status": 422,
+        "code": "validation_failed"
+      }
+    },
+    {
+      "name": "reject blank answer",
+      "passed": true,
+      "detail": {
+        "status": 422,
+        "code": "validation_failed"
+      }
+    },
+    {
+      "name": "reject fake product authority",
+      "passed": true,
+      "detail": {
+        "status": 400,
+        "code": "bad_request"
+      }
+    },
+    {
+      "name": "rejected writes leave current version and question intact",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "explicit developer answer advances once",
+      "passed": true,
+      "detail": {
+        "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+        "chat_id": "wi_01M227K0WQD0Z3X6784FC4E1WV",
+        "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+        "version": 5,
+        "revision": 1,
+        "status": "ready",
+        "run_id": "run_01M228N7T1JYW4VWG0NSC7NJEB",
+        "document": {
+          "version": "chat-analysis/v1",
+          "summary": "web-idea 需求分析：首期范围在只读（Word）与含编辑（PPT）之间冲突，写入前确认要求两附件不一致；异常交互（索引未就绪/JDK 缺失/零多结果）已有候选约定但文案统一性未定；代码与知识侧佐证阅读可用性与会话异常处理，但均无写入门禁实现。按本轮要求一次只提一个最需要确认的问题：首期范围裁定。所有材料均为验收/模拟件，不代表产品批准。",
+          "sources": [
+            {
+              "id": "source-md-request",
+              "kind": "attachment",
+              "ref": "src_01M227K0Y15SQVJ7Q6G83SQH9W",
+              "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+              "locator": "全文 11 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "“集成”采取直接移植、协议接入还是功能重实现，哪些能力先做，以及是否开放写入，尚未确认。参考库中有某功能不等于目标项目已具备。"
+            },
+            {
+              "id": "source-docx-scope",
+              "kind": "attachment",
+              "ref": "src_01M227K0WYDPBDW3EXA32GBBEA",
+              "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+              "locator": "docx 正文段落",
+              "read_status": "partial",
+              "coverage": "正文全部段落文字已提取",
+              "limitations": "仅解析 document.xml 文字流，图片、排版与批注未解析",
+              "quote": "模拟范围建议：首期仅文件阅读、定义和引用；写入/重命名应用需单独确认"
+            },
+            {
+              "id": "source-pptx-review",
+              "kind": "attachment",
+              "ref": "src_01M227K0XDAHQYGMMHX6JJN479",
+              "sha256": "19e537a8764ecc1a87e68dace7c7580555e27e2d734499f49004c916b1f5aa9e",
+              "locator": "slide1-slide2",
+              "read_status": "partial",
+              "coverage": "两张幻灯片全部文字已提取",
+              "limitations": "仅解析幻灯片文字，图片、图形备注页与演讲者备注未解析",
+              "quote": "首期包括跨文件 Rename 和 Quick Fix，一键应用并保存"
+            },
+            {
+              "id": "source-conv",
+              "kind": "conversation",
+              "ref": "conversation:sha256:0ba101fa88c25175675f896c76d72246bfc058e8a435a22e5ce504cfd8518d71",
+              "sha256": "0ba101fa88c25175675f896c76d72246bfc058e8a435a22e5ce504cfd8518d71",
+              "locator": "本轮运行指令",
+              "read_status": "read",
+              "coverage": "本轮任务指令与已核验来源目录",
+              "limitations": "仅覆盖本轮运行可见的对话内容",
+              "quote": "优先围绕首期只读还是编辑、异常交互、写入前确认这三类未定内容，提出最多3个需要开发找产品确认的问题。"
+            },
+            {
+              "id": "source-pkg-web",
+              "kind": "code",
+              "ref": "apps/web/package.json",
+              "sha256": "3214cdb9467a2f5c31db22f0e1f16e83dd5d36e711dff24ccb6c05e1e8a32747",
+              "locator": "全文 27 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "\"@monaco-editor/react\": \"^4.7.0\", \"monaco-editor\": \"^0.52.2\", \"react\": \"^19.0.0\""
+            },
+            {
+              "id": "source-jdtls-manager",
+              "kind": "code",
+              "ref": "apps/gateway/internal/jdtls/manager.go",
+              "sha256": "d351457dde8e7d839bc5352b212ebe6d4652a4dabfcd065391e8c61e6d195490",
+              "locator": "全文 188 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "ErrNotConfigured = errors.New(\"jdtls not configured\"); ErrNotReady = errors.New(\"jdtls not ready\")"
+            },
+            {
+              "id": "source-kb-jdk",
+              "kind": "knowledge",
+              "ref": "kb_01M222X97MVQ0MB9Z9GJAQYR8F",
+              "sha256": "cc2907ecb68b214b18687fcde934ef8b500dde549986d4a6825e905d682fdb6a",
+              "version": 1,
+              "locator": "version 1 body_markdown",
+              "read_status": "read",
+              "coverage": "版本 1 标题与正文已读",
+              "limitations": "知识条目自述为合成测试材料，不构成产品批准",
+              "quote": "缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。"
+            }
+          ],
+          "items": [
+            {
+              "id": "scope-integration-approach",
+              "kind": "unknown",
+              "title": "集成方式与能力取舍尚未确认",
+              "detail": "原始需求明确：对 intellij-community 的“集成”采取直接移植、协议接入还是功能重实现未定；哪些能力先做、是否开放写入未定；参考库具备某功能不等于 web-idea 已具备。",
+              "source_ids": [
+                "source-md-request"
+              ],
+              "basis": "observed",
+              "impact": "影响首期技术方案与工作量评估，任何实现选型前需产品定调。",
+              "recommendation": "由产品确认集成方式与首批能力清单后再排期。"
+            },
+            {
+              "id": "scope-first-phase-readonly",
+              "kind": "requirement",
+              "title": "Word 提议首期仅只读范围",
+              "detail": "模拟范围建议（pending、未获确认）：首期支持锁定 Workspace Root 内文件阅读、Java 定义和引用查询（结果可为零条或多条）；文件写入、重命名和一键应用需要单独确认；外部依赖目录按只读展示。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "若按此范围，前端无需编辑写盘能力，网关需保证 jdtls 暴露能力不被误用为写入。",
+              "recommendation": "与 PPT 编辑提议对照后由产品二选一或分期。"
+            },
+            {
+              "id": "scope-first-phase-edit",
+              "kind": "conflict",
+              "title": "首期范围冲突：只读 vs 含编辑",
+              "detail": "PPT 评审提议（pending、未获确认）称首期包括跨文件 Rename 和 Quick Fix，一键应用并保存；与 Word 的首期仅文件阅读、定义和引用直接矛盾。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "proposed",
+              "impact": "两个范围的工作量、风险与前端/网关设计差异巨大（编辑需 workspace edit 应用、冲突处理、回滚等）。",
+              "recommendation": "请产品裁定首期范围；两份材料均为模拟件，均不构成批准依据。"
+            },
+            {
+              "id": "normal-read-in-root",
+              "kind": "normal",
+              "title": "正常路径：Workspace Root 内阅读",
+              "detail": "首期（按 Word 提议）支持在锁定的 Workspace Root 内阅读文件；外部依赖目录按只读方式展示并允许查看来源。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "决定文件浏览与依赖展示的交互形态。",
+              "recommendation": "与网关 Workspace Root 沙箱约束对齐后确认。"
+            },
+            {
+              "id": "normal-def-ref-query",
+              "kind": "normal",
+              "title": "正常路径：Java 定义与引用查询",
+              "detail": "首期支持 Java 定义和引用查询，结果可为零条或多条；跳转零结果或多结果时显示可解释的结果状态，不自动猜选目标。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "需定义/引用 UI 与结果列表交互，零/多结果有明确交互约束。",
+              "recommendation": "按提议实现，结果状态文案待异常交互确认后回填。"
+            },
+            {
+              "id": "normal-web-shell",
+              "kind": "normal",
+              "title": "现状：Web 端为 Monaco 编辑器壳",
+              "detail": "apps/web 依赖为 Monaco + React 19 + marked/dompurify，无 LSP 客户端库、无 Rename/Quick Fix UI；测试仅覆盖 navigation 脚本。",
+              "source_ids": [
+                "source-pkg-web"
+              ],
+              "basis": "observed",
+              "impact": "无论只读还是编辑范围，LSP 客户端能力与编辑交互均需新增开发。",
+              "recommendation": "以范围裁定结果决定引入的协议客户端与 UI 范围。"
+            },
+            {
+              "id": "normal-jdtls-session",
+              "kind": "normal",
+              "title": "现状：网关按工作区管理 jdtls 会话",
+              "detail": "manager.go 实现每工作区 jdtls 进程生命周期：状态 off/starting/ready/failed；Ensure 启动（LaunchScript 为空则 ErrNotConfigured）、Session 未就绪返回 ErrNotReady、Stop 终止；jdtls 退出置 failed 并记录 Err，Done 通道用于关闭挂接的 WebSocket。",
+              "source_ids": [
+                "source-jdtls-manager"
+              ],
+              "basis": "observed",
+              "impact": "语义能力依赖 jdtls 就绪状态；未配置或未就绪时前端需有降级表现。",
+              "recommendation": "与异常交互约定对齐状态到 UI 的映射。"
+            },
+            {
+              "id": "exception-index-not-ready",
+              "kind": "exception",
+              "title": "异常：索引未就绪",
+              "detail": "Word 提议：索引未就绪时显示等待状态，并允许稍后重试；代码侧对应 jdtls starting/ErrNotReady/StatusFailed 路径。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-jdtls-manager"
+              ],
+              "basis": "proposed",
+              "impact": "需前端等待/重试交互；与统一错误文案问题相关。",
+              "recommendation": "将网关会话状态映射为等待态与可重试入口。"
+            },
+            {
+              "id": "exception-jdk-missing",
+              "kind": "exception",
+              "title": "异常：JDK 缺失仍可阅读",
+              "detail": "知识条目与 Word 一致：缺少 JDK 时仍可读取文件，语义能力明确提示不可用。注意知识条目自述为合成测试材料，不是产品批准。",
+              "source_ids": [
+                "source-kb-jdk",
+                "source-docx-scope"
+              ],
+              "basis": "observed",
+              "impact": "需要文件阅读与语义服务解耦的降级设计；该约定尚待产品确认后才可作准。",
+              "recommendation": "保留为候选约定，请产品确认后回填。"
+            },
+            {
+              "id": "exception-zero-multi-results",
+              "kind": "exception",
+              "title": "异常：跳转零结果或多结果",
+              "detail": "Word 提议：显示可解释的结果状态，不自动猜选目标。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "结果列表交互需在定义/引用查询 UI 中预留。",
+              "recommendation": "按提议实现；文案是否统一待异常交互确认后回填。"
+            },
+            {
+              "id": "exception-session-failure",
+              "kind": "exception",
+              "title": "异常：jdtls 启动失败或退出",
+              "detail": "manager.go：cmd.Start 失败置 StatusFailed 并记录 Err；进程退出后 watcher 置 failed 并记录退出信息；Session.Done 关闭后由代理关闭 WebSocket。",
+              "source_ids": [
+                "source-jdtls-manager"
+              ],
+              "basis": "observed",
+              "impact": "前端需处理会话中断与错误信息透传，属已存在行为而非新需求。",
+              "recommendation": "在异常交互规范中纳入该路径的错误展示。"
+            },
+            {
+              "id": "conflict-write-confirmation",
+              "kind": "conflict",
+              "title": "写入前确认要求冲突",
+              "detail": "Word 称文件写入、重命名和一键应用“需要单独确认”；PPT 提议跨文件 Rename 和 Quick Fix“一键应用并保存”，未提及任何前置确认或人审，仅把“是否需要人审”“预览是否必须”“失败是否回滚”列为未决。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "proposed",
+              "impact": "影响写入交互（确认/预览/人审流程）与是否需要回滚、冲突处理机制的设计。",
+              "recommendation": "请产品明确写入类操作是否必须用户确认，并顺带裁定预览、人审、回滚与修改冲突处理。"
+            },
+            {
+              "id": "unknown-write-gating",
+              "kind": "unknown",
+              "title": "代码侧无只读/写入门禁机制",
+              "detail": "package.json 显示前端无编辑能力组件；manager.go 仅管理 jdtls 进程，无能力裁剪或只读模式；未发现任何阻止 jdtls 全量 LSP 能力（含 workspace edit）被调用的门禁。",
+              "source_ids": [
+                "source-pkg-web",
+                "source-jdtls-manager"
+              ],
+              "basis": "unverified",
+              "impact": "若首期裁定为只读，需在网关或协议层新增能力限制，否则“只读”无法在现有代码上保证。",
+              "recommendation": "范围裁定后评估网关能力过滤方案；当前仅两份代码文件为证，未审查其余网关路由代码。"
+            },
+            {
+              "id": "unknown-unified-error-copy",
+              "kind": "unknown",
+              "title": "异常文案是否统一未定",
+              "detail": "Word 待确认事项提出：索引未就绪、JDK 缺失和零/多结果是否使用统一错误文案；PPT 未涉及异常文案，仅列 JDK 版本范围为未决。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "unverified",
+              "impact": "影响错误提示组件设计与文案规范产出。",
+              "recommendation": "由产品裁定统一或分场景，作为首期范围之后的下一确认项。"
+            }
+          ],
+          "questions": [
+            {
+              "id": "q-first-phase-scope",
+              "prompt": "首期交付范围应裁定为只读（文件阅读 + Java 定义/引用），还是包含编辑能力（跨文件 Rename、Quick Fix）？",
+              "selection": "single",
+              "options": [
+                {
+                  "id": "a",
+                  "label": "首期只读，编辑后置并另开确认"
+                },
+                {
+                  "id": "b",
+                  "label": "首期即含 Rename 与 Quick Fix"
+                },
+                {
+                  "id": "c",
+                  "label": "只读为主，仅开放低风险编辑子集"
+                }
+              ],
+              "item_ids": [
+                "scope-first-phase-readonly",
+                "scope-first-phase-edit"
+              ]
+            }
+          ]
+        },
+        "pending_count": 0,
+        "answered_count": 1,
+        "deferred_count": 0,
+        "answers": [
+          {
+            "id": "caa_01M22996GAXPSHH3BY1AA5XYRC",
+            "revision": 1,
+            "question_id": "q-first-phase-scope",
+            "question_fingerprint": "724cf858f30bf44b49e8fdc4989248272194d6b9d24c7d6993605d5edf725af8",
+            "selected_option_ids": [
+              "a"
+            ],
+            "text": "U04 隔离验收：开发理解测试，尚非产品确认。",
+            "disposition": "answered",
+            "created_at": "2026-09-09T05:12:06.410939Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "entity replay works without original HTTP response cache",
+      "passed": true,
+      "detail": {
+        "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+        "chat_id": "wi_01M227K0WQD0Z3X6784FC4E1WV",
+        "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+        "version": 5,
+        "revision": 1,
+        "status": "ready",
+        "run_id": "run_01M228N7T1JYW4VWG0NSC7NJEB",
+        "document": {
+          "version": "chat-analysis/v1",
+          "summary": "web-idea 需求分析：首期范围在只读（Word）与含编辑（PPT）之间冲突，写入前确认要求两附件不一致；异常交互（索引未就绪/JDK 缺失/零多结果）已有候选约定但文案统一性未定；代码与知识侧佐证阅读可用性与会话异常处理，但均无写入门禁实现。按本轮要求一次只提一个最需要确认的问题：首期范围裁定。所有材料均为验收/模拟件，不代表产品批准。",
+          "sources": [
+            {
+              "id": "source-md-request",
+              "kind": "attachment",
+              "ref": "src_01M227K0Y15SQVJ7Q6G83SQH9W",
+              "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+              "locator": "全文 11 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "“集成”采取直接移植、协议接入还是功能重实现，哪些能力先做，以及是否开放写入，尚未确认。参考库中有某功能不等于目标项目已具备。"
+            },
+            {
+              "id": "source-docx-scope",
+              "kind": "attachment",
+              "ref": "src_01M227K0WYDPBDW3EXA32GBBEA",
+              "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+              "locator": "docx 正文段落",
+              "read_status": "partial",
+              "coverage": "正文全部段落文字已提取",
+              "limitations": "仅解析 document.xml 文字流，图片、排版与批注未解析",
+              "quote": "模拟范围建议：首期仅文件阅读、定义和引用；写入/重命名应用需单独确认"
+            },
+            {
+              "id": "source-pptx-review",
+              "kind": "attachment",
+              "ref": "src_01M227K0XDAHQYGMMHX6JJN479",
+              "sha256": "19e537a8764ecc1a87e68dace7c7580555e27e2d734499f49004c916b1f5aa9e",
+              "locator": "slide1-slide2",
+              "read_status": "partial",
+              "coverage": "两张幻灯片全部文字已提取",
+              "limitations": "仅解析幻灯片文字，图片、图形备注页与演讲者备注未解析",
+              "quote": "首期包括跨文件 Rename 和 Quick Fix，一键应用并保存"
+            },
+            {
+              "id": "source-conv",
+              "kind": "conversation",
+              "ref": "conversation:sha256:0ba101fa88c25175675f896c76d72246bfc058e8a435a22e5ce504cfd8518d71",
+              "sha256": "0ba101fa88c25175675f896c76d72246bfc058e8a435a22e5ce504cfd8518d71",
+              "locator": "本轮运行指令",
+              "read_status": "read",
+              "coverage": "本轮任务指令与已核验来源目录",
+              "limitations": "仅覆盖本轮运行可见的对话内容",
+              "quote": "优先围绕首期只读还是编辑、异常交互、写入前确认这三类未定内容，提出最多3个需要开发找产品确认的问题。"
+            },
+            {
+              "id": "source-pkg-web",
+              "kind": "code",
+              "ref": "apps/web/package.json",
+              "sha256": "3214cdb9467a2f5c31db22f0e1f16e83dd5d36e711dff24ccb6c05e1e8a32747",
+              "locator": "全文 27 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "\"@monaco-editor/react\": \"^4.7.0\", \"monaco-editor\": \"^0.52.2\", \"react\": \"^19.0.0\""
+            },
+            {
+              "id": "source-jdtls-manager",
+              "kind": "code",
+              "ref": "apps/gateway/internal/jdtls/manager.go",
+              "sha256": "d351457dde8e7d839bc5352b212ebe6d4652a4dabfcd065391e8c61e6d195490",
+              "locator": "全文 188 行",
+              "read_status": "read",
+              "coverage": "全文已读",
+              "quote": "ErrNotConfigured = errors.New(\"jdtls not configured\"); ErrNotReady = errors.New(\"jdtls not ready\")"
+            },
+            {
+              "id": "source-kb-jdk",
+              "kind": "knowledge",
+              "ref": "kb_01M222X97MVQ0MB9Z9GJAQYR8F",
+              "sha256": "cc2907ecb68b214b18687fcde934ef8b500dde549986d4a6825e905d682fdb6a",
+              "version": 1,
+              "locator": "version 1 body_markdown",
+              "read_status": "read",
+              "coverage": "版本 1 标题与正文已读",
+              "limitations": "知识条目自述为合成测试材料，不构成产品批准",
+              "quote": "缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。"
+            }
+          ],
+          "items": [
+            {
+              "id": "scope-integration-approach",
+              "kind": "unknown",
+              "title": "集成方式与能力取舍尚未确认",
+              "detail": "原始需求明确：对 intellij-community 的“集成”采取直接移植、协议接入还是功能重实现未定；哪些能力先做、是否开放写入未定；参考库具备某功能不等于 web-idea 已具备。",
+              "source_ids": [
+                "source-md-request"
+              ],
+              "basis": "observed",
+              "impact": "影响首期技术方案与工作量评估，任何实现选型前需产品定调。",
+              "recommendation": "由产品确认集成方式与首批能力清单后再排期。"
+            },
+            {
+              "id": "scope-first-phase-readonly",
+              "kind": "requirement",
+              "title": "Word 提议首期仅只读范围",
+              "detail": "模拟范围建议（pending、未获确认）：首期支持锁定 Workspace Root 内文件阅读、Java 定义和引用查询（结果可为零条或多条）；文件写入、重命名和一键应用需要单独确认；外部依赖目录按只读展示。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "若按此范围，前端无需编辑写盘能力，网关需保证 jdtls 暴露能力不被误用为写入。",
+              "recommendation": "与 PPT 编辑提议对照后由产品二选一或分期。"
+            },
+            {
+              "id": "scope-first-phase-edit",
+              "kind": "conflict",
+              "title": "首期范围冲突：只读 vs 含编辑",
+              "detail": "PPT 评审提议（pending、未获确认）称首期包括跨文件 Rename 和 Quick Fix，一键应用并保存；与 Word 的首期仅文件阅读、定义和引用直接矛盾。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "proposed",
+              "impact": "两个范围的工作量、风险与前端/网关设计差异巨大（编辑需 workspace edit 应用、冲突处理、回滚等）。",
+              "recommendation": "请产品裁定首期范围；两份材料均为模拟件，均不构成批准依据。"
+            },
+            {
+              "id": "normal-read-in-root",
+              "kind": "normal",
+              "title": "正常路径：Workspace Root 内阅读",
+              "detail": "首期（按 Word 提议）支持在锁定的 Workspace Root 内阅读文件；外部依赖目录按只读方式展示并允许查看来源。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "决定文件浏览与依赖展示的交互形态。",
+              "recommendation": "与网关 Workspace Root 沙箱约束对齐后确认。"
+            },
+            {
+              "id": "normal-def-ref-query",
+              "kind": "normal",
+              "title": "正常路径：Java 定义与引用查询",
+              "detail": "首期支持 Java 定义和引用查询，结果可为零条或多条；跳转零结果或多结果时显示可解释的结果状态，不自动猜选目标。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "需定义/引用 UI 与结果列表交互，零/多结果有明确交互约束。",
+              "recommendation": "按提议实现，结果状态文案待异常交互确认后回填。"
+            },
+            {
+              "id": "normal-web-shell",
+              "kind": "normal",
+              "title": "现状：Web 端为 Monaco 编辑器壳",
+              "detail": "apps/web 依赖为 Monaco + React 19 + marked/dompurify，无 LSP 客户端库、无 Rename/Quick Fix UI；测试仅覆盖 navigation 脚本。",
+              "source_ids": [
+                "source-pkg-web"
+              ],
+              "basis": "observed",
+              "impact": "无论只读还是编辑范围，LSP 客户端能力与编辑交互均需新增开发。",
+              "recommendation": "以范围裁定结果决定引入的协议客户端与 UI 范围。"
+            },
+            {
+              "id": "normal-jdtls-session",
+              "kind": "normal",
+              "title": "现状：网关按工作区管理 jdtls 会话",
+              "detail": "manager.go 实现每工作区 jdtls 进程生命周期：状态 off/starting/ready/failed；Ensure 启动（LaunchScript 为空则 ErrNotConfigured）、Session 未就绪返回 ErrNotReady、Stop 终止；jdtls 退出置 failed 并记录 Err，Done 通道用于关闭挂接的 WebSocket。",
+              "source_ids": [
+                "source-jdtls-manager"
+              ],
+              "basis": "observed",
+              "impact": "语义能力依赖 jdtls 就绪状态；未配置或未就绪时前端需有降级表现。",
+              "recommendation": "与异常交互约定对齐状态到 UI 的映射。"
+            },
+            {
+              "id": "exception-index-not-ready",
+              "kind": "exception",
+              "title": "异常：索引未就绪",
+              "detail": "Word 提议：索引未就绪时显示等待状态，并允许稍后重试；代码侧对应 jdtls starting/ErrNotReady/StatusFailed 路径。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-jdtls-manager"
+              ],
+              "basis": "proposed",
+              "impact": "需前端等待/重试交互；与统一错误文案问题相关。",
+              "recommendation": "将网关会话状态映射为等待态与可重试入口。"
+            },
+            {
+              "id": "exception-jdk-missing",
+              "kind": "exception",
+              "title": "异常：JDK 缺失仍可阅读",
+              "detail": "知识条目与 Word 一致：缺少 JDK 时仍可读取文件，语义能力明确提示不可用。注意知识条目自述为合成测试材料，不是产品批准。",
+              "source_ids": [
+                "source-kb-jdk",
+                "source-docx-scope"
+              ],
+              "basis": "observed",
+              "impact": "需要文件阅读与语义服务解耦的降级设计；该约定尚待产品确认后才可作准。",
+              "recommendation": "保留为候选约定，请产品确认后回填。"
+            },
+            {
+              "id": "exception-zero-multi-results",
+              "kind": "exception",
+              "title": "异常：跳转零结果或多结果",
+              "detail": "Word 提议：显示可解释的结果状态，不自动猜选目标。",
+              "source_ids": [
+                "source-docx-scope"
+              ],
+              "basis": "proposed",
+              "impact": "结果列表交互需在定义/引用查询 UI 中预留。",
+              "recommendation": "按提议实现；文案是否统一待异常交互确认后回填。"
+            },
+            {
+              "id": "exception-session-failure",
+              "kind": "exception",
+              "title": "异常：jdtls 启动失败或退出",
+              "detail": "manager.go：cmd.Start 失败置 StatusFailed 并记录 Err；进程退出后 watcher 置 failed 并记录退出信息；Session.Done 关闭后由代理关闭 WebSocket。",
+              "source_ids": [
+                "source-jdtls-manager"
+              ],
+              "basis": "observed",
+              "impact": "前端需处理会话中断与错误信息透传，属已存在行为而非新需求。",
+              "recommendation": "在异常交互规范中纳入该路径的错误展示。"
+            },
+            {
+              "id": "conflict-write-confirmation",
+              "kind": "conflict",
+              "title": "写入前确认要求冲突",
+              "detail": "Word 称文件写入、重命名和一键应用“需要单独确认”；PPT 提议跨文件 Rename 和 Quick Fix“一键应用并保存”，未提及任何前置确认或人审，仅把“是否需要人审”“预览是否必须”“失败是否回滚”列为未决。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "proposed",
+              "impact": "影响写入交互（确认/预览/人审流程）与是否需要回滚、冲突处理机制的设计。",
+              "recommendation": "请产品明确写入类操作是否必须用户确认，并顺带裁定预览、人审、回滚与修改冲突处理。"
+            },
+            {
+              "id": "unknown-write-gating",
+              "kind": "unknown",
+              "title": "代码侧无只读/写入门禁机制",
+              "detail": "package.json 显示前端无编辑能力组件；manager.go 仅管理 jdtls 进程，无能力裁剪或只读模式；未发现任何阻止 jdtls 全量 LSP 能力（含 workspace edit）被调用的门禁。",
+              "source_ids": [
+                "source-pkg-web",
+                "source-jdtls-manager"
+              ],
+              "basis": "unverified",
+              "impact": "若首期裁定为只读，需在网关或协议层新增能力限制，否则“只读”无法在现有代码上保证。",
+              "recommendation": "范围裁定后评估网关能力过滤方案；当前仅两份代码文件为证，未审查其余网关路由代码。"
+            },
+            {
+              "id": "unknown-unified-error-copy",
+              "kind": "unknown",
+              "title": "异常文案是否统一未定",
+              "detail": "Word 待确认事项提出：索引未就绪、JDK 缺失和零/多结果是否使用统一错误文案；PPT 未涉及异常文案，仅列 JDK 版本范围为未决。",
+              "source_ids": [
+                "source-docx-scope",
+                "source-pptx-review"
+              ],
+              "basis": "unverified",
+              "impact": "影响错误提示组件设计与文案规范产出。",
+              "recommendation": "由产品裁定统一或分场景，作为首期范围之后的下一确认项。"
+            }
+          ],
+          "questions": [
+            {
+              "id": "q-first-phase-scope",
+              "prompt": "首期交付范围应裁定为只读（文件阅读 + Java 定义/引用），还是包含编辑能力（跨文件 Rename、Quick Fix）？",
+              "selection": "single",
+              "options": [
+                {
+                  "id": "a",
+                  "label": "首期只读，编辑后置并另开确认"
+                },
+                {
+                  "id": "b",
+                  "label": "首期即含 Rename 与 Quick Fix"
+                },
+                {
+                  "id": "c",
+                  "label": "只读为主，仅开放低风险编辑子集"
+                }
+              ],
+              "item_ids": [
+                "scope-first-phase-readonly",
+                "scope-first-phase-edit"
+              ]
+            }
+          ]
+        },
+        "pending_count": 0,
+        "answered_count": 1,
+        "deferred_count": 0,
+        "answers": [
+          {
+            "id": "caa_01M22996GAXPSHH3BY1AA5XYRC",
+            "revision": 1,
+            "question_id": "q-first-phase-scope",
+            "question_fingerprint": "724cf858f30bf44b49e8fdc4989248272194d6b9d24c7d6993605d5edf725af8",
+            "selected_option_ids": [
+              "a"
+            ],
+            "text": "U04 隔离验收：开发理解测试，尚非产品确认。",
+            "disposition": "answered",
+            "created_at": "2026-09-09T05:12:06.410939Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "same logical answer key with different contents conflicts",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/idempotency_conflict",
+        "title": "Idempotency conflict",
+        "status": 409,
+        "code": "idempotency_conflict",
+        "detail": "相同 Idempotency-Key 提交了不同请求体"
+      }
+    },
+    {
+      "name": "already answered question is not silently answered twice",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/version_conflict",
+        "title": "Resource version conflict",
+        "status": 409,
+        "code": "version_conflict",
+        "detail": "资源版本已变化"
+      }
+    },
+    {
+      "name": "stale Workspace cannot save an answer",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/workspace-scope-mismatch",
+        "title": "Workspace scope mismatch",
+        "status": 409,
+        "code": "workspace_scope_mismatch",
+        "detail": "请求实体不属于当前 Workspace",
+        "instance": "/api/v1/work-items/wi_01M227K0WQD0Z3X6784FC4E1WV/analysis/answers",
+        "request_id": "req_01M22996GFCJ16Z7YZ5KJW4YTT"
+      }
+    },
+    {
+      "name": "SQLite has one answer and no implicit Task publication",
+      "passed": true,
+      "detail": {
+        "answers": 1,
+        "tasks_unchanged": true
+      }
+    },
+    {
+      "name": "ordinary Chat still uses normal Run",
+      "passed": true,
+      "detail": {
+        "capability_snapshot_id": "caps_01M22996GK4K2AJN1D5WQ62KGN",
+        "run_id": "run_01M22996GKAV7KTP2NAYAAJK77",
+        "status": "queued",
+        "version": 1,
+        "work_item_id": "wi_01M227K0WQD0Z3X6784FC4E1WV"
+      }
+    },
+    {
+      "name": "ordinary Chat does not reset or auto-confirm analysis",
+      "passed": true,
+      "detail": null
+    }
+  ]
+}

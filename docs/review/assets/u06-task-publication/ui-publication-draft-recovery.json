@@ -1,0 +1,31 @@
+{
+  "beta": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJ2901NZW6AA30P2XJ7G",
+    "panel": null
+  },
+  "restored": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489&c=wi_01M2293P91XY36SRV9MAX6C750",
+    "fields": [
+      {
+        "type": "checkbox",
+        "value": "on",
+        "checked": false
+      },
+      {
+        "type": "checkbox",
+        "value": "on",
+        "checked": true
+      },
+      {
+        "type": "checkbox",
+        "value": "on",
+        "checked": false
+      },
+      {
+        "type": "text",
+        "value": "U06 UI 隔离验收：外部依赖只读提示",
+        "checked": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "kind": "UI lost successful Run response; reload reconciled persisted request with one actual SQLite Run",
+  "chat_id": "wi_01M223PYWVSM8Z1BK1GV7E7DBG",
+  "run_id": "run_01M223PYXZM87KZD6KJGQA7ZSH",
+  "run_count": 1,
+  "source_count": 1,
+  "source_refs": [
+    {
+      "filename": "original-request.md",
+      "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+      "source_id": "src_01M223PYX4Q4KJ919TX28H6M1P"
+    }
+  ]
+}

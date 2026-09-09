@@ -1,0 +1,26 @@
+{
+  "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+  "run_id": "run_01M2293PAVYJ6YNN47ZGHBRG8Y",
+  "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+  "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+  "source_count": 3,
+  "output_contract": "chat-analysis/v1",
+  "user_draft_preserved": true,
+  "source_refs": [
+    {
+      "filename": "reading-scope.docx",
+      "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+      "source_id": "src_01M2293P9B6ER61RR94EJ9FZWY"
+    },
+    {
+      "filename": "review-proposal.pptx",
+      "sha256": "19e537a8764ecc1a87e68dace7c7580555e27e2d734499f49004c916b1f5aa9e",
+      "source_id": "src_01M2293PA51E6ZYJNC6RACFZWR"
+    },
+    {
+      "filename": "original-request.md",
+      "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+      "source_id": "src_01M2293PAGQYB4Z6NHAAAJNYXD"
+    }
+  ]
+}

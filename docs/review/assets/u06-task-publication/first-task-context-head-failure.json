@@ -1,0 +1,26 @@
+{
+  "task_id": "wi_01M22MT7KT4BKF82ZM69NR75ZB",
+  "expected_head": "2bbfb37ae0ba5f70c8a6092533119f239dce1458",
+  "context": [
+    {
+      "work_item_id": "wi_01M22MT7KT4BKF82ZM69NR75ZB",
+      "context_owner_id": "wi_01M22MT7KT4BKF82ZM69NR75ZB",
+      "workspace_location_id": "wsloc_01M21SVJVRT42470CG4ABHT5G2",
+      "ref_kind": "root",
+      "branch_name": null,
+      "checkout_ref": null,
+      "worktree_ref": null,
+      "base_revision": null,
+      "version": 1,
+      "created_at": "2026-09-09T08:33:38.961872Z",
+      "updated_at": "2026-09-09T08:33:38.961872Z"
+    }
+  ],
+  "run_heads": [
+    null,
+    null,
+    null
+  ],
+  "runtime": "all mock",
+  "failure": "Published Task and Run BaseRevision were NULL; rebuild required to distinguish old binary from downstream context behavior"
+}

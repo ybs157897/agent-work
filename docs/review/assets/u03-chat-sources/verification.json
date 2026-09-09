@@ -1,0 +1,32 @@
+{
+  "http_sqlite_checks": 49,
+  "integrity_checks": 11,
+  "real_model_checks": 32,
+  "native_resume_new_source": true,
+  "ui": {
+    "file_only": true,
+    "queue_switch_reload": true,
+    "failed_upload_retained": true,
+    "lost_run_response_reconciled": true,
+    "direct_chat_link_real_report": true
+  },
+  "backend": [
+    "build",
+    "vet",
+    "chat-source HTTP and concurrent replay",
+    "runtime source admission and fresh/resume",
+    "focused lost-recovery race"
+  ],
+  "frontend": {
+    "tests_files": 124,
+    "tests_passed": 973,
+    "typecheck": "tsc -b",
+    "lint": "full plus focused after deep-link fix",
+    "build": true
+  },
+  "known_limitations": [
+    "Source shelf shows preservation/handoff facts; reading coverage and failures are in durable Run tool events and AI report.",
+    "DOCX thumbnail image not read; original preserved.",
+    "Earlier configured DeepSeek disabled provider, OpenRouter missing model and credit errors; final actual acceptance uses existing Kimi provider via DSH."
+  ]
+}

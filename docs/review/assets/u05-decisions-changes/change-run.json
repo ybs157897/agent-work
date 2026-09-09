@@ -1,0 +1,25 @@
+{
+  "run_id": "run_01M22GXZ9EC46E4R75E29FPNK1",
+  "source": {
+    "id": "src_01M22FTB44CZQ2RZ6AZZCBS3PG",
+    "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+    "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+    "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+    "client_key": "6bd55bab-fe95-433f-b117-8f720e19e42b",
+    "filename": "change-and-correction.md",
+    "mime": "text/markdown",
+    "size": 1229,
+    "sha256": "a40d0974bf36faade9fa060b887ba7e5a25f84ec2ee59532e2c8281d4d635806",
+    "status": "saved",
+    "created_at": "2026-09-09T07:06:19.669616Z",
+    "updated_at": "2026-09-09T07:06:19.669616Z",
+    "available": true
+  },
+  "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+  "instruction": "请按 change-and-correction.md 复核新增的外部依赖只读标识/来源提示，并实际检查客户端源码纠正normal-jdtls原推断。JDK降级规则未变。请用preserve_item_ids/preserve_question_ids引用未受影响的原事项/问题；不要重写未变条目，不把产品已确认等状态补写到item正文。仅输出实际改变/新增的对象及所需新来源，服务端会按冻结base_revision展开保留项。已保存产品结论独立保留，只重开实际受影响事项。所有材料为隔离验收，不修改代码，不发布任务。",
+  "base_revision": 1,
+  "first_delta_run_id": "run_01M22FTB4WDBY6K5D07ZFBYW4E",
+  "failed_runs": [
+    "run_01M22GD58ZJY6S6CK5VZPPXCB8"
+  ]
+}

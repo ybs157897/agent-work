@@ -1,0 +1,227 @@
+{
+  "reference_sha": "5ada6f537896bdf5d549ac12cd7f3e38ff637093",
+  "target_baseline": "web-idea 2bbfb37 plus observed working tree; embedded agent-work651056c",
+  "inventory_scope": "20 capability families, not exhaustive Java actions",
+  "items": [
+    {
+      "id": "JAVA-001",
+      "name": "编辑与高亮",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-impl/resources/intellij.java.impl.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "implemented",
+      "embedded": "partial_readonly",
+      "suggested_mapping": "Monaco及保存协议",
+      "exception_focus": "只读约束、失败保留、并发外部修改",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-002",
+      "name": "Java补全",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-impl/src/com/intellij/codeInsight/completion/JavaCompletionContributor.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "implemented",
+      "embedded": "partial_readonly",
+      "suggested_mapping": "JDT LS completion",
+      "exception_focus": "索引未就绪、过期响应、只读表面是否适用",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-003",
+      "name": "悬停文档",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-psi-api/src/com/intellij/psi/PsiJavaFile.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "JDT LS hover或服务",
+      "exception_focus": "模块级证据；精确documentation功能清单仍需细化",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-004",
+      "name": "定义与引用导航",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/platform/indexing-api/src/com/intellij/psi/search/PsiSearchHelper.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "implemented",
+      "embedded": "implemented",
+      "suggested_mapping": "JDT LS definition/references",
+      "exception_focus": "零/多结果、外部库无源码、返回位置、索引状态",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-005",
+      "name": "诊断与检查",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-impl-inspections/resources/intellij.java.impl.inspections.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "诊断模型与UI",
+      "exception_focus": "JDT LS诊断不等于完整IntelliJ inspections",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-006",
+      "name": "快速修复",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-analysis-api/resources/intellij.java.analysis.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "codeAction与写入合同",
+      "exception_focus": "预览过期、越界修改、部分失败、待确认写权限",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-007",
+      "name": "重命名与重构",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-impl-refactorings/resources/intellij.java.impl.refactorings.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "rename/refactor与受控写入",
+      "exception_focus": "跨文件/模块、冲突、原子应用、撤销、只读",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-008",
+      "name": "代码格式化",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/platform/lang-impl/src/com/intellij/codeInsight/actions/ReformatCodeProcessor.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "formatting接口",
+      "exception_focus": "不同风格配置、未保存缓冲区、只读",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-009",
+      "name": "优化导入",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/platform/lang-impl/src/com/intellij/codeInsight/actions/OptimizeImportsProcessor.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "organizeImports接口",
+      "exception_focus": "同名类、未解析依赖、误删、只读",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-010",
+      "name": "Maven工程导入",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/maven/plugin/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "partial",
+      "embedded": "partial",
+      "suggested_mapping": "工程服务和JDT LS",
+      "exception_focus": "依赖下载失败、离线、多模块、生成目录副作用",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-011",
+      "name": "Gradle工程导入",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/gradle/plugin/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "partial",
+      "embedded": "partial",
+      "suggested_mapping": "工程服务和JDT LS",
+      "exception_focus": "marker识别不等于完整模型；toolchain与多模块",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-012",
+      "name": "JDK与模块类路径",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/platform/projectModel-api/src/com/intellij/openapi/roots/ProjectRootManager.java",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "partial",
+      "embedded": "partial",
+      "suggested_mapping": "JDK与工程上下文",
+      "exception_focus": "宿主JDK与项目语言级别分离；8/11/17/21待定",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-013",
+      "name": "构建编译",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/compiler/openapi/resources/intellij.java.compiler.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "需要执行服务",
+      "exception_focus": "失败日志、取消、环境、预算；不得并列新Run权威",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-014",
+      "name": "运行Java程序",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/execution/openapi/resources/intellij.java.execution.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "需要执行服务",
+      "exception_focus": "运行配置、权限、进程取消、输入输出",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-015",
+      "name": "JUnit",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/junit/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "需要测试执行服务",
+      "exception_focus": "发现与执行分开；版本、失败、报告绑定",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-016",
+      "name": "TestNG",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/testng/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "需要测试执行服务",
+      "exception_focus": "框架版本、参数、取消、结果追溯",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-017",
+      "name": "Java调试",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/debugger/openapi/resources/intellij.java.debugger.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "需要调试协议服务",
+      "exception_focus": "断点、断连、进程归属、权限",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-018",
+      "name": "反编译阅读",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/java-decompiler/plugin/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "unverified",
+      "embedded": "unverified",
+      "suggested_mapping": "可能需要反编译服务",
+      "exception_focus": "源码不可得、许可证、生成内容非原始源码",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-019",
+      "name": "字节码查看",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/plugins/ByteCodeViewer/resources/META-INF/plugin.xml",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "unverified",
+      "embedded": "unverified",
+      "suggested_mapping": "需要专门只读服务",
+      "exception_focus": "二进制解析失败、大小限制、版本",
+      "scope_decision": "needs_confirmation"
+    },
+    {
+      "id": "JAVA-020",
+      "name": "代码生成模板",
+      "reference_url": "https://github.com/JetBrains/intellij-community/blob/5ada6f537896bdf5d549ac12cd7f3e38ff637093/java/java-impl/resources/fileTemplates/internal/Class.java.ft",
+      "reference_level": "bounded_module_or_file_evidence",
+      "standalone": "not_exposed",
+      "embedded": "not_exposed",
+      "suggested_mapping": "模板与写入合同",
+      "exception_focus": "同名文件、包路径、覆盖确认、模板来源",
+      "scope_decision": "needs_confirmation"
+    }
+  ]
+}
