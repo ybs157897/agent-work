@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -103,7 +105,7 @@ func (s *Service) conversationHistory(ctx context.Context, runs []*domain.Execut
 		}
 		events = mainAgentEvents(events)
 		if user := userReplayText(run, events); user != "" {
-			messages = appendHistoryMessage(messages, "user", user)
+			messages = appendHistoryUserMessage(messages, user, run.ID)
 		}
 		assistant := strings.TrimSpace(completedOrDeltaText(events))
 		if trace := toolTraceSection(events); trace != "" {
@@ -416,6 +418,15 @@ func completedOrDeltaText(events []RunEvent) string {
 
 func appendHistoryMessage(messages []map[string]any, role, text string) []map[string]any {
 	return append(messages, map[string]any{"role": role, "text": text})
+}
+
+func appendHistoryUserMessage(messages []map[string]any, text, runID string) []map[string]any {
+	digest := sha256.Sum256([]byte(text))
+	return append(messages, map[string]any{
+		"role": "user", "text": text,
+		"source_ref":    "conversation:run:" + runID,
+		"source_sha256": hex.EncodeToString(digest[:]),
+	})
 }
 
 func eventText(payload map[string]any) string {

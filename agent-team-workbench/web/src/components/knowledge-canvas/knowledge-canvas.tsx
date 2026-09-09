@@ -46,6 +46,7 @@ export type { KnowledgeCanvasReference } from '../../utils/agent-knowledge-canva
 
 export interface KnowledgeCanvasProps {
   workspaceId: string;
+  workspaceName?: string;
   agentId: string;
   agentName: string;
   requesterAgentId?: string;
@@ -532,6 +533,7 @@ function CanvasLoading({ label }: { label: string }) {
 
 export function KnowledgeCanvas({
   workspaceId,
+  workspaceName,
   agentId,
   agentName,
   requesterAgentId,
@@ -768,6 +770,7 @@ export function KnowledgeCanvas({
         <div className="knowledge-canvas-toolbar-title">
           <span className="knowledge-canvas-toolbar-icon" aria-hidden="true"><BookOpen className="h-4 w-4" /></span>
           <div className="min-w-0">
+            <p className="truncate text-caption text-text-tertiary">当前工作空间 · {workspaceName ?? workspaceId}</p>
             <h2 className="truncate text-body font-semibold text-text-primary">{agentName} 的知识</h2>
             <p className="truncate text-caption text-text-tertiary">{requesterAgentId ? '已发布内容' : '已发布共享内容'} · 只读画布</p>
           </div>
@@ -792,7 +795,7 @@ export function KnowledgeCanvas({
       <div className={cx('knowledge-canvas-layout', listCollapsed && 'is-list-collapsed')}>
         <aside className="knowledge-canvas-sidebar" aria-label="知识文档列表">
           <div className="knowledge-canvas-search">
-            <label htmlFor="knowledge-canvas-search" className="sr-only">搜索产品知识</label>
+            <label htmlFor="knowledge-canvas-search" className="sr-only">搜索知识</label>
             <Search className="knowledge-canvas-search-icon h-4 w-4" aria-hidden="true" />
             <Input id="knowledge-canvas-search" value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder="搜索文档" />
             {queryInput ? <button type="button" className="knowledge-canvas-search-clear" aria-label="清除搜索" onClick={() => setQueryInput('')}><X className="h-3.5 w-3.5" aria-hidden="true" /></button> : null}

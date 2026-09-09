@@ -11,6 +11,7 @@ import (
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/observability"
+	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
@@ -675,7 +676,8 @@ func (s *Service) maybeSelfHeal(ctx context.Context, r *domain.ExecutionRun) (st
 
 func selfHealRunParams(source *domain.ExecutionRun, instruction string) CreateRunParams {
 	p := CreateRunParams{AgentProfileID: source.AgentProfileID, Instruction: instruction,
-		AutoHealOf: source.ID, DispatchID: source.DispatchID, ClientKey: "session-heal:" + source.ID}
+		AutoHealOf: source.ID, DispatchID: source.DispatchID, ClientKey: "session-heal:" + source.ID,
+		SourceRefs: sourceRefsFromRunInput(source.Input)}
 	if coordinator, ok := source.Input["task_coordinator"].(map[string]any); ok {
 		p.CoordinatorContext = mapsCloneAny(coordinator)
 		p.CoordinatorContext["attempt"] = coordinatorAttemptValue(p.CoordinatorContext["attempt"]) + 1
@@ -691,6 +693,10 @@ func selfHealRunParams(source *domain.ExecutionRun, instruction string) CreateRu
 		p.governanceContext = mapsCloneAny(governance)
 	}
 	p.OutputContract, _ = source.Input["output_contract"].(string)
+	if p.OutputContract == orchestrator.OutputContractChatAnalysisV1 {
+		p.analysisBaseRevision = analysisBaseRevision(source)
+		p.analysisContext, _ = source.Input["analysis_context"].(string)
+	}
 	if raw, ok := source.Input["acceptance_criteria"].([]any); ok {
 		for _, item := range raw {
 			if text, ok := item.(string); ok {

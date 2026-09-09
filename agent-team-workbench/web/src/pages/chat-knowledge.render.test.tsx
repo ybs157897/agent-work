@@ -8,7 +8,7 @@ import { useWorkbenchThemeStore } from '../stores/workbench-theme.store';
 import ChatPage from './chat.page';
 
 vi.mock('../components/knowledge-canvas/knowledge-canvas', () => ({
-  KnowledgeCanvas: ({ agentId, requesterAgentId }: { agentId: string; requesterAgentId?: string }) => <div data-testid="knowledge-canvas" data-owner={agentId} data-reader={requesterAgentId ?? 'shared'} />,
+  KnowledgeCanvas: ({ agentId, requesterAgentId, workspaceName }: { agentId: string; requesterAgentId?: string; workspaceName?: string }) => <div data-testid="knowledge-canvas" data-owner={agentId} data-reader={requesterAgentId ?? 'shared'} data-workspace={workspaceName ?? 'unknown'} />,
 }));
 
 vi.mock('../stores/agents.store', async (importOriginal) => {
@@ -50,7 +50,7 @@ describe('Product Agent canvas layout and visibility boundary', () => {
   it('opens the declared product role with the real conversation and scoped knowledge side by side', () => {
     const html = render();
     expect(html).toContain('knowledge-chat-layout-active');
-    expect(html).toContain('data-owner="agent_product" data-reader="agent_product"');
+    expect(html).toContain('data-owner="agent_product" data-reader="agent_product" data-workspace="测试工作区"');
     expect(html).toContain('data-chat-scroll="transcript"');
     expect(html).toContain('aria-label="发送消息"');
     expect(html).toContain('aria-label="切换成员与会话列表"');

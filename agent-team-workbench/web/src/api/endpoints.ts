@@ -52,6 +52,7 @@ import type {
   WorkItemStatus,
   Workspace,
 } from './types';
+import type { ChatSourceRef } from './chat-sources';
 
 /**
  * 只封装控制平面已实现的端点（internal/httpapi/server.go）。
@@ -67,8 +68,8 @@ export const listWorkspaces = () => apiFetch<{ items: Workspace[] }>('/workspace
 export const patchWorkspace = (workspaceId: string, input: { name?: string; timezone?: string; expected_version: number }) =>
   apiFetch<Workspace>(`/workspaces/${workspaceId}`, { method: 'PATCH', body: input });
 
-export const getBootstrap = (workspaceId: string) =>
-  apiFetch<Bootstrap>(`/workspaces/${workspaceId}/bootstrap`);
+export const getBootstrap = (workspaceId: string, requestWorkspaceId?: string) =>
+  apiFetch<Bootstrap>(`/workspaces/${workspaceId}/bootstrap`, requestWorkspaceId ? { headers: { 'X-Workspace-ID': requestWorkspaceId } } : {});
 
 export const getDashboard = (workspaceId: string) =>
   apiFetch<Dashboard>(`/workspaces/${workspaceId}/dashboard`);
@@ -441,12 +442,12 @@ export const getWorkItemPlan = (workItemId: string) => apiFetch<Plan>(`/work-ite
 
 export interface CreateRunInput {
   agent_profile_id?: string;
-  output_contract?: 'languagegui/v1';
+  output_contract?: 'languagegui/v1' | 'chat-analysis/v1';
   runtime_preference?: { preferred: string; fallbacks?: string[] };
   requirements?: Record<string, string>;
   /** 实体级幂等键：同 key 重复创建返回既有 run（防队列 drain 重试重复建轮）。 */
   client_key?: string;
-  input: { instruction: string; acceptance_criteria?: string[] };
+  input: { instruction: string; acceptance_criteria?: string[]; source_refs?: ChatSourceRef[] };
 }
 
 /** 成功返回 202；真正开始执行由 SSE 事件确认（协议 §5.4）。 */

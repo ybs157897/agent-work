@@ -30,6 +30,7 @@ import { activeMention, applyMention, mentionableAgents, type MentionState } fro
 import { Avatar } from '../avatar';
 import { Button } from '../ui';
 import { validatePromptFiles, type PromptFileDescriptor } from './prompt-files';
+import { fileFromChatAttachment, loadChatAttachments, removeChatAttachment, saveChatAttachments, type ChatAttachmentRecoveryScope } from '../../utils/chat-attachment-recovery';
 
 export const PROMPT_LIBRARY = [
   { title: '关键指标', prompt: '请先给出结论，再用关键指标卡展示最重要的数据，并注明数据来源。' },
@@ -37,10 +38,14 @@ export const PROMPT_LIBRARY = [
   { title: '趋势图', prompt: '请用趋势图展示数据变化，同时提供可核对的数据表和简短结论。' },
 ] as const;
 
-const FILE_ACCEPT = '.txt,.md,.markdown,.csv,.json,.pdf,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/csv,application/json,application/pdf,image/png,image/jpeg,image/webp';
+const FILE_ACCEPT = '.txt,.md,.markdown,.csv,.json,.pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,text/plain,text/markdown,text/csv,application/json,application/pdf,application/msword,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,image/png,image/jpeg,image/webp';
 const IMAGE_ACCEPT = '.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp';
 
-interface PromptAttachment extends PromptFileDescriptor {
+function attachmentScopeKey(scope: ChatAttachmentRecoveryScope): string {
+  return `${scope.workspaceId}:${scope.agentId}:${scope.conversationId ?? 'new'}`;
+}
+
+export interface PromptAttachment extends PromptFileDescriptor {
   file: File;
   previewUrl?: string;
 }
@@ -71,7 +76,7 @@ type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 export interface PromptBoxProps {
   draft: string;
   onDraftChange: (value: string) => void;
-  onSend: () => void;
+  onSend: () => void | Promise<boolean>;
   placeholder: string;
   inputRef: RefObject<HTMLTextAreaElement>;
   queue: readonly QueuedMessage[];
@@ -85,6 +90,13 @@ export interface PromptBoxProps {
   usageText: string | null;
   /** 仅 Task 编排入口开启 @Agent；独立 Chat 默认不提供调度候选。 */
   mentionsEnabled?: boolean;
+  /** U01: local-only attachments are recovered by the same Workspace/Agent/conversation scope. */
+  attachmentScope?: ChatAttachmentRecoveryScope;
+  /** Keep the selected originals while a first Chat is being materialized. */
+  preserveAttachmentsOnScopeChange?: boolean;
+  /** Parent-triggered cleanup after a non-composer action delivered the originals. */
+  clearAttachmentsRequest?: number;
+  onAttachmentsChange?: (attachments: readonly PromptAttachment[]) => void;
 }
 
 export function PromptBox({
@@ -103,6 +115,10 @@ export function PromptBox({
   onStop,
   usageText,
   mentionsEnabled = false,
+  attachmentScope,
+  preserveAttachmentsOnScopeChange = false,
+  clearAttachmentsRequest = 0,
+  onAttachmentsChange,
 }: PromptBoxProps) {
   const [attachments, setAttachments] = useState<PromptAttachment[]>([]);
   const [fileError, setFileError] = useState('');
@@ -126,6 +142,94 @@ export function PromptBox({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const attachmentsRef = useRef(attachments);
   const draftRef = useRef(draft);
+  const sendInFlightRef = useRef(false);
+  const scopeKey = attachmentScope
+    ? `${attachmentScope.workspaceId}:${attachmentScope.agentId}:${attachmentScope.conversationId ?? 'new'}`
+    : '';
+  const previousScopeKeyRef = useRef(scopeKey);
+  const skippedScopeKeyRef = useRef<string | null>(null);
+  const persistedScopeRef = useRef<ChatAttachmentRecoveryScope | undefined>(attachmentScope);
+  const attachmentScopesRef = useRef(new Map<string, ChatAttachmentRecoveryScope[]>());
+  const attachmentPersistenceRef = useRef<Promise<void> | null>(null);
+  const clearAttachmentsRequestRef = useRef(clearAttachmentsRequest);
+
+  const rememberAttachmentScope = useCallback((key: string, scope: ChatAttachmentRecoveryScope) => {
+    const scopes = attachmentScopesRef.current.get(key) ?? [];
+    if (!scopes.some((item) => attachmentScopeKey(item) === attachmentScopeKey(scope))) scopes.push(scope);
+    attachmentScopesRef.current.set(key, scopes);
+  }, []);
+  const scopesForAttachment = useCallback((key: string): ChatAttachmentRecoveryScope[] => {
+    const remembered = attachmentScopesRef.current.get(key);
+    if (remembered?.length) return remembered;
+    const fallback = persistedScopeRef.current ?? attachmentScope;
+    return fallback ? [fallback] : [];
+  }, [attachmentScope]);
+
+  const persistAttachments = (scope: ChatAttachmentRecoveryScope, records: readonly PromptAttachment[]): Promise<void> => {
+    const previous = attachmentPersistenceRef.current ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => saveChatAttachments(scope, records.map((attachment) => ({
+        key: attachment.key,
+        name: attachment.name,
+        size: attachment.size,
+        mime: attachment.mime,
+        kind: attachment.kind,
+        lastModified: attachment.file.lastModified,
+        blob: attachment.file,
+      }))));
+    attachmentPersistenceRef.current = next;
+    void next.catch((error: unknown) => setFileError(error instanceof Error ? `附件暂存失败：${error.message}` : '附件暂存失败，请复制文件后重试'));
+    return next;
+  };
+
+  useEffect(() => {
+    if (!attachmentScope?.workspaceId || !attachmentScope.agentId) {
+      setAttachments([]);
+      return;
+    }
+    const scopeChanged = previousScopeKeyRef.current !== scopeKey;
+    previousScopeKeyRef.current = scopeKey;
+    if (scopeChanged && preserveAttachmentsOnScopeChange) {
+      const selected = attachmentsRef.current;
+      const previousScope = persistedScopeRef.current;
+      persistedScopeRef.current = attachmentScope;
+      if (selected.length) {
+        selected.forEach((attachment) => rememberAttachmentScope(attachment.key, attachmentScope));
+        const migrated = persistAttachments(attachmentScope, selected);
+        if (previousScope && attachmentScopeKey(previousScope) !== attachmentScopeKey(attachmentScope)) {
+          void migrated
+            .then(() => Promise.all(selected.map((attachment) => removeChatAttachment(previousScope, attachment.key).catch(() => undefined))))
+            .catch(() => undefined);
+        }
+      }
+      skippedScopeKeyRef.current = scopeKey;
+      return;
+    }
+    if (skippedScopeKeyRef.current === scopeKey) return;
+    skippedScopeKeyRef.current = null;
+    persistedScopeRef.current = attachmentScope;
+    let active = true;
+    void loadChatAttachments(attachmentScope)
+      .then((records) => {
+        if (!active) return;
+        records.forEach((record) => rememberAttachmentScope(record.key, attachmentScope));
+        setAttachments(records.map((record) => ({
+          key: record.key,
+          name: record.name,
+          size: record.size,
+          mime: record.mime,
+          kind: record.kind,
+          sourceIndex: 0,
+          file: fileFromChatAttachment(record),
+          ...(record.kind === 'image' && typeof URL !== 'undefined' ? { previewUrl: URL.createObjectURL(record.blob) } : {}),
+        })));
+      })
+      .catch((error: unknown) => {
+        if (active) setFileError(error instanceof Error ? `附件恢复失败：${error.message}` : '附件恢复失败，请重新选择原文件');
+      });
+    return () => { active = false; };
+  }, [attachmentScope, preserveAttachmentsOnScopeChange, rememberAttachmentScope, scopeKey]);
 
   useEffect(() => {
     setSpeechSupported(getSpeechConstructor() !== null);
@@ -139,7 +243,8 @@ export function PromptBox({
 
   useEffect(() => {
     attachmentsRef.current = attachments;
-  }, [attachments]);
+    onAttachmentsChange?.(attachments);
+  }, [attachments, onAttachmentsChange]);
 
   useEffect(() => {
     draftRef.current = draft;
@@ -195,9 +300,17 @@ export function PromptBox({
         : undefined;
       return { ...descriptor, file, ...(previewUrl ? { previewUrl } : {}) };
     });
-    if (next.length) setAttachments((current) => [...current, ...next]);
+    if (next.length) {
+      const merged = [...attachmentsRef.current, ...next];
+      setAttachments(merged);
+      persistedScopeRef.current = attachmentScope;
+      if (attachmentScope) {
+        next.forEach((attachment) => rememberAttachmentScope(attachment.key, attachmentScope));
+        persistAttachments(attachmentScope, merged);
+      }
+    }
     setFileError(result.errors.join('；'));
-  }, []);
+  }, [attachmentScope, rememberAttachmentScope]);
 
   const selectFiles = (event: ChangeEvent<HTMLInputElement>) => {
     addFiles(Array.from(event.target.files ?? []));
@@ -210,8 +323,32 @@ export function PromptBox({
       if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
       return current.filter((attachment) => attachment.key !== key);
     });
+    const scopes = scopesForAttachment(key);
+    if (scopes.length) {
+      const previous = attachmentPersistenceRef.current ?? Promise.resolve();
+      const next = previous.catch(() => undefined).then(() => Promise.all(scopes.map((scope) => removeChatAttachment(scope, key).catch(() => undefined))).then(() => undefined));
+      attachmentPersistenceRef.current = next;
+      void next.catch(() => setFileError('附件从本地恢复区移除失败，请刷新后重试'));
+    }
+    attachmentScopesRef.current.delete(key);
     setFileError('');
   };
+
+  useEffect(() => {
+    if (clearAttachmentsRequestRef.current === clearAttachmentsRequest) return;
+    clearAttachmentsRequestRef.current = clearAttachmentsRequest;
+    const selected = attachmentsRef.current;
+    if (selected.length === 0) return;
+    void (async () => {
+      await attachmentPersistenceRef.current?.catch(() => undefined);
+      await Promise.all(selected.flatMap((attachment) => scopesForAttachment(attachment.key).map((scope) => removeChatAttachment(scope, attachment.key).catch(() => undefined))));
+      for (const attachment of selected) {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+        attachmentScopesRef.current.delete(attachment.key);
+      }
+      setAttachments([]);
+    })();
+  }, [clearAttachmentsRequest, scopesForAttachment]);
 
   const onDragEnter = (event: DragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes('Files')) return;
@@ -270,6 +407,26 @@ export function PromptBox({
     }
   };
 
+  const submit = async () => {
+    if (sendInFlightRef.current || sending) return;
+    sendInFlightRef.current = true;
+    const selected = attachmentsRef.current;
+    try {
+      const retained = await onSend();
+      if (retained === true && selected.length > 0) {
+        await attachmentPersistenceRef.current?.catch(() => undefined);
+        await Promise.all(selected.flatMap((attachment) => scopesForAttachment(attachment.key).map((scope) => removeChatAttachment(scope, attachment.key).catch(() => undefined))));
+        for (const attachment of selected) {
+          if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+          attachmentScopesRef.current.delete(attachment.key);
+        }
+        setAttachments([]);
+      }
+    } finally {
+      sendInFlightRef.current = false;
+    }
+  };
+
   const onInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (mentionOpen) {
@@ -291,7 +448,7 @@ export function PromptBox({
     }
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
-    if (attachments.length === 0) onSend();
+    void submit();
   };
 
   const toggleSpeech = () => {
@@ -333,7 +490,7 @@ export function PromptBox({
   };
 
   const hasAttachments = attachments.length > 0;
-  const sendDisabled = !draft.trim() || sending || hasAttachments;
+  const sendDisabled = (!draft.trim() && !hasAttachments) || sending;
 
   return (
     <div
@@ -444,7 +601,7 @@ export function PromptBox({
       {(fileError || hasAttachments || speechError) && (
         <div className="chat-prompt-feedback" role={fileError || speechError ? 'alert' : 'status'}>
           <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>{fileError || speechError || '附件已在本地暂存；当前 Runtime 尚未接入附件，请移除后发送文字。'}</span>
+          <span>{fileError || speechError || '附件已在本地暂存，尚未提交；发送时会把原件交给当前对话。'}</span>
         </div>
       )}
       <div className="chat-prompt-footer">
@@ -497,7 +654,7 @@ export function PromptBox({
             {stopping ? '停止中' : '停止'}
           </Button>
         )}
-        <Button variant="primary" type="button" onClick={onSend} disabled={sendDisabled} aria-busy={sending} aria-label={runInFlight ? '加入发送队列' : '发送消息'} title={hasAttachments ? '请先移除尚未接入 Runtime 的附件' : undefined}>
+        <Button variant="primary" type="button" onClick={() => void submit()} disabled={sendDisabled} aria-busy={sending} aria-label={runInFlight ? '加入发送队列' : '发送消息'}>
           {sending ? '发送中' : runInFlight ? '加入队列' : '发送'}
           <SendHorizonal className="h-4 w-4" />
         </Button>

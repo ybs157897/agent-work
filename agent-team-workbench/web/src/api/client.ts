@@ -1,4 +1,5 @@
 import type { Problem } from './types';
+import { useWorkspaceStore } from '../stores/workspace.store';
 
 const BASE = '/api/v1';
 
@@ -47,6 +48,17 @@ interface FetchOptions {
   keepalive?: boolean;
 }
 
+function workspaceScopedPath(path: string): boolean {
+  const pathname = path.split('?', 1)[0];
+  if (pathname === '/me' || pathname === '/health' || pathname === '/workspaces' || pathname === '/models' || pathname.startsWith('/models/') || pathname === '/execution-hosts' || pathname.startsWith('/execution-hosts/') || pathname === '/runtimes' || pathname.startsWith('/runtimes/')) return false;
+  return pathname.startsWith('/workspaces/')
+    || pathname.startsWith('/workspace-locations/')
+    || pathname.startsWith('/work-items/')
+    || pathname.startsWith('/agent-profiles/')
+    || pathname.startsWith('/runs/')
+    || pathname.startsWith('/code-workspaces/');
+}
+
 /**
  * 统一 fetch 封装：JSON 编解码、problem+json → ApiError。
  * 网络层错误（TypeError）原样抛出，调用方可用同一 Idempotency-Key 安全重试。
@@ -56,10 +68,16 @@ export async function apiFetch<T>(path: string, opts: FetchOptions = {}): Promis
     'X-Request-Id': newRequestId(),
     ...opts.headers,
   };
-  let body: string | undefined;
+  const currentWorkspaceId = useWorkspaceStore.getState().selectedWorkspaceId ?? useWorkspaceStore.getState().workspace?.id ?? '';
+  if (workspaceScopedPath(path) && currentWorkspaceId && !headers['X-Workspace-ID']) headers['X-Workspace-ID'] = currentWorkspaceId;
+  let body: BodyInit | undefined;
   if (opts.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    body = JSON.stringify(opts.body);
+    if (typeof FormData !== 'undefined' && opts.body instanceof FormData) {
+      body = opts.body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(opts.body);
+    }
   }
   const method = opts.method ?? 'GET';
   if (method !== 'GET') {

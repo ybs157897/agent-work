@@ -111,7 +111,13 @@ func (s *Server) handleDeleteCodeWorkspace(w http.ResponseWriter, r *http.Reques
 		writeCodeWorkspaceProblem(w, r, application.ErrCodeWorkspaceExpired)
 		return
 	}
-	if err := s.codeWorkspaces.CloseSession(r.Context(), r.PathValue("session_id")); err != nil {
+	var err error
+	if workspaceID := codeWorkspaceRequestScope(r); workspaceID != "" {
+		err = s.codeWorkspaces.CloseSessionForWorkspace(r.Context(), r.PathValue("session_id"), workspaceID)
+	} else {
+		err = s.codeWorkspaces.CloseSession(r.Context(), r.PathValue("session_id"))
+	}
+	if err != nil {
 		writeCodeWorkspaceProblem(w, r, err)
 		return
 	}
@@ -131,7 +137,13 @@ func (s *Server) handleCodeWorkspaceBootstrap(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := r.PathValue("session_id")
-	ws, err := s.codeWorkspaces.Get(r.Context(), id)
+	var ws *application.CodeWorkspace
+	var err error
+	if workspaceID := codeWorkspaceRequestScope(r); workspaceID != "" {
+		ws, err = s.codeWorkspaces.GetForWorkspace(r.Context(), id, workspaceID)
+	} else {
+		ws, err = s.codeWorkspaces.Get(r.Context(), id)
+	}
 	if err != nil {
 		writeCodeWorkspaceProblem(w, r, err)
 		return
@@ -150,6 +162,10 @@ func (s *Server) handleCodeWorkspaceBootstrap(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleCodeWorkspaceView(w http.ResponseWriter, r *http.Request) {
+	// The iframe loads this URL natively and cannot attach X-Workspace-ID. The
+	// random session ID is therefore the capability; Proxy calls the service
+	// session boundary, which rechecks TTL, Agent ownership, Gateway generation,
+	// and the immutable Host snapshot on every request.
 	if s.codeWorkspaces == nil {
 		writeCodeWorkspaceProblem(w, r, application.ErrCodeWorkspaceExpired)
 		return
@@ -159,7 +175,13 @@ func (s *Server) handleCodeWorkspaceView(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	setCodeWorkspaceResponseHeaders(w.Header())
-	proxy, err := s.codeWorkspaces.Proxy(r.Context(), r.PathValue("session_id"))
+	var proxy *application.CodeWorkspaceProxy
+	var err error
+	if workspaceID := codeWorkspaceRequestScope(r); workspaceID != "" {
+		proxy, err = s.codeWorkspaces.ProxyForWorkspace(r.Context(), r.PathValue("session_id"), workspaceID)
+	} else {
+		proxy, err = s.codeWorkspaces.Proxy(r.Context(), r.PathValue("session_id"))
+	}
 	if err != nil {
 		writeCodeWorkspaceProblem(w, r, err)
 		return
@@ -187,7 +209,13 @@ func (s *Server) handleCodeWorkspaceGateway(w http.ResponseWriter, r *http.Reque
 	}
 	setCodeWorkspaceResponseHeaders(w.Header())
 	sessionID := r.PathValue("session_id")
-	proxy, err := s.codeWorkspaces.Proxy(r.Context(), sessionID)
+	var proxy *application.CodeWorkspaceProxy
+	var err error
+	if workspaceID := codeWorkspaceRequestScope(r); workspaceID != "" {
+		proxy, err = s.codeWorkspaces.ProxyForWorkspace(r.Context(), sessionID, workspaceID)
+	} else {
+		proxy, err = s.codeWorkspaces.Proxy(r.Context(), sessionID)
+	}
 	if err != nil {
 		writeCodeWorkspaceProblem(w, r, err)
 		return
@@ -317,6 +345,10 @@ func sameCodeWorkspaceOrigin(r *http.Request) bool {
 	}
 	u, err := url.Parse(origin)
 	return err == nil && u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https")
+}
+
+func codeWorkspaceRequestScope(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Workspace-ID"))
 }
 
 func (s *Server) proxyCodeWorkspace(w http.ResponseWriter, r *http.Request, proxy *application.CodeWorkspaceProxy, targetPath string) {

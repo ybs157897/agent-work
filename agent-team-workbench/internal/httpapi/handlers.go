@@ -474,9 +474,13 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			Instruction:        req.Input.Instruction,
 			AcceptanceCriteria: req.Input.AcceptanceCriteria,
 			ClientKey:          req.ClientKey,
+			SourceRefs:         req.Input.SourceRefs,
 			// HTTP 建 run 即用户消息入口：同事务落派发批次并做 @直达/接诊路由
 			//（会话元模型 S1）。
 			DispatchTrigger: domain.DispatchTriggerUserMessage,
+		}
+		if strings.TrimSpace(p.Instruction) == "" && len(p.SourceRefs) > 0 {
+			p.Instruction = "请阅读已附资料，并告诉我你观察到的内容或需要确认的问题。"
 		}
 		if req.RuntimePreference != nil {
 			p.RuntimePreference = &domain.RuntimePreference{

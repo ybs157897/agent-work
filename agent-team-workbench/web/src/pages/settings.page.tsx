@@ -35,6 +35,10 @@ export default function SettingsPage() {
   const librarian = useAgentsStore((s) => s.agents).find(isKnowledgeLibrarianAgent);
   const [editingWs, setEditingWs] = useState(false);
 
+  useEffect(() => {
+    setEditingWs(false);
+  }, [workspace?.id]);
+
   return (
     <main className="page-shell">
       <header className="page-header">
@@ -131,18 +135,26 @@ export default function SettingsPage() {
 }
 
 export function BuiltinKnowledgeSettings({ agent }: { agent?: AgentProfile }) {
+  const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
   return (
     <Card padded>
       <h3 className="text-h3 text-text-primary">知识库管理员</h3>
       <p className="mt-tight text-body text-text-secondary">系统内置的团队成员。其他智能体会调用它记录知识，你也可以直接与它对话。</p>
       {agent ? (
         <div className="mt-base flex flex-wrap gap-comfortable text-body">
-          <Link to={`/chat?agent=${encodeURIComponent(agent.id)}`} className="text-brand-primary underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-brand-primary/40">与知识库管理员对话</Link>
+          <Link to={chatAgentPath(workspaceId, agent.id)} className="text-brand-primary underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-brand-primary/40">与知识库管理员对话</Link>
           <Link to={`/agents?agent=${encodeURIComponent(agent.id)}`} className="text-text-secondary underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-brand-primary/40">设置模型与运行方式</Link>
         </div>
       ) : <p className="mt-base text-body text-text-secondary" role="status">内置管理员正在准备，工作区加载后会自动出现。</p>}
     </Card>
   );
+}
+
+function chatAgentPath(workspaceId: string | undefined, agentId: string): string {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set('ws', workspaceId);
+  params.set('agent', agentId);
+  return `/chat?${params.toString()}`;
 }
 
 const COORDINATOR_RUNTIME_OPTIONS: { value: CoordinatorRuntime; label: string }[] = [
@@ -537,8 +549,7 @@ function WorkspaceEditModal({ open, onClose }: { open: boolean; onClose: () => v
       setName(workspace?.name ?? '');
       setTimezone(workspace?.timezone ?? '');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, workspace?.id, workspace?.name, workspace?.timezone]);
 
   const save = async () => {
     if (!workspace) return;

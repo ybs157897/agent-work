@@ -12,9 +12,14 @@ export interface WorkspaceLocation {
 }
 
 export interface HostMount {
+  execution_host_id?: string;
   alias: string;
   repository_identity: string;
   registry_generation: string;
+  display_label?: string;
+  default_branch?: string;
+  supported_ref_kinds?: string[];
+  checkouts?: Array<Record<string, unknown>>;
   status: string;
 }
 

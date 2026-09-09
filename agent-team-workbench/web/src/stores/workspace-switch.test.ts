@@ -233,6 +233,27 @@ describe('switchWorkspace 固定顺序（RFC §12.1/12.2）', () => {
     expect(FakeEventSource.instances[1].url).toContain('/workspaces/ws_B/events?cursor=20');
   });
 
+  it('目标 Workspace 预加载失败时保留旧页面、generation 和 SSE', async () => {
+    await prepareWindow({ persisted: 'ws_A' });
+    stubFetchRouter({
+      '/workspaces/ws_A/bootstrap': () => json(bootstrapPayload(WS_A, 10)),
+      '/workspaces/ws_B/bootstrap': () => new Response('unavailable', { status: 503 }),
+      '/workspaces': () => json({ items: [WS_A, WS_B] }),
+      '/me': () => json({ user_id: 'u1', name: 'o', role: 'owner', feature_flags: {} }),
+    });
+    await bootstrap();
+    FakeEventSource.instances[0].emitOpen();
+    const before = useWorkspaceStore.getState();
+    await switchWorkspace('ws_B');
+    const after = useWorkspaceStore.getState();
+    expect(after.selectedWorkspaceId).toBe('ws_A');
+    expect(after.workspace?.id).toBe('ws_A');
+    expect(after.generation).toBe(before.generation);
+    expect(after.switching).toBe(false);
+    expect(after.notice).toContain('切换到「工作区乙」失败');
+    expect(FakeEventSource.instances[0].closed).toBe(false);
+  });
+
   it('旧 Workspace 的 SSE 事件/status/cursor-expired 不污染新 Workspace', async () => {
     await bootIntoA();
     await switchWorkspace('ws_B');

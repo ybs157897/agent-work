@@ -1,0 +1,24 @@
+[PRESENTATION ID] SRC-PPTX-01
+[STATUS] 模拟测试材料｜未获用户确认
+
+[SLIDE 1]
+Java 编辑能力评审提议
+模拟提议 · 需求状态 pending · 文档 ID SRC-PPTX-01
+模拟提议
+首期包括跨文件 Rename 和 Quick Fix，一键应用并保存
+提议状态：pending
+本页内容仅供评审，未获用户确认。
+测试解析关注点
+动作：跨文件 Rename、Quick Fix
+结果：一键应用并保存
+
+[SLIDE 2]
+未决点
+以下问题均保持 pending，不代表已确认的产品规则
+1 预览是否必须 pending
+2 是否需要人审 pending
+3 如何处理修改冲突 pending
+4 失败是否回滚 pending
+5 JDK 版本范围 pending
+模拟测试材料｜未获用户确认
+SRC-PPTX-01

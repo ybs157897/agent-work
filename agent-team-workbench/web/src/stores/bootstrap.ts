@@ -1,6 +1,8 @@
 import { getBootstrap, getMe, listWorkspaces } from '../api/endpoints';
+import { getWorkspace } from '../api/workspaces';
+import { ApiError } from '../api/client';
 import { WorkspaceEventStream } from '../api/sse';
-import type { Bootstrap } from '../api/types';
+import type { Bootstrap, Workspace } from '../api/types';
 import { useAgentsStore } from './agents.store';
 import { useDashboardStore } from './dashboard.store';
 import { useLogsStore } from './logs.store';
@@ -10,6 +12,10 @@ import { useTasksStore } from './tasks.store';
 import { useWorkspaceStore } from './workspace.store';
 
 let stream: WorkspaceEventStream | null = null;
+
+function validWorkspace(value: Workspace | null): value is Workspace {
+  return Boolean(value && typeof value.id === 'string' && value.id.length > 0 && typeof value.name === 'string');
+}
 
 /** 选中 Workspace 的持久化（localStorage + URL ?ws=；刷新页恢复）。 */
 const SELECTED_WORKSPACE_KEY = 'workbench.selected-workspace';
@@ -45,9 +51,9 @@ export async function bootstrap(): Promise<void> {
 }
 
 /**
- * 切换 Workspace（RFC §12.1 固定顺序）：
- * 1. generation+1 → 2. 停旧 EventSource → 3. reset 全部 workspace-scoped store
- * → 4. booting → 5. 拉目标 bootstrap → 6. guard 通过才 hydrate → 7. 起唯一新 SSE。
+ * 切换 Workspace：先用目标 scope 预加载完整快照。预加载失败时继续保留
+ * 当前 Workspace、SSE 和全部页面内容；只有目标快照成功后才推进 generation
+ * 并清理旧 Workspace 投影。
  */
 export async function switchWorkspace(workspaceId: string): Promise<void> {
   const ws = useWorkspaceStore.getState();
@@ -56,16 +62,42 @@ export async function switchWorkspace(workspaceId: string): Promise<void> {
   const target = ws.workspaces.find((w) => w.id === workspaceId);
   if (!target) return;
 
-  ws.beginSwitch(workspaceId);
-  stopStream();
-  resetWorkspaceScopedStores();
-  useWorkspaceStore.getState().setNotice(`正在切换到「${target.name}」…`);
-  persistSelectedWorkspace(workspaceId);
-  await enterWorkspace(workspaceId);
-  const after = useWorkspaceStore.getState();
-  if (after.phase === 'ready' && after.selectedWorkspaceId === workspaceId) {
-    after.setNotice(`已切换到「${target.name}」`);
+  ws.setSwitching(true);
+  ws.setNotice(`正在加载「${target.name}」…`);
+  try {
+    const { data, authoritativeWorkspace } = await preloadWorkspace(workspaceId);
+    const beforeCommit = useWorkspaceStore.getState();
+    // A future caller may have changed the target while this request was in
+    // flight. Keep the old projection unless this request is still current.
+    if (beforeCommit.switching === false || beforeCommit.selectedWorkspaceId !== ws.selectedWorkspaceId) return;
+    beforeCommit.beginSwitch(workspaceId);
+    stopStream();
+    resetWorkspaceScopedStores();
+    persistSelectedWorkspace(workspaceId);
+    if (validWorkspace(authoritativeWorkspace)) data.workspace = authoritativeWorkspace;
+    const scope = captureScope();
+    hydrateBootstrap(data);
+    useWorkspaceStore.getState().setReady(beforeCommit.me, data.workspace, data.health, data.event_cursor);
+    startStream(scope, data.event_cursor);
+    useWorkspaceStore.getState().setNotice(`已切换到「${target.name}」`);
+  } catch (err) {
+    useWorkspaceStore.getState().setSwitching(false);
+    useWorkspaceStore.getState().setNotice(`切换到「${target.name}」失败，已保留当前工作区：${err instanceof Error ? err.message : '目标工作区暂时不可用'}`);
   }
+}
+
+async function preloadWorkspace(workspaceId: string): Promise<{ data: Bootstrap; authoritativeWorkspace: Workspace | null }> {
+  const [data, authoritativeWorkspace] = await Promise.all([
+    // Explicit target header is required while the current header still names A.
+    getBootstrap(workspaceId, workspaceId),
+    getWorkspace(workspaceId, workspaceId).catch((error: unknown) => {
+      // Older test/preview servers may not expose GET Workspace yet. A missing
+      // route may fall back to bootstrap; real failures must abort the switch.
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }),
+  ]);
+  return { data, authoritativeWorkspace };
 }
 
 /** 进入目标 Workspace：拉 bootstrap；guard 通过才 hydrate + 起流（第 4-7 步）。 */
@@ -73,9 +105,14 @@ async function enterWorkspace(workspaceId: string): Promise<void> {
   useWorkspaceStore.getState().setBooting();
   const scope = captureScope();
   try {
-    const [me, data] = await Promise.all([getMe().catch(() => null), getBootstrap(workspaceId)]);
+    const [me, data, authoritativeWorkspace] = await Promise.all([
+      getMe().catch(() => null),
+      getBootstrap(workspaceId, workspaceId),
+      getWorkspace(workspaceId, workspaceId).catch(() => null),
+    ]);
     // 期间已切到别的 Workspace/generation：这份数据作废，不 hydrate。
     if (!isCurrent(scope)) return;
+    if (validWorkspace(authoritativeWorkspace)) data.workspace = authoritativeWorkspace;
     hydrateBootstrap(data);
     useWorkspaceStore.getState().setReady(me, data.workspace, data.health, data.event_cursor);
     startStream(scope, data.event_cursor);
@@ -91,8 +128,9 @@ async function enterWorkspace(workspaceId: string): Promise<void> {
  */
 async function resyncWorkspace(scope: Scope): Promise<void> {
   try {
-    const data = await getBootstrap(scope.workspaceId);
+    const [data, authoritativeWorkspace] = await Promise.all([getBootstrap(scope.workspaceId, scope.workspaceId), getWorkspace(scope.workspaceId, scope.workspaceId).catch(() => null)]);
     if (!isCurrent(scope)) return;
+    if (validWorkspace(authoritativeWorkspace)) data.workspace = authoritativeWorkspace;
     hydrateBootstrap(data);
     useWorkspaceStore.getState().setReady(useWorkspaceStore.getState().me, data.workspace, data.health, data.event_cursor);
     startStream(scope, data.event_cursor);

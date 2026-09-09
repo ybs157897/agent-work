@@ -88,6 +88,13 @@ func (r *ModuleRunner) Module(adapterID string) (AdapterModule, bool) {
 
 // Dispatch 实现 application.Dispatcher：构造 ExecContext 并异步驱动 Execute。
 func (r *ModuleRunner) Dispatch(ctx context.Context, run *domain.ExecutionRun) error {
+	if validator, ok := r.engine.(interface {
+		ValidateRunSourcesForExecution(context.Context, string) error
+	}); ok {
+		if err := validator.ValidateRunSourcesForExecution(ctx, run.ID); err != nil {
+			return fmt.Errorf("validate Chat source_refs for Run %s: %w", run.ID, err)
+		}
+	}
 	r.mu.Lock()
 	module, ok := r.modules[run.AdapterID]
 	r.mu.Unlock()

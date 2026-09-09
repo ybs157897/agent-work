@@ -1,0 +1,109 @@
+{
+  "metadata": {
+    "kind": "test_author_reviewed_expectation",
+    "synthetic": true,
+    "not_an_application_or_model_run": true
+  },
+  "understood": [
+    {
+      "text": "目标是参考IntelliJ Community扩展web-idea的Java能力；范围和集成方式尚未定案",
+      "source_ids": [
+        "SRC-USER-01",
+        "SRC-REF-01"
+      ]
+    },
+    {
+      "text": "独立web-idea与工作台嵌入模式必须分别记录，后者只读；当前未暴露完整重构/运行/测试/调试",
+      "source_ids": [
+        "SRC-CODE-01"
+      ]
+    }
+  ],
+  "unknowns": [
+    "是否包含修改文件的编辑/重构",
+    "首期能力排序",
+    "项目Java版本与语言服务宿主JDK要求"
+  ],
+  "conflicts": [
+    {
+      "id": "CONFLICT-WRITE-01",
+      "source_ids": [
+        "SRC-DOCX-01",
+        "SRC-PPTX-01",
+        "SRC-CODE-01"
+      ],
+      "citations": [
+        {
+          "source_id": "SRC-DOCX-01",
+          "locator": "word/document.xml:paragraph:5",
+          "text": "模拟范围建议：首期仅文件阅读、定义和引用；写入/重命名应用需单独确认"
+        },
+        {
+          "source_id": "SRC-PPTX-01",
+          "locator": "slide:1:paragraph:6",
+          "text": "首期包括跨文件 Rename 和 Quick Fix，一键应用并保存"
+        }
+      ],
+      "impact": [
+        "写权限与只读约束",
+        "多文件变更预览与确认",
+        "外部变更检测",
+        "部分失败与恢复"
+      ],
+      "recommendation": "先明确目标表面的写入范围；建议与产品沟通后由开发回填",
+      "status": "needs_confirmation"
+    }
+  ],
+  "candidate_requirements": [
+    {
+      "requirement_id": "REQ-WRITE-01",
+      "statement": "明确工作台嵌入模式是否开放编辑/重构",
+      "status": "needs_confirmation",
+      "source_ids": [
+        "SRC-USER-01",
+        "SRC-DOCX-01",
+        "SRC-PPTX-01"
+      ],
+      "acceptance": [
+        "未确认时不自动开放文件写入",
+        "确认后可定位决定及原始冲突"
+      ]
+    },
+    {
+      "requirement_id": "REQ-NAV-01",
+      "statement": "Java导航需覆盖索引未就绪、零/多结果与返回原位置",
+      "status": "candidate",
+      "source_ids": [
+        "SRC-CODE-01",
+        "SRC-REF-01",
+        "SRC-DOCX-01"
+      ],
+      "acceptance": [
+        "异常结果不伪装为已跳转成功",
+        "定义/引用结果定位可回到同一来源"
+      ]
+    }
+  ],
+  "next_question": {
+    "id": "Q-WRITE-SCOPE",
+    "title": "这次Java集成范围是否包含会修改文件的编辑/重构，还是保持工作台嵌入只读？"
+  },
+  "change_effects": [],
+  "evidence_gaps": [
+    {
+      "text": "Office解析仅覆盖文档正文段落和幻灯片文字；图片/OCR等不在此准备工具的能力内",
+      "source_ids": [
+        "SRC-DOCX-01",
+        "SRC-PPTX-01"
+      ]
+    },
+    {
+      "text": "知识导出与附件均为模拟测试材料；没有真实Workspace知识发布证据",
+      "source_ids": [
+        "SRC-KB-01",
+        "SRC-DOCX-01",
+        "SRC-PPTX-01"
+      ]
+    }
+  ]
+}

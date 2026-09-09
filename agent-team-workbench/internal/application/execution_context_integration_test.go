@@ -578,6 +578,83 @@ func TestWorkspaceLocationRequiresAdvertisedGenerationAndIdentity(t *testing.T) 
 	}
 }
 
+func TestFixedWorkspaceProjectCannotAddOrUnDefaultLocation(t *testing.T) {
+	ctx := context.Background()
+	svc, store, _, wsID, _ := newContextTestSvc(t, "ws_fixed_project_location")
+	canonicalKey := "project-fixed"
+	svc.SetProjectCanonicalKeyResolver(func(context.Context, string, string, string) (string, error) {
+		return canonicalKey, nil
+	})
+	loc, err := store.WorkspaceLocations().DefaultFor(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := store.WorkspaceProjects().Create(ctx, &domain.WorkspaceProject{
+		WorkspaceID: wsID, ExecutionHostID: loc.ExecutionHostID, MountAlias: loc.MountAlias,
+		MountGeneration: loc.MountGeneration, RepositoryIdentity: loc.RepositoryIdentity,
+		CanonicalKey: "host_local:project-fixed", LocationID: loc.ID,
+		Status: domain.WorkspaceProjectReady, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ExecutionHosts().UpsertMount(ctx, &domain.HostMount{
+		ExecutionHostID: domain.LocalHostID, Alias: "alternate", RepositoryIdentity: "repo_alternate",
+		RegistryGeneration: "gen_alternate", Status: domain.MountStatusReady, LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateWorkspaceLocation(ctx, wsID, application.CreateWorkspaceLocationParams{
+		ExecutionHostID: domain.LocalHostID, MountAlias: "alternate", RepositoryIdentity: "repo_alternate",
+		MountGeneration: "gen_alternate", IsDefault: false,
+	}); !errors.Is(err, domain.ErrWorkspaceLocationAmbiguous) {
+		t.Fatalf("fixed project must reject a second Location, got %v", err)
+	}
+	keepDefault := false
+	if _, err := svc.UpdateWorkspaceLocation(ctx, loc.ID, application.UpdateWorkspaceLocationParams{
+		MountGeneration: loc.MountGeneration, IsDefault: &keepDefault, ExpectedVersion: loc.Version,
+	}); !errors.Is(err, domain.ErrWorkspaceLocationAmbiguous) {
+		t.Fatalf("fixed project Location must remain default, got %v", err)
+	}
+	refreshedGeneration := "gen_fixed_refreshed"
+	if err := store.ExecutionHosts().UpsertMount(ctx, &domain.HostMount{
+		ExecutionHostID: domain.LocalHostID, Alias: loc.MountAlias, RepositoryIdentity: loc.RepositoryIdentity,
+		RegistryGeneration: refreshedGeneration, Status: domain.MountStatusReady, LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	freshLocation, err := store.WorkspaceLocations().Get(ctx, loc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateWorkspaceLocation(ctx, loc.ID, application.UpdateWorkspaceLocationParams{
+		MountGeneration: refreshedGeneration, ExpectedVersion: freshLocation.Version,
+	}); err != nil {
+		t.Fatalf("same fixed project root should permit generation refresh: %v", err)
+	}
+	refreshedProject, err := store.WorkspaceProjects().Get(ctx, wsID)
+	if err != nil || refreshedProject.MountGeneration != refreshedGeneration {
+		t.Fatalf("project identity should follow trusted generation refresh: project=%+v err=%v", refreshedProject, err)
+	}
+	canonicalKey = "project-other-root"
+	otherGeneration := "gen_other_root"
+	if err := store.ExecutionHosts().UpsertMount(ctx, &domain.HostMount{
+		ExecutionHostID: domain.LocalHostID, Alias: loc.MountAlias, RepositoryIdentity: loc.RepositoryIdentity,
+		RegistryGeneration: otherGeneration, Status: domain.MountStatusReady, LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	otherLocation, err := store.WorkspaceLocations().Get(ctx, loc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateWorkspaceLocation(ctx, loc.ID, application.UpdateWorkspaceLocationParams{
+		MountGeneration: otherGeneration, ExpectedVersion: otherLocation.Version,
+	}); !errors.Is(err, domain.ErrWorkspaceContextMismatch) {
+		t.Fatalf("different canonical root refresh must be rejected, got %v", err)
+	}
+}
+
 // TestStaticValidationRollsBackRunCreation 静态校验失败整事务回滚：
 // branch 不唯一 → workspace_branch_not_unique，无 queued Run、无快照残留；
 // branch 唯一但 checkout 已被非终态 Run 占用 → workspace_checkout_busy。

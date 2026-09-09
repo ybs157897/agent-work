@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, apiFetch } from './client';
+import { useWorkspaceStore } from '../stores/workspace.store';
 
 const jsonResponse = (status: number, body: unknown, contentType = 'application/json') =>
   new Response(JSON.stringify(body), {
@@ -9,6 +10,7 @@ const jsonResponse = (status: number, body: unknown, contentType = 'application/
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  useWorkspaceStore.setState({ selectedWorkspaceId: null, workspace: null });
 });
 
 describe('apiFetch', () => {
@@ -74,5 +76,43 @@ describe('apiFetch', () => {
     if (!(err instanceof ApiError)) throw new Error('expected ApiError');
     expect(err.code).toBe('http_error');
     expect(err.retryable).toBe(true);
+  });
+
+  it('业务请求携带当前 Workspace scope，切换到目标后使用目标 header', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {}))
+      .mockResolvedValueOnce(jsonResponse(200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkspaceStore.setState({ selectedWorkspaceId: 'ws_A', workspace: { id: 'ws_A', name: 'A', timezone: 'UTC', version: 1 } });
+    await apiFetch('/work-items/wi_A');
+    useWorkspaceStore.setState({ selectedWorkspaceId: 'ws_B', workspace: { id: 'ws_B', name: 'B', timezone: 'UTC', version: 1 } });
+    await apiFetch('/workspaces/ws_B/bootstrap');
+    expect((fetchMock.mock.calls[0][1].headers as Record<string, string>)['X-Workspace-ID']).toBe('ws_A');
+    expect((fetchMock.mock.calls[1][1].headers as Record<string, string>)['X-Workspace-ID']).toBe('ws_B');
+  });
+
+  it('全局目录/宿主请求不带旧 Workspace header', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, {}))
+      .mockResolvedValueOnce(jsonResponse(200, {}));
+    vi.stubGlobal('fetch', fetchMock);
+    useWorkspaceStore.setState({ selectedWorkspaceId: 'ws_A', workspace: { id: 'ws_A', name: 'A', timezone: 'UTC', version: 1 } });
+    await apiFetch('/execution-hosts');
+    await apiFetch('/workspaces');
+    expect((fetchMock.mock.calls[0][1].headers as Record<string, string>)['X-Workspace-ID']).toBeUndefined();
+    expect((fetchMock.mock.calls[1][1].headers as Record<string, string>)['X-Workspace-ID']).toBeUndefined();
+  });
+
+  it('旧 Workspace URL 配合当前 header 由服务端 scope mismatch 拒绝，客户端保留结构化错误', async () => {
+    useWorkspaceStore.setState({ selectedWorkspaceId: 'ws_B', workspace: { id: 'ws_B', name: 'B', timezone: 'UTC', version: 1 } });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(409, {
+      type: 'https://workbench.example/problems/workspace_scope_mismatch',
+      title: 'Workspace scope mismatch', status: 409, code: 'workspace_scope_mismatch', detail: '资源属于其他 Workspace', retryable: false,
+    }, 'application/problem+json'));
+    vi.stubGlobal('fetch', fetchMock);
+    const error: unknown = await apiFetch('/work-items/wi_from_a').catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe('workspace_scope_mismatch');
+    expect((fetchMock.mock.calls[0][1].headers as Record<string, string>)['X-Workspace-ID']).toBe('ws_B');
   });
 });

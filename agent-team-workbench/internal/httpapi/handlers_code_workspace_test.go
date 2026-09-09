@@ -99,6 +99,9 @@ func TestCodeWorkspaceHTTPIsDeveloperReadOnlyAndSessionBound(t *testing.T) {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"path":"","entries":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<!doctype html><title>code workspace</title>"))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workspaces/upstream-1/lsp":
 			conn, upgradeErr := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
 			if upgradeErr != nil {
@@ -168,6 +171,38 @@ func TestCodeWorkspaceHTTPIsDeveloperReadOnlyAndSessionBound(t *testing.T) {
 		t.Fatalf("unsafe session response: %s", create.Body.String())
 	}
 
+	wrongScope := httptest.NewRecorder()
+	wrongScopeReq := httptest.NewRequest(http.MethodGet, "/api/v1/code-workspaces/"+session.ID+"/bootstrap", nil)
+	wrongScopeReq.Header.Set("X-Workspace-ID", "ws_other")
+	mux.ServeHTTP(wrongScope, wrongScopeReq)
+	if wrongScope.Code != http.StatusForbidden {
+		t.Fatalf("wrong workspace scope should be rejected: status=%d body=%s", wrongScope.Code, wrongScope.Body.String())
+	}
+
+	rightScope := httptest.NewRecorder()
+	rightScopeReq := httptest.NewRequest(http.MethodGet, "/api/v1/code-workspaces/"+session.ID+"/bootstrap", nil)
+	rightScopeReq.Header.Set("X-Workspace-ID", ws.ID)
+	mux.ServeHTTP(rightScope, rightScopeReq)
+	if rightScope.Code != http.StatusOK {
+		t.Fatalf("origin workspace scope should be accepted: status=%d body=%s", rightScope.Code, rightScope.Body.String())
+	}
+
+	// Native iframe navigation has no X-Workspace-ID header. The random
+	// session capability still gates the static view through sessionForRequest.
+	view := httptest.NewRecorder()
+	viewReq := httptest.NewRequest(http.MethodGet, "/api/v1/code-workspaces/"+session.ID+"/view/", nil)
+	mux.ServeHTTP(view, viewReq)
+	if view.Code != http.StatusOK || !strings.Contains(view.Body.String(), "code workspace") {
+		t.Fatalf("native iframe view should use session capability: status=%d body=%s", view.Code, view.Body.String())
+	}
+	wrongDelete := httptest.NewRecorder()
+	wrongDeleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/code-workspaces/"+session.ID, nil)
+	wrongDeleteReq.Header.Set("X-Workspace-ID", "ws_other")
+	mux.ServeHTTP(wrongDelete, wrongDeleteReq)
+	if wrongDelete.Code != http.StatusForbidden {
+		t.Fatalf("wrong workspace cleanup should be rejected: status=%d body=%s", wrongDelete.Code, wrongDelete.Body.String())
+	}
+
 	bootstrap := httptest.NewRecorder()
 	mux.ServeHTTP(bootstrap, httptest.NewRequest(http.MethodGet, "/api/v1/code-workspaces/"+session.ID+"/bootstrap", nil))
 	if bootstrap.Code != http.StatusOK || !strings.Contains(bootstrap.Body.String(), `"lsp_enabled":true`) || strings.Contains(bootstrap.Body.String(), "gateway-secret") {
@@ -207,7 +242,9 @@ func TestCodeWorkspaceHTTPIsDeveloperReadOnlyAndSessionBound(t *testing.T) {
 	limitClose := httptest.NewRecorder()
 	for attempt := 0; attempt < 3 && limitClose.Code != http.StatusNoContent; attempt++ {
 		limitClose = httptest.NewRecorder()
-		mux.ServeHTTP(limitClose, httptest.NewRequest(http.MethodDelete, "/api/v1/code-workspaces/"+session.ID, nil))
+		cleanupReq := httptest.NewRequest(http.MethodDelete, "/api/v1/code-workspaces/"+session.ID, nil)
+		cleanupReq.Header.Set("X-Workspace-ID", ws.ID)
+		mux.ServeHTTP(limitClose, cleanupReq)
 	}
 	if limitClose.Code != http.StatusNoContent || deleteAttempts.Load() < 2 {
 		t.Fatalf("oversized frame session cleanup status=%d attempts=%d body=%s", limitClose.Code, deleteAttempts.Load(), limitClose.Body.String())
@@ -246,7 +283,9 @@ func TestCodeWorkspaceHTTPIsDeveloperReadOnlyAndSessionBound(t *testing.T) {
 	}
 
 	closeRec := httptest.NewRecorder()
-	mux.ServeHTTP(closeRec, httptest.NewRequest(http.MethodDelete, "/api/v1/code-workspaces/"+session.ID, nil))
+	cleanupReq := httptest.NewRequest(http.MethodDelete, "/api/v1/code-workspaces/"+session.ID, nil)
+	cleanupReq.Header.Set("X-Workspace-ID", ws.ID)
+	mux.ServeHTTP(closeRec, cleanupReq)
 	if closeRec.Code != http.StatusNoContent || !deleted.Load() || deleteAttempts.Load() < 2 {
 		t.Fatalf("close status=%d deleted=%v attempts=%d body=%s", closeRec.Code, deleted.Load(), deleteAttempts.Load(), closeRec.Body.String())
 	}

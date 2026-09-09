@@ -139,7 +139,11 @@ func (s *Server) handlePatchWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return problemBytes(err)
 		}
-		return renderJSON(w, r, http.StatusOK, toWorkspaceDTO(ws))
+		dto, dtoErr := s.workspaceDTO(r.Context(), ws)
+		if dtoErr != nil {
+			return problemBytes(dtoErr)
+		}
+		return renderJSON(w, r, http.StatusOK, dto)
 	})
 }
 

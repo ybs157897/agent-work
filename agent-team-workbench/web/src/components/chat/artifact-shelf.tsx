@@ -4,8 +4,8 @@ import { artifactBasename } from '../../utils/artifact-visuals';
 import { ArtifactMimeIcon } from './artifact-workspace';
 
 /**
- * 成果摘要条（单行）：只报数量与最近产物，真实清单在右侧工作区承载
- * （聊天区负责说明，工作区负责承载）。无成果时不渲染。
+ * 成果摘要条（单行）：只报数量与最近产物，真实清单在右侧成果面板承载。
+ * 无成果时不渲染。
  */
 export function ArtifactShelf({ artifacts, onOpen }: { artifacts: Artifact[]; onOpen: () => void }) {
   if (artifacts.length === 0) return null;
@@ -24,7 +24,7 @@ export function ArtifactShelf({ artifacts, onOpen }: { artifacts: Artifact[]; on
         onClick={onOpen}
         className="ml-auto shrink-0 text-caption font-medium text-brand-primary transition-colors hover:text-brand-accent"
       >
-        打开工作区
+        查看成果
       </button>
     </div>
   );

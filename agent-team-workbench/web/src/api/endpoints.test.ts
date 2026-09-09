@@ -29,6 +29,7 @@ import {
   createPlan,
   createTaskComment,
   createWorkItem,
+  createRun,
   getPlan,
   getRunChangeDiff,
   getWorkItemPlan,
@@ -181,6 +182,31 @@ describe('plan / tree endpoints', () => {
     const urls = fetchMock.mock.calls.map((c) => String(c[0]));
     expect(urls[0]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=task&parent_id=none');
     expect(urls[1]).toBe('/api/v1/workspaces/ws_1/work-items?record_kind=chat&parent_id=wi_parent');
+  });
+});
+
+describe('Chat Run source references', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('createRun sends opaque source refs with the original instruction', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({
+      run_id: 'run_1', work_item_id: 'wi_1', status: 'queued', version: 1, capability_snapshot_id: null,
+    }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createRun('wi_1', {
+      agent_profile_id: 'agent_1',
+      output_contract: 'languagegui/v1',
+      input: { instruction: '请读取附件并指出冲突', source_refs: [{ source_id: 'src_1', sha256: 'a'.repeat(64) }] },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/work-items/wi_1/runs');
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      input: { instruction: '请读取附件并指出冲突', source_refs: [{ source_id: 'src_1', sha256: 'a'.repeat(64) }] },
+    });
   });
 });
 

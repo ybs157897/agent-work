@@ -45,6 +45,19 @@ type RuntimeConfig struct {
 
 func (im *Importer) SetRuntimeConfig(cfg RuntimeConfig) { im.runtime = cfg }
 
+// PrepareWorkspaceScope migrates a single legacy agents/ root bundle into the
+// existing workspace-scoped directory before a second Workspace is admitted.
+// It is intentionally separate from one-Agent sync intents: the complete
+// legacy bundle must be moved and verified as one recovery step.
+func (im *Importer) PrepareWorkspaceScope(ctx context.Context, workspaceID string) error {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	if _, err := im.reconcileLocked(ctx); err != nil {
+		return err
+	}
+	return im.prepareWorkspaceScopeLocked(ctx, workspaceID)
+}
+
 type ImportResult struct {
 	Created int `json:"created"`
 	Updated int `json:"updated"`

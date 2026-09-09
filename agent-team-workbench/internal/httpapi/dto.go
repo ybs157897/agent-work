@@ -1,24 +1,57 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/chatanalysis"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 )
 
 // DTO 全部 snake_case（协议文档 §5.1）；Provider 原始字段不得出现在 Web DTO。
 
 type workspaceDTO struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Timezone string `json:"timezone"`
-	Version  int    `json:"version"`
+	ID       string               `json:"id"`
+	Name     string               `json:"name"`
+	Timezone string               `json:"timezone"`
+	Version  int                  `json:"version"`
+	Project  *workspaceProjectDTO `json:"project,omitempty"`
+	Setup    *workspaceSetupDTO   `json:"setup,omitempty"`
 }
 
 func toWorkspaceDTO(w *domain.Workspace) workspaceDTO {
 	return workspaceDTO{ID: w.ID, Name: w.Name, Timezone: w.Timezone, Version: w.Version}
+}
+
+type workspaceProjectDTO struct {
+	ExecutionHostID    string `json:"execution_host_id"`
+	MountAlias         string `json:"mount_alias"`
+	MountGeneration    string `json:"mount_generation"`
+	RepositoryIdentity string `json:"repository_identity"`
+	CanonicalKey       string `json:"canonical_key"`
+	LocationID         string `json:"location_id"`
+	Status             string `json:"status"`
+	Error              string `json:"error,omitempty"`
+	SourceWorkspaceID  string `json:"source_workspace_id,omitempty"`
+	Version            int    `json:"version"`
+}
+
+type workspaceSetupDTO struct {
+	Status            string `json:"status"`
+	SourceWorkspaceID string `json:"source_workspace_id,omitempty"`
+	AgentCount        int    `json:"agent_count"`
+}
+
+func toWorkspaceProjectDTO(p *domain.WorkspaceProject) *workspaceProjectDTO {
+	if p == nil {
+		return nil
+	}
+	return &workspaceProjectDTO{ExecutionHostID: p.ExecutionHostID, MountAlias: p.MountAlias,
+		MountGeneration: p.MountGeneration, RepositoryIdentity: p.RepositoryIdentity,
+		CanonicalKey: p.CanonicalKey, LocationID: p.LocationID, Status: string(p.Status),
+		Error: p.Error, SourceWorkspaceID: p.SourceWorkspaceID, Version: p.Version}
 }
 
 type agentDTO struct {
@@ -122,6 +155,7 @@ type runDTO struct {
 	AgentProfileID string      `json:"agent_profile_id,omitempty"`
 	Status         string      `json:"status"`
 	RuntimeLabel   string      `json:"runtime_label,omitempty"`
+	OutputContract string      `json:"output_contract,omitempty"`
 	Progress       *float64    `json:"progress,omitempty"`
 	RetryOf        string      `json:"retry_of,omitempty"`
 	Failure        *failureDTO `json:"failure,omitempty"`
@@ -143,14 +177,99 @@ type failureDTO struct {
 }
 
 func toRunDTO(r *domain.ExecutionRun) runDTO {
+	outputContract := ""
+	if r != nil && r.Input != nil {
+		outputContract, _ = r.Input["output_contract"].(string)
+	}
 	d := runDTO{
 		ID: r.ID, WorkItemID: r.WorkItemID, AgentProfileID: r.AgentProfileID,
-		Status: string(r.Status), RuntimeLabel: r.RuntimeLabel, Progress: r.Progress,
+		Status: string(r.Status), RuntimeLabel: r.RuntimeLabel, OutputContract: outputContract, Progress: r.Progress,
 		RetryOf: r.RetryOf, Version: r.Version, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 		UsageIn: r.UsageIn, UsageOut: r.UsageOut, UsageCached: r.UsageCached, UsageBasis: r.UsageBasis,
 	}
 	if r.Failure != nil {
 		d.Failure = &failureDTO{Code: r.Failure.Code, Message: r.Failure.Message, Retryable: r.Failure.Retryable}
+	}
+	return d
+}
+
+type chatAnalysisAnswerDTO struct {
+	ID                    string    `json:"id"`
+	ClientKey             string    `json:"client_key"`
+	Revision              int64     `json:"revision"`
+	QuestionID            string    `json:"question_id"`
+	QuestionFingerprint   string    `json:"question_fingerprint"`
+	SelectedOptionIDs     []string  `json:"selected_option_ids,omitempty"`
+	Text                  string    `json:"text,omitempty"`
+	Disposition           string    `json:"disposition"`
+	InheritedFromAnswerID string    `json:"inherited_from_answer_id,omitempty"`
+	LineageReason         string    `json:"lineage_reason,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+type chatAnalysisDecisionDTO struct {
+	ItemID             string           `json:"item_id"`
+	Revision           int64            `json:"revision"`
+	DecisionID         string           `json:"decision_id"`
+	Outcome            string           `json:"outcome"`
+	Conclusion         string           `json:"conclusion"`
+	Basis              string           `json:"basis"`
+	ProductVersion     string           `json:"product_version"`
+	ItemFingerprint    string           `json:"item_fingerprint"`
+	SourceDependencies []map[string]any `json:"source_dependencies,omitempty"`
+	Status             string           `json:"status"`
+	ReviewReason       string           `json:"review_reason,omitempty"`
+	UpdatedAt          time.Time        `json:"updated_at"`
+}
+
+func toChatAnalysisDecisionDTO(s *domain.ChatAnalysisDecisionState) chatAnalysisDecisionDTO {
+	var dependencies []map[string]any
+	_ = json.Unmarshal([]byte(s.SourceDependenciesJSON), &dependencies)
+	return chatAnalysisDecisionDTO{ItemID: s.ItemID, Revision: s.Revision, DecisionID: s.DecisionID,
+		Outcome: string(s.Outcome), Conclusion: s.Conclusion, Basis: s.Basis, ProductVersion: s.ProductVersion,
+		ItemFingerprint: s.ItemFingerprint, SourceDependencies: dependencies, Status: string(s.Status), ReviewReason: s.ReviewReason, UpdatedAt: s.UpdatedAt}
+}
+
+func toChatAnalysisAnswerDTO(a *domain.ChatAnalysisAnswer) chatAnalysisAnswerDTO {
+	return chatAnalysisAnswerDTO{ID: a.ID, ClientKey: a.ClientKey, Revision: a.Revision, QuestionID: a.QuestionID,
+		QuestionFingerprint: a.QuestionFingerprint, SelectedOptionIDs: a.SelectedOptionIDs,
+		Text: a.Text, Disposition: a.Disposition, InheritedFromAnswerID: a.InheritedFromAnswerID,
+		LineageReason: a.LineageReason, CreatedAt: a.CreatedAt}
+}
+
+type chatAnalysisDTO struct {
+	WorkspaceID     string                    `json:"workspace_id"`
+	ChatID          string                    `json:"chat_id"`
+	AgentID         string                    `json:"agent_id"`
+	Version         int                       `json:"version"`
+	Revision        int64                     `json:"revision"`
+	Status          string                    `json:"status"`
+	RunID           string                    `json:"run_id,omitempty"`
+	Error           string                    `json:"error,omitempty"`
+	Document        *chatanalysis.Document    `json:"document,omitempty"`
+	CurrentQuestion *chatanalysis.Question    `json:"current_question,omitempty"`
+	PendingCount    int                       `json:"pending_count"`
+	AnsweredCount   int                       `json:"answered_count"`
+	DeferredCount   int                       `json:"deferred_count"`
+	Answers         []chatAnalysisAnswerDTO   `json:"answers"`
+	Decisions       []chatAnalysisDecisionDTO `json:"decisions"`
+}
+
+func toChatAnalysisDTO(view *application.ChatAnalysisView) chatAnalysisDTO {
+	d := chatAnalysisDTO{Answers: make([]chatAnalysisAnswerDTO, 0), Decisions: make([]chatAnalysisDecisionDTO, 0)}
+	if view == nil || view.Projection == nil {
+		return d
+	}
+	p := view.Projection
+	d.WorkspaceID, d.ChatID, d.AgentID = p.WorkspaceID, p.ChatWorkItemID, p.AgentProfileID
+	d.Version, d.Revision, d.Status = p.Version, p.Revision, string(p.Status)
+	d.RunID, d.Error, d.Document, d.CurrentQuestion = p.CurrentRunID, p.Error, view.Document, view.CurrentQuestion
+	d.PendingCount, d.AnsweredCount, d.DeferredCount = view.PendingCount, view.AnsweredCount, view.DeferredCount
+	for _, answer := range view.Answers {
+		d.Answers = append(d.Answers, toChatAnalysisAnswerDTO(answer))
+	}
+	for _, decision := range view.Decisions {
+		d.Decisions = append(d.Decisions, toChatAnalysisDecisionDTO(decision))
 	}
 	return d
 }
@@ -273,8 +392,9 @@ type createRunRequest struct {
 	Requirements      map[string]string `json:"requirements"`
 	ClientKey         string            `json:"client_key"`
 	Input             struct {
-		Instruction        string   `json:"instruction"`
-		AcceptanceCriteria []string `json:"acceptance_criteria"`
+		Instruction        string                 `json:"instruction"`
+		AcceptanceCriteria []string               `json:"acceptance_criteria"`
+		SourceRefs         []domain.ChatSourceRef `json:"source_refs,omitempty"`
 	} `json:"input"`
 }
 

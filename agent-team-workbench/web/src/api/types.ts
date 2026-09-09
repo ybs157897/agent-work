@@ -34,6 +34,34 @@ export interface Workspace {
   name: string;
   timezone: string;
   version: number;
+  /** U01 server projection; root/path is deliberately never returned. */
+  project?: WorkspaceProject;
+  setup?: WorkspaceSetup;
+}
+
+export interface WorkspaceProject {
+  execution_host_id: string;
+  mount_alias: string;
+  mount_generation: string;
+  repository_identity: string;
+  canonical_key?: string;
+  status: 'ready' | 'unavailable' | 'setup_failed' | string;
+  error?: string;
+  location_id?: string;
+}
+
+export interface WorkspaceSetup {
+  status: 'ready' | 'pending' | 'failed' | string;
+  source_workspace_id?: string;
+  agent_count?: number;
+}
+
+export interface ExecutionHost {
+  id: string;
+  name: string;
+  kind: string;
+  status: string;
+  version: number;
 }
 
 export interface AgentProfile {
@@ -891,6 +919,7 @@ export interface ExecutionRun {
   work_item_id: string;
   agent_profile_id?: string;
   status: RunStatus;
+  output_contract?: 'languagegui/v1' | 'chat-analysis/v1';
   runtime_label?: string;
   progress?: number | null;
   retry_of?: string;

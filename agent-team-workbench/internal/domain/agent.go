@@ -162,6 +162,7 @@ type Workspace struct {
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Project   *WorkspaceProject
 }
 
 // MemberRole RBAC 最小集（协议文档 §10.1）。

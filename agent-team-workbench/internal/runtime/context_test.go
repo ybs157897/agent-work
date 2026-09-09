@@ -32,10 +32,38 @@ func TestEffectiveInstructionUsesRawTurnWhenResuming(t *testing.T) {
 		"conversation": map[string]any{
 			"resume_session_ref": "codex://thread_1",
 			"history":            []any{map[string]any{"role": "user", "text": "第一轮"}},
-		},
+		}, "source_context": "notes.md source_id=src_1 path=/trusted/notes.md",
 	}}
-	if got := EffectiveInstruction(run); got != "第二轮" {
-		t.Fatalf("native resume 不应重复回放历史: %q", got)
+	got := EffectiveInstruction(run)
+	if strings.Contains(got, "第一轮") || !strings.Contains(got, "第二轮") || !strings.Contains(got, "source_id=src_1") {
+		t.Fatalf("native resume 应保留当轮与原件上下文但不回放历史: %q", got)
+	}
+}
+
+func TestEffectiveInstructionAddsAnalysisContextOnNativeResume(t *testing.T) {
+	run := &domain.ExecutionRun{Input: map[string]any{
+		"instruction": "继续分析",
+		"conversation": map[string]any{
+			"resume_session_ref": "codex://analysis-thread",
+			"history":            []any{map[string]any{"role": "user", "text": "旧消息"}},
+		},
+		"analysis_context": "[Chat requirements workflow: chat-analysis/v1]\nsource ref=conversation:sha256:abc",
+	}}
+	got := EffectiveInstruction(run)
+	if strings.Contains(got, "旧消息") || !strings.Contains(got, "继续分析") ||
+		!strings.Contains(got, "Chat requirements workflow") || !strings.Contains(got, "conversation:sha256:abc") {
+		t.Fatalf("native resume must receive dynamic analysis context without replaying history: %q", got)
+	}
+}
+
+func TestEffectiveInstructionFreshSessionAppendsSourceContextAfterUserTurn(t *testing.T) {
+	run := &domain.ExecutionRun{Input: map[string]any{
+		"instruction":    "请读附件",
+		"source_context": "proposal.docx source_id=src_2 path=/trusted/proposal.docx",
+	}}
+	got := EffectiveInstruction(run)
+	if !strings.HasPrefix(got, "请读附件") || !strings.Contains(got, "source_id=src_2") || strings.Index(got, "source_id=src_2") < strings.Index(got, "请读附件") {
+		t.Fatalf("fresh session source context assembly = %q", got)
 	}
 }
 

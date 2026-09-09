@@ -140,6 +140,36 @@ paths:
       operationId: listWorkspaces
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkspaceList" } } } }
+    post:
+      tags: [workspace]
+      operationId: createWorkspace
+      summary: 创建或打开一个绑定到受信本机项目目录的 Workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, project]
+              properties:
+                name: { type: string }
+                timezone: { type: string }
+                source_workspace_id: { type: string }
+                project:
+                  type: object
+                  additionalProperties: false
+                  required: [execution_host_id, mount_alias, mount_generation, repository_identity]
+                  properties:
+                    execution_host_id: { type: string }
+                    mount_alias: { type: string }
+                    mount_generation: { type: string }
+                    repository_identity: { type: string }
+      responses:
+        "200": { description: 已存在的同一项目 Workspace；幂等复用 }
+        "201": { description: 已创建 Workspace }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/UnprocessableEntity" }
 
   /workspaces/{workspace_id}:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -151,6 +181,13 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
         "409": { $ref: "#/components/responses/Conflict" }
+    get:
+      tags: [workspace]
+      operationId: getWorkspace
+      summary: 读取 Workspace 与其绑定项目/setup 状态
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /workspaces/{workspace_id}/bootstrap:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
@@ -816,7 +853,7 @@ paths:
       tags: [work-items]
       operationId: getWorkItem
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationPublishResponse" } } } }
     patch:
       tags: [work-items]
       operationId: updateWorkItem
@@ -826,6 +863,59 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/sources:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [work-items]
+      operationId: listChatSources
+      summary: 列出当前 Chat 的原件元数据
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatSourceList" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [work-items]
+      operationId: uploadChatSource
+      summary: 上传 Chat 原件；服务端保存原件并返回 opaque source 元数据
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                client_key: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatSource" } } } }
+        "200": { description: 逻辑 client_key 重放；同一 source 元数据, content: { application/json: { schema: { $ref: "#/components/schemas/ChatSource" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+
+  /work-items/{work_item_id}/sources/{source_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkItemId" }
+      - { name: source_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [work-items]
+      operationId: getChatSource
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatSource" } } } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /work-items/{work_item_id}/sources/{source_id}/download:
+    parameters:
+      - { $ref: "#/components/parameters/WorkItemId" }
+      - { name: source_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [work-items]
+      operationId: downloadChatSource
+      summary: 通过同源受控流下载原件；不返回本机路径或 opaque key
+      responses:
+        "200": { description: 原始附件字节 }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /work-items/{work_item_id}/commands/assign:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
@@ -1043,6 +1133,116 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RunCreate" } } } }
       responses:
         "202": { content: { application/json: { schema: { $ref: "#/components/schemas/RunAccepted" } } } }
+
+  /work-items/{work_item_id}/analysis:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [chat-analysis]
+      operationId: getChatAnalysis
+      summary: Chat 需求分析的当前持久投影（无分析时为 idle）
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysis" } } } }
+
+  /work-items/{work_item_id}/analysis/answers:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [chat-analysis]
+      operationId: saveChatAnalysisAnswer
+      summary: 保存当前单题回答并推进到下一题
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysisAnswerCreate" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysis" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/analysis/decisions:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [chat-analysis]
+      operationId: saveChatAnalysisDecision
+      summary: 回填一条明确的产品结论
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysisDecisionCreate" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysis" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/analysis/history:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [chat-analysis]
+      operationId: getChatAnalysisHistory
+      summary: 查看有界的分析、回答、产品结论和重开历史
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysisHistory" } } } }
+
+  /work-items/{work_item_id}/analysis/recheck:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    post:
+      tags: [chat-analysis]
+      operationId: recheckChatAnalysis
+      summary: 重新核对当前分析引用的材料和版本
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysisRecheck" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/ChatAnalysis" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/analysis/drafts:
+    parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
+    get:
+      tags: [task-publication]
+      operationId: listPublicationDrafts
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationDraftList" } } } }
+    post:
+      tags: [task-publication]
+      operationId: createPublicationDraft
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PublicationDraftCreate" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationDraft" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /work-items/{work_item_id}/analysis/drafts/{draft_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkItemId" }
+      - { name: draft_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [task-publication]
+      operationId: getPublicationDraft
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationDraft" } } } }
+
+  /work-items/{work_item_id}/analysis/drafts/{draft_id}/recheck:
+    parameters:
+      - { $ref: "#/components/parameters/WorkItemId" }
+      - { name: draft_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [task-publication]
+      operationId: recheckPublicationDraft
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PublicationRecheck" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationDraft" } } } }
+
+  /work-items/{work_item_id}/analysis/drafts/{draft_id}/publish:
+    parameters:
+      - { $ref: "#/components/parameters/WorkItemId" }
+      - { name: draft_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [task-publication]
+      operationId: publishPublicationDraft
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/PublicationPublish" } } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/PublicationPublishResponse" } } } }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /work-items/{work_item_id}/dispatches:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
@@ -3091,6 +3291,29 @@ components:
         name: { type: string }
         timezone: { type: string }
         version: { type: integer }
+        project: { $ref: "#/components/schemas/WorkspaceProject" }
+        setup: { $ref: "#/components/schemas/WorkspaceSetup" }
+
+    WorkspaceProject:
+      type: object
+      properties:
+        execution_host_id: { type: string }
+        mount_alias: { type: string }
+        mount_generation: { type: string }
+        repository_identity: { type: string }
+        canonical_key: { type: string }
+        location_id: { type: string }
+        status: { type: string, enum: [pending, ready, unavailable, setup_failed] }
+        error: { type: string }
+        source_workspace_id: { type: string }
+        version: { type: integer }
+
+    WorkspaceSetup:
+      type: object
+      properties:
+        status: { type: string, enum: [pending, ready, failed] }
+        source_workspace_id: { type: string }
+        agent_count: { type: integer }
 
     WorkspacePatch:
       type: object
@@ -3627,7 +3850,7 @@ components:
       required: [agent_profile_id, input]
       properties:
         agent_profile_id: { type: string }
-        output_contract: { type: string, enum: [languagegui/v1] }
+        output_contract: { type: string, enum: [languagegui/v1, chat-analysis/v1] }
         runtime_preference: { $ref: "#/components/schemas/RuntimePreference" }
         requirements:
           type: object
@@ -3638,6 +3861,38 @@ components:
           properties:
             instruction: { type: string }
             acceptance_criteria: { type: array, items: { type: string } }
+            source_refs:
+              type: array
+              items: { $ref: "#/components/schemas/ChatSourceRef" }
+
+    ChatSourceRef:
+      type: object
+      required: [source_id, sha256]
+      properties:
+        source_id: { type: string }
+        sha256: { type: string, minLength: 64, maxLength: 64, pattern: "^[0-9a-fA-F]{64}$" }
+
+    ChatSource:
+      type: object
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        chat_id: { type: string }
+        agent_id: { type: string }
+        client_key: { type: string }
+        filename: { type: string }
+        mime: { type: string }
+        size: { type: integer, format: int64 }
+        sha256: { type: string, minLength: 64, maxLength: 64, pattern: "^[0-9a-fA-F]{64}$" }
+        status: { type: string, enum: [saved, handed_to_agent, read, failed] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        handed_at: { type: string, format: date-time, nullable: true }
+
+    ChatSourceList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ChatSource" } }
 
     RunAccepted:
       type: object
@@ -3648,6 +3903,241 @@ components:
         version: { type: integer }
         capability_snapshot_id: { type: string, nullable: true }
 
+    ChatAnalysis:
+      type: object
+      required: [workspace_id, chat_id, agent_id, version, revision, status, pending_count, answered_count, deferred_count, answers]
+      properties:
+        workspace_id: { type: string }
+        chat_id: { type: string }
+        agent_id: { type: string }
+        version: { type: integer, minimum: 0 }
+        revision: { type: integer, format: int64, minimum: 0 }
+        status: { type: string, enum: [idle, analyzing, needs_answer, ready, failed, stale] }
+        run_id: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        document: { $ref: "#/components/schemas/ChatAnalysisDocument", nullable: true }
+        current_question: { $ref: "#/components/schemas/ChatAnalysisQuestion", nullable: true }
+        pending_count: { type: integer, minimum: 0 }
+        answered_count: { type: integer, minimum: 0 }
+        deferred_count: { type: integer, minimum: 0 }
+        answers: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisAnswer" } }
+
+    ChatAnalysisDocument:
+      type: object
+      required: [version, summary, sources, items, questions]
+      properties:
+        version: { type: string, enum: [chat-analysis/v1] }
+        summary: { type: string }
+        sources: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisSource" } }
+        items: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisItem" } }
+        questions: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisQuestion" } }
+
+    ChatAnalysisSource:
+      type: object
+      required: [id, kind, ref, sha256, read_status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [attachment, conversation, code, knowledge] }
+        ref: { type: string }
+        sha256: { type: string, minLength: 64, maxLength: 64, pattern: "^[0-9a-fA-F]{64}$" }
+        version: { type: integer, minimum: 1 }
+        locator: { type: string }
+        coverage: { type: string }
+        limitations: { type: string }
+        quote: { type: string }
+        read_status: { type: string, enum: [read, partial, failed] }
+
+    ChatAnalysisItem:
+      type: object
+      required: [id, kind, title, detail, source_ids, basis]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [requirement, normal, exception, conflict, unknown] }
+        title: { type: string }
+        detail: { type: string }
+        source_ids: { type: array, items: { type: string } }
+        basis: { type: string, enum: [observed, proposed, unverified] }
+        impact: { type: string }
+        recommendation: { type: string }
+
+    ChatAnalysisQuestion:
+      type: object
+      required: [id, prompt, selection, item_ids]
+      properties:
+        id: { type: string }
+        prompt: { type: string }
+        selection: { type: string, enum: [single, multiple, text] }
+        options: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisOption" } }
+        item_ids: { type: array, items: { type: string } }
+
+    ChatAnalysisOption:
+      type: object
+      required: [id, label]
+      properties:
+        id: { type: string }
+        label: { type: string }
+
+    ChatAnalysisAnswer:
+      type: object
+      required: [id, client_key, revision, question_id, question_fingerprint, disposition, created_at]
+      properties:
+        id: { type: string }
+        client_key: { type: string, description: 与提交体一致的实体幂等键，供响应丢失后的草稿确认 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        question_id: { type: string }
+        question_fingerprint: { type: string }
+        selected_option_ids: { type: array, items: { type: string } }
+        text: { type: string }
+        disposition: { type: string, enum: [answered, deferred] }
+        inherited_from_answer_id: { type: string, description: 选择性继承时指向旧 revision 的原始回答 }
+        lineage_reason: { type: string, description: 继承或重问的服务端原因 }
+        created_at: { type: string, format: date-time }
+
+    ChatAnalysisAnswerCreate:
+      type: object
+      required: [expected_version, revision, question_id, disposition, client_key]
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        question_id: { type: string }
+        selected_option_ids: { type: array, items: { type: string } }
+        text: { type: string }
+        disposition: { type: string, enum: [answered, deferred] }
+        client_key: { type: string }
+
+    ChatAnalysisDecisionCreate:
+      type: object
+      required: [expected_version, revision, item_id, outcome, conclusion, basis, product_version, client_key]
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        item_id: { type: string }
+        outcome: { type: string, enum: [confirmed, rejected, needs_clarification] }
+        conclusion: { type: string, minLength: 1, maxLength: 8000 }
+        basis: { type: string, minLength: 1, maxLength: 4000 }
+        product_version: { type: string, minLength: 1, maxLength: 500 }
+        client_key: { type: string, minLength: 1, maxLength: 240 }
+
+    ChatAnalysisRecheck:
+      type: object
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+
+    ChatAnalysisHistory:
+      type: object
+      required: [revisions, answers, decisions, reopens]
+      properties:
+        revisions: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisRevision" } }
+        answers: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisAnswer" } }
+        decisions: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisDecision" } }
+        reopens: { type: array, items: { $ref: "#/components/schemas/ChatAnalysisReopen" } }
+
+    ChatAnalysisRevision:
+      type: object
+      required: [revision, run_id, document_digest, created_at]
+      properties:
+        revision: { type: integer, format: int64, minimum: 1 }
+        run_id: { type: string }
+        document_digest: { type: string, minLength: 64, maxLength: 64 }
+        document: { $ref: "#/components/schemas/ChatAnalysisDocument" }
+        created_at: { type: string, format: date-time }
+
+    ChatAnalysisDecision:
+      type: object
+      required: [id, workspace_id, chat_id, agent_id, revision, item_id, outcome, conclusion, basis, product_version, item_fingerprint, actor_id, client_key, created_at]
+      properties:
+        id: { type: string }
+        workspace_id: { type: string }
+        chat_id: { type: string }
+        agent_id: { type: string }
+        revision: { type: integer, format: int64, minimum: 1 }
+        item_id: { type: string }
+        outcome: { type: string, enum: [confirmed, rejected, needs_clarification] }
+        conclusion: { type: string }
+        basis: { type: string }
+        product_version: { type: string }
+        item_fingerprint: { type: string }
+        source_dependencies:
+          type: array
+          items: { type: object, additionalProperties: true }
+        actor_id: { type: string }
+        client_key: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ChatAnalysisReopen:
+      type: object
+      required: [id, item_id, from_revision, to_revision, reason, created_at]
+      properties:
+        id: { type: string }
+        item_id: { type: string }
+        from_revision: { type: integer, format: int64, minimum: 1 }
+        to_revision: { type: integer, format: int64, minimum: 1 }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+
+    PublicationDraftCreate:
+      type: object
+      required: [expected_version, revision, item_ids, title, client_key]
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        revision: { type: integer, format: int64, minimum: 1 }
+        item_ids: { type: array, minItems: 1, items: { type: string } }
+        title: { type: string, minLength: 1, maxLength: 500 }
+        client_key: { type: string, minLength: 1, maxLength: 240 }
+
+    PublicationRecheck:
+      type: object
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+
+    PublicationPublish:
+      type: object
+      required: [expected_version, client_key]
+      additionalProperties: false
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        client_key: { type: string, minLength: 1, maxLength: 240 }
+
+    PublicationDraft:
+      type: object
+      required: [draft_id, workspace_id, chat_id, agent_id, analysis_revision, item_ids, confirmation_ids, source_dependencies, title, description, acceptance_criteria, context_snapshot_id, project_baseline, fingerprint, status, client_key, version]
+      properties:
+        draft_id: { type: string }
+        workspace_id: { type: string }
+        chat_id: { type: string }
+        agent_id: { type: string }
+        analysis_revision: { type: integer, format: int64, minimum: 1 }
+        item_ids: { type: array, items: { type: string } }
+        confirmation_ids: { type: array, items: { type: string } }
+        source_dependencies: { type: array, items: { type: object, additionalProperties: true } }
+        title: { type: string }
+        description: { type: string }
+        acceptance_criteria: { type: array, items: { type: string } }
+        context_snapshot_id: { type: string }
+        project_baseline: { type: object, additionalProperties: true }
+        fingerprint: { type: string }
+        status: { type: string, enum: [ready, stale, published] }
+        task_id: { type: string, nullable: true }
+        client_key: { type: string }
+        version: { type: integer }
+
+    PublicationDraftList:
+      type: object
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/PublicationDraft" } }
+
+    PublicationPublishResponse:
+      type: object
+      required: [draft, task]
+      properties:
+        draft: { $ref: "#/components/schemas/PublicationDraft" }
+        task: { $ref: "#/components/schemas/WorkItem" }
+
     ExecutionRun:
       type: object
       properties:
@@ -3657,6 +4147,7 @@ components:
         status: { $ref: "#/components/schemas/RunStatus" }
         provider: { type: string, nullable: true }
         runtime_label: { type: string, nullable: true }
+        output_contract: { type: string, enum: [languagegui/v1, chat-analysis/v1], nullable: true }
         progress: { type: number, nullable: true }
         retry_of: { type: string, nullable: true }
         failure:

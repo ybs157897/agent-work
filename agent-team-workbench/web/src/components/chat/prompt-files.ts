@@ -29,9 +29,13 @@ const DOCUMENT_MIMES = new Set([
   'text/csv',
   'application/json',
   'application/pdf',
+  'application/msword',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp']);
-const DOCUMENT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'pdf']);
+const DOCUMENT_EXTENSIONS = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'pdf', 'doc', 'docx', 'ppt', 'pptx']);
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp']);
 const DANGEROUS_EXTENSIONS = new Set(['html', 'htm', 'svg', 'js', 'mjs', 'cjs', 'sh', 'exe', 'app', 'dmg']);
 
@@ -87,7 +91,10 @@ export function validatePromptFiles(
       errors.push(`${name}：仅支持常用文档、PDF、PNG、JPEG 和 WebP`);
       continue;
     }
-    const key = promptFileKey({ ...file, name });
+    // File exposes size/type/lastModified through prototype accessors. Do not
+    // spread a native File: that drops those values and makes distinct
+    // attachments collide on `name:undefined:0`.
+    const key = promptFileKey({ name, size: file.size, type: file.type, lastModified: file.lastModified });
     if (seen.has(key)) {
       errors.push(`${name}：已添加`);
       continue;
@@ -110,6 +117,14 @@ function extensionMime(extension: string): string {
       return 'application/json';
     case 'pdf':
       return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'ppt':
+      return 'application/vnd.ms-powerpoint';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
     case 'png':
       return 'image/png';
     case 'jpg':

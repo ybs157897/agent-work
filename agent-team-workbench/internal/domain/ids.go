@@ -44,6 +44,7 @@ const (
 	PrefixDeliveryBriefSnapshot = "brief_"
 	PrefixQuotaGapResolution    = "qgap_"
 	PrefixAgentConfigSyncIntent = "agentsync_"
+	PrefixChatSource            = "src_"
 )
 
 // NewID 生成带类型前缀的 ULID。

@@ -4,7 +4,7 @@ import { EmptyState } from '../ui';
 import { formatTime } from '../../utils/format';
 import { artifactBasename, classifyMime, formatBytes } from '../../utils/artifact-visuals';
 
-/** mime 类别图标：工作区与聊天区摘要卡共用。 */
+/** mime 类别图标：成果面板与聊天区摘要卡共用。 */
 export function ArtifactMimeIcon({ mime, className }: { mime: string; className?: string }) {
   const cls = className ?? 'h-4 w-4';
   switch (classifyMime(mime)) {
@@ -20,18 +20,18 @@ export function ArtifactMimeIcon({ mime, className }: { mime: string; className?
 }
 
 /**
- * 右侧工作区面板：承载本会话全部成果清单（聊天区只放摘要，成果在这里展开）。
+ * 右侧成果面板：承载本会话全部成果清单（聊天区只放摘要，成果在这里展开）。
  * 后端当前只暴露元数据（无内容端点），面板是清单不是预览器。
  */
 export function ArtifactWorkspace({ artifacts, onClose }: { artifacts: Artifact[]; onClose: () => void }) {
   return (
     <div className="flex min-h-0 w-80 shrink-0 flex-col border-l border-border-strong bg-surface-warm">
       <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-subtle px-4">
-        <span className="font-zh text-body-lg text-text-primary">工作区</span>
+        <span className="font-zh text-body-lg text-text-primary">成果</span>
         <button
           type="button"
-          aria-label="关闭工作区"
-          title="关闭工作区"
+          aria-label="关闭成果"
+          title="关闭成果"
           onClick={onClose}
           className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
         >
