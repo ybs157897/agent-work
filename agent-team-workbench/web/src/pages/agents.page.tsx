@@ -445,7 +445,7 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
         {builtinLibrarian && (
           <div className="border-b border-border-subtle px-comfortable py-base text-body text-text-secondary">
             系统内置的知识库管理员，负责接收团队成员的记录请求、整理知识并回答问题。这里只设置它使用的模型；
-            <Link to={`/chat?agent=${encodeURIComponent(agent.id)}`} className="text-brand-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary">与知识库管理员对话</Link>。
+            <Link to={chatAgentPath(workspace?.id, agent.id)} className="text-brand-primary underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary">与知识库管理员对话</Link>。
           </div>
         )}
         <ConfigToolbar>
@@ -655,6 +655,13 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
       <WakeAgentModal open={wakeOpen} onClose={() => setWakeOpen(false)} agent={agent} />
     </ConfigPanel>
   );
+}
+
+function chatAgentPath(workspaceId: string | undefined, agentId: string): string {
+  const params = new URLSearchParams();
+  if (workspaceId) params.set('ws', workspaceId);
+  params.set('agent', agentId);
+  return `/chat?${params.toString()}`;
 }
 
 function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }) {

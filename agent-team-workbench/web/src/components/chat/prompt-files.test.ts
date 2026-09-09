@@ -56,4 +56,16 @@ describe('prompt file validation', () => {
     expect(result.errors.some((error) => error.includes('已添加'))).toBe(true);
     expect(result.errors.some((error) => error.includes('20 MB') || error.includes('最多选择'))).toBe(true);
   });
+
+  it('reads native File accessors explicitly so same-name originals do not collide', () => {
+    const first = new File([new Uint8Array(5)], 'original-request.md', { type: 'text/markdown', lastModified: 11 });
+    const second = new File([new Uint8Array(7)], 'original-request.md', { type: 'text/markdown', lastModified: 12 });
+    const result = validatePromptFiles([first, second]);
+    expect(result.errors).toEqual([]);
+    expect(result.accepted).toHaveLength(2);
+    expect(result.accepted.map((item) => item.key)).toEqual([
+      'original-request.md:5:11',
+      'original-request.md:7:12',
+    ]);
+  });
 });

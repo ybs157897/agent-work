@@ -18,6 +18,8 @@ import { createRequestGuard } from './request-guard';
 import { toast } from './toast.store';
 import { useWorkspaceStore } from './workspace.store';
 import { parseContentBlockDocument, type ContentBlockDocument } from '../utils/content-blocks';
+import { readChatWorkspaceState, readChatSelection, writeChatSelection, writeChatWorkspaceState } from './chat-workspace-state';
+import { chatSourceClientKey, chatSourceDigest, listChatSources, uploadChatSource, type ChatSource, type ChatSourceRef } from '../api/chat-sources';
 
 /** 工具行卡片状态：started 时 running，completed/failed 后落定。 */
 export type ToolStatus = 'running' | 'success' | 'failed' | 'stopped';
@@ -115,10 +117,24 @@ export interface RunStreamParts {
   phaseStartedAt?: string;
 }
 
+export type ChatOutputContract = 'languagegui/v1' | 'chat-analysis/v1';
+
+export interface ChatSendOptions {
+  outputContract?: ChatOutputContract;
+}
+
 /** 队列消息：text + 入队时生成的实体级幂等键（drain 重试安全）。 */
 export interface QueuedMessage {
   text: string;
   clientKey: string;
+  sourceRefs?: ChatSourceRef[];
+  attachmentKeys?: string[];
+  outputContract?: ChatOutputContract;
+}
+
+export interface ChatAttachmentInput {
+  key: string;
+  file: File;
 }
 
 /** 从 tool.completed/failed 载荷提取 exit_code（仅有限数值，其余形态忽略）。 */
@@ -1105,6 +1121,8 @@ export interface RunAlert {
 }
 
 interface ChatStore {
+  /** Client projection scope; server work items remain the durable truth. */
+  workspaceId: string | null;
   agentId: string | null;
   conversationId: string | null;
   /** 会话列表（该 agent 名下的 work items，最新在前）。 */
@@ -1115,7 +1133,7 @@ interface ChatStore {
   runsLoadedConversationId: string | null;
   sending: boolean;
   sendError: string | null;
-  newConversationAttempt: { text: string; clientKey: string } | null;
+  newConversationAttempt: { text: string; clientKey: string; outputContract?: ChatOutputContract } | null;
   /**
    * 当前会话的待发送队列（Codex 式：运行中入队，本轮成功后自动续发）。
    * 内存级不落盘：刷新即弃、切换会话即清——持久化需要后端队列契约，暂以简单优先。
@@ -1128,15 +1146,21 @@ interface ChatStore {
   runAlerts: Record<string, RunAlert>;
   /** createRun 已返回但 timeline 尚无 run.created 时的用户文案（runId → instruction）。 */
   pendingUsers: Record<string, string>;
+  sourcesByConversation: Record<string, ChatSource[]>;
+  sourcesLoadingByConversation: Record<string, boolean>;
+  sourcesErrorByConversation: Record<string, string | undefined>;
 
   selectAgent: (id: string | null) => void;
+  /** Restore the last Agent/conversation for one Workspace after bootstrap. */
+  restoreWorkspace: (workspaceId: string) => void;
   /** Resolves only after the requested record has been validated and selected. */
   openConversation: (workItemId: string | null) => Promise<boolean>;
   refreshConversations: () => Promise<void>;
   refreshRuns: () => Promise<boolean>;
+  refreshSources: (conversationId?: string) => Promise<void>;
   /** true 表示原文已发送或保留在队列；false 时输入框应保留草稿。 */
-  send: (text: string) => Promise<boolean>;
-  enqueue: (text: string) => void;
+  send: (text: string, attachments?: ChatAttachmentInput[], options?: ChatSendOptions) => Promise<boolean>;
+  enqueue: (text: string, sourceRefs?: ChatSourceRef[], attachmentKeys?: string[], outputContract?: ChatOutputContract) => void;
   removeQueued: (index: number) => void;
   /** 出队首条开新轮（自动续发与手动「继续发送」共用；复用 sending 闸防重）。 */
   drainQueue: () => Promise<void>;
@@ -1163,7 +1187,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
   // 分叉会话首发：尚无 run 且 description 以分叉标记开头时，把上下文包拼进首条
   // instruction（description 原样保留在 work item 上不消费，仅本轮注入一次）。
   // clientKey 透传为 run 的实体级幂等键：同键重试由服务端查回既有 run（200 重放）。
-  const startRun = async (conversationId: string, agentId: string, text: string, clientKey?: string): Promise<void> => {
+  const startRun = async (conversationId: string, agentId: string, text: string, clientKey?: string, sourceRefs?: ChatSourceRef[], outputContract: ChatOutputContract = 'languagegui/v1'): Promise<void> => {
     const request = openConversationRequest;
     const scope = captureScope();
     const stillSelected = () => request === openConversationRequest && isCurrent(scope) && get().agentId === agentId;
@@ -1176,8 +1200,11 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     }
     const resp = await createRun(conversationId, {
       agent_profile_id: agentId,
-      output_contract: 'languagegui/v1',
-      input: { instruction },
+      output_contract: outputContract,
+      input: {
+        instruction,
+        ...(sourceRefs?.length ? { source_refs: sourceRefs } : {}),
+      },
       ...(clientKey ? { client_key: clientKey } : {}),
     });
     if (!stillSelected()) return;
@@ -1190,9 +1217,30 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     useRunsStore.getState().watchRun(resp.run_id);
     await get().refreshConversations();
     await get().refreshRuns();
+    if (sourceRefs?.length) void get().refreshSources(conversationId);
+  };
+
+  const uploadAttachmentsForChat = async (conversationId: string, attachments: readonly ChatAttachmentInput[]): Promise<ChatSourceRef[]> => {
+    const refs: ChatSourceRef[] = [];
+    for (const attachment of attachments) {
+      const source = await uploadChatSource(conversationId, attachment.file, chatSourceClientKey(conversationId, attachment.key));
+      refs.push({ source_id: source.id, sha256: chatSourceDigest(source.sha256) });
+    }
+    return refs;
+  };
+
+  const persistQueue = () => {
+    const state = get();
+    if (!state.workspaceId || !state.agentId) return;
+    const saved = readChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId);
+    writeChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId, {
+      composer: saved?.composer ?? { draft: '', reference: null },
+      queue: state.queue,
+    });
   };
 
   return {
+    workspaceId: null,
     agentId: null,
     conversationId: null,
     conversations: [],
@@ -1205,16 +1253,37 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     stoppingRunId: null,
     runAlerts: {},
     pendingUsers: {},
+    sourcesByConversation: {},
+    sourcesLoadingByConversation: {},
+    sourcesErrorByConversation: {},
+
+    restoreWorkspace: (workspaceId) => {
+      if (!workspaceId || get().workspaceId === workspaceId && get().agentId !== null) return;
+      const selection = readChatSelection(workspaceId);
+      const agentId = selection?.agentId ?? null;
+      const conversationId = selection?.conversationId ?? null;
+      openConversationRequest += 1;
+      set({ workspaceId, agentId, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
+      if (agentId) {
+        const restored = readChatWorkspaceState(workspaceId, agentId, conversationId);
+        set({ queue: restored?.queue ?? [] });
+        void get().refreshConversations();
+        if (conversationId) void get().openConversation(conversationId);
+      }
+    },
 
     selectAgent: (id) => {
       openConversationRequest += 1;
-      set({ agentId: id, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
+      const workspaceId = useWorkspaceStore.getState().workspace?.id ?? get().workspaceId;
+      set({ workspaceId, agentId: id, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
+      if (workspaceId && id) writeChatSelection(workspaceId, id, null);
       void get().refreshConversations();
     },
 
     openConversation: async (workItemId) => {
       const current = get().conversations.find((item) => item.id === workItemId);
-      if (workItemId && workItemId === get().conversationId && current?.record_kind === 'chat' && current.agent_profile_id === get().agentId) {
+      const activeWorkspaceId = get().workspaceId ?? useWorkspaceStore.getState().workspace?.id;
+      if (workItemId && workItemId === get().conversationId && current?.record_kind === 'chat' && current.agent_profile_id === get().agentId && current.workspace_id === activeWorkspaceId) {
         return loadSelectedConversation(workItemId, get().agentId, openConversationRequest);
       }
       const request = ++openConversationRequest;
@@ -1222,6 +1291,13 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const reset = () => set({ conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       if (!workItemId) {
         reset();
+        const workspaceId = get().workspaceId;
+        const agentId = get().agentId;
+        if (workspaceId && agentId) {
+          const restored = readChatWorkspaceState(workspaceId, agentId, null);
+          set({ queue: restored?.queue ?? [] });
+          writeChatSelection(workspaceId, agentId, null);
+        }
         return true;
       }
 
@@ -1229,11 +1305,17 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       if (listed) {
         // The Chat list is fail-closed: a task record can never be opened as a
         // conversation even if a stale URL or store snapshot contains its id.
-        if (listed.record_kind !== 'chat' || listed.agent_profile_id !== agentId) {
+        if (listed.record_kind !== 'chat' || listed.agent_profile_id !== agentId || listed.workspace_id !== (get().workspaceId ?? useWorkspaceStore.getState().workspace?.id)) {
           reset();
           return false;
         }
         set({ conversationId: workItemId, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false });
+        const workspaceId = get().workspaceId;
+        if (workspaceId && agentId) {
+          const restored = readChatWorkspaceState(workspaceId, agentId, workItemId);
+          set({ queue: restored?.queue ?? [] });
+          writeChatSelection(workspaceId, agentId, workItemId);
+        }
         return loadSelectedConversation(workItemId, agentId, request);
       }
 
@@ -1242,10 +1324,11 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       // rejected and never become a Chat transcript.
       reset();
       if (!agentId) return false;
+      const requestScope = captureScope();
       return getWorkItem(workItemId)
         .then((item) => {
-          if (request !== openConversationRequest || get().agentId !== agentId) return false;
-          if (item.record_kind !== 'chat' || item.agent_profile_id !== agentId) return false;
+          if (request !== openConversationRequest || get().agentId !== agentId || !isCurrent(requestScope)) return false;
+          if (item.record_kind !== 'chat' || item.agent_profile_id !== agentId || item.workspace_id !== (get().workspaceId ?? useWorkspaceStore.getState().workspace?.id)) return false;
           set((state) => ({
             conversations: state.conversations.some((entry) => entry.id === item.id)
               ? state.conversations
@@ -1257,6 +1340,12 @@ export const useChatStore = create<ChatStore>()((set, get) => {
             runAlerts: {},
             pendingUsers: {},
           }));
+          const workspaceId = get().workspaceId;
+          if (workspaceId && agentId) {
+            const restored = readChatWorkspaceState(workspaceId, agentId, workItemId);
+            set({ queue: restored?.queue ?? [] });
+            writeChatSelection(workspaceId, agentId, workItemId);
+          }
           return loadSelectedConversation(workItemId, agentId, request);
         })
         .catch(() => false);
@@ -1291,7 +1380,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         return false;
       }
       const conversation = get().conversations.find((item) => item.id === conversationId);
-      if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== get().agentId) {
+      if (!conversation || conversation.record_kind !== 'chat' || conversation.agent_profile_id !== get().agentId || conversation.workspace_id !== (get().workspaceId ?? useWorkspaceStore.getState().workspace?.id)) {
         // Do not load a task's execution history through the Chat surface,
         // even if a stale caller writes a conversation id into the store.
         set({ conversationId: null, runs: [], runsLoadedConversationId: null });
@@ -1309,11 +1398,38 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       return true;
     },
 
-    send: async (text) => {
+    refreshSources: async (requestedConversationId) => {
+      const conversationId = requestedConversationId ?? get().conversationId;
+      const scope = captureScope();
+      const agentId = get().agentId;
+      if (!conversationId || !agentId || !scope.workspaceId) return;
+      set((state) => ({
+        sourcesLoadingByConversation: { ...state.sourcesLoadingByConversation, [conversationId]: true },
+        sourcesErrorByConversation: { ...state.sourcesErrorByConversation, [conversationId]: undefined },
+      }));
+      try {
+        const result = await listChatSources(conversationId);
+        if (!isCurrent(scope) || get().conversationId !== conversationId || get().agentId !== agentId) return;
+        const items = result.items.filter((source) => source.workspace_id === scope.workspaceId && source.chat_id === conversationId && source.agent_id === agentId);
+        set((state) => ({
+          sourcesByConversation: { ...state.sourcesByConversation, [conversationId]: items },
+          sourcesLoadingByConversation: { ...state.sourcesLoadingByConversation, [conversationId]: false },
+        }));
+      } catch (error) {
+        if (!isCurrent(scope)) return;
+        set((state) => ({
+          sourcesLoadingByConversation: { ...state.sourcesLoadingByConversation, [conversationId]: false },
+          sourcesErrorByConversation: { ...state.sourcesErrorByConversation, [conversationId]: error instanceof Error ? error.message : '附件来源读取失败' },
+        }));
+      }
+    },
+
+    send: async (text, attachments = [], options) => {
       const trimmed = text.trim();
       const wsId = useWorkspaceStore.getState().workspace?.id;
       const agentId = get().agentId;
-      if (!wsId || !agentId || !trimmed) return false;
+      const instruction = trimmed || '请读取已附资料，并告诉我你观察到的内容或需要确认的问题。';
+      if (!wsId || !agentId || (!trimmed && attachments.length === 0)) return false;
 
       const request = openConversationRequest;
       const scope = captureScope();
@@ -1325,7 +1441,16 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       // 活动 Run 或有首发在途（sending，含 drain）：入队等本轮完成后自动续发，
       // 不再走 sendRunInput 的 steering 追加。
       if ((latestSnapshot && !TERMINAL.has(latestSnapshot.status)) || get().sending) {
-        get().enqueue(trimmed);
+        const conversationId = get().conversationId;
+        if (attachments.length > 0 && !conversationId) return false;
+        try {
+          const sourceRefs = conversationId && attachments.length > 0 ? await uploadAttachmentsForChat(conversationId, attachments) : undefined;
+          if (!isCurrentSend()) return false;
+          get().enqueue(instruction, sourceRefs, attachments.map((attachment) => attachment.key), options?.outputContract);
+        } catch (error) {
+          if (isCurrentSend()) set({ sendError: error instanceof Error ? error.message : '附件保存失败，请重试' });
+          return false;
+        }
         return true;
       }
       set({ sending: true, sendError: null });
@@ -1341,9 +1466,11 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         }
         if (!conversationId) {
           // 首发消息：建会话（work item）+ 建 run；任务状态由控制平面推进。
-          const title = trimmed.slice(0, 24) + (trimmed.length > 24 ? '…' : '');
+          const title = (trimmed || '读取附件').slice(0, 24) + ((trimmed || '读取附件').length > 24 ? '…' : '');
           const previous = get().newConversationAttempt;
-          const attempt = previous?.text === trimmed ? previous : { text: trimmed, clientKey: newQueueKey() };
+          const attempt = previous?.text === instruction && previous.outputContract === options?.outputContract
+            ? previous
+            : { text: instruction, clientKey: newQueueKey(), ...(options?.outputContract ? { outputContract: options.outputContract } : {}) };
           set({ newConversationAttempt: attempt });
           const wi = await createWorkItem(wsId, {
             title,
@@ -1361,12 +1488,21 @@ export const useChatStore = create<ChatStore>()((set, get) => {
             conversations: [wi, ...state.conversations.filter((item) => item.id !== wi.id)],
           }));
         }
+        const sourceRefs = attachments.length > 0 ? await uploadAttachmentsForChat(conversationId, attachments) : undefined;
+        if (!isCurrentSend()) return true;
         // 队列非空：先把本条入队再出队首条 createRun（FIFO——队头先发，本条排队尾）。
-        const pending = [...get().queue, { text: trimmed, clientKey: newQueueKey() }];
+        const pending = [...get().queue, {
+          text: instruction,
+          clientKey: newQueueKey(),
+          ...(sourceRefs?.length ? { sourceRefs } : {}),
+          ...(attachments.length ? { attachmentKeys: attachments.map((attachment) => attachment.key) } : {}),
+          ...(options?.outputContract ? { outputContract: options.outputContract } : {}),
+        }];
         first = pending.shift();
         if (!first) return false;
         set({ queue: pending });
-        await startRun(conversationId, agentId, first.text, first.clientKey);
+        persistQueue();
+        await startRun(conversationId, agentId, first.text, first.clientKey, first.sourceRefs, first.outputContract);
         return true;
       } catch (err) {
         if (!isCurrentSend()) return true;
@@ -1379,9 +1515,21 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       }
     },
 
-    enqueue: (text) => set((s) => ({ queue: [...s.queue, { text, clientKey: newQueueKey() }] })),
+    enqueue: (text, sourceRefs, attachmentKeys, outputContract) => {
+      set((s) => ({ queue: [...s.queue, {
+        text,
+        clientKey: newQueueKey(),
+        ...(sourceRefs?.length ? { sourceRefs } : {}),
+        ...(attachmentKeys?.length ? { attachmentKeys } : {}),
+        ...(outputContract ? { outputContract } : {}),
+      }] }));
+      persistQueue();
+    },
 
-    removeQueued: (index) => set((s) => ({ queue: s.queue.filter((_, i) => i !== index) })),
+    removeQueued: (index) => {
+      set((s) => ({ queue: s.queue.filter((_, i) => i !== index) }));
+      persistQueue();
+    },
 
     drainQueue: async () => {
       const wsId = useWorkspaceStore.getState().workspace?.id;
@@ -1393,10 +1541,12 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const scope = captureScope();
       const isCurrentSend = () => request === openConversationRequest && isCurrent(scope) && get().agentId === agentId;
       set({ sending: true, sendError: null, queue: get().queue.slice(1) });
+      persistQueue();
       try {
-        await startRun(conversationId, agentId, first.text, first.clientKey);
+        await startRun(conversationId, agentId, first.text, first.clientKey, first.sourceRefs, first.outputContract);
       } catch (err) {
         if (isCurrentSend()) set((state) => ({ queue: [first, ...state.queue], sendError: err instanceof Error ? err.message : '发送失败' }));
+        if (isCurrentSend()) persistQueue();
       } finally {
         if (isCurrentSend()) set({ sending: false });
       }
@@ -1476,6 +1626,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       // bump 请求序号：在途 openConversation/getWorkItem 闭包按票号失效，不得回写。
       openConversationRequest += 1;
       set({
+        workspaceId: null,
         agentId: null,
         conversationId: null,
         conversations: [],
@@ -1488,6 +1639,9 @@ export const useChatStore = create<ChatStore>()((set, get) => {
         stoppingRunId: null,
         runAlerts: {},
         pendingUsers: {},
+        sourcesByConversation: {},
+        sourcesLoadingByConversation: {},
+        sourcesErrorByConversation: {},
       });
     },
   };

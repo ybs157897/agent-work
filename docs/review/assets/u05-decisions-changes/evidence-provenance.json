@@ -1,0 +1,50 @@
+{
+  "actual_reading_run": "run_01M22FTB4WDBY6K5D07ZFBYW4E",
+  "reading_evidence": "real-delta-events.json",
+  "first_model_delta": "real-delta-output.md",
+  "reading_run_result": "rejected by overstrict preserved question dependency check, subsequently fixed",
+  "accepted_run": "run_01M22GXZ9EC46E4R75E29FPNK1",
+  "accepted_evidence": "accepted-delta-events.json",
+  "accepted_output": "accepted-delta-output.md",
+  "accepted_result": "revision 2",
+  "note": "The first real model turn read files and emitted the delta. Two later turns reissued the delta after validation corrections. The final turn resumed the second session and made no new tool calls. Execution success is distinct from analysis acceptance.",
+  "run_sessions": [
+    {
+      "id": "run_01M22FTB4WDBY6K5D07ZFBYW4E",
+      "session_before": null,
+      "session_after": "dsh://session-4769df16-f408-4c57-a966-52a838abe922",
+      "status": "succeeded",
+      "attempt": {
+        "status": "failed",
+        "revision": 0,
+        "error": "analysis 输出无效: invalid chat analysis: preserved question \"scope-choice\" overlaps explicit item \"exc-deps\""
+      },
+      "tool_starts": 11
+    },
+    {
+      "id": "run_01M22GD58ZJY6S6CK5VZPPXCB8",
+      "session_before": null,
+      "session_after": "dsh://session-b3bd51f1-f1a4-4f6a-ae2c-bc4f911ca068",
+      "status": "succeeded",
+      "attempt": {
+        "status": "failed",
+        "revision": 0,
+        "error": "analysis 来源校验失败: workspace_context_mismatch: conversation source \"conversation:sha256:63824199122e8b379ed45d9257d01ed33e814ac338e2b22f1417a7b8fac7a36f\" is outside the frozen catalog"
+      },
+      "tool_starts": 2
+    },
+    {
+      "id": "run_01M22GXZ9EC46E4R75E29FPNK1",
+      "session_before": "dsh://session-b3bd51f1-f1a4-4f6a-ae2c-bc4f911ca068",
+      "session_after": "dsh://session-b3bd51f1-f1a4-4f6a-ae2c-bc4f911ca068",
+      "status": "succeeded",
+      "attempt": {
+        "status": "succeeded",
+        "revision": 2,
+        "error": ""
+      },
+      "tool_starts": 0
+    }
+  ],
+  "accepted_resumed_second_session": true
+}

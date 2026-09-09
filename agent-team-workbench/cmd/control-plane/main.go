@@ -20,6 +20,7 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork"
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/chatsources"
 	"github.com/ybs/agent-team-workbench/internal/codegateway"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/hostregistry"
@@ -145,6 +146,19 @@ func run() error {
 	} else {
 		log.Printf("hostregistry: 加载 %s 失败（%v）；本机 mount 为空，仅保证 host_local 存在", registryPath, err)
 	}
+	svc.SetProjectCanonicalKeyResolver(func(ctx context.Context, alias, generation, repository string) (string, error) {
+		return localRegistry.ProjectCanonicalKey(ctx, alias, generation, repository)
+	})
+	svc.SetAnalysisCodeResolver(func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot, relative string) (string, error) {
+		resolved, err := localRegistry.Resolve(snapshot)
+		if err != nil {
+			return "", err
+		}
+		return application.ResolveAnalysisCodeDigest(resolved.AuthorizedRoot, relative)
+	})
+	svc.SetPublicationBaselineResolver(func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot) (domain.ProjectBaseline, error) {
+		return localRegistry.ResolveProjectBaseline(ctx, snapshot)
+	})
 	dshGateway := dsh.NewGateway(dsh.GatewayConfig{
 		BaseURL: env("ATW_DSH_GATEWAY_URL", ""),
 		Port:    atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),
@@ -306,6 +320,47 @@ func run() error {
 	} else if reconciled.Applied > 0 {
 		log.Printf("agent 配置同步 intent 已对账: %+v", reconciled)
 	}
+	// Workspace provisioning records remain pending/failed until every cloned
+	// ordinary Agent intent has reached the same external config truth. Startup
+	// reuses the existing intent/reconcile path; it does not invent a second
+	// setup scheduler.
+	if projects, projectErr := store.WorkspaceProjects().List(ctx); projectErr != nil {
+		return fmt.Errorf("读取 workspace project setup 失败: %w", projectErr)
+	} else {
+		for _, project := range projects {
+			if project.Status != domain.WorkspaceProjectPending && project.Status != domain.WorkspaceProjectSetupFailed {
+				continue
+			}
+			agents, agentErr := store.Agents().List(ctx, project.WorkspaceID)
+			if agentErr != nil {
+				return fmt.Errorf("读取 workspace %s Agent 失败: %w", project.WorkspaceID, agentErr)
+			}
+			setupErr := error(nil)
+			for _, agent := range agents {
+				if agent.Kind.IsSystem() {
+					continue
+				}
+				if err := agentCfg.ReconcileAgent(ctx, agent.ID); err != nil {
+					setupErr = err
+					break
+				}
+			}
+			current, getErr := store.WorkspaceProjects().Get(ctx, project.WorkspaceID)
+			if getErr != nil {
+				return fmt.Errorf("读取 workspace %s project setup 失败: %w", project.WorkspaceID, getErr)
+			}
+			if setupErr != nil {
+				if updateErr := store.WorkspaceProjects().UpdateStatus(ctx, project.WorkspaceID, domain.WorkspaceProjectSetupFailed, "Agent 配置尚未可靠落盘，请执行配置恢复", current.Version); updateErr != nil {
+					return updateErr
+				}
+				log.Printf("workspace %s project setup remains failed: %v", project.WorkspaceID, setupErr)
+				continue
+			}
+			if updateErr := store.WorkspaceProjects().UpdateStatus(ctx, project.WorkspaceID, domain.WorkspaceProjectReady, "", current.Version); updateErr != nil {
+				return updateErr
+			}
+		}
+	}
 	if wsIDs, err := store.Workspaces().ListIDs(ctx); err == nil {
 		for _, id := range wsIDs {
 			res, err := agentCfg.Import(ctx, id)
@@ -342,6 +397,7 @@ func run() error {
 
 	server := httpapi.NewServer(svc, store, hub)
 	server.SetAgentConfigSync(agentCfg)
+	server.SetChatSourceStore(chatsources.NewStore(filepath.Join(projectSpace.Root, "chat-sources")))
 
 	server.SetModelRegistry(modelReg)
 	server.SetCredentialsStore(credStore)

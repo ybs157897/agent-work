@@ -18,6 +18,7 @@
 package hostregistry
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"gopkg.in/yaml.v3"
@@ -216,6 +218,63 @@ func (r *Registry) Advertise() []domain.HostMount {
 		})
 	}
 	return out
+}
+
+// ProjectCanonicalKey returns a path-free identity for the evaluated mount
+// root. Two aliases/symlinks resolving to the same trusted directory therefore
+// share one key; the absolute path never leaves this process.
+func (r *Registry) ProjectCanonicalKey(ctx context.Context, alias, expectedGeneration, expectedRepository string) (string, error) {
+	m, generation, err := r.canonicalMount(alias)
+	if err != nil {
+		return "", err
+	}
+	if expectedGeneration != "" && generation != expectedGeneration {
+		return "", resolveErr(CodeGenerationChanged, "mount generation changed")
+	}
+	if expectedRepository != "" && m.RepositoryIdentity != expectedRepository {
+		return "", resolveErr(CodeRepositoryMismatch, "repository identity mismatch")
+	}
+	if err := verifyCanonicalGitRoot(ctx, m.Root); err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(m.Root)
+	if err != nil {
+		return "", resolveErr(CodeRefNotResolvable, "registered project root cannot be resolved")
+	}
+	sum := sha256.Sum256([]byte("workspace-project/v1\n" + real + "\n"))
+	return "project:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (r *Registry) canonicalMount(alias string) (*mount, string, error) {
+	if strings.TrimSpace(alias) == "" {
+		return nil, "", resolveErr(CodeMountNotAdvertised, "mount alias is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, m := range r.mounts {
+		if m.Alias == alias {
+			return m, r.generation, nil
+		}
+	}
+	return nil, "", resolveErr(CodeMountNotAdvertised, "mount alias is not advertised")
+}
+
+func verifyCanonicalGitRoot(ctx context.Context, root string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(cmdCtx, "git", "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return resolveErr(CodeRefNotResolvable, "registered project is not a readable Git root")
+	}
+	resolved, err := filepath.EvalSymlinks(strings.TrimSpace(string(output)))
+	if err != nil {
+		return resolveErr(CodeRefNotResolvable, "registered project root identity cannot be verified")
+	}
+	trusted, err := filepath.EvalSymlinks(root)
+	if err != nil || resolved != trusted {
+		return resolveErr(CodeRepositoryMismatch, "registered project root identity changed")
+	}
+	return nil
 }
 
 // discoverCheckouts 解析 `git -C <root> worktree list --porcelain`：

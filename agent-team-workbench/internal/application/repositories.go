@@ -69,10 +69,63 @@ type Store interface {
 	// ── Execution Context（任务控制面 RFC §4；接口由主智能体冻结，W2-CORE 实现）──
 	ExecutionHosts() ExecutionHostRepo
 	WorkspaceLocations() WorkspaceLocationRepo
+	WorkspaceProjects() WorkspaceProjectRepo
+	TaskPublicationDrafts() TaskPublicationDraftRepo
 	WorkItemContexts() WorkItemContextRepo
 	ContextSnapshots() ContextSnapshotRepo
 	// TaskComments append-only 任务反馈流（RFC §4.9；W3-CMT 实现）。
 	TaskComments() TaskCommentRepo
+	ChatSources() ChatSourceRepo
+	ChatAnalyses() ChatAnalysisRepo
+	ChatAnalysisDecisions() ChatAnalysisDecisionRepo
+}
+
+type ChatSourceRepo interface {
+	Create(ctx context.Context, source *domain.ChatSource) error
+	Get(ctx context.Context, workspaceID, chatID, sourceID string) (*domain.ChatSource, error)
+	GetByClientKey(ctx context.Context, workspaceID, chatID, clientKey string) (*domain.ChatSource, error)
+	ListByChat(ctx context.Context, workspaceID, chatID string) ([]*domain.ChatSource, error)
+	MarkHandedToAgent(ctx context.Context, sourceID string, at time.Time) error
+}
+
+// ChatAnalysisRepo stores the durable attempt/revision/answer projection for
+// the optional Chat requirement-analysis workflow. Callers invoke its writes
+// inside the surrounding authoritative Store transaction.
+type ChatAnalysisRepo interface {
+	Get(ctx context.Context, workspaceID, chatID string) (*domain.ChatAnalysis, error)
+	StartAttempt(ctx context.Context, attempt *domain.ChatAnalysisAttempt) (*domain.ChatAnalysis, error)
+	GetAttemptByRun(ctx context.Context, runID string) (*domain.ChatAnalysisAttempt, error)
+	GetRevision(ctx context.Context, workspaceID, chatID string, revision int64) (*domain.ChatAnalysisRevision, error)
+	ListRevisions(ctx context.Context, workspaceID, chatID string, limit int) ([]*domain.ChatAnalysisRevision, error)
+	ListAnswers(ctx context.Context, workspaceID, chatID string, revision int64) ([]*domain.ChatAnalysisAnswer, error)
+	GetAnswerByClientKey(ctx context.Context, workspaceID, chatID, clientKey string) (*domain.ChatAnalysisAnswer, error)
+	CreateInheritedAnswer(ctx context.Context, answer *domain.ChatAnalysisAnswer) error
+	MarkStale(ctx context.Context, workspaceID, chatID string, expectedVersion int, reason string) error
+	MarkRechecked(ctx context.Context, workspaceID, chatID string, expectedVersion int, status domain.ChatAnalysisStatus) error
+	CommitRevision(ctx context.Context, attemptID, runID string, revision *domain.ChatAnalysisRevision, status domain.ChatAnalysisStatus, reconcile func(context.Context, int64, int64) error) (bool, error)
+	FailAttempt(ctx context.Context, attemptID, runID, message string) (bool, error)
+	AppendAnswer(ctx context.Context, answer *domain.ChatAnalysisAnswer, expectedVersion int, expectedRevision int64, nextStatus domain.ChatAnalysisStatus) (*domain.ChatAnalysisAnswer, *domain.ChatAnalysis, bool, error)
+}
+
+type ChatAnalysisDecisionRepo interface {
+	GetDecisionByClientKey(ctx context.Context, workspaceID, chatID, clientKey string) (*domain.ChatAnalysisDecision, error)
+	ListDecisionStates(ctx context.Context, workspaceID, chatID string) ([]*domain.ChatAnalysisDecisionState, error)
+	ListDecisions(ctx context.Context, workspaceID, chatID string, limit int) ([]*domain.ChatAnalysisDecision, error)
+	ListReopens(ctx context.Context, workspaceID, chatID string, limit int) ([]*domain.ChatAnalysisReopen, error)
+	AppendDecision(ctx context.Context, decision *domain.ChatAnalysisDecision, state *domain.ChatAnalysisDecisionState, expectedVersion int, expectedRevision int64) (*domain.ChatAnalysisDecision, *domain.ChatAnalysisDecisionState, bool, error)
+	UpsertState(ctx context.Context, state *domain.ChatAnalysisDecisionState) error
+	AppendReopen(ctx context.Context, reopen *domain.ChatAnalysisReopen) (bool, error)
+}
+
+type TaskPublicationDraftRepo interface {
+	Create(ctx context.Context, draft *domain.TaskPublicationDraft) error
+	Get(ctx context.Context, workspaceID, chatID, draftID string) (*domain.TaskPublicationDraft, error)
+	GetByClientKey(ctx context.Context, workspaceID, chatID, clientKey string) (*domain.TaskPublicationDraft, error)
+	GetByTaskID(ctx context.Context, taskID string) (*domain.TaskPublicationDraft, error)
+	List(ctx context.Context, workspaceID, chatID string, limit int) ([]*domain.TaskPublicationDraft, error)
+	UpdateStatus(ctx context.Context, draftID string, status domain.PublicationDraftStatus, taskID string, expectedVersion int) error
+	CreatePublication(ctx context.Context, publication *domain.TaskPublication) error
+	GetPublicationByDraft(ctx context.Context, draftID string) (*domain.TaskPublication, error)
 }
 
 // TaskCommentRepo 任务评论与根级 revision cursor 存储。
@@ -149,6 +202,15 @@ type WorkspaceRepo interface {
 	Create(ctx context.Context, ws *domain.Workspace) error
 	Update(ctx context.Context, ws *domain.Workspace, expectedVersion int) error
 	ListIDs(ctx context.Context) ([]string, error)
+}
+
+type WorkspaceProjectRepo interface {
+	Create(ctx context.Context, project *domain.WorkspaceProject) error
+	Get(ctx context.Context, workspaceID string) (*domain.WorkspaceProject, error)
+	GetByCanonicalKey(ctx context.Context, canonicalKey string) (*domain.WorkspaceProject, error)
+	List(ctx context.Context) ([]*domain.WorkspaceProject, error)
+	UpdateStatus(ctx context.Context, workspaceID string, status domain.WorkspaceProjectStatus, message string, expectedVersion int) error
+	UpdateIdentity(ctx context.Context, workspaceID, repositoryIdentity, mountGeneration string, expectedVersion int) error
 }
 
 type AgentRepo interface {

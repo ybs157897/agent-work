@@ -1,0 +1,121 @@
+[
+  {
+    "name": "raw upload matches durable metadata",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "missing original has visible availability failure",
+    "passed": true,
+    "detail": {
+      "id": "src_01M2235TSH9Z0XR8S8JJ7MTKJ7",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "dbd4c7ae-c283-4350-b59c-59e53e121c9c",
+      "filename": "reading-scope.docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 39652,
+      "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+      "status": "handed_to_agent",
+      "created_at": "2026-09-09T03:25:24.666429Z",
+      "updated_at": "2026-09-09T03:25:24.910955Z",
+      "handed_at": "2026-09-09T03:25:24.785247Z",
+      "available": false,
+      "availability_error": "原件当前不可用或内容已发生变化"
+    }
+  },
+  {
+    "name": "missing original cannot be downloaded",
+    "passed": true,
+    "detail": {
+      "status": 500,
+      "error": {
+        "type": "https://workbench.example/problems/internal",
+        "title": "Internal error",
+        "status": 500,
+        "code": "internal",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources/src_01M2235TSH9Z0XR8S8JJ7MTKJ7/download",
+        "request_id": "req_01M2236Y328XBT7ZKRCJ6ZB1CP",
+        "retryable": true
+      }
+    }
+  },
+  {
+    "name": "missing original cannot enter a new Run",
+    "passed": true,
+    "detail": {
+      "status": 404
+    }
+  },
+  {
+    "name": "missing failure retains source metadata",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "changed original has visible availability failure",
+    "passed": true,
+    "detail": {
+      "id": "src_01M2235TSH9Z0XR8S8JJ7MTKJ7",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "dbd4c7ae-c283-4350-b59c-59e53e121c9c",
+      "filename": "reading-scope.docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 39652,
+      "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+      "status": "handed_to_agent",
+      "created_at": "2026-09-09T03:25:24.666429Z",
+      "updated_at": "2026-09-09T03:25:24.910955Z",
+      "handed_at": "2026-09-09T03:25:24.785247Z",
+      "available": false,
+      "availability_error": "原件当前不可用或内容已发生变化"
+    }
+  },
+  {
+    "name": "changed original cannot be downloaded",
+    "passed": true,
+    "detail": {
+      "status": 500,
+      "error": {
+        "type": "https://workbench.example/problems/internal",
+        "title": "Internal error",
+        "status": 500,
+        "code": "internal",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources/src_01M2235TSH9Z0XR8S8JJ7MTKJ7/download",
+        "request_id": "req_01M2236Y38AKK6JYGES3YDFPFR",
+        "retryable": true
+      }
+    }
+  },
+  {
+    "name": "changed original cannot enter a new Run",
+    "passed": true,
+    "detail": {
+      "status": 404
+    }
+  },
+  {
+    "name": "changed failure retains source metadata",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "restored exact original becomes available",
+    "passed": true,
+    "detail": null
+  },
+  {
+    "name": "caller-supplied filesystem path is rejected by HTTP schema",
+    "passed": true,
+    "detail": {
+      "type": "https://workbench.example/problems/bad_request",
+      "title": "Invalid request body",
+      "status": 400,
+      "code": "bad_request",
+      "detail": "json: unknown field \"path\""
+    }
+  }
+]

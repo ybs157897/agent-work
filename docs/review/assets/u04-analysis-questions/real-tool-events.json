@@ -1,0 +1,218 @@
+[
+  {
+    "run_seq": 752,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"file_path\":\"/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293PAGQYB4Z6NHAAAJNYXD/content.md\"}",
+      "args_summary": "/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293PAGQYB4Z6NHAAAJNY",
+      "call_id": "read_0|fc_BOeXR7Oq7LTjANXTXvLbajMR",
+      "record_kind": "chat",
+      "tool": "read"
+    },
+    "occurred_at": "2026-09-09T05:09:28.994705Z"
+  },
+  {
+    "run_seq": 756,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "read_0|fc_BOeXR7Oq7LTjANXTXvLbajMR",
+      "output": "<path>/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293PAGQYB4Z6NHAAAJNYXD/content.md</path>\n<type>file</type>\n<content>\n1: # 原始用户需求\n2: \n3: Source-ID: SRC-USER-01\n4: Kind: user_request\n5: Decision-State: unresolved_scope\n6: \n7: 用户指定 web-idea 作为目标项目，https://github.com/JetBrains/intellij-community 作为开源参考，要集成参考项目涉及的 Java 功能，并用此作为 agent-work 需求分析测试范本。\n8: \n9: 已确认工作方式：内部开发使用；结合当前内容、代码、知识库及 Word/PPT/Markdown 附件；发现冲突应列出来源、影响和建议，开发找产品确认后回填；一次只问一题。\n10: \n11: “集成”采取直接移植、协议接入还是功能重实现，哪些能力先做，以及是否开放写入，尚未确认。参考库中有某功能不等于目标项目已具备。\n\n(End of file - total 11 lines)\n</content>",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:28.996219Z"
+  },
+  {
+    "run_seq": 758,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"command\":\"cd /Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293P9B6ER61RR94EJ9FZWY && python3 -c \\\"\\nimport zipfile, re\\nfrom xml.etree import ElementTree as ET\\nz = zipfile.ZipFile('content.docx')\\nns = {'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}\\ndoc = ET.fromstring(z.read('word/document.xml'))\\nfor p in doc.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p'):\\n    text = ''.join(t.text or '' for t in p.iter('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t'))\\n    if text.strip(): print(text)\\n\\\"\",\"description\":\"Extract text from reading-scope.docx\"}",
+      "args_summary": "cd /Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293P9B6ER61RR94EJ",
+      "call_id": "bash_1|fc_AU0gwNyRYWtq2mc3S16AQucg",
+      "record_kind": "chat",
+      "tool": "bash"
+    },
+    "occurred_at": "2026-09-09T05:09:28.996984Z"
+  },
+  {
+    "run_seq": 762,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "bash_1|fc_AU0gwNyRYWtq2mc3S16AQucg",
+      "output": "Java 阅读范围讨论稿\n需求输入模拟件 · 文档 ID SRC-DOCX-01\n本文用于验证附件文字、段落和范围条件的解析结果。文中内容是模拟测试材料，未获用户确认。\n这不是现行业务规则。\n模拟范围建议：首期仅文件阅读、定义和引用；写入/重命名应用需单独确认\n范围建议\n首期支持在锁定的 Workspace Root 内阅读文件。\n首期支持 Java 定义和引用查询，结果可为零条或多条。\n文件写入、重命名和一键应用需要单独确认。\n外部依赖目录按只读方式展示，不把依赖修改纳入本模拟范围。\n异常\n索引未就绪：显示等待状态，并允许稍后重试。\nJDK 缺失：保留文件阅读，明确提示 Java 语义服务不可用。\n跳转零结果或多结果：显示可解释的结果状态，不自动猜选目标。\n外部依赖只读：允许查看来源，不提供写入入口。\n待确认事项\n以下问题保持未决，仅用于测试解析器对条件、范围和确认状态的识别。\n是否将文件阅读、定义和引用列为首期交付范围。\n写入和重命名是否始终要求独立确认。\n索引未就绪、JDK 缺失和零/多结果是否使用统一错误文案。\n外部依赖是否只允许只读访问。\n边界说明\n模拟范围建议不代表现行业务规则，不代表已经批准的产品行为，也不代表系统已经支持这些能力。\n状态：pending。用户确认后，需求方应另行记录确认内容和后续变更。",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:29.045616Z"
+  },
+  {
+    "run_seq": 764,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"command\":\"cd /Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293PA51E6ZYJNC6RACFZWR && python3 -c \\\"\\nimport zipfile\\nfrom xml.etree import ElementTree as ET\\nz = zipfile.ZipFile('content.pptx')\\nslides = sorted([n for n in z.namelist() if n.startswith('ppt/slides/slide') and n.endswith('.xml')], key=lambda x: int(x.split('slide')[2].split('.')[0]))\\nW = '{http://schemas.openxmlformats.org/drawingml/2006/main}'\\nfor s in slides:\\n    print('=== ' + s + ' ===')\\n    doc = ET.fromstring(z.read(s))\\n    for t in doc.iter(W+'t'):\\n        if t.text and t.text.strip(): print(t.text)\\n\\\"\",\"description\":\"Extract text from review-proposal.pptx\"}",
+      "args_summary": "cd /Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2293P91XY36SRV9MAX6C750/src_01M2293PA51E6ZYJNC6RA",
+      "call_id": "bash_2|fc_0dJgMMBUHIFi9N0X3rWobqzd",
+      "record_kind": "chat",
+      "tool": "bash"
+    },
+    "occurred_at": "2026-09-09T05:09:29.049057Z"
+  },
+  {
+    "run_seq": 768,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "bash_2|fc_0dJgMMBUHIFi9N0X3rWobqzd",
+      "output": "=== ppt/slides/slide1.xml ===\n模拟测试材料｜未获用户确认\nSRC-PPTX-01\nJava 编辑能力评审提议\n模拟提议 · 需求状态 pending · 文档 ID SRC-PPTX-01\n模拟提议\n首期包括跨文件 Rename 和 Quick Fix，一键应用并保存\n提议状态：pending\n本页内容仅供评审，未获用户确认。\n测试解析关注点\n动作：跨文件 Rename、Quick Fix\n结果：一键应用并保存\n=== ppt/slides/slide2.xml ===\n模拟测试材料｜未获用户确认\nSRC-PPTX-01\n未决点\n以下问题均保持 pending，不代表已确认的产品规则\n1\n预览是否必须\npending\n2\n是否需要人审\npending\n3\n如何处理修改冲突\npending\n4\n失败是否回滚\npending\n5\nJDK 版本范围\npending\n模拟测试材料｜未获用户确认\nSRC-PPTX-01",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:29.098982Z"
+  },
+  {
+    "run_seq": 1006,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"file_path\":\"/Users/yin/Documents/ybs/code/web-idea/apps/web/package.json\"}",
+      "args_summary": "/Users/yin/Documents/ybs/code/web-idea/apps/web/package.json",
+      "call_id": "read_3|fc_E85qirXcQsYj69c3Ow2eePEN",
+      "record_kind": "chat",
+      "tool": "read"
+    },
+    "occurred_at": "2026-09-09T05:09:39.085033Z"
+  },
+  {
+    "run_seq": 1008,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"file_path\":\"/Users/yin/Documents/ybs/code/web-idea/apps/gateway/internal/jdtls/manager.go\"}",
+      "args_summary": "/Users/yin/Documents/ybs/code/web-idea/apps/gateway/internal/jdtls/manager.go",
+      "call_id": "read_4|fc_wVSujUDU3jH1ahhDLIlewVln",
+      "record_kind": "chat",
+      "tool": "read"
+    },
+    "occurred_at": "2026-09-09T05:09:39.086346Z"
+  },
+  {
+    "run_seq": 1012,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "read_3|fc_E85qirXcQsYj69c3Ow2eePEN",
+      "output": "<path>/Users/yin/Documents/ybs/code/web-idea/apps/web/package.json</path>\n<type>file</type>\n<content>\n1: {\n2:   \"name\": \"web-idea-web\",\n3:   \"private\": true,\n4:   \"version\": \"0.1.0\",\n5:   \"type\": \"module\",\n6:   \"scripts\": {\n7:     \"dev\": \"vite\",\n8:     \"build\": \"tsc -b && vite build\",\n9:     \"preview\": \"vite preview\",\n10:     \"test\": \"node --test scripts/navigation.test.ts\"\n11:   },\n12:   \"dependencies\": {\n13:     \"@monaco-editor/react\": \"^4.7.0\",\n14:     \"dompurify\": \"^3.4.14\",\n15:     \"marked\": \"^18.0.11\",\n16:     \"monaco-editor\": \"^0.52.2\",\n17:     \"react\": \"^19.0.0\",\n18:     \"react-dom\": \"^19.0.0\"\n19:   },\n20:   \"devDependencies\": {\n21:     \"@types/react\": \"^19.0.10\",\n22:     \"@types/react-dom\": \"^19.0.4\",\n23:     \"@vitejs/plugin-react\": \"^4.3.4\",\n24:     \"typescript\": \"~5.7.2\",\n25:     \"vite\": \"^6.2.0\"\n26:   }\n27: }\n\n(End of file - total 27 lines)\n</content>",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:39.088582Z"
+  },
+  {
+    "run_seq": 1016,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "read_4|fc_wVSujUDU3jH1ahhDLIlewVln",
+      "output": "<path>/Users/yin/Documents/ybs/code/web-idea/apps/gateway/internal/jdtls/manager.go</path>\n<type>file</type>\n<content>\n1: package jdtls\n2: \n3: import (\n4: \t\"errors\"\n5: \t\"fmt\"\n6: \t\"io\"\n7: \t\"os\"\n8: \t\"os/exec\"\n9: \t\"path/filepath\"\n10: \t\"sync\"\n11: )\n12: \n13: var (\n14: \tErrNotConfigured = errors.New(\"jdtls not configured\")\n15: \tErrNotReady      = errors.New(\"jdtls not ready\")\n16: )\n17: \n18: type Status string\n19: \n20: const (\n21: \tStatusOff      Status = \"off\"\n22: \tStatusStarting Status = \"starting\"\n23: \tStatusReady    Status = \"ready\"\n24: \tStatusFailed   Status = \"failed\"\n25: )\n26: \n27: type Config struct {\n28: \t// LaunchScript is path to apps/jdtls-sidecar/bin/launch.sh (or empty to disable).\n29: \tLaunchScript string\n30: \t// DataRoot holds per-workspace jdtls -data directories.\n31: \tDataRoot string\n32: }\n33: \n34: type Session struct {\n35: \tStatus Status\n36: \tCmd    *exec.Cmd\n37: \tStdin  io.WriteCloser\n38: \tStdout io.ReadCloser\n39: \tRoot   string\n40: \tErr    string\n41: \tdone   chan struct{}\n42: }\n43: \n44: // Done is closed after the jdtls process has exited and its stdio pipes are\n45: // released. The proxy uses it to close any WebSocket attached to this session.\n46: func (s *Session) Done() <-chan struct{} {\n47: \tif s == nil {\n48: \t\treturn nil\n49: \t}\n50: \treturn s.done\n51: }\n52: \n53: type Manager struct {\n54: \tcfg Config\n55: \tmu  sync.Mutex\n56: \tby  map[string]*Session\n57: }\n58: \n59: func NewManager(cfg Config) *Manager {\n60: \treturn &Manager{cfg: cfg, by: make(map[string]*Session)}\n61: }\n62: \n63: func (m *Manager) Configured() bool {\n64: \treturn m.cfg.LaunchScript != \"\"\n65: }\n66: \n67: func (m *Manager) Status(workspaceID string) Status {\n68: \tm.mu.Lock()\n69: \tdefer m.mu.Unlock()\n70: \ts, ok := m.by[workspaceID]\n71: \tif !ok {\n72: \t\tif !m.Configured() {\n73: \t\t\treturn StatusOff\n74: \t\t}\n75: \t\treturn StatusOff\n76: \t}\n77: \treturn s.Status\n78: }\n79: \n80: func (m *Manager) Session(workspaceID string) (*Session, error) {\n81: \tm.mu.Lock()\n82: \tdefer m.mu.Unlock()\n83: \ts, ok := m.",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:39.090801Z"
+  },
+  {
+    "run_seq": 1018,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"command\":\"shasum -a 256 apps/web/package.json apps/gateway/internal/jdtls/manager.go\",\"description\":\"Compute SHA-256 of code sources\",\"workdir\":\"/Users/yin/Documents/ybs/code/web-idea\"}",
+      "args_summary": "shasum -a 256 apps/web/package.json apps/gateway/internal/jdtls/manager.go",
+      "call_id": "bash_5|fc_4ZG6jwH2hWKf2XnmGhKfjQKt",
+      "record_kind": "chat",
+      "tool": "bash"
+    },
+    "occurred_at": "2026-09-09T05:09:39.094086Z"
+  },
+  {
+    "run_seq": 1022,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "bash_5|fc_4ZG6jwH2hWKf2XnmGhKfjQKt",
+      "output": "3214cdb9467a2f5c31db22f0e1f16e83dd5d36e711dff24ccb6c05e1e8a32747  apps/web/package.json\nd351457dde8e7d839bc5352b212ebe6d4652a4dabfcd065391e8c61e6d195490  apps/gateway/internal/jdtls/manager.go",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:39.134851Z"
+  },
+  {
+    "run_seq": 1024,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"command\":\"'/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/atw-knowledge' --access-file '/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/runtime/knowledge-access/run_01M2293PAVYJ6YNN47ZGHBRG8Y.json' read kb_01M222X97MVQ0MB9Z9GJAQYR8F 1\",\"description\":\"Read knowledge item version 1\"}",
+      "args_summary": "'/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u04-acceptance/atw-knowledge' --access-file '/Users/yin/Documents/ybs/code/agent-work-u04-analysis-questions/.agent-work/u0",
+      "call_id": "bash_6|fc_dJZECs3AGHMz7oM8MzYJAwGz",
+      "record_kind": "chat",
+      "tool": "bash"
+    },
+    "occurred_at": "2026-09-09T05:09:39.135959Z"
+  },
+  {
+    "run_seq": 1028,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "bash_6|fc_dJZECs3AGHMz7oM8MzYJAwGz",
+      "output": "{\"item\":{\"id\":\"kb_01M222X97MVQ0MB9Z9GJAQYR8F\",\"workspace_id\":\"ws_01M21SVJVR9PGEA7E5DQR2XC0X\",\"owner_agent_id\":\"agent_01M21SVJVS3900FYJY71V5K489\",\"visibility\":\"private\",\"kind\":\"fact\",\"title\":\"U03_WEB_IDEA_RULE_7D91 Java 阅读验收约定：缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。\",\"current_version_id\":\"kbv_01M222X97N0P9CK3Q17MR1JK48\",\"current_version\":1,\"status\":\"effective\",\"version\":2,\"created_at\":\"2026-09-09T03:20:44.53231Z\",\"updated_at\":\"2026-09-09T03:20:44.53231Z\"},\"sources\":[{\"id\":\"kbs_01M222X97N2NYKEH08YCMBVPRM\",\"workspace_id\":\"ws_01M21SVJVR9PGEA7E5DQR2XC0X\",\"submitted_by_agent_id\":\"agent_01M21SVJVS3900FYJY71V5K489\",\"kind\":\"document\",\"ref\":\"u03-synthetic-input.md@1\",\"excerpt\":\"U03_WEB_IDEA_RULE_7D91 Java 阅读验收约定：缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。\",\"created_at\":\"2026-09-09T03:20:44.53231Z\"}],\"version\":{\"id\":\"kbv_01M222X97N0P9CK3Q17MR1JK48\",\"item_id\":\"kb_01M222X97MVQ0MB9Z9GJAQYR8F\",\"version\":1,\"base_version\":0,\"status\":\"effective\",\"kind\":\"fact\",\"title\":\"U03_WEB_IDEA_RULE_7D91 Java 阅读验收约定：缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。\",\"body_markdown\":\"## 隔离验收材料\\nU03_WEB_IDEA_RULE_7D91 Java 阅读验收约定：缺少 JDK 时仍可读取文件，语义能力显示不可用。本条是合成测试材料，不是产品批准。\\n此条为合成验收数据。\",\"metadata\":{\"fixture\":\"U03\"},\"content_digest\":\"sha256:cc2907ecb68b214b18687fcde934ef8b500dde549986d4a6825e905d682fdb6a\",\"created_by_agent_id\":\"agent_01M21SVJVS3900FYJY71V5K489\",\"published_at\":\"2026-09-09T03:20:44.53231Z\",\"created_at\":\"2026-09-09T03:20:44.53231Z\"}}",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:09:39.172051Z"
+  },
+  {
+    "run_seq": 2284,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"file_path\":\"/Users/yin/Documents/ybs/code/web-idea/AGENTS.md\"}",
+      "args_summary": "/Users/yin/Documents/ybs/code/web-idea/AGENTS.md",
+      "call_id": "read_7|fc_eqARzCFgQsOvmOLq8NncGwph",
+      "record_kind": "chat",
+      "tool": "read"
+    },
+    "occurred_at": "2026-09-09T05:10:23.444406Z"
+  },
+  {
+    "run_seq": 2288,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "read_7|fc_eqARzCFgQsOvmOLq8NncGwph",
+      "output": "<path>/Users/yin/Documents/ybs/code/web-idea/AGENTS.md</path>\n<type>file</type>\n<content>\n1: # web-idea 工作指令\n2: \n3: ## 纪律\n4: \n5: 本仓库遵循 `dsh-dev-workflow`：一任务一分支、分刀提交、删除优先于垫片、证据匹配表面、决策留痕。\n6: \n7: ## 范围红线（负向保证）\n8: \n9: 1. **MVP 不做完整 IDE**：不做调试器 UI、重构写盘、终端复刻、插件市场。\n10: 2. **语义能力只接 Java（jdtls）**：其他语言最多语法高亮，不上第二套 language server，除非新开 ADR。\n11: 3. **Gateway 是唯一信任边界**：浏览器永不直连 jdtls；一切路径必须经 Workspace Root 沙箱。\n12: 4. **不嵌入 Theia / code-server 整机**：复用 Monaco + LSP 协议，不嵌整站 IDE 产品。\n13: 5. **文档与实现同寿**：改组件边界或协议时，同一提交更新 `docs/architecture/` 与相关 ADR / notes。\n14: \n15: ## 文档权威\n16: \n17: - 产品范围：`docs/product/vision.md`\n18: - 架构事实源：`docs/architecture/`\n19: - 决策：`docs/decisions/`（ADR）+ `notes/{lifecycle}/architecture/`\n20: \n21: ## 验证（触面）\n22: \n23: - Gateway：`cd apps/gateway && go test ./...`\n24: - Web：`cd apps/web && pnpm exec tsc -b`（或 `pnpm build`）\n25: - 契约：改 API 时同步 `contracts/openapi/gateway-v1.yaml`\n26: - 一键：`bash scripts/verify-scaffold.sh`\n\n(End of file - total 26 lines)\n</content>",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:10:23.448528Z"
+  },
+  {
+    "run_seq": 2290,
+    "agent_id": "main",
+    "event_type": "tool.started",
+    "payload": {
+      "args": "{\"command\":\"shasum -a 256 AGENTS.md\",\"description\":\"Compute SHA-256 of AGENTS.md\",\"workdir\":\"/Users/yin/Documents/ybs/code/web-idea\"}",
+      "args_summary": "shasum -a 256 AGENTS.md",
+      "call_id": "bash_8|fc_fdNnmLuA1XBToxeG7egZIVS2",
+      "record_kind": "chat",
+      "tool": "bash"
+    },
+    "occurred_at": "2026-09-09T05:10:23.449273Z"
+  },
+  {
+    "run_seq": 2294,
+    "agent_id": "main",
+    "event_type": "tool.completed",
+    "payload": {
+      "call_id": "bash_8|fc_fdNnmLuA1XBToxeG7egZIVS2",
+      "output": "1e3057cb454d0f104da7e7c3f10fca9fd8e4d84c9f9ba2384b1bf793a63ba032  AGENTS.md",
+      "record_kind": "chat"
+    },
+    "occurred_at": "2026-09-09T05:10:23.475953Z"
+  }
+]

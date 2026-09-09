@@ -1,0 +1,10 @@
+{
+  "unit": "U02",
+  "status": "complete",
+  "http_checks": 45,
+  "live_run_cli_checks": 16,
+  "knowledge_seed": "synthetic published records via official KnowledgeRepo",
+  "model_curation": "not invoked; Mock only holds Run lifecycle",
+  "ui": "A and B same-name Agent views show own private/shared knowledge; return restores A; standalone B view shows B shared only",
+  "delivery": "isolated uncommitted unit; no merge or push"
+}

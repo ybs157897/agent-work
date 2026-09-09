@@ -11,11 +11,12 @@ function renderShell(path: string) {
   );
 }
 
-describe('task conversation navigation', () => {
-  it('provides a dedicated sidebar destination and a full-height conversation surface', () => {
-    const html = renderShell('/task-chat');
-    expect(html).toMatch(/<a(?=[^>]*href="\/task-chat")(?=[^>]*aria-current="page")[^>]*>/);
-    expect(html).toContain('任务对话');
+describe('global chat navigation', () => {
+  it('uses the existing Chat destination as the single conversation entry', () => {
+    const html = renderShell('/chat');
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat")(?=[^>]*aria-current="page")[^>]*>/);
+    expect(html).toContain('对话');
+    expect(html).not.toContain('任务对话');
     expect(html).toContain('href="/tasks"');
     expect(html).toContain('href="/chat"');
     expect(html).toMatch(/<main(?=[^>]*id="main-content")(?=[^>]*class="[^"]*workbench-chat-surface)[^>]*>/);
@@ -24,6 +25,13 @@ describe('task conversation navigation', () => {
     expect(html).not.toContain('打开主导航');
     expect(html).not.toContain('关闭主导航');
     expect(html).toContain('data-theme="light"');
+  });
+
+  it('keeps the legacy task-chat URL inside the same full-height shell for redirect recovery', () => {
+    const html = renderShell('/task-chat');
+    expect(html).not.toMatch(/<a(?=[^>]*href="\/task-chat")(?=[^>]*aria-current="page")[^>]*>/);
+    expect(html).toContain('href="/chat"');
+    expect(html).toContain('workbench-chat-surface');
   });
 
   it('keeps the board as a separate destination', () => {

@@ -1,0 +1,5 @@
+{
+  "recorded_at": "2026-09-09T18:25:39.689576+08:00",
+  "binary_sha256": "7af3d92c83c856ec7c98eb4e5776d006311d77910578776bd85d41511a551397",
+  "note": "Final binary includes legacy provider removal and system model configuration cloning"
+}

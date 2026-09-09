@@ -24,6 +24,7 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
     expect(html).toContain('<option value="ws_a"');
     expect(html).toContain('<option value="ws_b"');
     expect(html).toContain('工作区甲');
+    expect(html).toContain('打开或创建工作区');
   });
 
   it('切换期间 disabled（阻断并发切换；generation fencing 在 store 层兜底）', () => {
@@ -75,4 +76,5 @@ describe('WorkspaceSelectorView 渲染（任务控制面 RFC §12.3，键盘流�
     onChange('ws_b');
     expect(onChange).toHaveBeenCalledWith('ws_b');
   });
+
 });

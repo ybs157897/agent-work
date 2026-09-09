@@ -107,3 +107,23 @@ func TestModuleRunnerDispatchFailsClosedWithoutSnapshot(t *testing.T) {
 		t.Fatal("resolver 失败时 Dispatch 应 fail closed")
 	}
 }
+
+type sourceValidationEngine struct {
+	*statefulEngine
+	validated bool
+	err       error
+}
+
+func (e *sourceValidationEngine) ValidateRunSourcesForExecution(context.Context, string) error {
+	e.validated = true
+	return e.err
+}
+
+func TestModuleRunnerValidatesFrozenChatSourcesBeforeExecute(t *testing.T) {
+	engine := &sourceValidationEngine{statefulEngine: &statefulEngine{run: dispatchedRun()}, err: errors.New("source changed")}
+	runner := NewModuleRunner(engine)
+	runner.Register("fake", &fakeModule{outcome: OutcomeSucceeded})
+	if err := runner.Dispatch(context.Background(), engine.run); err == nil || !engine.validated {
+		t.Fatalf("source validation must reject before Execute: err=%v validated=%v", err, engine.validated)
+	}
+}

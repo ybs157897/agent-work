@@ -55,10 +55,20 @@ type Service struct {
 	KnowledgeEndpoint  string
 	KnowledgeCLIPath   string
 	KnowledgeAccessDir string
+	chatSourceStore    ChatSourceStore
+	// analysisCodeResolver is the Host-local trust hook for validating code
+	// references reported by a Chat analysis. It returns a digest only; the
+	// filesystem path remains inside the resolver process.
+	analysisCodeResolver AnalysisCodeResolver
 	// agentConfigSyncIntentsEnabled gates the external-config bridge. Tests and
 	// embedders that do not mount an agents/ synchronizer keep the historical
 	// DB-only Agent update path; the control-plane enables this before serving.
 	agentConfigSyncIntentsEnabled bool
+	// projectCanonicalKeyResolver is a Host-local trust hook used when a
+	// WorkspaceProject already fixes one directory. It returns a path-free
+	// realpath identity; nil keeps storage-only test embedders compatible.
+	projectCanonicalKeyResolver func(context.Context, string, string, string) (string, error)
+	publicationBaselineResolver PublicationBaselineResolver
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {
@@ -72,6 +82,13 @@ func (s *Service) EnableAgentConfigSyncIntents() { s.agentConfigSyncIntentsEnabl
 
 // SetDispatcher 用于打破 Service ↔ Gateway/Adapter 的构造环（启动时一次性注入）。
 func (s *Service) SetDispatcher(d Dispatcher) { s.dispatcher = d }
+
+// SetProjectCanonicalKeyResolver installs the trusted Host registry identity
+// probe used by WorkspaceLocation updates. The resolver never exposes a
+// filesystem path; callers provide only alias, generation, and repository ID.
+func (s *Service) SetProjectCanonicalKeyResolver(v func(context.Context, string, string, string) (string, error)) {
+	s.projectCanonicalKeyResolver = v
+}
 
 // emit 在事务内追加 Canonical Event（stream_events + outbox 同事务）。
 func (s *Service) emit(ctx context.Context, workspaceID, evType, aggType, aggID string, aggVersion int, runEvent *RunEventRecord, data map[string]any) error {
@@ -973,7 +990,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, workspaceID string, p Crea
 			}
 		}
 	}
-	if coordinatorRootID != "" {
+	if coordinatorRootID != "" && ctx.Value(publicationDeferCoordinatorStartKey) == nil {
 		// The row/state/event transaction is the durable hand-off. Starting after
 		// commit prevents a runtime side effect from observing a rolled-back task;
 		// a failure is persisted as blocked/retryable state by the engine.

@@ -1,0 +1,40 @@
+{
+  "kind": "real Kimi analysis in existing Chat with server source/schema validation; developer answers synthetic",
+  "run_id": "run_01M2293PAVYJ6YNN47ZGHBRG8Y",
+  "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+  "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+  "model": {
+    "api": "openai-responses",
+    "api_key_env": "MOONSHOT_API_KEY",
+    "base_url": "https://api.kimi.com/coding/v1",
+    "model": "kimi-k2.7-code",
+    "provider": "moonshot",
+    "provider_id": "prov-kimi",
+    "ref": "kimi-2-7"
+  },
+  "source_kinds": [
+    "attachment",
+    "code",
+    "conversation",
+    "knowledge"
+  ],
+  "item_kinds": [
+    "conflict",
+    "exception",
+    "normal",
+    "requirement",
+    "unknown"
+  ],
+  "question_count": 3,
+  "tool_started": 9,
+  "tool_completed": 9,
+  "answer_rows": 3,
+  "answered": 2,
+  "deferred": 1,
+  "pending": 0,
+  "no_product_confirmation": true,
+  "limitations": [
+    "Model reading coverage is reported by AI; source validator verifies identity and digest.",
+    "Unsupported capability inference found and recorded separately; not accepted as product confirmation."
+  ]
+}

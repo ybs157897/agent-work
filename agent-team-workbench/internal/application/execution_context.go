@@ -746,6 +746,11 @@ func (s *Service) CreateWorkspaceLocation(ctx context.Context, workspaceID strin
 		if _, err := s.store.Workspaces().Get(ctx, workspaceID); err != nil {
 			return err
 		}
+		if _, projectErr := s.store.WorkspaceProjects().Get(ctx, workspaceID); projectErr == nil {
+			return fmt.Errorf("%w: Workspace 已固定项目目录，不能再添加第二个 Location", domain.ErrWorkspaceLocationAmbiguous)
+		} else if !errors.Is(projectErr, domain.ErrNotFound) {
+			return projectErr
+		}
 		if _, err := s.store.ExecutionHosts().Get(ctx, p.ExecutionHostID); err != nil {
 			return err
 		}
@@ -823,6 +828,16 @@ func (s *Service) UpdateWorkspaceLocation(ctx context.Context, locationID string
 		if err != nil {
 			return err
 		}
+		if project, projectErr := s.store.WorkspaceProjects().Get(ctx, l.WorkspaceID); projectErr == nil {
+			if project.LocationID != l.ID {
+				return fmt.Errorf("%w: Workspace 固定项目之外的 Location 不可修改", domain.ErrWorkspaceLocationAmbiguous)
+			}
+			if p.IsDefault != nil && !*p.IsDefault {
+				return fmt.Errorf("%w: Workspace 固定项目 Location 必须保持默认", domain.ErrWorkspaceLocationAmbiguous)
+			}
+		} else if !errors.Is(projectErr, domain.ErrNotFound) {
+			return projectErr
+		}
 		if p.ExpectedVersion != l.Version {
 			return domain.ErrVersionConflict
 		}
@@ -843,6 +858,14 @@ func (s *Service) UpdateWorkspaceLocation(ctx context.Context, locationID string
 		}
 		if mount.RepositoryIdentity != identity {
 			return fmt.Errorf("%w: mount %s repository identity 不匹配", domain.ErrWorkspaceContextMismatch, l.MountAlias)
+		}
+		if project, projectErr := s.store.WorkspaceProjects().Get(ctx, l.WorkspaceID); projectErr == nil && s.projectCanonicalKeyResolver != nil {
+			canonical, canonicalErr := s.projectCanonicalKeyResolver(ctx, l.MountAlias, p.MountGeneration, identity)
+			if canonicalErr != nil || project.CanonicalKey != l.ExecutionHostID+":"+canonical {
+				return fmt.Errorf("%w: Location 不再指向 Workspace 固定的 canonical project root", domain.ErrWorkspaceContextMismatch)
+			}
+		} else if projectErr != nil && !errors.Is(projectErr, domain.ErrNotFound) {
+			return projectErr
 		}
 		l.RepositoryIdentity = identity
 		l.MountGeneration = mount.RegistryGeneration
@@ -865,6 +888,13 @@ func (s *Service) UpdateWorkspaceLocation(ctx context.Context, locationID string
 			return err
 		}
 		l.Version = expected + 1
+		if project, projectErr := s.store.WorkspaceProjects().Get(ctx, l.WorkspaceID); projectErr == nil {
+			if err := s.store.WorkspaceProjects().UpdateIdentity(ctx, l.WorkspaceID, l.RepositoryIdentity, l.MountGeneration, project.Version); err != nil {
+				return err
+			}
+		} else if !errors.Is(projectErr, domain.ErrNotFound) {
+			return projectErr
+		}
 		updated = l
 		return s.emit(ctx, l.WorkspaceID, domain.EventWorkspaceLocationUpdated,
 			domain.AggregateWorkspaceLocation, l.ID, l.Version, nil,

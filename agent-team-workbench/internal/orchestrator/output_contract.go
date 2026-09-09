@@ -1,8 +1,13 @@
 package orchestrator
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/ybs/agent-team-workbench/internal/chatanalysis"
+)
 
 const OutputContractLanguageGUIV1 = "languagegui/v1"
+const OutputContractChatAnalysisV1 = chatanalysis.Version
 
 const languageGUIV1Marker = "[Chat output contract: languagegui/v1]"
 
@@ -35,7 +40,7 @@ Answer organization (mandatory for substantive answers — reports, reviews, pla
 - Never repeat in prose what a block already shows: blocks carry the detail, prose carries the reasoning.`
 
 func SupportsOutputContract(contract string) bool {
-	return contract == "" || contract == OutputContractLanguageGUIV1
+	return contract == "" || contract == OutputContractLanguageGUIV1 || contract == OutputContractChatAnalysisV1
 }
 
 // ApplyOutputContract 把请求级展示能力固化进 Run 快照并合并 system prompt。
@@ -52,10 +57,14 @@ func ApplyOutputContract(input map[string]any, contract string) bool {
 	}
 	input["output_contract"] = contract
 	current, _ := input["system_prompt"].(string)
+	prompt := languageGUIV1Prompt
+	if contract == OutputContractChatAnalysisV1 {
+		prompt = chatanalysis.Prompt
+	}
 	if strings.TrimSpace(current) == "" {
-		input["system_prompt"] = languageGUIV1Prompt
+		input["system_prompt"] = prompt
 	} else {
-		input["system_prompt"] = current + "\n\n" + languageGUIV1Prompt
+		input["system_prompt"] = current + "\n\n" + prompt
 	}
 	return true
 }

@@ -1,0 +1,11 @@
+{
+  "recorded_at": "2026-09-09T17:17:36.473397+08:00",
+  "binary_sha256": "7f3ebc42da54d53de9d775978f1f59ad9368c59630118176ad3e98a7df613494",
+  "sources": {
+    "internal/application/publication.go": "42fffff7838aee31d2767bf43e3a65fe5357a66f69eb17fcc64a2196cf6843d5",
+    "internal/application/coordinator_engine.go": "dac2cfea70c430e51956a76720345bd2a2a48c9749fd415820b76b54b6695a41",
+    "internal/httpapi/handlers_publication.go": "929d70c4038f1bbf70e51290f9e3a10caba27395fb1c084c76e20cf26a5782a6",
+    "internal/httpapi/server.go": "2f39f5dc4bbc797a281ef20c687aa44733ceb8bc75732f9fe0aa630be54b5cfa",
+    "internal/hostregistry/project_scan.go": "d893b2df21978d97aee5f1d6743044a274eec5dbc90c47633769ddad1f893e13"
+  }
+}

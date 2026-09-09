@@ -1,7 +1,7 @@
-import { BookOpen, Bot, Cpu, KanbanSquare, Layers3, LayoutDashboard, MessageSquare, MessagesSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
-import { useEffect } from 'react';
+import { BookOpen, Bot, Cpu, KanbanSquare, Layers3, LayoutDashboard, MessageSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import React from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { SseStatusPill } from './sse-status';
 import { WorkspaceSelector } from './workspace-selector';
 import { useWorkspaceStore } from '../stores/workspace.store';
@@ -13,7 +13,6 @@ const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: '总览', end: true },
   { to: '/agents', icon: Bot, label: '智能体配置' },
   { to: '/tasks', icon: KanbanSquare, label: '任务看板' },
-  { to: '/task-chat', icon: MessagesSquare, label: '任务对话' },
   { to: '/chat', icon: MessageSquare, label: '对话' },
   { to: '/models', icon: Cpu, label: '模型' },
   { to: '/knowledge', icon: BookOpen, label: '知识库' },
@@ -25,7 +24,6 @@ const BREADCRUMBS: Record<string, string> = {
   '/': '总览',
   '/agents': '智能体配置',
   '/tasks': '任务看板',
-  '/task-chat': '任务对话',
   '/chat': '对话',
   '/models': '模型',
   '/knowledge': '知识库',
@@ -35,8 +33,13 @@ const BREADCRUMBS: Record<string, string> = {
 
 export function LayoutShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const workspace = useWorkspaceStore((state) => state.workspace);
+  const switching = useWorkspaceStore((state) => state.switching);
+  const rememberRoute = useWorkspaceStore((state) => state.rememberRoute);
+  const lastRouteFor = useWorkspaceStore((state) => state.lastRouteFor);
   const theme = useWorkbenchThemeStore((state) => state.theme);
+  const previousWorkspaceRef = useRef<string | null>(null);
   const backgroundLocation = taskPeekBackground(location.state);
   const backgroundPath = backgroundLocation?.pathname === '/tasks/' ? '/tasks' : backgroundLocation?.pathname;
   const breadcrumb = backgroundLocation
@@ -48,6 +51,26 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     applyWorkbenchTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!workspace?.id || switching) return;
+    const workspaceId = workspace.id;
+    const currentRoute = workspaceRoute(location.pathname, location.search, location.hash, workspaceId);
+    const rawRoute = `${location.pathname}${location.search}${location.hash}`;
+    const previousWorkspaceId = previousWorkspaceRef.current;
+    previousWorkspaceRef.current = workspaceId;
+    if (previousWorkspaceId === null && rawRoute !== currentRoute) {
+      navigate(currentRoute, { replace: true });
+      rememberRoute(workspaceId, currentRoute);
+      return;
+    }
+    if (previousWorkspaceId !== null && previousWorkspaceId !== workspaceId) {
+      const remembered = lastRouteFor(workspaceId) ?? `/chat?ws=${encodeURIComponent(workspaceId)}`;
+      if (remembered !== currentRoute) navigate(remembered, { replace: true });
+      return;
+    }
+    rememberRoute(workspaceId, currentRoute);
+  }, [lastRouteFor, location.hash, location.pathname, location.search, navigate, rememberRoute, switching, workspace?.id]);
 
   return (
     <div className="workbench-theme relative flex h-dvh w-full flex-row overflow-hidden bg-surface-base" data-theme={theme}>
@@ -97,6 +120,14 @@ export function LayoutShell({ children }: { children: React.ReactNode }) {
       </div>
     </div>
   );
+}
+
+function workspaceRoute(pathname: string, search: string, hash: string, workspaceId: string): string {
+  const normalizedPath = pathname === '/task-chat' || pathname === '/task-chat/' ? '/chat' : pathname;
+  const params = new URLSearchParams(search);
+  params.set('ws', workspaceId);
+  const query = params.toString();
+  return `${normalizedPath}${query ? `?${query}` : ''}${hash}`;
 }
 
 function SidebarContents() {

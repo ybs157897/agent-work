@@ -1,0 +1,9 @@
+{
+  "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489&c=wi_01M2293P91XY36SRV9MAX6C750",
+  "selected": "exc-deps",
+  "fields": [
+    "U05-P2 隔离验收：外部依赖只读浏览，显示只读标识与来源路径，禁止编辑写入。",
+    "模拟产品沟通；依据原 Word 范围与变更 Markdown，JDK 缺失降级规则不变。",
+    "U05-P2"
+  ]
+}

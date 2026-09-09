@@ -226,6 +226,30 @@ func requireKnowledgeReadScope(workspaceID, requesterAgentID string) error {
 	return nil
 }
 
+// requireKnowledgeReadScopeForRepo closes the caller-supplied Agent identity
+// gap. A workspace-scoped read may use the explicit human management sentinel,
+// but every Agent requester must be a live Agent belonging to that same
+// Workspace before visibility predicates are evaluated.
+func (r *KnowledgeRepo) requireKnowledgeReadScopeForRepo(ctx context.Context, workspaceID, requesterAgentID string) error {
+	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+		return err
+	}
+	if requesterAgentID == "human:shared" {
+		return nil
+	}
+	ownerWorkspace, err := r.agentWorkspace(ctx, requesterAgentID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return domain.ErrNotFound
+		}
+		return err
+	}
+	if ownerWorkspace != workspaceID {
+		return domain.ErrNotFound
+	}
+	return nil
+}
+
 func (r *KnowledgeRepo) agentWorkspace(ctx context.Context, agentID string) (string, error) {
 	if strings.TrimSpace(agentID) == "" {
 		return "", fmt.Errorf("%w: knowledge agent identity is required", domain.ErrValidation)
@@ -291,7 +315,7 @@ func (r *KnowledgeRepo) CreateItem(ctx context.Context, item *domain.KnowledgeIt
 }
 
 func (r *KnowledgeRepo) GetItem(ctx context.Context, workspaceID, requesterAgentID, itemID string) (*domain.KnowledgeItem, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	item, err := scanKnowledgeItem(r.store.queryRow(ctx, r.store.exec(ctx),
@@ -312,7 +336,7 @@ func (r *KnowledgeRepo) ListVisibleItems(ctx context.Context, workspaceID, reque
 
 func (r *KnowledgeRepo) ListVisibleItemsPage(ctx context.Context, workspaceID, requesterAgentID string,
 	options domain.KnowledgeListOptions) ([]*domain.KnowledgeItem, string, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, "", err
 	}
 	options = options.Normalize()
@@ -777,7 +801,7 @@ func (r *KnowledgeRepo) CreateVersionBundle(ctx context.Context, version *domain
 }
 
 func (r *KnowledgeRepo) GetVersion(ctx context.Context, workspaceID, requesterAgentID, versionID string) (*domain.KnowledgeVersion, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	version, err := scanKnowledgeVersion(r.store.queryRow(ctx, r.store.exec(ctx),
@@ -793,7 +817,7 @@ func (r *KnowledgeRepo) GetVersion(ctx context.Context, workspaceID, requesterAg
 
 func (r *KnowledgeRepo) ListVersions(ctx context.Context, workspaceID, requesterAgentID, itemID string,
 	status domain.KnowledgeStatus) ([]*domain.KnowledgeVersion, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	args := []any{itemID, workspaceID, domain.KnowledgeVisibilityWorkspace, requesterAgentID}
@@ -857,7 +881,7 @@ func (r *KnowledgeRepo) createSource(ctx context.Context, source *domain.Knowled
 }
 
 func (r *KnowledgeRepo) GetSource(ctx context.Context, workspaceID, requesterAgentID, sourceID string) (*domain.KnowledgeSource, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	source, err := scanKnowledgeSource(r.store.queryRow(ctx, r.store.exec(ctx),
@@ -915,7 +939,7 @@ func (r *KnowledgeRepo) linkVersionSource(ctx context.Context, link *domain.Know
 }
 
 func (r *KnowledgeRepo) ListVersionSources(ctx context.Context, workspaceID, requesterAgentID, versionID string) ([]*domain.KnowledgeSource, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	rows, err := r.store.query(ctx, r.store.exec(ctx),
@@ -1031,7 +1055,7 @@ func (r *KnowledgeRepo) loadRelationSources(ctx context.Context, relation *domai
 
 func (r *KnowledgeRepo) ListRelations(ctx context.Context, workspaceID, requesterAgentID, itemID string,
 	direction domain.KnowledgeRelationDirection, limit int) ([]*domain.KnowledgeRelation, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	if direction == "" {
@@ -1189,7 +1213,7 @@ func (r *KnowledgeRepo) SubmitCandidate(ctx context.Context, submission *domain.
 }
 
 func (r *KnowledgeRepo) GetSubmission(ctx context.Context, workspaceID, requesterAgentID, submissionID string) (*domain.KnowledgeSubmission, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	return r.getSubmission(ctx,
@@ -1221,7 +1245,7 @@ func (r *KnowledgeRepo) getSubmissionByClientKey(ctx context.Context, workspaceI
 }
 
 func (r *KnowledgeRepo) GetSubmissionByClientKey(ctx context.Context, workspaceID, agentID, clientKey string) (*domain.KnowledgeSubmission, error) {
-	if err := requireKnowledgeReadScope(workspaceID, agentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, agentID); err != nil {
 		return nil, err
 	}
 	return r.getSubmissionByClientKey(ctx, workspaceID, agentID, clientKey)
@@ -1229,7 +1253,7 @@ func (r *KnowledgeRepo) GetSubmissionByClientKey(ctx context.Context, workspaceI
 
 func (r *KnowledgeRepo) ListSubmissions(ctx context.Context, workspaceID, requesterAgentID string,
 	status domain.KnowledgeSubmissionStatus, limit int) ([]*domain.KnowledgeSubmission, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	args := []any{workspaceID, requesterAgentID}
@@ -1488,6 +1512,9 @@ type knowledgeSearchRow struct {
 
 func (r *KnowledgeRepo) Search(ctx context.Context, query *domain.KnowledgeQuery) ([]*domain.KnowledgeHit, error) {
 	if err := query.ValidateReadScope(); err != nil {
+		return nil, err
+	}
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, query.WorkspaceID, query.RequesterAgentID); err != nil {
 		return nil, err
 	}
 	budget := query.Budget.Normalize()
@@ -1776,6 +1803,9 @@ func (r *KnowledgeRepo) CreateQuerySnapshot(ctx context.Context, snapshot *domai
 		if snapshot == nil {
 			return fmt.Errorf("%w: knowledge query snapshot required", domain.ErrValidation)
 		}
+		if err := r.requireKnowledgeReadScopeForRepo(ctx, snapshot.WorkspaceID, snapshot.RequesterAgentID); err != nil {
+			return err
+		}
 		if snapshot.ID == "" {
 			snapshot.ID = domain.NewID(domain.PrefixKnowledgeQuerySnapshot)
 		}
@@ -1827,7 +1857,7 @@ func (r *KnowledgeRepo) CreateQuerySnapshot(ctx context.Context, snapshot *domai
 }
 
 func (r *KnowledgeRepo) GetQuerySnapshot(ctx context.Context, workspaceID, requesterAgentID, snapshotID string) (*domain.KnowledgeQuerySnapshot, error) {
-	if err := requireKnowledgeReadScope(workspaceID, requesterAgentID); err != nil {
+	if err := r.requireKnowledgeReadScopeForRepo(ctx, workspaceID, requesterAgentID); err != nil {
 		return nil, err
 	}
 	snapshot := &domain.KnowledgeQuerySnapshot{}

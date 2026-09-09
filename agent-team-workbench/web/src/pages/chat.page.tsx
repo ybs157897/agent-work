@@ -1,7 +1,11 @@
-import { BookOpen, Boxes, Code2, Columns2, GitBranch, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
+import { ArchiveRestore, BookOpen, Boxes, Code2, Columns2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
+import { ChatAnalysisPanel } from '../components/chat/chat-analysis-panel';
+import { ChatDecisionPanel } from '../components/chat/chat-decision-panel';
+import { TaskDraftPreview } from '../components/chat/task-draft-preview';
+import { ChatSourceShelf } from '../components/chat/chat-source-shelf';
 import { KnowledgeChatHandoff, type KnowledgeChatSeed } from '../components/chat/knowledge-chat-handoff';
 import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas';
 import { CodeWorkspace } from '../components/code-workspace/code-workspace';
@@ -12,22 +16,27 @@ import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
 import { SwarmMemberWorkspace, isSameSwarmMemberSelection, type SwarmMemberSelection } from '../components/chat/swarm-member-workspace';
-import { PROMPT_LIBRARY, PromptBox } from '../components/chat/prompt-box';
+import { PROMPT_LIBRARY, PromptBox, type PromptAttachment } from '../components/chat/prompt-box';
 import { Avatar } from '../components/avatar';
-import { EmptyState } from '../components/ui';
+import { Button, EmptyState } from '../components/ui';
 import { SseStatusPill } from '../components/sse-status';
 import { runStatusColor, runStatusText } from '../components/status';
 import { useAgentsStore } from '../stores/agents.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
+import { CHAT_ANALYSIS_INSTRUCTION, CHAT_ANALYSIS_OUTPUT_CONTRACT, useChatAnalysisStore } from '../stores/chat-analysis.store';
+import { CHAT_ANALYSIS_CHANGE_INSTRUCTION, useChatDecisionsStore } from '../stores/chat-decisions.store';
+import { usePublicationStore } from '../stores/publication.store';
 import { useWorkbenchThemeStore, type WorkbenchTheme } from '../stores/workbench-theme.store';
-import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatMessage } from '../stores/chat.store';
+import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatAttachmentInput, type ChatMessage } from '../stores/chat.store';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
+import { readChatWorkspaceState, readLegacyTaskIntakeRecovery, useChatWorkspaceStorageNotice, writeChatWorkspaceState, type LegacyTaskIntakeRecovery, type LegacyTaskIntakeRecoveryEntry } from '../stores/chat-workspace-state';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
+import { isChatPath } from '../utils/route-layout';
 import { buildCanvasMessage, canReadAgentKnowledge, readCanvasPreference, referenceBelongsTo, restoreCanvasComposer, writeCanvasPreference, type CanvasComposerDraft, type KnowledgeCanvasReference } from '../utils/agent-knowledge-canvas';
 import './chat-knowledge-workspace.css';
 import { deriveChatDock } from '../utils/derive-chat-dock';
@@ -53,6 +62,32 @@ import {
 interface ProjectionTrace {
   signature: string;
   input: OutputTraceInput;
+}
+
+function routePath(route: string): string {
+  return route.split(/[?#]/, 1)[0] || '/';
+}
+
+/** Outgoing Chat must not claim a new Workspace while LayoutShell is restoring
+ * that Workspace's remembered route. */
+export function shouldRebindChatOwner(
+  previousWorkspaceId: string | null,
+  currentWorkspaceId: string,
+  currentPath: string,
+  rememberedRoute: string | null,
+): boolean {
+  if (!previousWorkspaceId || previousWorkspaceId === currentWorkspaceId) return true;
+  return routePath(currentPath) === routePath(rememberedRoute ?? '/chat');
+}
+
+/** Keep a deep-linked conversation query while its async hydration is pending. */
+export function shouldPreserveChatDeepLink(
+  requestedConversation: string | null,
+  pendingConversation: string | null,
+  activeConversation: string | null,
+): boolean {
+  if (!requestedConversation) return false;
+  return requestedConversation === pendingConversation || requestedConversation === activeConversation;
 }
 
 function useProjectionTrace(trace: ProjectionTrace | undefined): void {
@@ -153,15 +188,39 @@ export default function ChatPage() {
   const runsLoadedConversationId = useChatStore((s) => s.runsLoadedConversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
   const openConversation = useChatStore((s) => s.openConversation);
+  const restoreWorkspace = useChatStore((s) => s.restoreWorkspace);
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
   const [promptSeed, setPromptSeed] = useState<{ id: number; text: string } | null>(null);
+  const [legacyRecovery, setLegacyRecovery] = useState<LegacyTaskIntakeRecovery | null>(null);
   const chatTheme = useWorkbenchThemeStore((state) => state.theme);
   const changeChatTheme = useWorkbenchThemeStore((state) => state.toggleTheme);
   const urlBooted = useRef(false);
+  const pendingUrlConversationRef = useRef<string | null>(null);
+  const lastWorkspaceRef = useRef<string | null>(null);
+  const pageOwnerRef = useRef<{ workspaceId: string; generation: number } | null>(null);
+  const [pageOwner, setPageOwner] = useState<{ workspaceId: string; generation: number } | null>(null);
+  const activePathRef = useRef(location.pathname);
   const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
+  const workspaceProjectReady = useWorkspaceStore((state) => {
+    const workspace = state.workspace;
+    return (!workspace?.project || workspace.project.status === 'ready') && (!workspace?.setup || workspace.setup.status === 'ready');
+  });
   const generation = useWorkspaceStore((state) => state.generation);
+  const lastRouteFor = useWorkspaceStore((state) => state.lastRouteFor);
+  const chatPathActive = isChatPath(location.pathname);
+  const ownsChatScope = chatPathActive
+    && pageOwner?.workspaceId === workspaceId
+    && pageOwner?.generation === generation;
+  const chatNavigationParams = useCallback((nextAgentId: string, nextConversationId?: string) => {
+    const next = new URLSearchParams();
+    if (workspaceId) next.set('ws', workspaceId);
+    next.set('agent', nextAgentId);
+    if (nextConversationId) next.set('c', nextConversationId);
+    return next;
+  }, [workspaceId]);
   const currentAgent = agents.find((agent) => agent.id === agentId);
   const [canvasOverrides, setCanvasOverrides] = useState<Record<string, boolean>>({});
   const [codeOverrides, setCodeOverrides] = useState<Record<string, boolean>>({});
@@ -170,13 +229,76 @@ export default function ChatPage() {
   const canvasKey = `${workspaceId ?? ''}:${agentId ?? ''}`;
   const codeKey = `${workspaceId ?? ''}:${agentId ?? ''}:${conversationId ?? 'new'}`;
   const canvasAvailable = !!currentAgent && isUserManagedAgent(currentAgent);
-  const codeAvailable = !!currentAgent && currentAgent.role === 'developer' && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
+  const codeAvailable = workspaceProjectReady && !!currentAgent && currentAgent.role === 'developer' && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
   const codeEnabled = codeAvailable && !!workspaceId && (codeOverrides[codeKey]
     ?? (searchParams.get('canvas') === 'code' && searchParams.get('agent') === agentId ? true : false));
   const canvasEnabled = canvasAvailable && !!workspaceId && !codeEnabled && (canvasOverrides[canvasKey]
     ?? (searchParams.get('canvas') === 'knowledge' && searchParams.get('agent') === agentId
       ? true : readCanvasPreference(workspaceId, currentAgent)));
   const codeRunsLoaded = !conversationId || runsLoadedConversationId === conversationId;
+
+  useEffect(() => {
+    setLegacyRecovery(workspaceId ? readLegacyTaskIntakeRecovery(workspaceId) : null);
+  }, [workspaceId]);
+
+  useLayoutEffect(() => {
+    activePathRef.current = location.pathname;
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!chatPathActive || !workspaceId) return;
+    const previousOwner = pageOwnerRef.current;
+    if (previousOwner && !shouldRebindChatOwner(previousOwner.workspaceId, workspaceId, location.pathname, lastRouteFor(workspaceId))) return;
+    if (!pageOwnerRef.current || pageOwnerRef.current.workspaceId !== workspaceId || pageOwnerRef.current.generation !== generation) {
+      const nextOwner = { workspaceId, generation };
+      pageOwnerRef.current = nextOwner;
+      setPageOwner(nextOwner);
+    }
+  }, [chatPathActive, generation, lastRouteFor, location.pathname, workspaceId]);
+
+  const isChatNavigationCurrent = useCallback(() => {
+    const current = useWorkspaceStore.getState();
+    return isChatPath(activePathRef.current)
+      && pageOwnerRef.current?.workspaceId === current.workspace?.id
+      && pageOwnerRef.current?.generation === current.generation;
+  }, []);
+
+  const restoreLegacy = (entryIndex = 0) => {
+    if (!legacyRecovery) return;
+    const entry = legacyRecovery.entries[entryIndex] ?? legacyRecovery;
+    const content = formatLegacyRecoveryContent(entry);
+    if (!content) return;
+    const targetAgent = currentAgent ?? agents.find((agent) => isChatAgent(agent));
+    if (!targetAgent) return;
+    selectAgent(targetAgent.id);
+    openConversation(null);
+    setPromptSeed({ id: Date.now(), text: content });
+    setSidebarView('chats');
+    setSearchParams(chatNavigationParams(targetAgent.id), { replace: true });
+  };
+
+  // Workspace is the outer identity boundary. Restore the last Agent and
+  // conversation only after the target bootstrap has made it current; on a
+  // real A → B switch, discard URL-local Agent parameters so B cannot inherit
+  // A's deep link accidentally.
+  useEffect(() => {
+    if (!workspaceId || !ownsChatScope) return;
+    const switched = lastWorkspaceRef.current !== null && lastWorkspaceRef.current !== workspaceId;
+    lastWorkspaceRef.current = workspaceId;
+    restoreWorkspace(workspaceId);
+    urlBooted.current = false;
+    pendingUrlConversationRef.current = null;
+    if (switched) {
+      const next = new URLSearchParams(searchParams);
+      next.set('ws', workspaceId);
+      next.delete('agent');
+      next.delete('c');
+      next.delete('knowledge');
+      next.delete('version');
+      next.delete('canvas');
+      setSearchParams(next, { replace: true });
+    }
+  }, [ownsChatScope, restoreWorkspace, searchParams, setSearchParams, workspaceId]);
   const toggleCanvas = () => {
     if (!workspaceId || !agentId) return;
     const enabled = !canvasEnabled;
@@ -184,6 +306,7 @@ export default function ChatPage() {
     setCodeOverrides((current) => ({ ...current, [codeKey]: false }));
     writeCanvasPreference(workspaceId, agentId, enabled);
     const params = new URLSearchParams(searchParams);
+    if (workspaceId) params.set('ws', workspaceId);
     params.delete('canvas');
     setSearchParams(params, { replace: true });
     setCanvasNavigationOpen(false);
@@ -197,6 +320,7 @@ export default function ChatPage() {
       setCanvasOverrides((current) => ({ ...current, [canvasKey]: false }));
     }
     const params = new URLSearchParams(searchParams);
+    if (workspaceId) params.set('ws', workspaceId);
     if (enabled) {
       params.set('agent', agentId);
       params.set('canvas', 'code');
@@ -216,33 +340,59 @@ export default function ChatPage() {
   const prepareKnowledge = useCallback(async (seed: KnowledgeChatSeed) => {
     if (useChatStore.getState().agentId !== seed.agentId) selectAgent(seed.agentId);
     const opened = await openConversation(requestedConversation);
-    if (knowledgeKeyRef.current !== knowledgeKey) return;
+    if (knowledgeKeyRef.current !== knowledgeKey || !isChatNavigationCurrent()) return;
     if (!opened) throw new Error('历史对话或运行记录暂时无法读取。请重试，或返回知识库重新打开。');
     setSidebarView('chats');
     setPromptSeed(requestedConversation ? null : { id: Date.now(), text: seed.text });
     setPreparedKnowledge(knowledgeKey);
     urlBooted.current = true;
-  }, [selectAgent, openConversation, knowledgeKey, requestedConversation]);
+  }, [isChatNavigationCurrent, selectAgent, openConversation, knowledgeKey, requestedConversation]);
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
-    if (urlBooted.current || knowledgeQuery !== null) return;
+    if (!ownsChatScope || urlBooted.current || knowledgeQuery !== null) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
     if (qAgent && agents.length === 0) return;
-    if (qAgent && agents.some((agent) => agent.id === qAgent) && qAgent !== agentId) selectAgent(qAgent);
-    if (qConv) openConversation(qConv);
+    if (qAgent && agents.length > 0 && !agents.some((agent) => agent.id === qAgent)) {
+      const next = new URLSearchParams(searchParams);
+      if (workspaceId) next.set('ws', workspaceId);
+      next.delete('agent');
+      next.delete('c');
+      next.delete('knowledge');
+      next.delete('version');
+      next.delete('canvas');
+      setSearchParams(next, { replace: true });
+      urlBooted.current = true;
+      return;
+    }
+    if (qAgent && qAgent !== agentId) selectAgent(qAgent);
+    if (qConv) {
+      pendingUrlConversationRef.current = qConv;
+      void openConversation(qConv).then((opened) => {
+        if (pendingUrlConversationRef.current === qConv) pendingUrlConversationRef.current = null;
+        if (opened || !isChatNavigationCurrent()) return;
+        const currentParams = new URLSearchParams(window.location.search);
+        if (currentParams.get('c') !== qConv) return;
+        const next = new URLSearchParams(currentParams);
+        if (workspaceId) next.set('ws', workspaceId);
+        next.delete('c');
+        setSearchParams(next, { replace: true });
+      });
+    }
     urlBooted.current = true;
-  }, [knowledgeQuery, searchParams, agents, agentId, selectAgent, openConversation]);
+  }, [knowledgeQuery, searchParams, agents, agentId, selectAgent, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
 
   // 新会话创建时同步 ?c=，便于刷新后恢复。
   useEffect(() => {
-    if (!urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
+    if (!ownsChatScope || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
     const current = useChatStore.getState();
     if (current.agentId !== agentId || current.conversationId !== conversationId) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
+    if (shouldPreserveChatDeepLink(qConv, pendingUrlConversationRef.current, conversationId)) return;
     const next = new URLSearchParams(searchParams);
+    if (workspaceId) next.set('ws', workspaceId);
     next.set('agent', agentId);
     if (conversationId) {
       if (qAgent === agentId && qConv === conversationId) return;
@@ -254,14 +404,14 @@ export default function ChatPage() {
     if (knowledgeQuery !== null && qConv) return;
     next.delete('c');
     setSearchParams(next, { replace: true });
-  }, [agentId, conversationId, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey]);
+  }, [agentId, conversationId, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
 
   const pick = (id: string) => {
     selectAgent(id);
     setSidebarView('chats');
     setPromptSeed(null);
     setCanvasNavigationOpen(false);
-    setSearchParams({ agent: id }, { replace: true });
+    setSearchParams(chatNavigationParams(id), { replace: true });
   };
   return (
     <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${canvasEnabled ? ' chat-knowledge-page' : codeEnabled ? ' chat-code-page' : ''}`} data-theme={chatTheme} data-navigation-open={canvasNavigationOpen}>
@@ -291,22 +441,24 @@ export default function ChatPage() {
         </div>
         {agentId && (
           <>
+            {legacyRecovery && <LegacyTaskIntakeRecoveryNotice recovery={legacyRecovery} onRestore={restoreLegacy} disabled={!agents.length} />}
             <ChatSidebarNav view={sidebarView} onChange={setSidebarView} />
             {sidebarView === 'chats' && <ConversationList onPick={(id) => {
               setPromptSeed(null);
               setNarrowPanel('chat');
               openConversation(id);
-              setSearchParams(id ? { agent: agentId, c: id } : { agent: agentId }, { replace: true });
+              setSearchParams(chatNavigationParams(agentId, id ?? undefined), { replace: true });
             }} />}
             {sidebarView === 'library' && <SidebarLibrary onUse={(text) => {
               openConversation(null);
-              setSearchParams({ agent: agentId }, { replace: true });
+              setSearchParams(chatNavigationParams(agentId), { replace: true });
               setPromptSeed({ id: Date.now(), text });
               setSidebarView('chats');
             }} />}
             {sidebarView === 'apps' && <SidebarApps />}
           </>
         )}
+        {!agentId && legacyRecovery && <LegacyTaskIntakeRecoveryNotice recovery={legacyRecovery} onRestore={restoreLegacy} disabled={!agents.length} />}
         <Link to="/knowledge" className="mt-auto flex shrink-0 items-center gap-tight border-t border-border-subtle px-snug py-base text-body text-text-secondary hover:text-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary/40">
           <BookOpen className="h-4 w-4" aria-hidden />查看团队知识
         </Link>
@@ -327,7 +479,7 @@ export default function ChatPage() {
               <EmptyState
                 icon={<MessageSquare className="w-5 h-5" />}
                 title="选一位团队成员，说说你需要什么帮助"
-                description="咨询问题从这里开始；要交办一项工作，请打开任务对话。"
+                description="咨询和需求整理都从这里开始；选择团队成员后直接说明目标、范围和限制。"
               />
             </div>
           </div>
@@ -337,6 +489,18 @@ export default function ChatPage() {
   );
 }
 
+export function formatLegacyRecoveryContent(entry: LegacyTaskIntakeRecoveryEntry): string {
+  const historicalContent = [
+    entry.composerText,
+    entry.draft ? `旧任务草案：${entry.draft.title}\n${entry.draft.description}\n验收标准：${entry.draft.acceptance_criteria.join('；')}` : undefined,
+    entry.messages.filter((message) => message.role === 'user').slice(-3).map((message) => message.content).join('\n'),
+  ].filter((value): value is string => Boolean(value?.trim()));
+  if (historicalContent.length === 0) return '';
+  const source = entry.projectKey ? `历史来源 projectKey：${entry.projectKey}（仅作来源标签）` : '历史来源：未绑定旧项目（仅作来源标签）';
+  const boundary = '本次仅恢复历史文字到当前 Chat，不切换当前工作区目录、不自动发布任务；当前全局 WorkspaceProject 代码根仍有效。';
+  return [source, boundary, ...historicalContent].join('\n\n');
+}
+
 function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
   return (
     <div className="chat-chrome flex h-12 shrink-0 items-center justify-between border-b border-border-subtle bg-surface-base px-6">
@@ -344,6 +508,31 @@ function ChatChrome({ left, right }: { left: ReactNode; right?: ReactNode }) {
       <div className="flex shrink-0 items-center gap-2">{right}</div>
     </div>
   );
+}
+
+function LegacyTaskIntakeRecoveryNotice({ recovery, onRestore, disabled }: { recovery: LegacyTaskIntakeRecovery; onRestore: (entryIndex: number) => void; disabled: boolean }) {
+  return (
+    <section className="mx-tight mb-tight rounded-card border border-status-warning/30 bg-status-warning/5 px-snug py-tight" aria-label="旧任务草案恢复">
+      <div className="flex items-start gap-tight">
+        <ArchiveRestore className="mt-0.5 h-4 w-4 shrink-0 text-status-warning" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-caption font-medium text-text-primary">发现旧任务对话草案</p>
+          <p className="mt-micro text-caption text-text-secondary">它仍按当前工作区保存在本地，共发现 {recovery.entries.length} 份历史内容{recovery.bindingPresent ? '，并保留了旧项目绑定记录' : ''}；仅恢复文字，不切换当前工作区目录，也不会自动发布任务。</p>
+          <div className="mt-tight space-y-micro">
+            {recovery.entries.map((entry, index) => <LegacyRecoveryEntryRow key={`${entry.projectKey ?? 'unbound'}:${index}`} entry={entry} index={index} onRestore={onRestore} disabled={disabled} />)}
+            {recovery.entries.length === 0 && <span className="text-caption text-text-tertiary">只有旧项目绑定记录，未发现可导入正文。</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LegacyRecoveryEntryRow({ entry, index, onRestore, disabled }: { entry: LegacyTaskIntakeRecoveryEntry; index: number; onRestore: (index: number) => void; disabled: boolean }) {
+  const details = [entry.messages.length ? `${entry.messages.length} 条消息` : '', entry.draft ? '含草案' : '', entry.composerText ? '含未发送输入' : '', entry.hasTerminalState ? '含旧发布状态' : ''].filter(Boolean).join(' · ');
+  const title = entry.draft?.title ?? `历史记录 ${index + 1}`;
+  const source = entry.projectKey ? `projectKey：${entry.projectKey}` : '未绑定旧项目';
+  return <div className="flex items-start gap-tight rounded-button border border-border-subtle bg-surface-base px-tight py-micro"><div className="min-w-0 flex-1 text-caption text-text-secondary"><p className="break-words font-medium text-text-primary">{title}</p><p className="mt-micro break-all text-text-tertiary" title={entry.projectKey ?? undefined}>{source}</p><p className="mt-micro break-words text-text-tertiary">{details || '仅有历史正文'}</p></div><Button type="button" size="sm" className="shrink-0 px-tight" onClick={() => onRestore(index)} disabled={disabled}>恢复文字</Button></div>;
 }
 
 function ChatThemeToggle({ theme, onToggle }: { theme: WorkbenchTheme; onToggle: () => void }) {
@@ -569,6 +758,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   onNarrowPanelChange: (panel: 'document' | 'chat') => void;
 }) {
   const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
+  const workspaceName = useWorkspaceStore((state) => state.workspace?.name);
+  const switchingWorkspace = useWorkspaceStore((state) => state.switching);
   const userRole = useWorkspaceStore((state) => state.me?.role);
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
@@ -583,9 +774,59 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const stopActiveRun = useChatStore((s) => s.stopActiveRun);
   const stoppingRunId = useChatStore((s) => s.stoppingRunId);
   const retryRun = useChatStore((s) => s.retryRun);
+  const analysisProjection = useChatAnalysisStore((s) => s.projection);
+  const analysisDraft = useChatAnalysisStore((s) => s.draft);
+  const analysisLoading = useChatAnalysisStore((s) => s.loading);
+  const analysisSubmitting = useChatAnalysisStore((s) => s.submitting);
+  const analysisError = useChatAnalysisStore((s) => s.error);
+  const refreshAnalysis = useChatAnalysisStore((s) => s.refresh);
+  const setAnalysisSelection = useChatAnalysisStore((s) => s.setSelection);
+  const setAnalysisText = useChatAnalysisStore((s) => s.setText);
+  const submitAnalysisAnswer = useChatAnalysisStore((s) => s.submitAnswer);
+  const restoreAnalysisDraftText = useChatAnalysisStore((s) => s.restoreDraftText);
+  const discardAnalysisDraft = useChatAnalysisStore((s) => s.discardDraft);
+  const decisionHistory = useChatDecisionsStore((s) => s.history);
+  const selectedDecisionItemId = useChatDecisionsStore((s) => s.selectedItemId);
+  const decisionDraft = useChatDecisionsStore((s) => s.draft);
+  const decisionLoading = useChatDecisionsStore((s) => s.loading);
+  const decisionHistoryLoading = useChatDecisionsStore((s) => s.historyLoading);
+  const decisionSubmitting = useChatDecisionsStore((s) => s.submitting);
+  const decisionError = useChatDecisionsStore((s) => s.error);
+  const refreshDecisions = useChatDecisionsStore((s) => s.refresh);
+  const selectDecisionItem = useChatDecisionsStore((s) => s.selectItem);
+  const recheckDecisions = useChatDecisionsStore((s) => s.recheck);
+  const setDecisionOutcome = useChatDecisionsStore((s) => s.setOutcome);
+  const setDecisionConclusion = useChatDecisionsStore((s) => s.setConclusion);
+  const setDecisionBasis = useChatDecisionsStore((s) => s.setBasis);
+  const setDecisionProductVersion = useChatDecisionsStore((s) => s.setProductVersion);
+  const submitDecision = useChatDecisionsStore((s) => s.submit);
+  const restoreDecisionDraftText = useChatDecisionsStore((s) => s.restoreDraftText);
+  const discardDecisionDraft = useChatDecisionsStore((s) => s.discardDraft);
+  const resetDecisions = useChatDecisionsStore((s) => s.reset);
+  const publicationDraft = usePublicationStore((s) => s.draft);
+  const publicationLoading = usePublicationStore((s) => s.loading);
+  const publicationSaving = usePublicationStore((s) => s.saving);
+  const publicationPublishing = usePublicationStore((s) => s.publishing);
+  const publicationError = usePublicationStore((s) => s.error);
+  const hydratePublication = usePublicationStore((s) => s.hydrate);
+  const refreshPublication = usePublicationStore((s) => s.refresh);
+  const reconcilePublication = usePublicationStore((s) => s.reconcile);
+  const openPublication = usePublicationStore((s) => s.openFromAnalysis);
+  const togglePublicationItem = usePublicationStore((s) => s.toggleItem);
+  const setPublicationTitle = usePublicationStore((s) => s.setTitle);
+  const startNewPublicationDraft = usePublicationStore((s) => s.startNewDraft);
+  const savePublicationDraft = usePublicationStore((s) => s.saveDraft);
+  const publishPublication = usePublicationStore((s) => s.publish);
+  const resetPublication = usePublicationStore((s) => s.reset);
+  const resetAnalysis = useChatAnalysisStore((s) => s.reset);
+  const conversationSources = useChatStore((s) => conversationId ? s.sourcesByConversation[conversationId] : undefined);
+  const sourcesLoading = useChatStore((s) => conversationId ? s.sourcesLoadingByConversation[conversationId] === true : false);
+  const sourcesError = useChatStore((s) => conversationId ? s.sourcesErrorByConversation[conversationId] : undefined);
+  const refreshSources = useChatStore((s) => s.refreshSources);
   const runAlerts = useChatStore((s) => s.runAlerts);
   const pendingUsers = useChatStore((s) => s.pendingUsers);
   const sendError = useChatStore((s) => s.sendError);
+  const storageNotice = useChatWorkspaceStorageNotice();
   const allAgents = useAgentsStore((s) => s.agents);
   const agents = useMemo(
     () => allAgents.filter(isChatAgent),
@@ -602,14 +843,32 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const unwatchRun = useRunsStore((s) => s.unwatchRun);
   const approvals = useRunsStore((s) => s.approvals);
 
-  const [composer, setComposer] = useState<CanvasComposerDraft>({ draft: initialPrompt, reference: null });
+  const savedComposer = workspaceId && agentId
+    ? readChatWorkspaceState(workspaceId, agentId, conversationId)?.composer
+    : undefined;
+  const [composer, setComposerState] = useState<CanvasComposerDraft>(initialPrompt
+    ? { draft: initialPrompt, reference: null }
+    : savedComposer ?? { draft: '', reference: null });
+  const [composerAttachments, setComposerAttachments] = useState<readonly PromptAttachment[]>([]);
+  const [attachmentSendPending, setAttachmentSendPending] = useState(false);
+  const attachmentSendPendingRef = useRef(false);
+  const [attachmentClearRequest, setAttachmentClearRequest] = useState(0);
+  const [analysisLaunchPending, setAnalysisLaunchPending] = useState(false);
   const { draft, reference: knowledgeReference } = composer;
   const setDraft = useCallback((value: string | ((previous: string) => string)) => {
-    setComposer((current) => ({ ...current, draft: typeof value === 'function' ? value(current.draft) : value }));
-  }, []);
+    setComposerState((current) => {
+      const next = { ...current, draft: typeof value === 'function' ? value(current.draft) : value };
+      if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: next, queue: useChatStore.getState().queue });
+      return next;
+    });
+  }, [agentId, conversationId, workspaceId]);
   const setKnowledgeReference = useCallback((reference: KnowledgeCanvasReference | null) => {
-    setComposer((current) => ({ ...current, reference }));
-  }, []);
+    setComposerState((current) => {
+      const next = { ...current, reference };
+      if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: next, queue: useChatStore.getState().queue });
+      return next;
+    });
+  }, [agentId, conversationId, workspaceId]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [selectedSwarmMember, setSelectedSwarmMember] = useState<SwarmMemberSelection | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -626,6 +885,10 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const [approvalAnchors, setApprovalAnchors] = useState<Record<string, string>>({});
   const previousConversationRef = useRef(conversationId);
 
+  const onComposerAttachmentsChange = useCallback((attachments: readonly PromptAttachment[]) => {
+    setComposerAttachments(attachments);
+  }, []);
+
   useLayoutEffect(() => {
     const previous = previousConversationRef.current;
     if (previous === conversationId) return;
@@ -633,14 +896,22 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     // Creating the first Run changes the conversation ID; the Agent's reader
     // and any newly typed follow-up must remain in place during that transition.
     if (!(previous === null && conversationId !== null && sending)) {
-      setComposer({ draft: '', reference: null });
+      const restored = workspaceId && agentId
+        ? readChatWorkspaceState(workspaceId, agentId, conversationId)?.composer
+        : undefined;
+      setComposerState(restored ?? { draft: '', reference: null });
+      if (!attachmentSendPendingRef.current) setComposerAttachments([]);
     }
     setWorkspaceOpen(false);
     setSelectedSwarmMember(null);
     followStreamRef.current = true;
     approvalAnchorsRef.current = {};
     setApprovalAnchors({});
-  }, [conversationId, sending]);
+  }, [agentId, conversationId, sending, workspaceId]);
+
+  useEffect(() => {
+    if (conversationId) void refreshSources(conversationId);
+  }, [conversationId, refreshSources]);
 
   useEffect(() => {
     if (initialPrompt) textareaRef.current?.focus();
@@ -662,6 +933,45 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
   const latestRunNotice = latestRunId ? runAlerts[latestRunId] : undefined;
 
+  useEffect(() => {
+    if (!workspaceId || !agentId || !conversationId) {
+      resetAnalysis();
+      return;
+    }
+    void refreshAnalysis(workspaceId, agentId, conversationId);
+  }, [agentId, conversationId, refreshAnalysis, resetAnalysis, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !agentId || !conversationId || !latestRunId || !latestRun?.status) return;
+    void refreshAnalysis(workspaceId, agentId, conversationId);
+  }, [agentId, conversationId, latestRun?.status, latestRunId, refreshAnalysis, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !agentId || !conversationId) {
+      resetDecisions();
+      return;
+    }
+    if (!analysisProjection) return;
+    void refreshDecisions(workspaceId, agentId, conversationId);
+  }, [agentId, analysisProjection, conversationId, refreshDecisions, resetDecisions, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !agentId || !conversationId) {
+      resetPublication();
+      return;
+    }
+    hydratePublication(workspaceId, agentId, conversationId);
+  }, [agentId, conversationId, hydratePublication, resetPublication, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !agentId || !conversationId || !analysisProjection) return;
+    void refreshPublication();
+  }, [agentId, analysisProjection, conversationId, refreshPublication, workspaceId]);
+
+  useEffect(() => {
+    if (analysisProjection) reconcilePublication(analysisProjection);
+  }, [analysisProjection, reconcilePublication]);
+
   // 订阅当前会话所有 run，确保历史轮次消息可回放。
   useEffect(() => {
     for (const id of runIds) watchRun(id);
@@ -671,6 +981,15 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   }, [runIds, watchRun, unwatchRun]);
 
   const messages = useMemo(() => buildMessages(runIds, timelines), [runIds, timelines]);
+  const analysisRunIds = useMemo(() => new Set(
+    [...runs, ...Object.values(runSnapshots)]
+      .filter((run) => run.output_contract === 'chat-analysis/v1')
+      .map((run) => run.id),
+  ), [runSnapshots, runs]);
+  const transcriptSourceMessages = useMemo(
+    () => messages.filter((message) => !(message.kind === 'assistant' && analysisRunIds.has(message.runId))),
+    [analysisRunIds, messages],
+  );
   const selectedMember = useMemo(() => {
     if (!selectedSwarmMember) return undefined;
     const swarmMessage = messages.find((message) => message.runId === selectedSwarmMember.runId && message.kind === 'swarm' && message.swarm?.id === selectedSwarmMember.swarmId);
@@ -680,6 +999,10 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const liveStream = useMemo(
     () => (latestRunId ? aggregateRunStream(timelines[latestRunId] ?? []) : { reasoning: '', answerDraft: '' }),
     [latestRunId, timelines],
+  );
+  const transcriptLiveStream = useMemo(
+    () => latestRunId && analysisRunIds.has(latestRunId) ? { ...liveStream, answerDraft: '' } : liveStream,
+    [analysisRunIds, latestRunId, liveStream],
   );
   const liveRunActive = isRunLive(latestRun?.status);
   const messagesProjectionTrace = useMemo<ProjectionTrace | undefined>(() => {
@@ -734,8 +1057,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   }, [latestRunId, liveRunActive, liveStream]);
   useProjectionTrace(liveDraftProjectionTrace);
   const displayMessages = useMemo(
-    () => hideLiveRunDrafts(messages, latestRunId, liveRunActive),
-    [messages, latestRunId, liveRunActive],
+    () => hideLiveRunDrafts(transcriptSourceMessages, latestRunId, liveRunActive),
+    [latestRunId, liveRunActive, transcriptSourceMessages],
   );
   const runApprovals = useMemo(
     () => (latestRunId ? approvals[latestRunId] ?? [] : []),
@@ -786,11 +1109,11 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
       buildTranscriptSegments(transcriptMessages, {
         runStatuses,
         liveRunId: latestRunId,
-        liveStream,
+        liveStream: transcriptLiveStream,
         liveRunActive,
         hasPendingApproval,
         pendingUsers,
-        rawMessages: messages,
+        rawMessages: transcriptSourceMessages,
         showReasoning,
         toolGrouping: {
           groupExplore: groupExploreTools,
@@ -802,11 +1125,11 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
       transcriptMessages,
       runStatuses,
       latestRunId,
-      liveStream,
+      transcriptLiveStream,
       liveRunActive,
       hasPendingApproval,
       pendingUsers,
-      messages,
+      transcriptSourceMessages,
       showReasoning,
       groupExploreTools,
       groupTerminalTools,
@@ -818,7 +1141,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     setApprovalAnchors({});
     approvalAnchorsRef.current = {};
     setSelectedSwarmMember(null);
-  }, [conversationId]);
+  }, [agentId, conversationId]);
 
   // 审批出现时钉住 anchor：之后的新输出排在审批卡之后（对齐 kanna inline approval）。
   useEffect(() => {
@@ -949,6 +1272,15 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     el.scrollTop = el.scrollHeight;
   }, [conversationId, presentedSegments.length, liveStream.reasoning, liveStream.answerDraft, runApprovals.length]);
 
+  const previousAnalysisStatusRef = useRef(analysisProjection?.status);
+  useEffect(() => {
+    const previous = previousAnalysisStatusRef.current;
+    const next = analysisProjection?.status;
+    previousAnalysisStatusRef.current = next;
+    if (next !== 'needs_answer' || previous === next || !followStreamRef.current || !scrollRef.current) return;
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [analysisProjection?.status]);
+
   // 自动续发：最新 run「进入」succeeded 且队列非空时出队首条开新轮。
   // 只在状态边沿触发一次：drain 失败后 sending 复位也不会原地重试风暴；
   // failed/cancelled/lost/interrupted 不自动发（留给用户手动「继续发送」）。
@@ -964,18 +1296,109 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   // 最新 run 的累计输入用量；后端未上报（字段缺失）时不渲染。
   // 上下文窗口需另拉 /models 匹配 agent 模型--不值得为凑格式加请求，只显 used。
   const usageText = formatTokenUsage(latestRun?.usage_in);
+  const attachmentScope = useMemo(
+    () => (workspaceId && agentId ? { workspaceId, agentId, conversationId } : undefined),
+    [agentId, conversationId, workspaceId],
+  );
+  const analysisQueued = queue.some((item) => item.outputContract === CHAT_ANALYSIS_OUTPUT_CONTRACT);
+  const decisionItem = useMemo(() => {
+    const items = analysisProjection?.document?.items ?? [];
+    const selectedId = selectedDecisionItemId && items.some((item) => item.id === selectedDecisionItemId)
+      ? selectedDecisionItemId
+      : items.find((item) => analysisProjection?.decisions.some((decision) => decision.item_id === item.id))?.id ?? items[0]?.id;
+    return items.find((item) => item.id === selectedId) ?? null;
+  }, [analysisProjection, selectedDecisionItemId]);
+  const decision = useMemo(
+    () => analysisProjection && decisionItem
+      ? analysisProjection.decisions.find((candidate) => candidate.item_id === decisionItem.id) ?? null
+      : null,
+    [analysisProjection, decisionItem],
+  );
+  const decisionRecheckReason = decision?.review_reason ?? (analysisProjection?.status === 'stale' ? analysisProjection.error : undefined);
+  const publicationItems = useMemo(() => {
+    if (!analysisProjection?.document || ['stale', 'analyzing', 'failed'].includes(analysisProjection.status)) return [];
+    const itemIds = new Set(analysisProjection.document.items.map((item) => item.id));
+    const confirmed = new Set(analysisProjection.decisions
+      .filter((candidate) => candidate.revision === analysisProjection.revision && candidate.status === 'valid' && candidate.outcome === 'confirmed' && itemIds.has(candidate.item_id))
+      .map((candidate) => candidate.item_id));
+    return analysisProjection.document.items.filter((item) => confirmed.has(item.id));
+  }, [analysisProjection]);
+  const publicationDecisions = useMemo(
+    () => analysisProjection?.decisions.filter((candidate) => publicationItems.some((item) => item.id === candidate.item_id)) ?? [],
+    [analysisProjection, publicationItems],
+  );
+  const publicationBlocked = !analysisProjection || ['stale', 'analyzing', 'failed'].includes(analysisProjection.status);
 
-  const doSend = () => {
+  const sendComposer = async (options: { outputContract?: 'languagegui/v1' | 'chat-analysis/v1'; fallbackText?: string; clearAttachmentsAfterSend?: boolean } = {}): Promise<boolean> => {
+    if (switchingWorkspace) return false;
     const text = draft.trim();
-    if (!text) return;
+    const messageText = text || options.fallbackText || '';
+    if (!messageText && composerAttachments.length === 0) return false;
     const reference = knowledgeReference && workspaceId && agentId && referenceBelongsTo(knowledgeReference, workspaceId, agentId) ? knowledgeReference : null;
-    const message = buildCanvasMessage(text, reference);
+    const message = buildCanvasMessage(messageText, reference);
     if (canvasEnabled || codeEnabled) onNarrowPanelChange('chat');
-    setComposer({ draft: '', reference: null });
-    void send(message).then((retained) => {
-      if (!retained) setComposer((current) => restoreCanvasComposer(current, { draft: text, reference }));
+    const attachmentInputs: ChatAttachmentInput[] = composerAttachments.map((attachment) => ({ key: attachment.key, file: attachment.file }));
+    if (attachmentInputs.length > 0) {
+      attachmentSendPendingRef.current = true;
+      setAttachmentSendPending(true);
+    }
+    setComposerState({ draft: '', reference: null });
+    if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: { draft: '', reference: null }, queue: useChatStore.getState().queue });
+    let retained = false;
+    try {
+      retained = await send(message, attachmentInputs, options.outputContract ? { outputContract: options.outputContract } : undefined);
+      if (retained) {
+        if (options.clearAttachmentsAfterSend && attachmentInputs.length > 0) setAttachmentClearRequest((value) => value + 1);
+        const activeConversationId = useChatStore.getState().conversationId;
+        if (activeConversationId && workspaceId && agentId && options.outputContract === CHAT_ANALYSIS_OUTPUT_CONTRACT) void refreshAnalysis(workspaceId, agentId, activeConversationId);
+        if (activeConversationId && options.outputContract !== CHAT_ANALYSIS_OUTPUT_CONTRACT) void refreshSources(activeConversationId);
+      }
+    } catch {
+      retained = false;
+    } finally {
+      if (attachmentInputs.length > 0) {
+        attachmentSendPendingRef.current = false;
+        setAttachmentSendPending(false);
+      }
+    }
+    if (!retained) setComposerState((current) => {
+      const next = restoreCanvasComposer(current, { draft: text, reference });
+      const recoveryConversationId = useChatStore.getState().conversationId;
+      if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, recoveryConversationId, { composer: next, queue: useChatStore.getState().queue });
+      return next;
     });
+    return retained;
   };
+
+  const startAnalysis = async () => {
+    if (switchingWorkspace || analysisLaunchPending || analysisQueued || analysisSubmitting || analysisProjection?.status === 'analyzing' || analysisProjection?.status === 'needs_answer') return;
+    setAnalysisLaunchPending(true);
+    try {
+      await sendComposer({
+        outputContract: CHAT_ANALYSIS_OUTPUT_CONTRACT,
+        fallbackText: CHAT_ANALYSIS_INSTRUCTION,
+        clearAttachmentsAfterSend: true,
+      });
+    } finally {
+      setAnalysisLaunchPending(false);
+    }
+  };
+
+  const startChangeReview = async () => {
+    if (switchingWorkspace || analysisLaunchPending || analysisQueued || analysisSubmitting) return;
+    setAnalysisLaunchPending(true);
+    try {
+      await sendComposer({
+        outputContract: CHAT_ANALYSIS_OUTPUT_CONTRACT,
+        fallbackText: CHAT_ANALYSIS_CHANGE_INSTRUCTION,
+        clearAttachmentsAfterSend: true,
+      });
+    } finally {
+      setAnalysisLaunchPending(false);
+    }
+  };
+
+  const doSend = () => sendComposer();
 
   const applyPrompt = (text: string) => {
     setDraft(text);
@@ -984,6 +1407,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
 
   return (
     <div className="knowledge-chat-workspace flex min-h-0 flex-1 flex-col overflow-hidden">
+      {storageNotice && <p className="mx-auto w-full max-w-[920px] shrink-0 border-b border-status-warning/30 bg-status-warning/5 px-comfortable py-tight text-caption text-status-warning" role="status">{storageNotice}</p>}
       {(canvasEnabled || codeEnabled) && (
         <div className="knowledge-chat-mobile-tabs" role="group" aria-label={codeEnabled ? '代码工作区视图' : '产品工作区视图'}>
           {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
@@ -995,7 +1419,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     <div className={`knowledge-chat-layout flex flex-1 min-h-0 overflow-hidden${canvasEnabled || codeEnabled ? ' knowledge-chat-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
       {canvasEnabled && workspaceId && agentId && (
         <section className="knowledge-chat-document" aria-label="Agent 知识画布">
-          <KnowledgeCanvas workspaceId={workspaceId} agentId={agentId} agentName={agent?.name ?? 'Agent'} requesterAgentId={canReadAgentKnowledge(userRole) ? agentId : undefined} onReference={onKnowledgeReference} refreshKey={latestRun && TERMINAL.has(latestRun.status) ? `${latestRun.id}:${latestRun.status}` : ''} />
+          <KnowledgeCanvas workspaceId={workspaceId} workspaceName={workspaceName} agentId={agentId} agentName={agent?.name ?? 'Agent'} requesterAgentId={canReadAgentKnowledge(userRole) ? agentId : undefined} onReference={onKnowledgeReference} refreshKey={latestRun && TERMINAL.has(latestRun.status) ? `${latestRun.id}:${latestRun.status}` : ''} />
         </section>
       )}
       {codeEnabled && workspaceId && agentId && (
@@ -1021,12 +1445,23 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
             {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="knowledge-chat-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
             {codeAvailable && <button type="button" onClick={onToggleCode} aria-pressed={codeEnabled} aria-label={codeEnabled ? '关闭代码工作台' : '打开代码工作台'} className="knowledge-chat-code-toggle"><Code2 className="h-4 w-4" aria-hidden />代码</button>}
             {canvasAvailable && <button type="button" onClick={onToggleCanvas} aria-pressed={canvasEnabled} aria-label={canvasEnabled ? '关闭知识画布' : '打开知识画布'} className="knowledge-chat-canvas-toggle"><Columns2 className="h-4 w-4" aria-hidden />画布</button>}
+            <button
+              type="button"
+              onClick={() => void startAnalysis()}
+              disabled={switchingWorkspace || analysisLaunchPending || analysisQueued || analysisSubmitting || analysisProjection?.status === 'analyzing' || analysisProjection?.status === 'needs_answer'}
+              aria-label="整理需求，逐项确认"
+              title={runInFlight ? '当前运行结束后开始需求整理' : '整理当前对话的需求、异常场景和材料冲突'}
+              className="inline-flex h-8 items-center gap-micro rounded-button border border-brand-primary/30 px-tight text-caption text-brand-primary transition-colors hover:bg-brand-muted/35 disabled:cursor-not-allowed disabled:opacity-55"
+            >
+              {analysisLaunchPending || analysisProjection?.status === 'analyzing' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <ListChecks className="h-3.5 w-3.5" aria-hidden="true" />}
+              {analysisQueued ? '已加入整理队列' : analysisProjection?.status === 'needs_answer' ? '继续确认' : analysisProjection?.status === 'ready' ? '重新整理需求' : '整理需求，逐项确认'}
+            </button>
             <ChatThemeToggle theme={chatTheme} onToggle={onToggleTheme} />
             {conversationArtifacts.length > 0 && (
               <button
                 type="button"
-                title={workspaceOpen ? '关闭工作区' : '打开工作区'}
-                aria-label={workspaceOpen ? '关闭工作区' : '打开工作区'}
+                title={workspaceOpen ? '关闭成果' : '查看成果'}
+                aria-label={workspaceOpen ? '关闭成果' : '查看成果'}
                 aria-pressed={workspaceOpen}
                 onClick={() => { setSelectedSwarmMember(null); setWorkspaceOpen((v) => !v); }}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary"
@@ -1095,6 +1530,62 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
           {latestRunId && latestRun && TERMINAL.has(latestRun.status) && (
             <FileChangesCard runId={latestRunId} />
           )}
+          <ChatAnalysisPanel
+            projection={analysisProjection}
+            draft={analysisDraft}
+            loading={analysisLoading}
+            submitting={analysisSubmitting}
+            error={analysisError}
+            conversationSources={conversationSources ?? []}
+            onSelection={setAnalysisSelection}
+            onText={setAnalysisText}
+            onSubmit={(disposition) => { void submitAnalysisAnswer(disposition); }}
+            onRestart={() => void startAnalysis()}
+            onRefresh={() => workspaceId && agentId && conversationId && void refreshAnalysis(workspaceId, agentId, conversationId)}
+            onRestoreDraftText={restoreAnalysisDraftText}
+            onDiscardDraft={discardAnalysisDraft}
+          />
+          <ChatDecisionPanel
+            item={decisionItem}
+            items={analysisProjection?.document?.items ?? []}
+            selectedItemId={selectedDecisionItemId}
+            decision={decision}
+            revision={analysisProjection?.revision ?? 0}
+            recheckReason={decisionRecheckReason}
+            history={decisionHistory}
+            draft={decisionDraft}
+            loading={decisionLoading}
+            historyLoading={decisionHistoryLoading}
+            submitting={decisionSubmitting}
+            error={decisionError}
+            onOutcome={setDecisionOutcome}
+            onSelectItem={selectDecisionItem}
+            onConclusion={setDecisionConclusion}
+            onBasis={setDecisionBasis}
+            onProductVersion={setDecisionProductVersion}
+            onSubmit={() => { void submitDecision(); }}
+            onRecheck={() => { void recheckDecisions(); }}
+            onRestoreDraftText={restoreDecisionDraftText}
+            onDiscardDraft={discardDecisionDraft}
+            onReviewChanges={() => { void startChangeReview(); }}
+          />
+          <TaskDraftPreview
+            items={publicationItems}
+            decisions={publicationDecisions}
+            draft={publicationDraft}
+            analysisBlocked={publicationBlocked}
+            loading={publicationLoading}
+            saving={publicationSaving}
+            publishing={publicationPublishing}
+            error={publicationError}
+            onOpen={openPublication}
+            onToggleItem={togglePublicationItem}
+            onTitle={setPublicationTitle}
+            onNewDraft={startNewPublicationDraft}
+            onSave={() => { void savePublicationDraft(); }}
+            onPublish={() => { void publishPublication(); }}
+            onRetry={() => { void refreshPublication(); }}
+          />
         </div>
       </div>
 
@@ -1120,6 +1611,13 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
             </div>
           )}
           <ChatBottomDock workflow={dock.workflow} runStatus={latestRun?.status} />
+          <ChatSourceShelf
+            chatId={conversationId}
+            sources={conversationSources ?? []}
+            loading={sourcesLoading}
+            error={sourcesError}
+            onRetry={() => conversationId && void refreshSources(conversationId)}
+          />
           {knowledgeReference && (
             <div className="knowledge-chat-reference" aria-label="本轮知识引用">
               <details>
@@ -1130,7 +1628,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
             </div>
           )}
           <PromptBox
-            key={conversationId ?? 'new-conversation'}
             draft={draft}
             onDraftChange={setDraft}
             onSend={doSend}
@@ -1142,11 +1639,15 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
             onRemoveQueued={removeQueued}
             canDrainQueue={!runInFlight && (!!sendError || (!!latestRun && TERMINAL.has(latestRun.status) && latestRun.status !== 'succeeded'))}
             onDrainQueue={() => void drainQueue()}
-            sending={sending}
+            sending={sending || switchingWorkspace}
             runInFlight={runInFlight}
             stopping={!!latestRunId && stoppingRunId === latestRunId}
             onStop={() => latestRunId && void stopActiveRun(latestRunId, 'user_stopped')}
             usageText={usageText}
+            attachmentScope={attachmentScope}
+            preserveAttachmentsOnScopeChange={attachmentSendPending}
+            clearAttachmentsRequest={attachmentClearRequest}
+            onAttachmentsChange={onComposerAttachmentsChange}
           />
         </div>
       </div>

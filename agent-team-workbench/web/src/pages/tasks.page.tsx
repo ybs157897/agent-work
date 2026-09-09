@@ -266,7 +266,7 @@ export default function TasksPage() {
             )}
             <button
               type="button"
-              onClick={() => navigate('/task-chat')}
+              onClick={() => navigate('/chat')}
               className="plane-board-add focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40"
             >
               <Plus className="h-3.5 w-3.5" aria-hidden />
@@ -313,7 +313,7 @@ export default function TasksPage() {
               showEmptyColumns={showEmptyColumns}
               onShowEmpty={() => setShowEmptyColumns(true)}
             />
-            <EmptyTaskState onCreate={() => navigate('/task-chat')} />
+            <EmptyTaskState onCreate={() => navigate('/chat')} />
           </div>
         ) : viewMode === 'kanban' ? (
           <div className="px-base py-snug">
@@ -336,7 +336,7 @@ export default function TasksPage() {
                   tasks={col.tasks}
                   childCounts={childCounts}
                   participantsByRoot={participantsByRoot}
-                  onCreate={col.id === 'todo' ? () => navigate('/task-chat') : undefined}
+                  onCreate={col.id === 'todo' ? () => navigate('/chat') : undefined}
                   onOpen={openTask}
                 />
               ))}

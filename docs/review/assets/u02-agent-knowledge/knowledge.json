@@ -1,0 +1,52 @@
+{
+  "alpha_other_private": {
+    "item_id": "kb_01M21YPZ91T3M61V4S5R79H7GG",
+    "marker": "U02_ALPHA_OTHER_PRIVATE 另一个 Agent 的未共享排障笔记。",
+    "owner_agent_id": "agent_01M21SV9311Y981PES9P64DCQG",
+    "source_id": "kbs_01M21YPZ91JD3SNTE2TKW0YJRF",
+    "version_id": "kbv_01M21YPZ91XCC3VAM2TTTYF92N",
+    "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82"
+  },
+  "alpha_private": {
+    "item_id": "kb_01M21YPZ90SAT0JCKHKQ6NAQMN",
+    "marker": "U02_ALPHA_PRIVATE Java 工程规则：索引未就绪时保留文件阅读。",
+    "owner_agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+    "source_id": "kbs_01M21YPZ909GDJXC4CKSSQJYY3",
+    "version_id": "kbv_01M21YPZ908VJV3DVN6BVADBJ7",
+    "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82"
+  },
+  "alpha_shared": {
+    "item_id": "kb_01M21YPZ91WE6E1G1Z1110PQS6",
+    "marker": "U02_ALPHA_SHARED 工程团队约定：跨文件重命名先预览再确认。",
+    "owner_agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+    "source_id": "kbs_01M21YPZ91WGAZYVSH9TJRYVY3",
+    "version_id": "kbv_01M21YPZ91P0DA6YDDCAT08MCG",
+    "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82"
+  },
+  "beta_private": {
+    "item_id": "kb_01M21YPZ92FD7GSEJY0EJSXSTK",
+    "marker": "U02_BETA_PRIVATE 财务规则：凭证金额按两位小数核对。",
+    "owner_agent_id": "agent_01M21SVJ2B166PTTYW7GK6GNR2",
+    "source_id": "kbs_01M21YPZ92RX3CF37CS9S8GW1Y",
+    "version_id": "kbv_01M21YPZ926XF9XJATD36ZJ1WA",
+    "workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G"
+  },
+  "beta_shared": {
+    "item_id": "kb_01M21YPZ92TBX81C2CZG57VW47",
+    "marker": "U02_BETA_SHARED 财务团队约定：月结前核对账期。",
+    "owner_agent_id": "agent_01M21SVJ2B166PTTYW7GK6GNR2",
+    "source_id": "kbs_01M21YPZ92X2YW5W8THAJJ14Y2",
+    "version_id": "kbv_01M21YPZ92XKX8NQYM97MG2DPX",
+    "workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G"
+  },
+  "kind": "synthetic isolation fixtures via official KnowledgeRepo; not model curation",
+  "workspace_ids": {
+    "alpha": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+    "alpha_other_agent": "agent_01M21SV9311Y981PES9P64DCQG",
+    "beta": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+    "beta_agent": "agent_01M21SVJ2B166PTTYW7GK6GNR2",
+    "gamma": "ws_01M21SVJGDR2VE9HX2TDM0441N",
+    "source": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+    "source_agent": "agent_01M21SV95WPMQJ30V994J0YEZC"
+  }
+}

@@ -19,6 +19,9 @@ export default function DashboardPage() {
   const agents = useAgentsStore((s) => s.agents);
   const workItems = useTasksStore((s) => s.items);
   const navigate = useNavigate();
+  const chatPath = (agentId: string) => workspace?.id
+    ? `/chat?ws=${encodeURIComponent(workspace.id)}&agent=${encodeURIComponent(agentId)}`
+    : `/chat?agent=${encodeURIComponent(agentId)}`;
 
   if (!dashboard) return <DashboardSkeleton />;
 
@@ -65,7 +68,7 @@ export default function DashboardPage() {
                   <button
                     type="button"
                     key={agent.id}
-                    onClick={() => navigate(`/chat?agent=${agent.id}`)}
+                    onClick={() => navigate(chatPath(agent.id))}
                     title={`与 ${agent.name} 对话`}
                     className="group flex min-w-0 items-center gap-snug rounded-button border border-border-subtle bg-surface-base/55 p-snug text-left transition-colors duration-motionFast hover:border-border-strong hover:bg-surface-base focus-visible:ring-2 focus-visible:ring-brand-primary/35"
                     role="listitem"

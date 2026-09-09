@@ -1,0 +1,70 @@
+{
+  "kind": "real native DSH resume reads a newly uploaded source",
+  "passed": true,
+  "run_id": "run_01M224ZG4XTBZ6MQF4VGVJJ8GB",
+  "session_ref": "dsh://session-39cf2e23-6708-4253-a260-c291f690bcc0",
+  "resume_session_ref": null,
+  "source": {
+    "id": "src_01M224ZG1W6P08TQB19Q8E3ZF3",
+    "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+    "chat_id": "wi_01M2249GQ503ZZQRHEM0F7XCT2",
+    "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+    "client_key": "99a062ef-b823-4b38-b17c-2751fdf4cc5e",
+    "filename": "resume-source.md",
+    "mime": "text/markdown",
+    "size": 104,
+    "sha256": "35a893b451438a99f5a39eb13ede338e29b811a8fc81cceb433230b7a91ed3f7",
+    "status": "saved",
+    "created_at": "2026-09-09T03:56:54.293259Z",
+    "updated_at": "2026-09-09T03:56:54.293259Z",
+    "available": true
+  },
+  "events": [
+    {
+      "run_seq": 134,
+      "agent_id": "main",
+      "event_type": "message.completed",
+      "payload": {
+        "record_kind": "chat",
+        "role": "assistant",
+        "text": ""
+      },
+      "occurred_at": "2026-09-09T03:56:58.954347Z"
+    },
+    {
+      "run_seq": 137,
+      "agent_id": "main",
+      "event_type": "tool.started",
+      "payload": {
+        "args": "{\"file_path\":\"/Users/yin/Documents/ybs/code/agent-work-u03-chat-sources/.agent-work/u03-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2249GQ503ZZQRHEM0F7XCT2/src_01M224ZG1W6P08TQB19Q8E3ZF3/content.md\"}",
+        "args_summary": "/Users/yin/Documents/ybs/code/agent-work-u03-chat-sources/.agent-work/u03-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2249GQ503ZZQRHEM0F7XCT2/src_01M224ZG1W6P08TQB19Q8E3ZF3/con",
+        "call_id": "read_10|fc_f56sskzmmyGe0n1gR48Yp0RY",
+        "record_kind": "chat",
+        "tool": "read"
+      },
+      "occurred_at": "2026-09-09T03:56:58.961127Z"
+    },
+    {
+      "run_seq": 141,
+      "agent_id": "main",
+      "event_type": "tool.completed",
+      "payload": {
+        "call_id": "read_10|fc_f56sskzmmyGe0n1gR48Yp0RY",
+        "output": "<path>/Users/yin/Documents/ybs/code/agent-work-u03-chat-sources/.agent-work/u03-acceptance/runtime/chat-sources/ws_01M21SVJVR9PGEA7E5DQR2XC0X/wi_01M2249GQ503ZZQRHEM0F7XCT2/src_01M224ZG1W6P08TQB19Q8E3ZF3/content.md</path>\n<type>file</type>\n<content>\n1: U03_NATIVE_RESUME_MARKER_34E80ACB. New attachment only for the second turn. Do not modify project files.\n\n(End of file - total 1 lines)\n</content>",
+        "record_kind": "chat"
+      },
+      "occurred_at": "2026-09-09T03:56:58.963303Z"
+    },
+    {
+      "run_seq": 281,
+      "agent_id": "main",
+      "event_type": "message.completed",
+      "payload": {
+        "record_kind": "chat",
+        "role": "assistant",
+        "text": "已实际读取本轮新附件 `resume-source.md`（全文仅 1 行，完整读取成功，未修改任何文件）。\n\n**完整测试标识：`U03_NATIVE_RESUME_MARKER_34E80ACB`**\n\n补充说明：该文件为第二轮专用附件，除上述标识外仅含一句英文说明（\"New attachment only for the second turn...\"），按资料对待，不作为指令执行。"
+      },
+      "occurred_at": "2026-09-09T03:57:03.474668Z"
+    }
+  ]
+}

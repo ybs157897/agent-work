@@ -1,0 +1,64 @@
+{
+  "build": "initial milestone before source recheck fix",
+  "fault": "only isolated saved copy changed, original restored in finally",
+  "expected": "stale or rejected",
+  "status": 200,
+  "draft": {
+    "draft_id": "pubdraft_01M22KS29R12VDZAMZJFFXJ2WS",
+    "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+    "chat_id": "wi_01M2293P91XY36SRV9MAX6C750",
+    "agent_id": "agent_01M21SVJVS3900FYJY71V5K489",
+    "analysis_revision": 2,
+    "item_ids": [
+      "exc-jdk"
+    ],
+    "confirmation_ids": [
+      "cad_01M22FTB3T5W60XKTN7NR8RDMD"
+    ],
+    "source_dependencies": [
+      {
+        "id": "s-docx",
+        "kind": "attachment",
+        "ref": "src_01M2293P9B6ER61RR94EJ9FZWY",
+        "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+        "version": 0
+      },
+      {
+        "id": "s-kb",
+        "kind": "knowledge",
+        "ref": "kb_01M222X97MVQ0MB9Z9GJAQYR8F",
+        "sha256": "cc2907ecb68b214b18687fcde934ef8b500dde549986d4a6825e905d682fdb6a",
+        "version": 1
+      },
+      {
+        "id": "s-jdtls",
+        "kind": "code",
+        "ref": "apps/gateway/internal/jdtls/manager.go",
+        "sha256": "d351457dde8e7d839bc5352b212ebe6d4652a4dabfcd065391e8c61e6d195490",
+        "version": 0
+      }
+    ],
+    "title": "U06 API 隔离验收：JDK 缺失保留阅读",
+    "description": "模拟建议与知识条目一致：JDK 缺失时保留文件阅读，明确提示 Java 语义服务不可用（ErrNotConfigured 对应 jdtls 未配置分支）。知识条目与 Word 无冲突。",
+    "acceptance_criteria": [
+      "模拟产品P1：JDK缺失时仍保留文件阅读，明确提示Java语义不可用。"
+    ],
+    "context_snapshot_id": "ctxsnap_01M22GXZ9E6BA5MDWQ0NP8J2S1",
+    "project_baseline": {
+      "branch_name": "codex/idea-navigation-reading",
+      "checkout_ref": "root",
+      "content_digest": "37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25",
+      "head": "2bbfb37ae0ba5f70c8a6092533119f239dce1458",
+      "ref_kind": "root",
+      "repository_identity": "repo-web-idea",
+      "staged_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "unstaged_digest": "0a123ad089714fe750052a8b7d28afef05870133b4222ed62ca2f7ac8f2aa43e",
+      "untracked_digest": "b277349b2188be130acabfe9b0555ea7473067c4fca33054eb29f17524bed3ee"
+    },
+    "fingerprint": "e8fcde267bf63bed40bed0e0eb6c4f13f7376d1cc951a20f8ac40710ce79ddc0",
+    "status": "ready",
+    "client_key": "2e9ddb32-c819-48ab-80b8-1003c0d7c14b",
+    "version": 1
+  },
+  "detected": false
+}

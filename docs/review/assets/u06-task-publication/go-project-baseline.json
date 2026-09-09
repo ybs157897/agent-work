@@ -1,0 +1,11 @@
+{
+  "repository_identity": "repo-web-idea",
+  "ref_kind": "root",
+  "branch_name": "codex/idea-navigation-reading",
+  "checkout_ref": "root",
+  "head": "2bbfb37ae0ba5f70c8a6092533119f239dce1458",
+  "staged_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "unstaged_digest": "0a123ad089714fe750052a8b7d28afef05870133b4222ed62ca2f7ac8f2aa43e",
+  "untracked_digest": "b277349b2188be130acabfe9b0555ea7473067c4fca33054eb29f17524bed3ee",
+  "content_digest": "37df7838260184e051aa6b65f0ed4e5ccfb7fb60ecf042d34138a5ed7c7e2c25"
+}

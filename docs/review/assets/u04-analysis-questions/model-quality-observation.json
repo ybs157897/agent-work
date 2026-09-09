@@ -1,0 +1,8 @@
+{
+  "kind": "human review of real AI proposal; not a server authorization or protocol failure",
+  "run_id": "run_01M2293PAVYJ6YNN47ZGHBRG8Y",
+  "item_id": "normal-jdtls",
+  "finding": "Model inferred missing frontend LSP/write capabilities from package.json. Reading package dependencies alone cannot establish absence of local implementations.",
+  "action": "Prompt strengthened to require implementation/call-site evidence for capability gaps. Keep original revision immutable; U05 developer confirmation must not approve this unsupported inference. Later material/correction flow will verify change handling.",
+  "no_code_changes_authorized": true
+}

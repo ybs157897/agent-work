@@ -1,0 +1,11 @@
+{
+  "built_at": "2026-09-09T16:45:56.614770+08:00",
+  "sources": {
+    "internal/application/publication.go": "c137073f548910ca80450bcd115d233d1363982988f857f0a9c8916c79d3d7f3",
+    "internal/application/execution_context.go": "a27746977928cd1a574dd50a7792f399b55f9f96fac8ea0202863d7e4c70a8ab",
+    "internal/application/coordinator_engine.go": "f4c1f365300148d8aceead45fccbbf6e86dd17b8ebae355a3ce81121d30824bf",
+    "internal/hostregistry/project_scan.go": "d893b2df21978d97aee5f1d6743044a274eec5dbc90c47633769ddad1f893e13",
+    "internal/domain/project_baseline.go": "bb1417577dd39be1d97d6a4389db7c8788887dcd8cc407c5b539aec566ebd5aa"
+  },
+  "binary_sha256": "e46648fec69939540c60192f01ed19090768e5f7bf5f9dfa22799f290c60de93"
+}

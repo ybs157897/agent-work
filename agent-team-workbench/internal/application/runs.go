@@ -46,6 +46,13 @@ type CreateRunParams struct {
 	// ClientKey 非空时启用实体级幂等：同 workspace 下同 key 重复创建返回既有 run
 	// （队列 drain 重试等场景；撞键时事务整体回滚，不产生重复事件与重复分派）。
 	ClientKey string
+	// SourceRefs are opaque Chat source identities. The application resolves
+	// them through the trusted FileStore before the Run row is committed.
+	SourceRefs []domain.ChatSourceRef
+	// analysisBaseRevision/analysisContext are internal recovery lineage. Public
+	// HTTP callers cannot choose a baseline or forge prior model context.
+	analysisBaseRevision int64
+	analysisContext      string
 	// ContextSource 决定快照来源策略（RFC §4.7）：空 = current（重新解析当前
 	// context 并冻结身份）；inherited/retry/evaluation/recovery 从
 	// ContextSourceSnapshotID 克隆（身份不变，不重读当前 Location/mount）。
@@ -91,6 +98,9 @@ type coordinatorRunAdmission struct {
 
 // CreateRun：权威事务写入 queued Run 后才分派，避免幽灵任务（架构文档 §5）。
 func (s *Service) CreateRun(ctx context.Context, workItemID string, p CreateRunParams) (*domain.ExecutionRun, error) {
+	if strings.TrimSpace(p.Instruction) == "" && len(p.SourceRefs) > 0 {
+		p.Instruction = "请阅读已附资料，并告诉我你观察到的内容或需要确认的问题。"
+	}
 	if p.Instruction == "" {
 		return nil, fmt.Errorf("%w: instruction required", domain.ErrValidation)
 	}
@@ -293,6 +303,9 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		}
 	}
 	var agent *domain.AgentProfile
+	var resolvedSources []resolvedChatSource
+	analysisRequested := p.OutputContract == orchestrator.OutputContractChatAnalysisV1
+	var analysisCatalog chatAnalysisCatalog
 	var coordinatorConfig *domain.TaskCoordinatorConfig
 	quotaAdmission := mapsCloneAny(p.quotaAdmission)
 	// usageAdmissionLocal 聚合受管 Worker/eval Run 创建闸产生的 usage kind
@@ -371,6 +384,20 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			}
 		} else if agent == nil || !agent.Kind.IsTaskCoordinator() || p.AgentProfileID != coordinatorState.CoordinatorAgentID {
 			return nil, fmt.Errorf("%w: coordinated root Task 只能由系统 Coordinator 或受证明的 Handoff target 创建 Run", domain.ErrValidation)
+		}
+	}
+	if analysisRequested {
+		plan, err := s.prepareChatAnalysisSources(ctx, wi, p.AgentProfileID, p.SourceRefs)
+		if err != nil {
+			return nil, err
+		}
+		resolvedSources = plan.Resolved
+		p.SourceRefs = plan.Refs
+		analysisCatalog.Sources = append(analysisCatalog.Sources, plan.Catalog...)
+	} else if len(p.SourceRefs) > 0 {
+		resolvedSources, err = s.resolveChatSourceRefs(ctx, wi, p.AgentProfileID, p.SourceRefs)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if p.governanceContext != nil && agent != nil {
@@ -584,8 +611,17 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		librarianAgent.Policy.Sandbox = "read-only"
 		agent = &librarianAgent
 	}
-	runInput := orchestrator.BuildInput(p.Instruction, p.AcceptanceCriteria, p.Requirements,
+	runInput := orchestrator.BuildInput(sourcePrompt(p.Instruction), p.AcceptanceCriteria, p.Requirements,
 		p.RuntimePreference, agent, label, reason)
+	if len(resolvedSources) > 0 {
+		runInput["source_refs"] = sourceRefInput(resolvedSources)
+		runInput["source_context"] = sourceContext(resolvedSources)
+		for _, resolved := range resolvedSources {
+			if err := s.store.ChatSources().MarkHandedToAgent(ctx, resolved.Source.ID, now); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if quotaAdmission != nil {
 		runInput["quota_admission"] = quotaAdmission
 	}
@@ -744,6 +780,50 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		conversation["handoff_summary"] = buildHandoffSummary(wi, history)
 	}
 	r.Input["conversation"] = conversation
+	if analysisRequested {
+		for _, message := range history {
+			role, _ := message["role"].(string)
+			if role != "user" {
+				continue
+			}
+			text, _ := message["text"].(string)
+			ref, _ := message["source_ref"].(string)
+			if ref == "" {
+				ref = analysisConversationRef + ":sha256:" + analysisTextDigest(text)
+			}
+			appendAnalysisConversationAliases(&analysisCatalog.Sources, ref, text)
+		}
+		appendAnalysisConversationAliases(&analysisCatalog.Sources,
+			analysisConversationRef+":sha256:"+analysisTextDigest(p.Instruction), p.Instruction)
+		sortChatAnalysisCatalogSources(analysisCatalog.Sources)
+		baseRevision := p.analysisBaseRevision
+		if baseRevision == 0 {
+			if previousAnalysis, previousErr := s.store.ChatAnalyses().Get(ctx, wi.WorkspaceID, wi.ID); previousErr == nil && previousAnalysis != nil {
+				baseRevision = previousAnalysis.Revision
+			} else if previousErr != nil && !errors.Is(previousErr, domain.ErrNotFound) {
+				return nil, previousErr
+			}
+		}
+		if err := s.mergeBaseAnalysisConversationCatalog(ctx, wi, baseRevision, &analysisCatalog); err != nil {
+			return nil, err
+		}
+		analysisContext := p.analysisContext
+		if strings.TrimSpace(analysisContext) == "" {
+			var contextErr error
+			analysisContext, contextErr = s.buildChatAnalysisContext(ctx, wi, &analysisCatalog)
+			if contextErr != nil {
+				return nil, contextErr
+			}
+		}
+		requestDigest := analysisRequestDigest(wi.ID, p.Instruction, analysisCatalog)
+		r.Input["analysis"] = map[string]any{
+			"version":        orchestrator.OutputContractChatAnalysisV1,
+			"request_digest": requestDigest,
+			"base_revision":  baseRevision,
+			"source_catalog": analysisCatalog.Sources,
+		}
+		r.Input["analysis_context"] = analysisContext
+	}
 	if p.AutoHealOf != "" {
 		r.Input["auto_heal_of"] = p.AutoHealOf
 		// 自愈重试也是一次 retry：填 RetryOf 让重试链在领域层可追溯。
@@ -795,6 +875,11 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	r.ContextSnapshotID = snapshot.ID
 	if err := s.claimTaskSessionAnchor(ctx, r, snapshot); err != nil {
 		return nil, err
+	}
+	if analysisRequested {
+		if err := s.startChatAnalysisAttemptLocked(ctx, wi, r, analysisCatalog); err != nil {
+			return nil, err
+		}
 	}
 	if newDispatch != nil {
 		if leadRunID != "" {
@@ -1177,6 +1262,30 @@ func (s *Service) createRetryRunLocked(ctx context.Context, parent *domain.Execu
 		}
 	}
 	input := cloneInput(parent.Input)
+	if refs := sourceRefsFromRunInput(parent.Input); len(refs) > 0 {
+		resolved, err := s.resolveChatSourceRefs(ctx, wi, parent.AgentProfileID, refs)
+		if err != nil {
+			return nil, err
+		}
+		input["source_refs"] = sourceRefInput(resolved)
+		for _, source := range resolved {
+			if err := s.store.ChatSources().MarkHandedToAgent(ctx, source.Source.ID, now); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if isChatAnalysisRun(parent) {
+		_, ok := chatAnalysisCatalogFromRunInput(input)
+		if !ok {
+			return nil, fmt.Errorf("%w: retry analysis source catalog is missing", domain.ErrStateConflict)
+		}
+		// A retry is the same analysis attempt lineage. Preserve the parent's
+		// exact prompt/context instead of rebuilding it from the latest projection
+		// while retaining the frozen base_revision and source catalog.
+		if contextText, ok := input["analysis_context"].(string); !ok || strings.TrimSpace(contextText) == "" {
+			return nil, fmt.Errorf("%w: retry analysis context is missing", domain.ErrStateConflict)
+		}
+	}
 	delete(input, "quota_admission")
 	// usage 准入证据按本轮 gate 重算（父 Run 的快照不继承，政策移除时不残留）。
 	delete(input, "usage_quota_admission")
@@ -1277,6 +1386,15 @@ func (s *Service) createRetryRunLocked(ctx context.Context, parent *domain.Execu
 	run.ContextSnapshotID = retrySnap.ID
 	if err := s.claimTaskSessionAnchor(ctx, run, retrySnap); err != nil {
 		return nil, err
+	}
+	if isChatAnalysisRun(run) {
+		catalog, ok := chatAnalysisCatalogFromRunInput(input)
+		if !ok {
+			return nil, fmt.Errorf("%w: retry analysis source catalog is missing", domain.ErrStateConflict)
+		}
+		if err := s.startChatAnalysisAttemptLocked(ctx, wi, run, catalog); err != nil {
+			return nil, err
+		}
 	}
 	if !isTaskWorkItem(wi) {
 		// Retry is another Chat turn; keep its list ordering current without
@@ -1590,6 +1708,11 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 			pair("maybeSettleGovernanceTurnQuota", func() (bool, error) { return s.maybeSettleGovernanceTurnQuota(ctx, r) })
 			// S3 派发收口：worker→lead 回流唤醒与批次终态收口（尽力而为）。
 			pair("maybeSettleDispatch", func() (bool, error) { return s.maybeSettleDispatch(ctx, r) })
+		}
+		if isChatAnalysisRun(r) && r.Status.IsTerminal() {
+			s.journalPostHook(ctx, j, r.ID, "maybeProcessChatAnalysis", func() (bool, error) {
+				return s.ProcessChatAnalysisTerminal(ctx, r.ID)
+			})
 		}
 		if marker, librarian := knowledgeLibrarianMarker(r); librarian && r.Status.IsTerminal() && marker.JobID != "" {
 			s.journalPostHook(ctx, j, r.ID, "maybeAdvanceKnowledgeLibrarian", func() (bool, error) {
@@ -2268,12 +2391,17 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 		p := CreateRunParams{
 			AgentProfileID:    run.AgentProfileID,
 			Instruction:       instruction,
+			SourceRefs:        sourceRefsFromRunInput(run.Input),
 			RuntimePreference: runtimePreferenceOf(run.Input["runtime_preference"]),
 			// lost 重建沿用原 Run 的执行上下文（recovery 克隆，不重读当前 context）。
 			ContextSource:           domain.SnapshotSourceRecovery,
 			ContextSourceSnapshotID: run.ContextSnapshotID,
 		}
 		p.OutputContract, _ = run.Input["output_contract"].(string)
+		if p.OutputContract == orchestrator.OutputContractChatAnalysisV1 {
+			p.analysisBaseRevision = analysisBaseRevision(run)
+			p.analysisContext, _ = run.Input["analysis_context"].(string)
+		}
 		if marker, ok := knowledgeLibrarianMarker(run); ok {
 			p.knowledgeJobID = marker.JobID
 			p.knowledgeTurnSeq = marker.TurnSeq + 1

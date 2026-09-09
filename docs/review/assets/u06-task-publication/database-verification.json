@@ -1,0 +1,32 @@
+{
+  "failed_schema_request_task_count": 0,
+  "orphan_contexts": 0,
+  "final_task_id": "wi_01M22P2JB25FX6VFDHMS94X042",
+  "publication_count_for_final_task": 1,
+  "runtime_results": [
+    {
+      "id": "run_01M22P2JM6CEXNH3J8CP5RM7FG",
+      "status": "succeeded",
+      "runtime_label": "mock"
+    },
+    {
+      "id": "run_01M22P2SZDNFTWCMTSCS188RY7",
+      "status": "succeeded",
+      "runtime_label": "mock"
+    },
+    {
+      "id": "run_01M22P317FPB6MHY835FJT55MJ",
+      "status": "succeeded",
+      "runtime_label": "mock"
+    }
+  ],
+  "coordinator": [
+    {
+      "status": "blocked",
+      "phase": "blocked",
+      "last_error": "plan_json_syntax at /: Coordinator turn returned no PlanDecisionV2 control candidate",
+      "next_action_at": null
+    }
+  ],
+  "execution_interpretation": "Mock runtime verified Task/Run transport and context; it emitted no PlanDecisionV2, so existing bounded repair reached blocked. No real Java implementation or artifact acceptance is claimed."
+}

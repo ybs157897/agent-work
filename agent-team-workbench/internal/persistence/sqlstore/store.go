@@ -136,10 +136,15 @@ type Store struct {
 	// Execution context 四仓储（任务控制面 RFC §4；实现在 execution_contexts.go）。
 	execHosts    application.ExecutionHostRepo
 	locations    application.WorkspaceLocationRepo
+	projects     application.WorkspaceProjectRepo
 	wiContexts   application.WorkItemContextRepo
 	ctxSnapshots application.ContextSnapshotRepo
 	// TaskComment append-only 任务反馈流（任务控制面 RFC §4.9；实现在 task_comments.go）。
-	taskComments application.TaskCommentRepo
+	taskComments          application.TaskCommentRepo
+	chatSources           application.ChatSourceRepo
+	chatAnalyses          application.ChatAnalysisRepo
+	chatAnalysisDecisions application.ChatAnalysisDecisionRepo
+	taskPublicationDrafts application.TaskPublicationDraftRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -179,9 +184,14 @@ func New(db *sql.DB) *Store {
 	s.knowledgeJobs = &KnowledgeJobRepo{store: s}
 	s.execHosts = &ExecutionHostRepo{store: s}
 	s.locations = &WorkspaceLocationRepo{store: s}
+	s.projects = &WorkspaceProjectRepo{store: s}
 	s.wiContexts = &WorkItemContextRepo{store: s}
 	s.ctxSnapshots = &ContextSnapshotRepo{store: s}
 	s.taskComments = &TaskCommentRepo{store: s}
+	s.chatSources = &ChatSourceRepo{store: s}
+	s.chatAnalyses = &ChatAnalysisRepo{store: s}
+	s.chatAnalysisDecisions = &ChatAnalysisDecisionRepo{store: s}
+	s.taskPublicationDrafts = &TaskPublicationDraftRepo{store: s}
 	return s
 }
 
@@ -227,11 +237,20 @@ func (s *Store) KnowledgeJobs() application.KnowledgeJobRepo { return s.knowledg
 // Execution context accessor（实现在 execution_contexts.go）。
 func (s *Store) ExecutionHosts() application.ExecutionHostRepo         { return s.execHosts }
 func (s *Store) WorkspaceLocations() application.WorkspaceLocationRepo { return s.locations }
+func (s *Store) WorkspaceProjects() application.WorkspaceProjectRepo   { return s.projects }
 func (s *Store) WorkItemContexts() application.WorkItemContextRepo     { return s.wiContexts }
 func (s *Store) ContextSnapshots() application.ContextSnapshotRepo     { return s.ctxSnapshots }
 
 // TaskComment accessor（实现在 task_comments.go）。
-func (s *Store) TaskComments() application.TaskCommentRepo { return s.taskComments }
+func (s *Store) TaskComments() application.TaskCommentRepo  { return s.taskComments }
+func (s *Store) ChatSources() application.ChatSourceRepo    { return s.chatSources }
+func (s *Store) ChatAnalyses() application.ChatAnalysisRepo { return s.chatAnalyses }
+func (s *Store) ChatAnalysisDecisions() application.ChatAnalysisDecisionRepo {
+	return s.chatAnalysisDecisions
+}
+func (s *Store) TaskPublicationDrafts() application.TaskPublicationDraftRepo {
+	return s.taskPublicationDrafts
+}
 
 // Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
 func (s *Store) Wakeups() scheduling.Store { return s.wakeups }

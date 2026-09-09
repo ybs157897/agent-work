@@ -1,0 +1,19 @@
+{
+  "fixed_sha": "5ada6f537896bdf5d549ac12cd7f3e38ff637093",
+  "repository": "JetBrains/intellij-community",
+  "spot_checks": [
+    {
+      "path": "LICENSE.txt",
+      "lines": "1-35",
+      "github_blob_sha": "60fd1a0a3601333c02ab65504355a7edc4f1e6c9",
+      "result": "source identifies Open-Source Build Terms and refers to Apache 2.0"
+    },
+    {
+      "path": "java/java-impl/src/com/intellij/codeInsight/completion/JavaCompletionContributor.java",
+      "lines": "1-42",
+      "github_blob_sha": "24506c07d43e8ef3ee0674f2e1f0c60c9c996edb",
+      "result": "Java source and platform/PSI dependencies confirmed"
+    }
+  ],
+  "reference_scope": "bounded module-level inspection; not complete inventory of actions or implementation acceptance"
+}

@@ -1611,6 +1611,46 @@ describe('send 队列语义（不再 steering）', () => {
     expect(useChatStore.getState().queue).toEqual([]);
   });
 
+  it('需求整理入口沿用 Chat Run，但使用 chat-analysis/v1 输出合同', async () => {
+    const fetchMock = stubFetch();
+    await useChatStore.getState().send('请整理当前需求', [], { outputContract: 'chat-analysis/v1' });
+    const creates = createRunCalls(fetchMock);
+    expect(creates).toHaveLength(1);
+    expect(JSON.parse(String(creates[0][1]?.body)).output_contract).toBe('chat-analysis/v1');
+  });
+
+  it('需求整理保留当前用户原文并沿用当前附件上传到同一 analysis Run', async () => {
+    const source = {
+      id: 'src_docx', workspace_id: 'ws_1', chat_id: 'wi_1', agent_id: 'agent_1',
+      filename: '范围.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: 3, sha256: 'a'.repeat(64), status: 'saved', created_at: '',
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith('/work-items/wi_1/sources') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify(source), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith('/work-items/wi_1/runs') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify({ run_id: 'run_analysis', work_item_id: 'wi_1', status: 'queued', version: 1, capability_snapshot_id: null }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+      return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await useChatStore.getState().send('请确认首期范围', [{ key: '范围.docx:3:1', file: new File(['abc'], '范围.docx', { type: source.mime }) }], { outputContract: 'chat-analysis/v1' });
+    const runCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/work-items/wi_1/runs') && init?.method === 'POST');
+    expect(JSON.parse(String(runCall?.[1]?.body))).toMatchObject({ output_contract: 'chat-analysis/v1', input: { instruction: '请确认首期范围', source_refs: [{ source_id: 'src_docx', sha256: 'a'.repeat(64) }] } });
+    const sourceCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/sources') && init?.method === 'POST');
+    expect((sourceCall?.[1]?.body as FormData).get('file')).toBeInstanceOf(File);
+    expect(((sourceCall?.[1]?.body as FormData).get('file') as File).name).toBe('范围.docx');
+  });
+
+  it('活动 Run 中需求整理入队并在 drain 时保留输出合同', async () => {
+    const fetchMock = stubFetch();
+    useChatStore.setState({ runs: [run('run_1', 'running')] });
+    await useChatStore.getState().send('请逐项确认', [], { outputContract: 'chat-analysis/v1' });
+    expect(useChatStore.getState().queue[0]?.outputContract).toBe('chat-analysis/v1');
+    useChatStore.setState({ runs: [run('run_1', 'succeeded')] });
+    await useChatStore.getState().drainQueue();
+    const creates = createRunCalls(fetchMock);
+    expect(JSON.parse(String(creates[0]?.[1]?.body)).output_contract).toBe('chat-analysis/v1');
+  });
+
   it('removeQueued 按下标移除对应条目', () => {
     const s = useChatStore.getState();
     s.enqueue('a');
@@ -1941,5 +1981,106 @@ describe('retryRun', () => {
     expect(watchRun).toHaveBeenCalledWith('run_retry');
     expect(useChatStore.getState().runs.map((run) => run.id)).toEqual(['run_retry']);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('Chat source attachment delivery', () => {
+  const source = {
+    id: 'src_1', workspace_id: 'ws_1', chat_id: 'wi_1', agent_id: 'agent_1',
+    filename: '需求.md', mime: 'text/markdown', size: 3, sha256: 'a'.repeat(64), status: 'saved', created_at: '',
+  };
+  const conversation: WorkItem = {
+    id: 'wi_1', workspace_id: 'ws_1', record_kind: 'chat', agent_profile_id: 'agent_1',
+    title: '当前对话', description: '', status: 'todo', priority: 'medium', due_date: null,
+    runs_count: 0, version: 1, created_at: '', updated_at: '',
+  };
+
+  beforeEach(() => {
+    useWorkspaceStore.setState({ workspace: { id: 'ws_1', name: 'w', timezone: 'UTC', version: 1 } });
+    useChatStore.setState({
+      workspaceId: 'ws_1', agentId: 'agent_1', conversationId: 'wi_1', conversations: [conversation],
+      runs: [], queue: [], sending: false, sendError: null,
+    });
+    useRunsStore.setState({ runs: {}, timelines: {}, watchRun: () => {} });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('纯附件消息上传原件并把 source_refs 交给 CreateRun', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith('/work-items/wi_1/sources') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify(source), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith('/work-items/wi_1/runs') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify({ run_id: 'run_attachment', work_item_id: 'wi_1', status: 'queued', version: 1, capability_snapshot_id: null }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith('/work-items/wi_1/sources')) return Promise.resolve(new Response(JSON.stringify({ items: [{ ...source, status: 'handed_to_agent' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith('/work-items/wi_1/runs')) return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      if (url.includes('/workspaces/ws_1/work-items')) return Promise.resolve(new Response(JSON.stringify({ items: [conversation], next_cursor: null }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const retained = await useChatStore.getState().send('', [{ key: '需求.md:3:1', file: new File(['abc'], '需求.md', { type: 'text/markdown' }) }]);
+
+    expect(retained).toBe(true);
+    const runCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/work-items/wi_1/runs') && init?.method === 'POST');
+    expect(runCall).toBeTruthy();
+    const body = JSON.parse(String(runCall?.[1]?.body));
+    expect(body.input.instruction).toBe('请读取已附资料，并告诉我你观察到的内容或需要确认的问题。');
+    expect(body.input.source_refs).toEqual([{ source_id: 'src_1', sha256: 'a'.repeat(64) }]);
+  });
+
+  it('新 Chat 的需求整理同时保留用户描述、DOCX 原件和 analysis 输出合同', async () => {
+    const wi = { ...conversation, id: 'wi_analysis_new' };
+    const sourceForNewChat = { ...source, chat_id: wi.id, filename: '范围.docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith('/workspaces/ws_1/work-items') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify(wi), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith(`/work-items/${wi.id}/sources`) && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify(sourceForNewChat), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith(`/work-items/${wi.id}/runs`) && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify({ run_id: 'run_analysis_new', work_item_id: wi.id, status: 'queued', version: 1, capability_snapshot_id: null }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+      return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({ conversationId: null, conversations: [], runs: [] });
+
+    expect(await useChatStore.getState().send('用户描述的首期范围', [{ key: '范围.docx:3:1', file: new File(['abc'], '范围.docx', { type: sourceForNewChat.mime }) }], { outputContract: 'chat-analysis/v1' })).toBe(true);
+    const runCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith(`/work-items/${wi.id}/runs`) && init?.method === 'POST');
+    expect(JSON.parse(String(runCall?.[1]?.body))).toMatchObject({ output_contract: 'chat-analysis/v1', input: { instruction: '用户描述的首期范围', source_refs: [{ source_id: 'src_1', sha256: 'a'.repeat(64) }] } });
+    const sourceCall = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/sources') && init?.method === 'POST');
+    expect(((sourceCall?.[1]?.body as FormData).get('file') as File).name).toBe('范围.docx');
+  });
+
+  it('原件上传失败时不创建 Run，保留可重试错误', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('附件保存失败'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const retained = await useChatStore.getState().send('请读取这个文件', [{ key: '需求.md:3:1', file: new File(['abc'], '需求.md', { type: 'text/markdown' }) }]);
+
+    expect(retained).toBe(false);
+    expect(useChatStore.getState().sendError).toBe('附件保存失败');
+    expect(useChatStore.getState().runs).toEqual([]);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/runs'))).toBe(false);
+  });
+
+  it('队列重试复用 source_refs，不重复上传原件', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith('/work-items/wi_1/sources') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify(source), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      if (url.endsWith('/work-items/wi_1/runs') && init?.method === 'POST') return Promise.resolve(new Response(JSON.stringify({ run_id: 'run_attachment', work_item_id: 'wi_1', status: 'queued', version: 1, capability_snapshot_id: null }), { status: 202, headers: { 'Content-Type': 'application/json' } }));
+      return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({ runs: [{ id: 'run_active', work_item_id: 'wi_1', status: 'running', created_at: '' } as ExecutionRun] });
+
+    await useChatStore.getState().send('排队读取', [{ key: '需求.md:3:1', file: new File(['abc'], '需求.md', { type: 'text/markdown' }) }]);
+    const queued = useChatStore.getState().queue[0];
+    expect(queued?.sourceRefs).toEqual([{ source_id: 'src_1', sha256: 'a'.repeat(64) }]);
+    useChatStore.setState({ runs: [{ id: 'run_active', work_item_id: 'wi_1', status: 'succeeded', created_at: '' } as ExecutionRun] });
+    await useChatStore.getState().drainQueue();
+
+    const sourceUploads = fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/sources') && init?.method === 'POST');
+    const runCalls = fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/runs') && init?.method === 'POST');
+    expect(sourceUploads).toHaveLength(1);
+    expect(JSON.parse(String(runCalls[0]?.[1]?.body)).input.source_refs).toEqual([{ source_id: 'src_1', sha256: 'a'.repeat(64) }]);
   });
 });

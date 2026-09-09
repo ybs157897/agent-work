@@ -1,0 +1,23 @@
+{
+  "before": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489&c=wi_01M2293P91XY36SRV9MAX6C750",
+    "recovery": "发现旧任务对话草案\n\n它仍按当前工作区保存在本地，共发现 1 份历史内容；仅恢复文字，不切换当前工作区目录，也不会自动发布任务。\n\nU07 历史草案\n\nprojectKey：u07-legacy-project\n\n1 条消息 · 含草案 · 含未发送输入 · 含旧发布状态\n\n恢复文字",
+    "otherWorkspaceLeaked": false,
+    "questionCount": 1,
+    "bucket": "{\"version\":2,\"messages\":[{\"id\":\"u07-old\",\"role\":\"user\",\"content\":\"U07 旧需求历史内容\"}],\"draft\":{\"title\":\"U07 历史草案\",\"description\":\"保留原文本和项目标签，当前全局空间决定代码根\",\"acceptance_criteria\":[\"只供显式人工恢复\"]},\"composerText\":\"U07-LEGACY-A 原空间未发送文本\",\"pendingPublication\":{\"input\":{\"title\":\"U07 历史草案\",\"description\":\"历史发布状态不得自动重放\",\"acceptance_criteria\":[\"人工恢复\"]}}}"
+  },
+  "after": {
+    "url": "http://127.0.0.1:49754/chat?ws=ws_01M21SVJVR9PGEA7E5DQR2XC0X&agent=agent_01M21SVJVS3900FYJY71V5K489",
+    "composer": "历史来源 projectKey：u07-legacy-project（仅作来源标签）\n\n本次仅恢复历史文字到当前 Chat，不切换当前工作区目录、不自动发布任务；当前全局 WorkspaceProject 代码根仍有效。\n\nU07-LEGACY-A 原空间未发送文本\n\n旧任务草案：U07 历史草案\n保留原文本和项目标签，当前全局空间决定代码根\n验收标准：只供显式人工恢复\n\nU07 旧需求历史内容",
+    "workspace": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+    "bucket": "{\"version\":2,\"messages\":[{\"id\":\"u07-old\",\"role\":\"user\",\"content\":\"U07 旧需求历史内容\"}],\"draft\":{\"title\":\"U07 历史草案\",\"description\":\"保留原文本和项目标签，当前全局空间决定代码根\",\"acceptance_criteria\":[\"只供显式人工恢复\"]},\"composerText\":\"U07-LEGACY-A 原空间未发送文本\",\"pendingPublication\":{\"input\":{\"title\":\"U07 历史草案\",\"description\":\"历史发布状态不得自动重放\",\"acceptance_criteria\":[\"人工恢复\"]}}}"
+  },
+  "checks": {
+    "redirected": true,
+    "projectKeyDisplayed": true,
+    "otherWorkspaceHidden": true,
+    "bucketUnchanged": true,
+    "projectKeyRecovered": true,
+    "workspaceUnchanged": true
+  }
+}

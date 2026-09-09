@@ -1,0 +1,29 @@
+{
+  "real_model_selective_preservation": true,
+  "revision": 2,
+  "preserved_item": "exc-jdk",
+  "preserved_text_byte_equivalent": true,
+  "reopened": [
+    "exc-deps",
+    "normal-jdtls"
+  ],
+  "old_decisions_retained": 3,
+  "reopens": 2,
+  "code_inference_corrected": true,
+  "answer_lineage": [
+    {
+      "question_id": "exception-interaction",
+      "revision": 2,
+      "inherited_from_answer_id": "caa_01M22A8WP39EERYVZXBE3KG2TE",
+      "lineage_reason": "question_unchanged",
+      "disposition": "deferred"
+    },
+    {
+      "question_id": "write-confirm",
+      "revision": 2,
+      "inherited_from_answer_id": "caa_01M22ASWH40EC7AJYB6D1GSC12",
+      "lineage_reason": "question_unchanged",
+      "disposition": "answered"
+    }
+  ]
+}

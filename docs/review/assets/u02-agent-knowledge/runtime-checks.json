@@ -1,0 +1,109 @@
+{
+  "runtime": "mock Run lifecycle; real knowledge CLI and HTTP; no model curation",
+  "checks": [
+    {
+      "name": "create isolated Chat",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "start mock Run in original space",
+      "passed": true,
+      "detail": {
+        "status": 202
+      }
+    },
+    {
+      "name": "server produced private Run access file",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "create isolated Chat",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "start mock Run in original space",
+      "passed": true,
+      "detail": {
+        "status": 202
+      }
+    },
+    {
+      "name": "server produced private Run access file",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "A actual CLI reads own private knowledge",
+      "passed": true,
+      "detail": {
+        "exit": 0
+      }
+    },
+    {
+      "name": "A actual CLI cannot read foreign private knowledge",
+      "passed": true,
+      "detail": {
+        "exit": 1
+      }
+    },
+    {
+      "name": "B actual CLI reads own private knowledge",
+      "passed": true,
+      "detail": {
+        "exit": 0
+      }
+    },
+    {
+      "name": "B actual CLI cannot read foreign private knowledge",
+      "passed": true,
+      "detail": {
+        "exit": 1
+      }
+    },
+    {
+      "name": "A token cannot impersonate B Run",
+      "passed": true,
+      "detail": {
+        "status": 401
+      }
+    },
+    {
+      "name": "caller query cannot replace token-bound Workspace and Agent",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "mock access Run reached terminal cancellation",
+      "passed": true,
+      "detail": {
+        "run_id": "run_01M21ZGK9T9HA6Z6CVKJBGQ492",
+        "status": "cancelled"
+      }
+    },
+    {
+      "name": "mock access Run reached terminal cancellation",
+      "passed": true,
+      "detail": {
+        "run_id": "run_01M21ZGKACZG74M2D1WM66WNHP",
+        "status": "cancelled"
+      }
+    },
+    {
+      "name": "terminal Run capability is no longer usable",
+      "passed": true,
+      "detail": {
+        "status": 401
+      }
+    },
+    {
+      "name": "private access files cleaned after terminal",
+      "passed": true,
+      "detail": null
+    }
+  ]
+}

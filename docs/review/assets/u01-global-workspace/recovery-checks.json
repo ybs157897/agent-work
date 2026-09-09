@@ -1,0 +1,134 @@
+[
+  {
+    "name": "failed external configuration never returns ready",
+    "passed": true,
+    "details": {
+      "status": 202,
+      "response": {
+        "id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+        "name": "web-idea 配置恢复验收",
+        "timezone": "Asia/Shanghai",
+        "version": 1,
+        "project": {
+          "execution_host_id": "host_local",
+          "mount_alias": "web-idea",
+          "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+          "repository_identity": "repo-web-idea",
+          "canonical_key": "host_local:project:c3a8a8c6bc6f32bd25a3c91d850d773e2cef724d063eada2e60b8366dc04990a",
+          "location_id": "wsloc_01M21SVJVRT42470CG4ABHT5G2",
+          "status": "setup_failed",
+          "error": "Agent 配置尚未可靠落盘，请执行配置恢复",
+          "source_workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+          "version": 2
+        },
+        "setup": {
+          "status": "setup_failed",
+          "source_workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+          "agent_count": 6
+        }
+      }
+    }
+  },
+  {
+    "name": "reopen recovers pending setup",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "response": {
+        "id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+        "name": "web-idea 配置恢复验收",
+        "timezone": "Asia/Shanghai",
+        "version": 1,
+        "project": {
+          "execution_host_id": "host_local",
+          "mount_alias": "web-idea",
+          "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+          "repository_identity": "repo-web-idea",
+          "canonical_key": "host_local:project:c3a8a8c6bc6f32bd25a3c91d850d773e2cef724d063eada2e60b8366dc04990a",
+          "location_id": "wsloc_01M21SVJVRT42470CG4ABHT5G2",
+          "status": "ready",
+          "source_workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+          "version": 3
+        },
+        "setup": {
+          "status": "ready",
+          "source_workspace_id": "ws_01M21SVJ2901NZW6AA30P2XJ7G",
+          "agent_count": 6
+        },
+        "reused": true
+      }
+    }
+  },
+  {
+    "name": "recovery kept one project workspace",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "all clone intents settled",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "create scoped A conversation",
+    "passed": true,
+    "details": {
+      "id": "wi_01M21SVK5FNGZD8ZCSRC1JCGD4",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "record_kind": "chat",
+      "title": "A scope entity probe",
+      "description": "",
+      "status": "todo",
+      "priority": "medium",
+      "due_date": null,
+      "agent_profile_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "review": {
+        "ready": false,
+        "can_accept": false,
+        "can_return": false,
+        "accept_reason": "任务尚未进入待验收阶段",
+        "return_reason": "任务尚未进入待验收阶段"
+      },
+      "runs_count": 0,
+      "version": 1,
+      "created_at": "2026-09-09T00:42:31.983313Z",
+      "updated_at": "2026-09-09T00:42:31.983313Z"
+    }
+  },
+  {
+    "name": "same workspace can read conversation",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "foreign workspace header cannot read old conversation",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/workspace-scope-mismatch",
+      "title": "Workspace scope mismatch",
+      "status": 409,
+      "code": "workspace_scope_mismatch",
+      "detail": "请求实体不属于当前 Workspace",
+      "instance": "/api/v1/work-items/wi_01M21SVK5FNGZD8ZCSRC1JCGD4",
+      "request_id": "req_01M21SVK5HZNDRW5PDNKVH9PEK"
+    }
+  },
+  {
+    "name": "foreign workspace header cannot change old conversation",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/workspace-scope-mismatch",
+      "title": "Workspace scope mismatch",
+      "status": 409,
+      "code": "workspace_scope_mismatch",
+      "detail": "请求实体不属于当前 Workspace",
+      "instance": "/api/v1/work-items/wi_01M21SVK5FNGZD8ZCSRC1JCGD4",
+      "request_id": "req_01M21SVK5JSGF5ER2VB5DAABG4"
+    }
+  },
+  {
+    "name": "failed cross-space write retained original title",
+    "passed": true,
+    "details": null
+  }
+]

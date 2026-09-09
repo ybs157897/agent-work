@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "result": {
+    "type": "https://workbench.example/problems/idempotency_conflict",
+    "title": "Idempotency conflict",
+    "status": 409,
+    "code": "idempotency_conflict",
+    "detail": "相同 Idempotency-Key 提交了不同请求体"
+  }
+}

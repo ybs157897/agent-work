@@ -1,0 +1,413 @@
+[
+  {
+    "name": "A human shared reads only permitted knowledge",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ91WE6E1G1Z1110PQS6"
+      ]
+    }
+  },
+  {
+    "name": "A human shared search remains scoped",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ91WE6E1G1Z1110PQS6"
+      ]
+    }
+  },
+  {
+    "name": "B human shared reads only permitted knowledge",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ92TBX81C2CZG57VW47"
+      ]
+    }
+  },
+  {
+    "name": "B human shared search remains scoped",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ92TBX81C2CZG57VW47"
+      ]
+    }
+  },
+  {
+    "name": "A owner reads only permitted knowledge",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ90SAT0JCKHKQ6NAQMN",
+        "kb_01M21YPZ91WE6E1G1Z1110PQS6"
+      ]
+    }
+  },
+  {
+    "name": "A owner search remains scoped",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ90SAT0JCKHKQ6NAQMN",
+        "kb_01M21YPZ91WE6E1G1Z1110PQS6"
+      ]
+    }
+  },
+  {
+    "name": "B same-name owner reads only permitted knowledge",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ92FD7GSEJY0EJSXSTK",
+        "kb_01M21YPZ92TBX81C2CZG57VW47"
+      ]
+    }
+  },
+  {
+    "name": "B same-name owner search remains scoped",
+    "passed": true,
+    "details": {
+      "status": 200,
+      "ids": [
+        "kb_01M21YPZ92FD7GSEJY0EJSXSTK",
+        "kb_01M21YPZ92TBX81C2CZG57VW47"
+      ]
+    }
+  },
+  {
+    "name": "foreign requester rejected before A read",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SV92ZD5EZN02ERM3M7V82/knowledge/items",
+      "request_id": "req_01M21Z8DD2AW57X6F6PE8TSR7J"
+    }
+  },
+  {
+    "name": "reverse foreign requester rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SVJ2901NZW6AA30P2XJ7G/knowledge/items",
+      "request_id": "req_01M21Z8DD31JX6T1PXK58MG0Y0"
+    }
+  },
+  {
+    "name": "human shared cannot read private item directly",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SV92ZD5EZN02ERM3M7V82/knowledge/items/kb_01M21YPZ90SAT0JCKHKQ6NAQMN",
+      "request_id": "req_01M21Z8DD48TM6AX98KQ9XJC48"
+    }
+  },
+  {
+    "name": "different A Agent cannot read owner private item",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SV92ZD5EZN02ERM3M7V82/knowledge/items/kb_01M21YPZ90SAT0JCKHKQ6NAQMN",
+      "request_id": "req_01M21Z8DD4TFAN58AH4GT7M557"
+    }
+  },
+  {
+    "name": "owner reads private original with sources",
+    "passed": true,
+    "details": {
+      "status": 200
+    }
+  },
+  {
+    "name": "B cannot obtain A alpha_private",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_private",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_private/versions",
+    "passed": true,
+    "details": {
+      "status": 200
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_private/versions",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_private/versions/1",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_private/versions/1",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_private/versions/kbv_01M21YPZ908VJV3DVN6BVADBJ7",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_private/versions/kbv_01M21YPZ908VJV3DVN6BVADBJ7",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_private/relations",
+    "passed": true,
+    "details": {
+      "status": 200
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_private/relations",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_shared",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_shared",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_shared/versions",
+    "passed": true,
+    "details": {
+      "status": 200
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_shared/versions",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_shared/versions/1",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_shared/versions/1",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_shared/versions/kbv_01M21YPZ91P0DA6YDDCAT08MCG",
+    "passed": true,
+    "details": {
+      "status": 404
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_shared/versions/kbv_01M21YPZ91P0DA6YDDCAT08MCG",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "B cannot obtain A alpha_shared/relations",
+    "passed": true,
+    "details": {
+      "status": 200
+    }
+  },
+  {
+    "name": "no foreign source/quote leakage alpha_shared/relations",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "foreign version cannot be substituted into visible item",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SV92ZD5EZN02ERM3M7V82/knowledge/items/kb_01M21YPZ90SAT0JCKHKQ6NAQMN/versions/kbv_01M21YPZ926XF9XJATD36ZJ1WA",
+      "request_id": "req_01M21Z8DDEVNCD0SGAS6PSM2G2"
+    }
+  },
+  {
+    "name": "global wrong-workspace header blocks knowledge call",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/workspace-scope-mismatch",
+      "title": "Workspace scope mismatch",
+      "status": 409,
+      "code": "workspace_scope_mismatch",
+      "detail": "请求实体不属于当前 Workspace",
+      "instance": "/api/v1/workspaces/ws_01M21SV92ZD5EZN02ERM3M7V82/knowledge/items",
+      "request_id": "req_01M21Z8DDF1MZ4YEA8JR501Z26"
+    }
+  },
+  {
+    "name": "empty third workspace does not inherit knowledge",
+    "passed": true,
+    "details": {
+      "items": [],
+      "next_cursor": null
+    }
+  },
+  {
+    "name": "HTTP write persists candidate in URL workspace only",
+    "passed": true,
+    "details": {
+      "id": "kss_01M21Z8DDJT7K8D6YFC9EWJQ5C",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "b34ae1ae-dcf0-4a10-858e-3292848e7c3c",
+      "request": {
+        "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+        "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+        "client_key": "b34ae1ae-dcf0-4a10-858e-3292848e7c3c",
+        "changes": [
+          {
+            "base_version": 0,
+            "owner_agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+            "visibility": "private",
+            "title": "U02_HTTP_A_CANDIDATE",
+            "body": "仅属于 A 的新候选，尚未整理发布。",
+            "kind": "fact",
+            "sources": [
+              {
+                "kind": "document",
+                "ref": "u02-fixture-a.md",
+                "locator": "line:1",
+                "excerpt": "仅属于 A 的新候选，尚未整理发布。"
+              }
+            ]
+          }
+        ]
+      },
+      "request_digest": "sha256:54fa9300415876d34d155cce4698c313426d634ee1d3457e827761e2d552fa30",
+      "status": "received",
+      "version": 1,
+      "created_at": "2026-09-09T02:16:54.962934Z",
+      "updated_at": "2026-09-09T02:16:54.962934Z"
+    }
+  },
+  {
+    "name": "candidate retry remains idempotent",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "foreign workspace cannot read submission",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not-found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见",
+      "instance": "/api/v1/workspaces/ws_01M21SVJ2901NZW6AA30P2XJ7G/knowledge/submissions/kss_01M21Z8DDJT7K8D6YFC9EWJQ5C",
+      "request_id": "req_01M21Z8DDNN19299339851CV6K"
+    }
+  },
+  {
+    "name": "unreviewed candidate is not falsely published",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/state_conflict",
+      "title": "Command conflicts with current state",
+      "status": 409,
+      "code": "state_conflict",
+      "detail": "command conflicts with current state: submission must be curated with evidence before publication"
+    }
+  },
+  {
+    "name": "cross-space candidate identity/owner rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/validation_failed",
+      "title": "Validation failed",
+      "status": 422,
+      "code": "validation_failed",
+      "detail": "domain validation failed: candidate Agent does not belong to workspace"
+    }
+  },
+  {
+    "name": "cross-space candidate identity/owner rejected",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/validation_failed",
+      "title": "Validation failed",
+      "status": 422,
+      "code": "validation_failed",
+      "detail": "domain validation failed: candidate change 0 cannot claim owner \"agent_01M21SVJ2B166PTTYW7GK6GNR2\""
+    }
+  },
+  {
+    "name": "B cannot repeal A knowledge",
+    "passed": true,
+    "details": {
+      "type": "https://workbench.example/problems/not_found",
+      "title": "Resource not found",
+      "status": 404,
+      "code": "not_found",
+      "detail": "资源在当前 Workspace 视角不可见"
+    }
+  },
+  {
+    "name": "failed foreign mutation preserves A rule",
+    "passed": true,
+    "details": null
+  },
+  {
+    "name": "SQLite candidate has immutable A ownership",
+    "passed": true,
+    "details": [
+      "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "received"
+    ]
+  }
+]

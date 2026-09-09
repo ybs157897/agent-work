@@ -163,21 +163,23 @@ export function CodeWorkspace({ workspaceId, agentId, conversationId, runsLoaded
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const requestVersion = useRef(0);
   const activeSessionRef = useRef<CodeWorkspaceSession | null>(null);
+  const originWorkspaceRef = useRef<string | null>(null);
   const [releaseGuard] = useState<CodeWorkspaceReleaseGuard>(() => createCodeWorkspaceReleaseGuard());
 
   const releaseSession = useCallback((sessionId: string, onFailure?: (error: unknown) => void) => {
     releaseGuard.release(sessionId, (releasedId) => {
-      void deleteCodeWorkspace(releasedId, true).catch((error: unknown) => {
+      void deleteCodeWorkspace(releasedId, true, originWorkspaceRef.current ?? workspaceId).catch((error: unknown) => {
         if (onFailure) onFailure(error);
         else console.error('code workspace cleanup failed', error);
       });
     });
-  }, [releaseGuard]);
+  }, [releaseGuard, workspaceId]);
 
   useEffect(() => {
     let disposed = false;
     let pageHidden = false;
     const version = ++requestVersion.current;
+    originWorkspaceRef.current = workspaceId;
     let created: CodeWorkspaceSession | null = null;
     const onPageHide: EventListener = () => {
       pageHidden = true;

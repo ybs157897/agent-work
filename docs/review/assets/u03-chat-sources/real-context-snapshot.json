@@ -1,0 +1,22 @@
+{
+  "id": "ctxsnap_01M2249GTWDZS6NWVPTWT9DTJY",
+  "run_id": "run_01M2249GTWM36PEJNK5MNGEJA3",
+  "schema_version": "execution-context/v1",
+  "workspace_id": "ws_01M21SVJVR9PGEA7E5DQR2XC0X",
+  "workspace_location_id": "wsloc_01M21SVJVRT42470CG4ABHT5G2",
+  "location_version": 1,
+  "mount_generation": "25f6e60375044bed0d7e1cefb7b289697dc622044472862e8067a0f4758d6ca9",
+  "execution_host_id": "host_local",
+  "mount_alias": "web-idea",
+  "repository_identity": "repo-web-idea",
+  "ref_kind": "root",
+  "branch_name": null,
+  "checkout_ref": null,
+  "worktree_ref": null,
+  "base_revision": null,
+  "context_generation": 1,
+  "source": "current",
+  "source_snapshot_id": null,
+  "snapshot_digest": "bdcc54be3e8345416833a49466c951a055c2f2bf9fee6ad2fb98aa5b31ed5202",
+  "created_at": "2026-09-09T03:44:54.108494Z"
+}

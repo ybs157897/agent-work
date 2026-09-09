@@ -276,6 +276,17 @@ func (s *Service) appendCoordinatorEvent(ctx context.Context, state *domain.Task
 // turn for a root Task. State, Run and causal event are committed before the
 // Runtime side effect; a crash after commit is recovered by the due-state loop.
 func (s *Service) StartCoordinator(ctx context.Context, workItemID string) error {
+	if err := s.ensurePublicationBaselineBeforeCoordinator(ctx, workItemID); err != nil {
+		// A published Task's first Coordinator Run is gated by the frozen
+		// publication baseline.  If that gate fails, persist the failure before
+		// returning: callers such as publication publish deliberately treat a
+		// start error as best-effort, so returning the error alone would leave a
+		// durable Coordinator queued forever with no blocker or event.
+		if blockErr := s.blockCoordinatorForStartFailure(context.WithoutCancel(ctx), workItemID, err); blockErr != nil {
+			return errors.Join(err, blockErr)
+		}
+		return err
+	}
 	if state, stateErr := s.store.TaskCoordinators().GetStateForWorkItem(ctx, workItemID); stateErr == nil {
 		// 恢复面重放当前 Turn 的 quota sweep：Worker 终态 commit 与 post-commit
 		// sweep 之间崩溃时，这里是唯一补跑路径（phase6 已存在/无 usage

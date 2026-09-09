@@ -456,6 +456,9 @@ func (s *Service) replayRunTerminalHooks(ctx context.Context, r *domain.Executio
 	if !isGovernedCoordinatorRun(r) && !isKnowledgeLibrarianRun(r) {
 		s.maybeSelfHeal(ctx, r)
 	}
+	if isChatAnalysisRun(r) {
+		s.ProcessChatAnalysisTerminal(ctx, r.ID)
+	}
 	if wi, werr := s.store.WorkItems().Get(ctx, r.WorkItemID); werr == nil && isTaskWorkItem(wi) {
 		s.maybeAdvancePlans(ctx, r)
 		s.maybeProcessVerdict(ctx, r)

@@ -1,0 +1,7 @@
+{
+  "passed": true,
+  "kind": "actual mock Run lifecycle; invalid output retains earlier real-model document and human answers",
+  "run_id": "run_01M22AZ2MFZ04D2P04A0ES4DZM",
+  "revision": 1,
+  "error": "analysis 输出无效: invalid chat analysis: one complete atw-analysis block is required"
+}

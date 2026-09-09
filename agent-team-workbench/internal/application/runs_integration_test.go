@@ -11,6 +11,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
+	"github.com/ybs/agent-team-workbench/internal/chatsources"
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/migtest"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
@@ -813,8 +814,26 @@ func TestResumeLostRunReexecutes(t *testing.T) {
 	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
 
 	wi := seedRunEnv(t, ctx, svc, store)
-	run, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
-		AgentProfileID: wi.AgentProfileID, Instruction: "可恢复指令",
+	chat, err := svc.CreateWorkItem(ctx, wi.WorkspaceID, application.CreateWorkItemParams{
+		Title: "带附件的可恢复对话", RecordKind: domain.RecordKindChat, AgentProfileID: wi.AgentProfileID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetChatSourceStore(chatsources.NewStore(t.TempDir()))
+	source, replayed, err := svc.CreateChatSource(ctx, application.ChatSourceUpload{
+		ChatWorkItemID: chat.ID, Filename: "resume.md", MIME: "text/markdown",
+		Data: []byte("失联后仍需继续读取的原始附件"), ClientKey: "resume-source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed || source == nil {
+		t.Fatalf("首次上传不应 replay: source=%+v replayed=%v", source, replayed)
+	}
+	run, err := svc.CreateRun(ctx, chat.ID, application.CreateRunParams{
+		AgentProfileID: chat.AgentProfileID, Instruction: "可恢复指令",
+		SourceRefs: []domain.ChatSourceRef{{SourceID: source.ID, SHA256: source.SHA256}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -847,6 +866,24 @@ func TestResumeLostRunReexecutes(t *testing.T) {
 	}
 	if instr, _ := redo.Input["instruction"].(string); instr != "可恢复指令" {
 		t.Fatalf("恢复 run 应沿用原指令: %q", instr)
+	}
+	refs, ok := redo.Input["source_refs"].([]map[string]any)
+	if !ok || len(refs) != 1 {
+		t.Fatalf("恢复 run 应保留 source_refs: %#v", redo.Input["source_refs"])
+	}
+	ref := refs[0]
+	if ref["source_id"] != source.ID || ref["sha256"] != source.SHA256 {
+		t.Fatalf("恢复 run 的 source_ref 不匹配: %#v", refs[0])
+	}
+	view, err := svc.ChatSourceView(ctx, chat.WorkspaceID, chat.ID, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.Available {
+		t.Fatalf("恢复后原件应仍可 Resolve: %+v", view)
+	}
+	if view.Status != domain.ChatSourceHandedToAgent {
+		t.Fatalf("恢复后 source 状态应保持 handed_to_agent: %s", view.Status)
 	}
 	conv, _ := redo.Input["conversation"].(map[string]any)
 	if conv["resume_session_ref"] != "codex://thread_lost" {

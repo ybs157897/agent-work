@@ -1,0 +1,569 @@
+{
+  "kind": "actual HTTP and SQLite; mock Run lifecycle",
+  "checks": [
+    {
+      "name": "create scoped Chat",
+      "passed": true,
+      "detail": {
+        "status": 201
+      }
+    },
+    {
+      "name": "create scoped Chat",
+      "passed": true,
+      "detail": {
+        "status": 201
+      }
+    },
+    {
+      "name": "create scoped Chat",
+      "passed": true,
+      "detail": {
+        "status": 201
+      }
+    },
+    {
+      "name": "save original reading-scope.docx",
+      "passed": true,
+      "detail": {
+        "status": 201,
+        "source": {
+          "id": "src_01M2235TSH9Z0XR8S8JJ7MTKJ7",
+          "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+          "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+          "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+          "client_key": "dbd4c7ae-c283-4350-b59c-59e53e121c9c",
+          "filename": "reading-scope.docx",
+          "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "size": 39652,
+          "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+          "status": "saved",
+          "created_at": "2026-09-09T03:25:24.666429Z",
+          "updated_at": "2026-09-09T03:25:24.666429Z",
+          "available": true
+        }
+      }
+    },
+    {
+      "name": "public metadata contains no storage path",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "logical upload replay ignores new multipart boundary reading-scope.docx",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "changed bytes cannot reuse upload key reading-scope.docx",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/idempotency-conflict",
+        "title": "Idempotency conflict",
+        "status": 409,
+        "code": "idempotency_conflict",
+        "detail": "相同 Idempotency-Key 提交了不同请求体",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TSWHP7NCC20BKM5612F"
+      }
+    },
+    {
+      "name": "download preserves every original byte reading-scope.docx",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "foreign Chat cannot read reading-scope.docx",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read reading-scope.docx/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read reading-scope.docx",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read reading-scope.docx/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Workspace cannot hand source to Run reading-scope.docx",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/not_found",
+        "title": "Resource not found",
+        "status": 404,
+        "code": "not_found",
+        "detail": "资源在当前 Workspace 视角不可见"
+      }
+    },
+    {
+      "name": "save original review-proposal.pptx",
+      "passed": true,
+      "detail": {
+        "status": 201,
+        "source": {
+          "id": "src_01M2235TT2YRV9CPC96TY35ANT",
+          "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+          "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+          "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+          "client_key": "4133c021-fabe-4586-af6b-a464da3b9176",
+          "filename": "review-proposal.pptx",
+          "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+          "size": 16663,
+          "sha256": "19e537a8764ecc1a87e68dace7c7580555e27e2d734499f49004c916b1f5aa9e",
+          "status": "saved",
+          "created_at": "2026-09-09T03:25:24.683945Z",
+          "updated_at": "2026-09-09T03:25:24.683945Z",
+          "available": true
+        }
+      }
+    },
+    {
+      "name": "public metadata contains no storage path",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "logical upload replay ignores new multipart boundary review-proposal.pptx",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "changed bytes cannot reuse upload key review-proposal.pptx",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/idempotency-conflict",
+        "title": "Idempotency conflict",
+        "status": 409,
+        "code": "idempotency_conflict",
+        "detail": "相同 Idempotency-Key 提交了不同请求体",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TTEQSWPJ3M63QMWND02"
+      }
+    },
+    {
+      "name": "download preserves every original byte review-proposal.pptx",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "foreign Chat cannot read review-proposal.pptx",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read review-proposal.pptx/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read review-proposal.pptx",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read review-proposal.pptx/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Workspace cannot hand source to Run review-proposal.pptx",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/not_found",
+        "title": "Resource not found",
+        "status": 404,
+        "code": "not_found",
+        "detail": "资源在当前 Workspace 视角不可见"
+      }
+    },
+    {
+      "name": "save original original-request.md",
+      "passed": true,
+      "detail": {
+        "status": 201,
+        "source": {
+          "id": "src_01M2235TTMTWRT6W5WCAHJK6KR",
+          "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+          "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+          "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+          "client_key": "32a98871-625f-44c2-9613-4e8afcfb3068",
+          "filename": "original-request.md",
+          "mime": "text/markdown",
+          "size": 720,
+          "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+          "status": "saved",
+          "created_at": "2026-09-09T03:25:24.699946Z",
+          "updated_at": "2026-09-09T03:25:24.699946Z",
+          "available": true
+        }
+      }
+    },
+    {
+      "name": "public metadata contains no storage path",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "logical upload replay ignores new multipart boundary original-request.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "changed bytes cannot reuse upload key original-request.md",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/idempotency-conflict",
+        "title": "Idempotency conflict",
+        "status": 409,
+        "code": "idempotency_conflict",
+        "detail": "相同 Idempotency-Key 提交了不同请求体",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TTZJJXAE0PF966XRB20"
+      }
+    },
+    {
+      "name": "download preserves every original byte original-request.md",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "foreign Chat cannot read original-request.md",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read original-request.md/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read original-request.md",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Chat cannot read original-request.md/download",
+      "passed": true,
+      "detail": {
+        "status": 404
+      }
+    },
+    {
+      "name": "foreign Workspace cannot hand source to Run original-request.md",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/not_found",
+        "title": "Resource not found",
+        "status": 404,
+        "code": "not_found",
+        "detail": "资源在当前 Workspace 视角不可见"
+      }
+    },
+    {
+      "name": "global Workspace fence blocks stale source listing",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/workspace-scope-mismatch",
+        "title": "Workspace scope mismatch",
+        "status": 409,
+        "code": "workspace_scope_mismatch",
+        "detail": "请求实体不属于当前 Workspace",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TV4BCFB32XD9JP0DMRR"
+      }
+    },
+    {
+      "name": "global Workspace fence blocks stale upload",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/workspace-scope-mismatch",
+        "title": "Workspace scope mismatch",
+        "status": 409,
+        "code": "workspace_scope_mismatch",
+        "detail": "请求实体不属于当前 Workspace",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TV4DFW2M48A8141GN9F"
+      }
+    },
+    {
+      "name": "invalid source admission unknown",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/not_found",
+        "title": "Resource not found",
+        "status": 404,
+        "code": "not_found",
+        "detail": "资源在当前 Workspace 视角不可见"
+      }
+    },
+    {
+      "name": "invalid source admission stale digest",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/workspace_context_mismatch",
+        "title": "Workspace context mismatch",
+        "status": 409,
+        "code": "workspace_context_mismatch",
+        "detail": "workspace_context_mismatch: source_ref ownership or digest mismatch"
+      }
+    },
+    {
+      "name": "invalid source admission duplicate",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": "domain validation failed: duplicate source_ref src_01M2235TSH9Z0XR8S8JJ7MTKJ7"
+      }
+    },
+    {
+      "name": "foreign Agent cannot consume Chat source",
+      "passed": true,
+      "detail": {
+        "type": "https://workbench.example/problems/validation_failed",
+        "title": "Validation failed",
+        "status": 422,
+        "code": "validation_failed",
+        "detail": "domain validation failed: agent 不属于当前 workspace"
+      }
+    },
+    {
+      "name": "empty upload rejected",
+      "passed": true,
+      "detail": {
+        "type": "about:blank",
+        "title": "Source too large",
+        "status": 413,
+        "code": "chat_source_too_large",
+        "detail": "附件为空或超过 10 MiB 限制",
+        "instance": "/api/v1/work-items/wi_01M2235TSARRNK2D4S6SK5C947/sources",
+        "request_id": "req_01M2235TVAB6GB5AB078870BCS"
+      }
+    },
+    {
+      "name": "oversize original rejected",
+      "passed": true,
+      "detail": {
+        "status": 413
+      }
+    },
+    {
+      "name": "concurrent upload replay creates one durable source",
+      "passed": true,
+      "detail": [
+        [
+          200,
+          {
+            "id": "src_01M2235TW4FKCE90CD4RRQM9WV",
+            "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+            "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+            "client_key": "9fe996d1-fefa-4b91-be96-d64004c7967e",
+            "filename": "concurrent.md",
+            "mime": "text/markdown",
+            "size": 37,
+            "sha256": "8c09f7a2a18c022ef7cb97000c6d7b8c4d3d0b5ece95872ad321e7fa6e3fe495",
+            "status": "saved",
+            "created_at": "2026-09-09T03:25:24.74898Z",
+            "updated_at": "2026-09-09T03:25:24.74898Z",
+            "available": false
+          }
+        ],
+        [
+          200,
+          {
+            "id": "src_01M2235TW4FKCE90CD4RRQM9WV",
+            "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+            "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+            "client_key": "9fe996d1-fefa-4b91-be96-d64004c7967e",
+            "filename": "concurrent.md",
+            "mime": "text/markdown",
+            "size": 37,
+            "sha256": "8c09f7a2a18c022ef7cb97000c6d7b8c4d3d0b5ece95872ad321e7fa6e3fe495",
+            "status": "saved",
+            "created_at": "2026-09-09T03:25:24.74898Z",
+            "updated_at": "2026-09-09T03:25:24.74898Z",
+            "available": false
+          }
+        ],
+        [
+          201,
+          {
+            "id": "src_01M2235TW4FKCE90CD4RRQM9WV",
+            "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+            "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+            "client_key": "9fe996d1-fefa-4b91-be96-d64004c7967e",
+            "filename": "concurrent.md",
+            "mime": "text/markdown",
+            "size": 37,
+            "sha256": "8c09f7a2a18c022ef7cb97000c6d7b8c4d3d0b5ece95872ad321e7fa6e3fe495",
+            "status": "saved",
+            "created_at": "2026-09-09T03:25:24.74898Z",
+            "updated_at": "2026-09-09T03:25:24.74898Z",
+            "available": true
+          }
+        ],
+        [
+          200,
+          {
+            "id": "src_01M2235TW4FKCE90CD4RRQM9WV",
+            "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+            "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+            "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+            "client_key": "9fe996d1-fefa-4b91-be96-d64004c7967e",
+            "filename": "concurrent.md",
+            "mime": "text/markdown",
+            "size": 37,
+            "sha256": "8c09f7a2a18c022ef7cb97000c6d7b8c4d3d0b5ece95872ad321e7fa6e3fe495",
+            "status": "saved",
+            "created_at": "2026-09-09T03:25:24.74898Z",
+            "updated_at": "2026-09-09T03:25:24.74898Z",
+            "available": false
+          }
+        ]
+      ]
+    },
+    {
+      "name": "file-only Chat sends existing Run path",
+      "passed": true,
+      "detail": {
+        "capability_snapshot_id": "caps_01M2235TXH3YRESKH9NPJHXA9S",
+        "run_id": "run_01M2235TXH8MXHTADMA8W9Q32R",
+        "status": "queued",
+        "version": 1,
+        "work_item_id": "wi_01M2235TSARRNK2D4S6SK5C947"
+      }
+    },
+    {
+      "name": "lost Run response replay returns same Run",
+      "passed": true,
+      "detail": {
+        "capability_snapshot_id": "caps_01M2235TXH3YRESKH9NPJHXA9S",
+        "run_id": "run_01M2235TXH8MXHTADMA8W9Q32R",
+        "status": "queued",
+        "version": 1,
+        "work_item_id": "wi_01M2235TSARRNK2D4S6SK5C947"
+      }
+    },
+    {
+      "name": "SQLite Run and references belong to source Workspace",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "trusted paths resolve exact original bytes",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "server keeps the original user instruction separate",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "handoff is not falsely marked as read",
+      "passed": true,
+      "detail": null
+    },
+    {
+      "name": "later Run can reuse already handed source",
+      "passed": true,
+      "detail": {
+        "capability_snapshot_id": "caps_01M2235V1FRACYHJVYX5PS4ZA4",
+        "run_id": "run_01M2235V1E4FBJMKGS61HSD28T",
+        "status": "queued",
+        "version": 1,
+        "work_item_id": "wi_01M2235TSARRNK2D4S6SK5C947"
+      }
+    }
+  ],
+  "chats": [
+    "wi_01M2235TSARRNK2D4S6SK5C947",
+    "wi_01M2235TSDMXGRXMMDYGY6ABJ6",
+    "wi_01M2235TSERWCANDRM42QYA7GS"
+  ],
+  "sources": [
+    {
+      "id": "src_01M2235TSH9Z0XR8S8JJ7MTKJ7",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "dbd4c7ae-c283-4350-b59c-59e53e121c9c",
+      "filename": "reading-scope.docx",
+      "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "size": 39652,
+      "sha256": "46b7874722482414ae5b500b621a4b92bc8e676f8e901d138ba9c25ac3a50298",
+      "status": "saved",
+      "created_at": "2026-09-09T03:25:24.666429Z",
+      "updated_at": "2026-09-09T03:25:24.666429Z",
+      "available": true
+    },
+    {
+      "id": "src_01M2235TT2YRV9CPC96TY35ANT",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "4133c021-fabe-4586-af6b-a464da3b9176",
+      "filename": "review-proposal.pptx",
+      "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "size": 16663,
+      "sha256": "19e537a8764ecc1a87e68dace7c7580555e27e2d734499f49004c916b1f5aa9e",
+      "status": "saved",
+      "created_at": "2026-09-09T03:25:24.683945Z",
+      "updated_at": "2026-09-09T03:25:24.683945Z",
+      "available": true
+    },
+    {
+      "id": "src_01M2235TTMTWRT6W5WCAHJK6KR",
+      "workspace_id": "ws_01M21SV92ZD5EZN02ERM3M7V82",
+      "chat_id": "wi_01M2235TSARRNK2D4S6SK5C947",
+      "agent_id": "agent_01M21SV95WPMQJ30V994J0YEZC",
+      "client_key": "32a98871-625f-44c2-9613-4e8afcfb3068",
+      "filename": "original-request.md",
+      "mime": "text/markdown",
+      "size": 720,
+      "sha256": "9da68f6f214f227a2b92a9a919b4d1e0cf2646d3de8dc44a93d7f4065564ff59",
+      "status": "saved",
+      "created_at": "2026-09-09T03:25:24.699946Z",
+      "updated_at": "2026-09-09T03:25:24.699946Z",
+      "available": true
+    }
+  ],
+  "runs": [
+    "run_01M2235TXH8MXHTADMA8W9Q32R"
+  ]
+}

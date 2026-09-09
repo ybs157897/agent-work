@@ -26,7 +26,11 @@ export const createCodeWorkspace = (
 );
 
 /** Release a code viewer session. keepalive is used while the owner is unmounting. */
-export const deleteCodeWorkspace = (sessionId: string, keepalive = false) => apiFetch<void>(
+export const deleteCodeWorkspace = (sessionId: string, keepalive = false, originWorkspaceId?: string) => apiFetch<void>(
   `/code-workspaces/${encodeURIComponent(sessionId)}`,
-  { method: 'DELETE', keepalive },
+  {
+    method: 'DELETE',
+    keepalive,
+    ...(originWorkspaceId ? { headers: { 'X-Workspace-ID': originWorkspaceId } } : {}),
+  },
 );

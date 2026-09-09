@@ -1,0 +1,26 @@
+[
+  {
+    "name": "exact publish replay after saved source drift",
+    "status": 200,
+    "task_id": "wi_01M22P2JB25FX6VFDHMS94X042",
+    "passed": true
+  },
+  {
+    "name": "same publish key changed expected version conflicts",
+    "status": 409,
+    "passed": true,
+    "error": {
+      "type": "https://workbench.example/problems/idempotency_conflict",
+      "title": "Idempotency conflict",
+      "status": 409,
+      "code": "idempotency_conflict",
+      "detail": "相同 Idempotency-Key 提交了不同请求体"
+    }
+  },
+  {
+    "name": "retry creates no extra Task",
+    "before": 5,
+    "after": 5,
+    "passed": true
+  }
+]

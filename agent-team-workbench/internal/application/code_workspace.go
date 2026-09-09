@@ -51,6 +51,9 @@ type CodeWorkspaceCreateParams struct {
 }
 
 type CodeWorkspace struct {
+	// ID is a short-lived, cryptographically random capability. Native iframe
+	// navigation cannot attach X-Workspace-ID, so every view/gateway request
+	// authenticates this capability through sessionForRequest instead.
 	ID                 string
 	WorkspaceID        string
 	AgentID            string
@@ -532,8 +535,27 @@ func (s *CodeWorkspaceService) Get(ctx context.Context, id string) (*CodeWorkspa
 	return cloneCodeWorkspace(session), nil
 }
 
+// GetForWorkspace enforces the caller's business scope after resolving the
+// session's durable owner. The scope header is a request fence, not a second
+// authentication system.
+func (s *CodeWorkspaceService) GetForWorkspace(ctx context.Context, id, workspaceID string) (*CodeWorkspace, error) {
+	session, err := s.sessionForWorkspaceRequest(ctx, id, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return cloneCodeWorkspace(session), nil
+}
+
 func (s *CodeWorkspaceService) Proxy(ctx context.Context, id string) (*CodeWorkspaceProxy, error) {
 	session, err := s.sessionForRequest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &CodeWorkspaceProxy{BaseURL: session.BaseURL, Token: session.Token, GatewayWorkspaceID: session.GatewayWorkspaceID}, nil
+}
+
+func (s *CodeWorkspaceService) ProxyForWorkspace(ctx context.Context, id, workspaceID string) (*CodeWorkspaceProxy, error) {
+	session, err := s.sessionForWorkspaceRequest(ctx, id, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -569,6 +591,26 @@ func (s *CodeWorkspaceService) CloseSession(ctx context.Context, id string) erro
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+// CloseSessionForWorkspace permits teardown of an old Workspace session only
+// when the caller explicitly supplies that session's origin Workspace. A
+// missing session remains idempotent, matching CloseSession.
+func (s *CodeWorkspaceService) CloseSessionForWorkspace(ctx context.Context, id, workspaceID string) error {
+	s.mu.Lock()
+	session := s.sessions[id]
+	var owner string
+	if session != nil {
+		owner = session.WorkspaceID
+	}
+	s.mu.Unlock()
+	if session == nil {
+		return nil
+	}
+	if strings.TrimSpace(workspaceID) == "" || owner != workspaceID {
+		return fmt.Errorf("%w: code workspace belongs to another workspace", ErrCodeWorkspaceForbidden)
+	}
+	return s.CloseSession(ctx, id)
 }
 
 func (s *CodeWorkspaceService) sessionForRequest(ctx context.Context, id string) (*codeWorkspaceSession, error) {
@@ -623,6 +665,17 @@ func (s *CodeWorkspaceService) sessionForRequest(ctx context.Context, id string)
 	if _, _, err := s.resolveSnapshot(ctx, session); err != nil {
 		_ = s.CloseSession(context.WithoutCancel(ctx), id)
 		return nil, err
+	}
+	return session, nil
+}
+
+func (s *CodeWorkspaceService) sessionForWorkspaceRequest(ctx context.Context, id, workspaceID string) (*codeWorkspaceSession, error) {
+	session, err := s.sessionForRequest(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(workspaceID) != "" && session.WorkspaceID != workspaceID {
+		return nil, fmt.Errorf("%w: code workspace belongs to another workspace", ErrCodeWorkspaceForbidden)
 	}
 	return session, nil
 }

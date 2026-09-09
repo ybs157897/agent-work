@@ -1,0 +1,104 @@
+{
+  "generated_at": "2026-09-08",
+  "purpose": "Small source evidence manifest for the Java capability fixture; no source bodies or credentials are copied.",
+  "surfaces": [
+    {
+      "name": "standalone-web-idea",
+      "root": "/Users/yin/Documents/ybs/code/web-idea",
+      "baseline": "2bbfb37",
+      "working_tree": "codex/idea-navigation-reading with uncommitted changes"
+    },
+    {
+      "name": "agent-work-fixture",
+      "root": "/Users/yin/Documents/ybs/code/agent-work-web-idea-requirement-fixture/integrations/web-idea",
+      "baseline": "651056c",
+      "working_tree": "clean fixture surface"
+    }
+  ],
+  "files": [
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/gateway/internal/api/server.go",
+      "sha256": "468b0d8ddd5e137f0f4075e83bc44eada2c845b22dea8f258712c1aa24cd5bf7",
+      "lines": "40-51,76-98",
+      "summary": "Gateway routes and standalone workspace creation; includes PUT file and LSP endpoints."
+    },
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/gateway/internal/lspproxy/proxy.go",
+      "sha256": "847578ab00fd96b285b9f759b52b4393a18248ed0ade49422e93223013730e2c",
+      "lines": "20-95",
+      "summary": "WebSocket to jdtls stdio bridge without the embedded read-only method filter."
+    },
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/gateway/internal/projectmodel/inspect.go",
+      "sha256": "7b181d44f7adcbbbb2a93fc565420c326629671b8502503f6386049905523638",
+      "lines": "129-149,152-223,225-266",
+      "summary": "Maven/Gradle marker detection, bounded Maven modules/dependencies, and JDK probe."
+    },
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/gateway/internal/jdtls/manager.go",
+      "sha256": "d351457dde8e7d839bc5352b212ebe6d4652a4dabfcd065391e8c61e6d195490",
+      "lines": "94-170,173-188",
+      "summary": "Lazy jdtls startup, stdio session, and workspace lifecycle stop."
+    },
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/web/src/App.tsx",
+      "sha256": "e63332f2622607eedcdd71166ce7dc05505d0b8652cc42a95565c083d6d2af6a",
+      "lines": "245-280,553-723,840-895",
+      "summary": "Standalone save/edit flow, usages/definition navigation, and CodePane wiring."
+    },
+    {
+      "surface": "standalone-web-idea",
+      "path": "apps/web/src/lsp/session.ts",
+      "sha256": "49918225ac98098ac59fe7785defba41a9fdc01be7b2269652628d7b6b6cce75",
+      "lines": "215-245,371-430",
+      "summary": "jdtls initialize settings plus completion, references, and definition requests."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/gateway/internal/api/server.go",
+      "sha256": "3aff9ffdc6eaafd20c5ce236ab76356a13a4b2472615249f46ae714c9f143895",
+      "lines": "138-157,182-240,286-310,377-410",
+      "summary": "Embedded snapshot Gateway routes, TTL/read-only workspace creation, and jdtls/read-only FS boundary."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/gateway/internal/lspproxy/proxy.go",
+      "sha256": "f494ca3eb09e124337f423192d3e4bf03f8add885df1023ae397c8cd12016da0",
+      "lines": "20-110,115-186",
+      "summary": "LSP bridge and read-only JSON-RPC method whitelist."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/gateway/internal/projectmodel/inspect.go",
+      "sha256": "98ae657631b74bc912eb444554be7753e7413fd5a48a2a4527ce52c614f941d8",
+      "lines": "129-149,152-223,225-266",
+      "summary": "Same lightweight Maven/Gradle/JDK project snapshot used by the embedded reader."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/gateway/internal/jdtls/manager.go",
+      "sha256": "5507279a8bb62463795870d9ba8a0140b70e11f904e1793c96bd9908ef77cec9",
+      "lines": "94-170,173-248",
+      "summary": "Snapshot jdtls lifecycle and per-workspace data cleanup."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/web/src/App.tsx",
+      "sha256": "aecf9906955579ed0e0cec4f21c52b5ab6c57096c5278515f626a6da29ffd70c",
+      "lines": "242-257,341-376,978-1000",
+      "summary": "Embedded bootstrap sets readOnly=true; copied standalone save path is guarded and editor callbacks are disabled."
+    },
+    {
+      "surface": "agent-work-fixture",
+      "path": "apps/web/src/lsp/session.ts",
+      "sha256": "6200634c3b3ae9165bc06bae8aa0dfbb42e917edf1b020af7799879e0efdb262",
+      "lines": "215-245,368-431",
+      "summary": "Embedded LSP session retains completion/references/definition while passing read-only settings."
+    }
+  ]
+}

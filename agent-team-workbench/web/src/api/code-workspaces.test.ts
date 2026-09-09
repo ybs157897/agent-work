@@ -39,4 +39,12 @@ describe('Java code workspace endpoints', () => {
     expect(init.method).toBe('DELETE');
     expect(init.keepalive).toBe(true);
   });
+
+  it('teardown carries the session origin Workspace after the UI has switched away', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await deleteCodeWorkspace('code/old', true, 'ws_A');
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['X-Workspace-ID']).toBe('ws_A');
+  });
 });

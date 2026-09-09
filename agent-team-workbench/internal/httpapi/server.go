@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/agentconfig"
@@ -21,7 +22,6 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 	"github.com/ybs/agent-team-workbench/internal/security"
 	"github.com/ybs/agent-team-workbench/internal/sse"
-	"github.com/ybs/agent-team-workbench/internal/taskintake"
 )
 
 type ctxKey int
@@ -49,21 +49,21 @@ type AgentConfigDurableReconciler interface {
 
 // Server 承载 REST + SSE；M1 认证为演示用户（owner），RBAC 守卫已接入（M4 会话化）。
 type Server struct {
-	svc              *application.Service
-	store            application.Store
-	hub              *sse.Hub
-	demoRole         domain.MemberRole
-	agentCfg         AgentConfigSync
-	models           *modelconfig.Registry
-	credentials      *modelconfig.CredentialsStore
-	workbenchRoot    string
-	taskIntakeClient *taskintake.Client
-	codeWorkspaces   *application.CodeWorkspaceService
+	svc             *application.Service
+	store           application.Store
+	hub             *sse.Hub
+	demoRole        domain.MemberRole
+	agentCfg        AgentConfigSync
+	models          *modelconfig.Registry
+	credentials     *modelconfig.CredentialsStore
+	workbenchRoot   string
+	codeWorkspaces  *application.CodeWorkspaceService
+	chatSourceStore application.ChatSourceStore
+	hostRegistry    *hostregistry.Registry
 }
 
 func NewServer(svc *application.Service, store application.Store, hub *sse.Hub) *Server {
-	return &Server{svc: svc, store: store, hub: hub, demoRole: domain.RoleOwner,
-		taskIntakeClient: taskintake.NewClient(nil)}
+	return &Server{svc: svc, store: store, hub: hub, demoRole: domain.RoleOwner}
 }
 
 // SetDemoRole 仅用于测试 RBAC 守卫；生产由会话中间件注入角色。
@@ -86,14 +86,20 @@ func (s *Server) SetCredentialsStore(store *modelconfig.CredentialsStore) { s.cr
 // SetWorkbenchRoot 用于解析 DSH agent preset 目录等相对路径。
 func (s *Server) SetWorkbenchRoot(root string) { s.workbenchRoot = root }
 
-// SetTaskIntakeClient replaces the text-only provider client. Production uses
-// the default HTTP client; tests can inject a client with an httptest transport.
-func (s *Server) SetTaskIntakeClient(client *taskintake.Client) { s.taskIntakeClient = client }
+// SetChatSourceStore mounts the root-owned original-file store used by Chat
+// uploads and trusted Run source_refs resolution.
+func (s *Server) SetChatSourceStore(store application.ChatSourceStore) {
+	s.chatSourceStore = store
+	if s.svc != nil {
+		s.svc.SetChatSourceStore(store)
+	}
+}
 
 // SetCodeWorkspaceGateway mounts the server-side web-idea Gateway endpoint.
 // The Gateway token is retained only by the application proxy; browser routes
 // receive a same-origin URL and never receive the upstream credential.
 func (s *Server) SetCodeWorkspaceGateway(endpoint application.CodeWorkspaceGateway, registry *hostregistry.Registry) {
+	s.hostRegistry = registry
 	if s.codeWorkspaces != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		s.codeWorkspaces.Close(ctx)
@@ -123,19 +129,79 @@ func (s *Server) guard(perm string, next http.HandlerFunc) http.HandlerFunc {
 			})
 			return
 		}
+		if err := s.validateWorkspaceRequestScope(r); err != nil {
+			writeProblem(w, r, Problem{Type: "https://workbench.example/problems/workspace-scope-mismatch",
+				Title: "Workspace scope mismatch", Status: http.StatusConflict,
+				Code: "workspace_scope_mismatch", Detail: "请求实体不属于当前 Workspace"})
+			return
+		}
 		next(w, r)
 	}
+}
+
+// validateWorkspaceRequestScope is an optional client scope fence. Existing
+// callers without X-Workspace-ID retain the legacy demo behavior; the global
+// frontend sends it on every scoped request so a stale entity URL cannot act
+// on a newly selected Workspace. Path-scoped endpoints are checked directly;
+// bare entity endpoints resolve their owner from the canonical repository.
+func (s *Server) validateWorkspaceRequestScope(r *http.Request) error {
+	want := strings.TrimSpace(r.Header.Get("X-Workspace-ID"))
+	if want == "" {
+		return nil
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) >= 2 && parts[0] == "workspaces" {
+		if parts[1] != want {
+			return domain.ErrWorkspaceContextMismatch
+		}
+		return nil
+	}
+	var workspaceID string
+	switch {
+	case len(parts) >= 2 && parts[0] == "work-items":
+		if wi, err := s.store.WorkItems().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = wi.WorkspaceID
+		}
+	case len(parts) >= 2 && parts[0] == "runs":
+		if run, err := s.store.Runs().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = run.WorkspaceID
+		}
+	case len(parts) >= 2 && parts[0] == "agent-profiles":
+		if agent, err := s.store.Agents().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = agent.WorkspaceID
+		}
+	case len(parts) >= 2 && parts[0] == "runtime-bindings":
+		if binding, err := s.store.Bindings().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = binding.WorkspaceID
+		}
+	case len(parts) >= 2 && parts[0] == "workspace-locations":
+		if location, err := s.store.WorkspaceLocations().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = location.WorkspaceID
+		}
+	case len(parts) >= 2 && parts[0] == "plans":
+		if plan, err := s.store.Plans().Get(r.Context(), parts[1]); err == nil {
+			workspaceID = plan.WorkspaceID
+		}
+	}
+	if workspaceID != "" && workspaceID != want {
+		return domain.ErrWorkspaceContextMismatch
+	}
+	return nil
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	s.registerKnowledgeRoutes(mux)
+	s.registerChatSourceRoutes(mux)
 	s.registerCodeWorkspaceRoutes(mux)
 
 	mux.HandleFunc("GET /api/v1/me", s.guard(security.PermRead, s.handleMe))
 	// /health 与 /runtimes/dsh/catalog 在 openapi 中声明为公开端点（security: []），不挂守卫。
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/workspaces", s.guard(security.PermRead, s.handleListWorkspaces))
+	mux.HandleFunc("POST /api/v1/workspaces", s.guard(security.PermWorkspaceAdmin, s.handleCreateWorkspace))
+	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}", s.guard(security.PermRead, s.handleGetWorkspace))
 	mux.HandleFunc("PATCH /api/v1/workspaces/{workspace_id}", s.guard(security.PermWorkspaceAdmin, s.handlePatchWorkspace))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/bootstrap", s.guard(security.PermRead, s.handleBootstrap))
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/dashboard", s.guard(security.PermRead, s.handleDashboard))
@@ -161,9 +227,6 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermRead, s.handleListWorkItems))
 	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/work-items", s.guard(security.PermWorkItemWrite, s.handleCreateWorkItem))
-	// Pre-publish task clarification is stateless and text-only. It must never
-	// enter the WorkItem/Run/Coordinator execution path before user confirmation.
-	mux.HandleFunc("POST /api/v1/workspaces/{workspace_id}/task-intake/analyze", s.guard(security.PermWorkItemWrite, s.handleAnalyzeTaskIntake))
 	// Native governance read/command surface. All handlers delegate to the
 	// canonical Goal/Todo/Handoff/Evidence/ProjectionRepair Service ports.
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/goals", s.guard(security.PermRead, s.handleListGoals))
@@ -226,6 +289,16 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRunControl, s.handleCreateRun))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/runs", s.guard(security.PermRead, s.handleListWorkItemRuns))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/analysis", s.guard(security.PermRead, s.handleGetChatAnalysis))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/answers", s.guard(security.PermWorkItemWrite, s.handleSaveChatAnalysisAnswer))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/decisions", s.guard(security.PermWorkItemWrite, s.handleSaveChatAnalysisDecision))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/analysis/history", s.guard(security.PermRead, s.handleGetChatAnalysisHistory))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/recheck", s.guard(security.PermWorkItemWrite, s.handleRecheckChatAnalysis))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/drafts", s.guard(security.PermWorkItemWrite, s.handleCreatePublicationDraft))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/analysis/drafts", s.guard(security.PermRead, s.handleListPublicationDrafts))
+	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/analysis/drafts/{draft_id}", s.guard(security.PermRead, s.handleGetPublicationDraft))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/drafts/{draft_id}/recheck", s.guard(security.PermWorkItemWrite, s.handleRecheckPublicationDraft))
+	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/analysis/drafts/{draft_id}/publish", s.guard(security.PermWorkItemWrite, s.handlePublishPublicationDraft))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/dispatches", s.guard(security.PermRead, s.handleListWorkItemDispatches))
 	mux.HandleFunc("GET /api/v1/work-items/{work_item_id}/decisions", s.guard(security.PermRead, s.handleListWorkItemDecisions))
 	mux.HandleFunc("POST /api/v1/work-items/{work_item_id}/decisions", s.guard(security.PermWorkItemWrite, s.handleRecordDecision))
@@ -514,6 +587,14 @@ func renderProblem(status int, code, title, detail string) (int, []byte) {
 	return status, b
 }
 
+func renderRetryableProblem(status int, code, title, detail string) (int, []byte) {
+	b, _ := json.Marshal(Problem{
+		Type: "https://workbench.example/problems/" + code, Title: title,
+		Status: status, Code: code, Detail: detail, Retryable: true,
+	})
+	return status, b
+}
+
 // ── Workspace / Dashboard / Activities / SSE ─────────────────────────
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -563,7 +644,12 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			fail(w, r, err)
 			return
 		}
-		items = append(items, toWorkspaceDTO(ws))
+		dto, dtoErr := s.workspaceDTO(r.Context(), ws)
+		if dtoErr != nil {
+			fail(w, r, dtoErr)
+			return
+		}
+		items = append(items, *dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -660,8 +746,13 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
+	workspace, err := s.workspaceDTO(r.Context(), ws)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"workspace":    toWorkspaceDTO(ws),
+		"workspace":    workspace,
 		"dashboard":    dash,
 		"agents":       map[string]any{"items": agentDTOs},
 		"work_items":   map[string]any{"items": wiDTOs},
