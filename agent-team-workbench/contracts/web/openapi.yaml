@@ -829,24 +829,6 @@ paths:
         "201": { content: { application/json: { schema: { $ref: "#/components/schemas/WorkItem" } } } }
         "422": { description: record_kind/Task assignment/根 Task 初始状态校验失败, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
 
-  /workspaces/{workspace_id}/task-intake/analyze:
-    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
-    post:
-      tags: [task-intake]
-      operationId: analyzeTaskIntake
-      summary: 发布任务前的无状态需求澄清
-      description: |
-        使用 registry 中已配置凭据的直接文本模型分析完整对话并返回自然语言回复与可编辑草案。
-        此端点不创建或修改 WorkItem、Goal、Run、Coordinator、Dispatch 或调度唤醒，也不提供工具调用。
-        只有用户随后单独调用 createWorkItem 才会进入任务执行流程。
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/TaskIntakeAnalyzeRequest" } } } }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/TaskIntakeAnalyzeResponse" } } } }
-        "400": { description: 消息或草案输入超出边界, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
-        "422": { description: 分析模型未配置、不可直接调用或凭据缺失, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
-        "502": { description: 模型提供方错误或返回非契约 JSON, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
-        "504": { description: 模型提供方超时, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
-
   /work-items/{work_item_id}:
     parameters: [{ $ref: "#/components/parameters/WorkItemId" }]
     get:
@@ -3674,73 +3656,6 @@ components:
             required: [acceptance_criteria]
             properties:
               acceptance_criteria: { minItems: 1 }
-
-    TaskIntakeMessage:
-      type: object
-      required: [role, content]
-      additionalProperties: false
-      properties:
-        role: { type: string, enum: [user, assistant] }
-        content: { type: string, minLength: 1, maxLength: 8000 }
-
-    TaskIntakeQuestion:
-      type: object
-      required: [id, title, options, multiple]
-      additionalProperties: false
-      properties:
-        id: { type: string, minLength: 1, maxLength: 64 }
-        title: { type: string, minLength: 1, maxLength: 300 }
-        options:
-          type: array
-          minItems: 2
-          maxItems: 5
-          items: { type: string, minLength: 1, maxLength: 200 }
-        multiple: { type: boolean }
-
-    TaskIntakeDraft:
-      type: object
-      additionalProperties: false
-      required: [title, description, acceptance_criteria]
-      properties:
-        title: { type: string, minLength: 1, maxLength: 2000 }
-        description: { type: string, minLength: 1, maxLength: 2000 }
-        acceptance_criteria:
-          type: array
-          minItems: 1
-          maxItems: 64
-          items: { type: string, minLength: 1, maxLength: 2000 }
-
-    TaskIntakeAnalyzeRequest:
-      type: object
-      additionalProperties: false
-      required: [messages]
-      properties:
-        messages:
-          type: array
-          minItems: 1
-          maxItems: 40
-          items: { $ref: "#/components/schemas/TaskIntakeMessage" }
-        draft:
-          allOf: [{ $ref: "#/components/schemas/TaskIntakeDraft" }]
-          nullable: true
-          description: 客户端当前可编辑草案，仅作为需求上下文，不是发布授权
-        model_ref:
-          type: string
-          description: 可选的 registry 模型引用；省略时读取已存在 Coordinator 的 ModelRef
-
-    TaskIntakeAnalyzeResponse:
-      type: object
-      required: [reply, questions, draft]
-      additionalProperties: false
-      properties:
-        reply: { type: string, minLength: 1, maxLength: 8000, description: questions 非空时服务端限制为 1000 字符，以容纳前端回传的问题选项上下文 }
-        questions:
-          type: array
-          maxItems: 3
-          items: { $ref: "#/components/schemas/TaskIntakeQuestion" }
-        draft:
-          allOf: [{ $ref: "#/components/schemas/TaskIntakeDraft" }]
-          nullable: true
 
     WorkItemPatch:
       type: object
