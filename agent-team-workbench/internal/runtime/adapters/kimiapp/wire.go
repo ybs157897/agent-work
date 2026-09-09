@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/ybs/agent-team-workbench/internal/domain"
+	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
 // ---- REST 客户端 ----
@@ -47,7 +49,9 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any,
 	if err != nil {
 		return &kapError{Transport: true, Message: err.Error()}
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if !skipAuth && c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
@@ -177,6 +181,42 @@ func (c *restClient) resolveApproval(ctx context.Context, sessionID, approvalID,
 		return nil
 	}
 	return kerr
+}
+
+func (c *restClient) resolveQuestion(ctx context.Context, sessionID, questionID string, response domain.QuestionResponse) error {
+	answers := make(map[string]questionAnswer, len(response.Answers))
+	for id, answer := range response.Answers {
+		answers[id] = questionAnswer{Kind: answer.Kind, OptionID: answer.OptionID, OptionIDs: answer.OptionIDs, Text: answer.Text, OtherText: answer.OtherText}
+	}
+	path := "/api/v1/sessions/" + sessionID + "/questions/" + questionID
+	kerr := c.do(ctx, http.MethodPost, path, &questionResolveRequest{Answers: answers, Method: response.Method, Note: response.Note}, nil, false)
+	if kerr == nil {
+		return nil
+	}
+	if kerr != nil && (kerr.Code == codeQuestionResolved || kerr.Code == 40909) {
+		return fmt.Errorf("%w: %s", runtime.ErrQuestionProviderAlreadyResolved, kerr.Message)
+	}
+	return kerr
+}
+
+func (c *restClient) dismissQuestion(ctx context.Context, sessionID, questionID string) *kapError {
+	path := "/api/v1/sessions/" + sessionID + "/questions/" + questionID + ":dismiss"
+	kerr := c.do(ctx, http.MethodPost, path, nil, nil, false)
+	if kerr != nil && (kerr.Code == codeQuestionNotFound || kerr.Code == codeQuestionResolved) {
+		return nil
+	}
+	return kerr
+}
+
+func (c *restClient) listPendingQuestions(ctx context.Context, sessionID string) ([]evQuestionRequested, *kapError) {
+	var out struct {
+		Items []evQuestionRequested `json:"items"`
+	}
+	path := "/api/v1/sessions/" + sessionID + "/questions?status=pending"
+	if kerr := c.do(ctx, http.MethodGet, path, nil, &out, false); kerr != nil {
+		return nil, kerr
+	}
+	return out.Items, nil
 }
 
 // ---- WS 事件流 ----

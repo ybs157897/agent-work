@@ -223,6 +223,8 @@ func (f *fakeKap) serveREST(w http.ResponseWriter, r *http.Request) {
 		writeKap(w, http.StatusOK, 0, map[string]any{"aborted": true})
 	case r.Method == http.MethodPost && strings.Contains(path, "/approvals/"):
 		writeKap(w, http.StatusOK, 0, map[string]any{"resolved": true, "resolved_at": "now"})
+	case r.Method == http.MethodPost && strings.Contains(path, "/questions/"):
+		writeKap(w, http.StatusOK, 0, map[string]any{"resolved": true, "resolved_at": "now"})
 	default:
 		writeKap(w, http.StatusNotFound, 0, nil)
 	}
@@ -371,6 +373,16 @@ type recordCallbacks struct {
 	usages    []runtime.Usage
 	logs      []string
 	approvals chan approvalReq
+}
+
+type questionCallbacks struct {
+	*recordCallbacks
+	questions chan domain.QuestionRequest
+}
+
+func (c *questionCallbacks) RequestQuestion(request domain.QuestionRequest) string {
+	c.questions <- request
+	return "eng_question"
 }
 
 func newRecordCallbacks() *recordCallbacks {
@@ -523,6 +535,7 @@ func TestManifestCapabilities(t *testing.T) {
 		"resume":                                  runtime.CapSupported,
 		"steering":                                runtime.CapSupported,
 		"approval":                                runtime.CapSupported,
+		"question":                                runtime.CapSupported,
 		"subagents":                               runtime.CapSupported,
 		"swarm":                                   runtime.CapSupported,
 		"interrupt":                               runtime.CapSupported,
@@ -1283,6 +1296,38 @@ func TestApprovalResolveRoundtrip(t *testing.T) {
 
 	if res.Outcome != runtime.OutcomeSucceeded {
 		t.Fatalf("期望成功，得到 %s（%+v）", res.Outcome, res.Failure)
+	}
+}
+
+func TestQuestionResolveWaitsForProviderAck(t *testing.T) {
+	f := newFakeKap(t)
+	m := newTestModule(f)
+	cb := &questionCallbacks{recordCallbacks: newRecordCallbacks(), questions: make(chan domain.QuestionRequest, 1)}
+	controls := make(chan runtime.Control, 8)
+	res := runKapExecute(t, m, newTestExec(context.Background(), "", cb, controls), f, func(pid string) {
+		f.push(kapEvent("s_1", "turn.started", map[string]any{"turnId": 1, "promptId": pid}, 1, false))
+		f.push(kapEvent("s_1", "event.question.requested", map[string]any{
+			"question_id": "q_provider", "session_id": "s_1", "turn_id": 1,
+			"questions": []map[string]any{{"id": "q_0", "question": "颜色？", "options": []map[string]any{{"id": "opt_0_0", "label": "蓝色"}, {"id": "opt_0_1", "label": "绿色"}}}},
+		}, 2, false))
+		request := <-cb.questions
+		if request.ProviderID != "q_provider" || request.Questions[0].Options[0].ID != "opt_0_0" {
+			t.Fatalf("question decode mismatch: %+v", request)
+		}
+		ack := make(chan error, 1)
+		controls <- runtime.Control{Kind: runtime.ControlQuestion, QuestionID: "eng_question", Question: &domain.QuestionResponse{Answers: map[string]domain.QuestionAnswer{"q_0": {Kind: "single", OptionID: "opt_0_0"}}}, Ack: ack}
+		body := f.waitCall("/api/v1/sessions/s_1/questions/q_provider")
+		answers, _ := body["answers"].(map[string]any)
+		if answers["q_0"] == nil {
+			t.Fatalf("question answer body mismatch: %v", body)
+		}
+		if err := <-ack; err != nil {
+			t.Fatalf("provider ack: %v", err)
+		}
+		f.push(kapEvent("s_1", "turn.ended", map[string]any{"turnId": 1, "reason": "completed"}, 3, false))
+	})
+	if res.Outcome != runtime.OutcomeSucceeded {
+		t.Fatalf("question turn outcome=%s failure=%+v", res.Outcome, res.Failure)
 	}
 }
 

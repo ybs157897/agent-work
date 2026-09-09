@@ -66,8 +66,8 @@ describe('KnowledgePage presentation contract', () => {
     expect(knowledgeStatusClass('effective')).toContain('text-status-success');
     expect(isKnowledgeLibrarianAgent({ kind: 'knowledge_librarian' })).toBe(true);
     expect(isKnowledgeLibrarianAgent({ kind: 'user' })).toBe(false);
-    expect(buildKnowledgeChatPath('agent/builtin')).toBe('/chat?agent=agent%2Fbuiltin');
-    expect(buildKnowledgeChatPath('agent/builtin', 'kb_1', 2, '/knowledge?ws=ws_1&item=kb_1', 'ws_1')).toBe('/chat?agent=agent%2Fbuiltin&ws=ws_1&knowledge=kb_1&version=2&return_to=%2Fknowledge%3Fws%3Dws_1%26item%3Dkb_1');
+    expect(buildKnowledgeChatPath('agent/builtin')).toBe('/chat?agent=agent%2Fbuiltin&new=1');
+    expect(buildKnowledgeChatPath('agent/builtin', 'kb_1', 2, '/knowledge?ws=ws_1&item=kb_1', 'ws_1')).toBe('/chat?agent=agent%2Fbuiltin&new=1&ws=ws_1&knowledge=kb_1&version=2&return_to=%2Fknowledge%3Fws%3Dws_1%26item%3Dkb_1');
     expect(buildKnowledgeChatPath('')).toBeNull();
   });
 

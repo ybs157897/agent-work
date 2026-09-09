@@ -212,7 +212,7 @@ export function buildKnowledgePath(options: KnowledgePathOptions = {}): string {
   return encoded ? '/knowledge?' + encoded : '/knowledge';
 }
 
-/** Build the existing ordinary chat URL while carrying an optional knowledge citation. */
+/** Open a fresh librarian conversation, optionally carrying a knowledge citation. */
 export function buildKnowledgeChatPath(
   agentId: string | undefined,
   itemId?: string,
@@ -222,7 +222,7 @@ export function buildKnowledgeChatPath(
 ): string | null {
   const normalized = agentId?.trim();
   if (!normalized) return null;
-  const params = new URLSearchParams({ agent: normalized });
+  const params = new URLSearchParams({ agent: normalized, new: '1' });
   const workspace = workspaceId?.trim() || (returnTo ? new URLSearchParams(returnTo.split('?')[1] ?? '').get('ws') ?? '' : '');
   if (workspace) params.set('ws', workspace);
   if (itemId?.trim()) params.set('knowledge', itemId.trim());

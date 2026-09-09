@@ -242,6 +242,11 @@ components:
             - approval.requested
             - approval.resolved
             - approval.expired
+            - question.requested
+            - question.answered
+            - question.resolved
+            - question.dismissed
+            - question.expired
             # Artifact / Usage
             - artifact.created
             - artifact.updated

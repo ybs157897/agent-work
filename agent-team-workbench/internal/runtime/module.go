@@ -312,6 +312,30 @@ func (r *ModuleRunner) ResolveApproval(runID, approvalID string, approved bool) 
 	return ar.send(Control{Kind: ControlApproval, ApprovalID: approvalID, Approved: approved})
 }
 
+// ResolveQuestion forwards a typed native question response to an active
+// adapter. It never routes through the approval or steering control kinds.
+func (r *ModuleRunner) ResolveQuestion(ctx context.Context, runID, questionID string, response domain.QuestionResponse) error {
+	ar, module := r.lookupActive(runID)
+	if ar == nil {
+		return fmt.Errorf("run %s 不在本进程执行", runID)
+	}
+	if !r.moduleCapability(context.Background(), module, "question") {
+		return fmt.Errorf("%w: question", domain.ErrCapabilityMissing)
+	}
+	ack := make(chan error, 1)
+	if err := ar.send(Control{Kind: ControlQuestion, QuestionID: questionID, Question: &response, Ack: ack}); err != nil {
+		return err
+	}
+	select {
+	case err := <-ack:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(35 * time.Second):
+		return fmt.Errorf("question provider delivery timed out")
+	}
+}
+
 // Control 下达终态意图（interrupt/cancel）并取消 ExecContext。
 func (r *ModuleRunner) Control(runID string, terminal domain.RunStatus) {
 	ar, _ := r.lookupActive(runID)
@@ -452,6 +476,22 @@ func (c *runnerCallbacks) RequestApproval(kind, risk, summary string) string {
 	req, err := c.runner.engine.RequestApproval(context.Background(), c.runID, kind, risk, summary)
 	if err != nil || req == nil {
 		log.Printf("module: run %s 审批发起失败: %v", c.runID, err)
+		return ""
+	}
+	return req.ID
+}
+
+func (c *runnerCallbacks) RequestQuestion(request domain.QuestionRequest) string {
+	c.firstActivity()
+	c.markRunning()
+	sink, ok := c.runner.engine.(QuestionSink)
+	if !ok {
+		log.Printf("module: run %s question sink unavailable", c.runID)
+		return ""
+	}
+	req, err := sink.RequestQuestion(context.Background(), c.runID, request)
+	if err != nil || req == nil {
+		log.Printf("module: run %s question persistence failed: %v", c.runID, err)
 		return ""
 	}
 	return req.ID

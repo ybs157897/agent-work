@@ -115,6 +115,7 @@ export interface RunStreamParts {
   phaseId?: string;
   /** 当前可见阶段首个 delta 的时间，用于工作时间线的阶段耗时。 */
   phaseStartedAt?: string;
+  reasoningCompletedAt?: string;
 }
 
 export type ChatOutputContract = 'languagegui/v1' | 'chat-analysis/v1';
@@ -475,6 +476,7 @@ export function aggregateRunStream(entries: TimelineEntry[], agentId = 'main'): 
   let answerDraft = '';
   let phaseId = '';
   let phaseStartedAt = '';
+  let reasoningCompletedAt = '';
   for (const e of entries) {
     if ((e.agent_id ?? 'main') !== agentId) continue;
     if (e.type === 'message.completed') {
@@ -482,6 +484,7 @@ export function aggregateRunStream(entries: TimelineEntry[], agentId = 'main'): 
       answerDraft = '';
       phaseId = '';
       phaseStartedAt = '';
+      reasoningCompletedAt = '';
       continue;
     }
     // 只有新的工具调用开启可见阶段边界。progress/completed/failed 可能夹着
@@ -491,23 +494,43 @@ export function aggregateRunStream(entries: TimelineEntry[], agentId = 'main'): 
       answerDraft = '';
       phaseId = '';
       phaseStartedAt = '';
+      reasoningCompletedAt = '';
       continue;
     }
     if (e.type !== 'message.delta') continue;
+    const foldedReasoning = typeof e.data?.reasoning_folded === 'string' ? e.data.reasoning_folded : '';
+    const foldedAnswer = typeof e.data?.text_folded === 'string' ? e.data.text_folded : '';
+    if (foldedReasoning) {
+      reasoning = e.data?.reasoning_folded_truncated ? `……（早期推理已省略）\n\n${foldedReasoning}` : foldedReasoning;
+      phaseId = String(e.data?.reasoning_folded_phase_id ?? phaseId);
+      phaseStartedAt = String(e.data?.reasoning_folded_started_at ?? phaseStartedAt);
+      reasoningCompletedAt = String(e.data?.reasoning_folded_completed_at ?? reasoningCompletedAt);
+    }
+    if (foldedAnswer) {
+      answerDraft = foldedAnswer;
+      if (!reasoning) {
+        phaseId = String(e.data?.text_folded_phase_id ?? phaseId);
+        phaseStartedAt = String(e.data?.text_folded_started_at ?? phaseStartedAt);
+      }
+    }
     const chunk = extractDeltaChunk(e.data);
     if (!chunk?.text) continue;
     if (!phaseId && (chunk.type === 'reasoning-delta' || chunk.type === 'text-delta')) {
       phaseId = timelinePhaseId(e);
       phaseStartedAt = e.occurred_at;
     }
-    if (chunk.type === 'reasoning-delta') reasoning += chunk.text;
-    if (chunk.type === 'text-delta') answerDraft += chunk.text;
+    if (chunk.type === 'reasoning-delta' && !foldedReasoning) {
+      reasoning += chunk.text;
+      reasoningCompletedAt = e.occurred_at;
+    }
+    if (chunk.type === 'text-delta' && !foldedAnswer) answerDraft += chunk.text;
   }
   return {
     reasoning,
     answerDraft,
     ...(phaseId ? { phaseId } : {}),
     ...(phaseStartedAt ? { phaseStartedAt } : {}),
+    ...(reasoningCompletedAt ? { reasoningCompletedAt } : {}),
   };
 }
 
@@ -681,6 +704,21 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
           break;
         }
         case 'message.delta': {
+          const foldedReasoning = typeof e.data?.reasoning_folded === 'string' ? e.data.reasoning_folded : '';
+          const foldedAnswer = foldedText(e);
+          if (foldedReasoning) {
+            reasoningBuf = e.data?.reasoning_folded_truncated ? `……（早期推理已省略）\n\n${foldedReasoning}` : foldedReasoning;
+            phaseId = String(e.data?.reasoning_folded_phase_id ?? phaseId);
+            phaseStartedAt = String(e.data?.reasoning_folded_started_at ?? phaseStartedAt);
+            reasoningLastAt = String(e.data?.reasoning_folded_completed_at ?? reasoningLastAt);
+          }
+          if (foldedAnswer) {
+            answerBuf = foldedAnswer;
+            if (!reasoningBuf) {
+              phaseId = String(e.data?.text_folded_phase_id ?? phaseId);
+              phaseStartedAt = String(e.data?.text_folded_started_at ?? phaseStartedAt);
+            }
+          }
           const chunk = extractDeltaChunk(e.data);
           if (
             chunk?.text
@@ -690,11 +728,11 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             phaseId = timelinePhaseId(e);
             phaseStartedAt = e.occurred_at;
           }
-          if (chunk?.type === 'reasoning-delta' && chunk.text) {
+          if (chunk?.type === 'reasoning-delta' && chunk.text && !foldedReasoning) {
             reasoningBuf += chunk.text;
             reasoningLastAt = e.occurred_at;
           }
-          if (chunk?.type === 'text-delta' && chunk.text) {
+          if (chunk?.type === 'text-delta' && chunk.text && !foldedAnswer) {
             answerBuf += chunk.text;
           }
           if (e.role === 'user' && e.text) {
@@ -786,16 +824,19 @@ export function buildMessages(runIds: string[], timelines: Record<string, Timeli
             phaseId = typeof e.data?.reasoning_folded_phase_id === 'string'
               ? e.data.reasoning_folded_phase_id
               : phaseId;
+            reasoningLastAt = typeof e.data?.reasoning_folded_completed_at === 'string'
+              ? e.data.reasoning_folded_completed_at
+              : reasoningLastAt;
           }
           const foldedTextValue = foldedText(e);
           if (foldedTextValue) {
             // text_folded is the complete stage captured before this tool
             // boundary. It is authoritative over any surviving delta tail.
             answerBuf = foldedTextValue;
-            phaseStartedAt = typeof e.data?.text_folded_started_at === 'string'
+            phaseStartedAt = !reasoningBuf && typeof e.data?.text_folded_started_at === 'string'
               ? e.data.text_folded_started_at
               : phaseStartedAt;
-            phaseId = typeof e.data?.text_folded_phase_id === 'string'
+            phaseId = !reasoningBuf && typeof e.data?.text_folded_phase_id === 'string'
               ? e.data.text_folded_phase_id
               : phaseId;
           }
@@ -1151,6 +1192,8 @@ interface ChatStore {
   sourcesErrorByConversation: Record<string, string | undefined>;
 
   selectAgent: (id: string | null) => void;
+  /** Start an independent draft without interrupting the previously selected Run. */
+  startConversation: (agentId: string) => void;
   /** Restore the last Agent/conversation for one Workspace after bootstrap. */
   restoreWorkspace: (workspaceId: string) => void;
   /** Resolves only after the requested record has been validated and selected. */
@@ -1278,6 +1321,17 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       set({ workspaceId, agentId: id, conversationId: null, runs: [], runsLoadedConversationId: null, queue: [], runAlerts: {}, pendingUsers: {}, sendError: null, sending: false, newConversationAttempt: null });
       if (workspaceId && id) writeChatSelection(workspaceId, id, null);
       void get().refreshConversations();
+    },
+
+    startConversation: (agentId) => {
+      const workspaceId = useWorkspaceStore.getState().workspace?.id ?? get().workspaceId;
+      if (!workspaceId) return;
+      writeChatWorkspaceState(workspaceId, agentId, null, {
+        composer: { draft: '', reference: null }, queue: [],
+        analysisDraft: null, decisionDraft: null, publicationDraft: null,
+      });
+      // Even the same Agent must invalidate pending history and send responses.
+      get().selectAgent(agentId);
     },
 
     openConversation: async (workItemId) => {

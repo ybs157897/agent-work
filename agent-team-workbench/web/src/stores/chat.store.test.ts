@@ -1065,7 +1065,7 @@ describe('aggregateRunStream', () => {
       entry('run_1', 1, 'message.delta', { raw: { chunk: { type: 'reasoning-delta', text: '想' } } }),
       entry('run_1', 2, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '收' } } }),
     ];
-    expect(aggregateRunStream(entries)).toEqual({ reasoning: '想', answerDraft: '收', phaseId: 'run-seq-1', phaseStartedAt: '2026-08-22T00:00:00Z' });
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '想', answerDraft: '收', phaseId: 'run-seq-1', phaseStartedAt: '2026-08-22T00:00:00Z', reasoningCompletedAt: '2026-08-22T00:00:00Z' });
   });
 
   it('message.completed 之后仅聚合下一段 delta', () => {
@@ -1097,7 +1097,7 @@ describe('aggregateRunStream', () => {
       entry('run_1', 6, 'tool.completed', { output: '完成' }),
       entry('run_1', 7, 'message.delta', { raw: { chunk: { type: 'text-delta', text: '复' } } }),
     ];
-    expect(aggregateRunStream(entries)).toEqual({ reasoning: '考', answerDraft: '答复', phaseId: 'run-seq-3', phaseStartedAt: '2026-08-22T00:00:00Z' });
+    expect(aggregateRunStream(entries)).toEqual({ reasoning: '考', answerDraft: '答复', phaseId: 'run-seq-3', phaseStartedAt: '2026-08-22T00:00:00Z', reasoningCompletedAt: '2026-08-22T00:00:00Z' });
   });
 
   it('reasoning-only 在 tool.started 后切到新阶段，连续工具不重复切尾', () => {

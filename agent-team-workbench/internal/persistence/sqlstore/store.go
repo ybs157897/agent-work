@@ -145,6 +145,7 @@ type Store struct {
 	chatAnalyses          application.ChatAnalysisRepo
 	chatAnalysisDecisions application.ChatAnalysisDecisionRepo
 	taskPublicationDrafts application.TaskPublicationDraftRepo
+	questions             *QuestionRepo
 }
 
 var _ application.Store = (*Store)(nil)
@@ -192,6 +193,7 @@ func New(db *sql.DB) *Store {
 	s.chatAnalyses = &ChatAnalysisRepo{store: s}
 	s.chatAnalysisDecisions = &ChatAnalysisDecisionRepo{store: s}
 	s.taskPublicationDrafts = &TaskPublicationDraftRepo{store: s}
+	s.questions = &QuestionRepo{store: s}
 	return s
 }
 
@@ -251,6 +253,8 @@ func (s *Store) ChatAnalysisDecisions() application.ChatAnalysisDecisionRepo {
 func (s *Store) TaskPublicationDrafts() application.TaskPublicationDraftRepo {
 	return s.taskPublicationDrafts
 }
+
+func (s *Store) Questions() application.QuestionRepo { return s.questions }
 
 // Wakeups 返回满足 scheduling.Store 的唤醒仓储（application 端口复用同一接口定义）。
 func (s *Store) Wakeups() scheduling.Store { return s.wakeups }

@@ -200,6 +200,7 @@ describe('buildTranscriptSegments', () => {
         answerDraft: '好的，我先全面了解项目架构。',
         phaseId: 'run-seq-1',
         phaseStartedAt: '2026-08-28T00:00:00Z',
+        reasoningCompletedAt: '2026-08-28T00:00:31Z',
       },
       runStatuses: { r1: 'running' },
     });
@@ -207,6 +208,7 @@ describe('buildTranscriptSegments', () => {
     const assistant = segments.find((segment) => segment.kind === 'assistant');
     expect(thinking?.kind === 'thinking' && thinking.streaming).toBe(false);
     expect(thinking?.kind === 'thinking' && thinking.msg.text).toBe('先分析结构');
+    expect(thinking?.kind === 'thinking' && thinking.msg.completedAt).toBe('2026-08-28T00:00:31Z');
     expect(assistant?.kind === 'assistant' && assistant.streaming).toBe(true);
   });
 

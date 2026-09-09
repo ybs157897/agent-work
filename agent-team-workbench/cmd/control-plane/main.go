@@ -240,6 +240,9 @@ func run() error {
 		gateway.ForwardApproval(ctx, runID, approvalID, approved)
 		_ = modules.ResolveApproval(runID, approvalID, approved)
 	}
+	svc.QuestionForwarder = func(ctx context.Context, runID, questionID string, response domain.QuestionResponse) error {
+		return modules.ResolveQuestion(ctx, runID, questionID, response)
+	}
 	svc.ControlForwarder = func(ctx context.Context, runID, action string) {
 		gateway.ForwardControl(ctx, runID, action)
 		terminal := domain.RunCancelled

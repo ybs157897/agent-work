@@ -221,15 +221,31 @@ function foldEvictedReasoning(
     reasoning?: { text: string; truncated: boolean; startedAt?: string; completedAt?: string; phaseId?: string };
     text?: { text: string; startedAt?: string; phaseId?: string };
   }>();
-  const buffers: Record<'reasoning' | 'text', { text: string; sawDelta: boolean; sawEvicted: boolean; startedAt: string; completedAt: string; phaseId: string }> = {
-    reasoning: { text: '', sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
-    text: { text: '', sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
+  const buffers: Record<'reasoning' | 'text', { text: string; truncated: boolean; sawDelta: boolean; sawEvicted: boolean; startedAt: string; completedAt: string; phaseId: string }> = {
+    reasoning: { text: '', truncated: false, sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
+    text: { text: '', truncated: false, sawDelta: false, sawEvicted: false, startedAt: '', completedAt: '', phaseId: '' },
   };
+  let liveTail: TimelineEntry | undefined;
   for (const entry of entries) {
     if (entry.type === 'message.delta') {
+      // A capped, still-open phase carries its prefix on a retained delta.
+      // Replace the prefix before appending newer deltas so re-capping neither
+      // duplicates text nor changes the disclosure's phase identity.
+      for (const kind of ['reasoning', 'text'] as const) {
+        const folded = entry.data?.[`${kind}_folded`];
+        if (typeof folded !== 'string') continue;
+        const buffer = buffers[kind];
+        buffer.text = folded;
+        buffer.truncated = entry.data?.[`${kind}_folded_truncated`] === true;
+        buffer.sawDelta = true;
+        buffer.sawEvicted = true;
+        buffer.startedAt = String(entry.data?.[`${kind}_folded_started_at`] ?? buffer.startedAt);
+        buffer.completedAt = String(entry.data?.[`${kind}_folded_completed_at`] ?? buffer.completedAt);
+        buffer.phaseId = String(entry.data?.[`${kind}_folded_phase_id`] ?? buffer.phaseId);
+      }
       const text = extractDeltaChunk(entry.data);
       const deltaKind = text?.type === 'reasoning-delta' ? 'reasoning' : text?.type === 'text-delta' ? 'text' : undefined;
-      if (deltaKind && text?.text) {
+      if (deltaKind && text?.text && typeof entry.data?.[`${deltaKind}_folded`] !== 'string') {
         const buffer = buffers[deltaKind];
         if (!buffer.sawDelta) {
           buffer.startedAt = entry.occurred_at;
@@ -240,6 +256,7 @@ function foldEvictedReasoning(
         buffer.sawDelta = true;
         if (!retainedIds.has(entryIdentity(entry))) buffer.sawEvicted = true;
       }
+      if (retainedIds.has(entryIdentity(entry))) liveTail = entry;
       continue;
     }
     if (entry.type === 'tool.started' || entry.type === 'message.completed') {
@@ -253,7 +270,7 @@ function foldEvictedReasoning(
         const fold: { reasoning?: { text: string; truncated: boolean; startedAt?: string; completedAt?: string; phaseId?: string }; text?: { text: string; startedAt?: string; phaseId?: string } } = {};
         const reasoning = buffers.reasoning;
         if (typeof entry.data?.reasoning_folded !== 'string' && reasoning.sawDelta && reasoning.sawEvicted) {
-          const truncated = reasoning.text.length > REASONING_FOLD_TAIL_CHARS;
+          const truncated = reasoning.truncated || reasoning.text.length > REASONING_FOLD_TAIL_CHARS;
           fold.reasoning = {
             text: truncated ? reasoning.text.slice(-REASONING_FOLD_TAIL_CHARS) : reasoning.text,
             truncated,
@@ -275,23 +292,49 @@ function foldEvictedReasoning(
       if (retainedIds.has(entryIdentity(entry))) {
         for (const buffer of Object.values(buffers)) {
           buffer.text = '';
+          buffer.truncated = false;
           buffer.sawDelta = false;
           buffer.sawEvicted = false;
           buffer.startedAt = '';
           buffer.completedAt = '';
           buffer.phaseId = '';
         }
+        liveTail = undefined;
       }
     }
   }
-  if (folds.size === 0) return retained;
+  if (liveTail) {
+    const fold: NonNullable<ReturnType<typeof folds.get>> = {};
+    if (buffers.reasoning.sawEvicted) {
+      const value = buffers.reasoning;
+      fold.reasoning = {
+        text: value.text.slice(-REASONING_FOLD_TAIL_CHARS),
+        truncated: value.truncated || value.text.length > REASONING_FOLD_TAIL_CHARS,
+        startedAt: value.startedAt, completedAt: value.completedAt, phaseId: value.phaseId,
+      };
+    }
+    if (buffers.text.sawEvicted) {
+      const value = buffers.text;
+      fold.text = { text: value.text, startedAt: value.startedAt, phaseId: value.phaseId };
+    }
+    if (fold.reasoning || fold.text) folds.set(entryIdentity(liveTail), fold);
+  }
   return retained.map((entry) => {
     const fold = folds.get(entryIdentity(entry));
-    if (!fold) return entry;
+    let data = entry.data;
+    if (entry.type === 'message.delta' && !fold && (typeof data?.reasoning_folded === 'string' || typeof data?.text_folded === 'string')) {
+      // Only the newest live carrier (or the settled boundary) owns a prefix.
+      // Retaining one copy on every delta would multiply the text budget by 500.
+      data = { ...data };
+      for (const kind of ['reasoning', 'text']) {
+        for (const suffix of ['', '_started_at', '_completed_at', '_phase_id', '_truncated']) delete data[`${kind}_folded${suffix}`];
+      }
+    }
+    if (!fold) return data === entry.data ? entry : { ...entry, data };
     return {
       ...entry,
       data: {
-        ...entry.data,
+        ...data,
           ...(fold.reasoning ? {
             reasoning_folded: fold.reasoning.text,
             ...(fold.reasoning.startedAt ? { reasoning_folded_started_at: fold.reasoning.startedAt } : {}),

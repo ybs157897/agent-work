@@ -39,6 +39,9 @@ type Service struct {
 	// ApprovalForwarder / ControlForwarder 把决定转发到 Runner WSS（M2）；
 	// 无 Runner 的内置 Mock 路径不需要。
 	ApprovalForwarder func(ctx context.Context, runID, approvalID string, approved bool)
+	// QuestionForwarder delivers a typed native question response to the active
+	// adapter; it is independent from ApprovalForwarder and InputForwarder.
+	QuestionForwarder func(ctx context.Context, runID, questionID string, response domain.QuestionResponse) error
 	ControlForwarder  func(ctx context.Context, runID, action string)
 	// InputForwarder 把用户 steering 输入转发到活动 Run 的执行端（adapter 同 session 追加 prompt）。
 	InputForwarder func(ctx context.Context, runID, instruction string) error
@@ -69,10 +72,18 @@ type Service struct {
 	// realpath identity; nil keeps storage-only test embedders compatible.
 	projectCanonicalKeyResolver func(context.Context, string, string, string) (string, error)
 	publicationBaselineResolver PublicationBaselineResolver
+	questionDeliveryMu          sync.Mutex
+	questionDeliveries          map[string]*questionDelivery
+}
+
+type questionDelivery struct {
+	response domain.QuestionResponse
+	done     chan struct{}
+	err      error
 }
 
 func NewService(store Store, dispatcher Dispatcher, notifier Notifier, adapters *runtime.Registry) *Service {
-	return &Service{store: store, dispatcher: dispatcher, notifier: notifier, adapters: adapters, revertedChanges: make(map[string]string)}
+	return &Service{store: store, dispatcher: dispatcher, notifier: notifier, adapters: adapters, revertedChanges: make(map[string]string), questionDeliveries: make(map[string]*questionDelivery)}
 }
 
 // EnableAgentConfigSyncIntents makes Agent updates create a durable external

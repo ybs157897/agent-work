@@ -1862,6 +1862,33 @@ func (s *Service) RecordRunEvent(ctx context.Context, runID, evType string, data
 	return nil
 }
 
+func (s *Service) reconcileQuestionProviderEvent(ctx context.Context, run *domain.ExecutionRun, evType string, data map[string]any) error {
+	if evType != domain.EventQuestionAnswered && evType != domain.EventQuestionDismissed {
+		return nil
+	}
+	providerID, _ := data["provider_question_id"].(string)
+	sessionRef, _ := data["session_ref"].(string)
+	if providerID == "" || sessionRef == "" {
+		return nil
+	}
+	q, err := s.store.Questions().GetByProviderKey(ctx, run.ID, sessionRef, providerID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if evType == domain.EventQuestionAnswered {
+		answers, _ := data["answers"].(map[string]any)
+		if err := q.MarkProviderAnswered(time.Now().UTC(), answers); err != nil {
+			return err
+		}
+	} else if err := q.Dismiss(time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.store.Questions().Update(ctx, q)
+}
+
 // recordRunEventTx 是 Run 域事件追加的事务内核心（RecordRunEvent 与
 // ApplyRunnerEvent 共用）：白名单校验在 emit 内，artifact.created 投影、
 // Chat 排序触点都保持同一语义。
@@ -1883,6 +1910,9 @@ func (s *Service) recordRunEventTx(ctx context.Context, runID, evType string, da
 		}
 	}
 	eventData := withWorkItemRecordKind(data, wi)
+	if err := s.reconcileQuestionProviderEvent(ctx, r, evType, eventData); err != nil {
+		return "", err
+	}
 	if evType == domain.EventArtifactCreated {
 		s.projectArtifactEvent(ctx, r, eventData)
 	}
@@ -1981,6 +2011,289 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 		s.autoResolveFromGrant(approval, grant)
 	}
 	return approval, nil
+}
+
+// RequestQuestion persists one native AskUserQuestion interaction and emits a
+// browser-visible event. The provider key is scoped by (run, session), so a
+// replayed Kimi frame cannot create or answer a question from another run.
+func (s *Service) RequestQuestion(ctx context.Context, runID string, request domain.QuestionRequest) (*domain.QuestionRequest, error) {
+	var result *domain.QuestionRequest
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		r, err := s.store.Runs().Get(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if r.Status.IsTerminal() {
+			return fmt.Errorf("%w: run is terminal", domain.ErrStateConflict)
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if err := requireValidWorkItemRecordKind(wi); err != nil {
+			return err
+		}
+		if existing, err := s.store.Questions().GetByProviderKey(ctx, r.ID, request.SessionRef, request.ProviderID); err == nil {
+			result = existing
+			return nil
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		request.ID = domain.NewID(domain.PrefixQuestion)
+		request.RunID = r.ID
+		request.WorkItemID = r.WorkItemID
+		request.AgentID = strings.TrimSpace(request.AgentID)
+		if request.AgentID == "" {
+			request.AgentID = "main"
+		}
+		request.Status = domain.QuestionPending
+		if request.CreatedAt.IsZero() {
+			request.CreatedAt = time.Now().UTC()
+		}
+		if err := request.Validate(); err != nil {
+			return err
+		}
+		if err := s.store.Questions().Create(ctx, &request); err != nil {
+			return err
+		}
+		data := map[string]any{
+			"run_id": r.ID, "work_item_id": r.WorkItemID, "question_id": request.ID,
+			"provider_question_id": request.ProviderID, "session_ref": request.SessionRef,
+			"agent_id": request.AgentID, "turn_id": request.TurnID,
+			"tool_call_id": request.ToolCallID, "questions": request.Questions,
+			"status": string(request.Status), "record_kind": string(workItemRecordKind(wi)),
+		}
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventQuestionRequested,
+			domain.AggregateExecutionRun, r.ID, r.Version,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventQuestionRequested, Payload: data}, data); err != nil {
+			return err
+		}
+		result = &request
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result != nil {
+		if r, err := s.store.Runs().Get(ctx, result.RunID); err == nil {
+			s.notifier.Notify(r.WorkspaceID)
+		}
+	}
+	return result, nil
+}
+
+func (s *Service) Questions(ctx context.Context, runID string) ([]*domain.QuestionRequest, error) {
+	return s.store.Questions().ListPending(ctx, runID)
+}
+
+// deliverQuestionSingleflight ensures one typed response is sent to a provider
+// at a time per durable question. The entry is removed after completion, so a
+// failed or ambiguous delivery can be retried with the same immutable response.
+func (s *Service) deliverQuestionSingleflight(ctx context.Context, questionID string, response domain.QuestionResponse, deliver func() error) error {
+	s.questionDeliveryMu.Lock()
+	if s.questionDeliveries == nil {
+		s.questionDeliveries = make(map[string]*questionDelivery)
+	}
+	if current := s.questionDeliveries[questionID]; current != nil {
+		if !current.response.Equal(response) {
+			s.questionDeliveryMu.Unlock()
+			return fmt.Errorf("%w: another response is already being delivered", domain.ErrStateConflict)
+		}
+		done := current.done
+		s.questionDeliveryMu.Unlock()
+		select {
+		case <-done:
+			return current.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	current := &questionDelivery{response: response, done: make(chan struct{})}
+	s.questionDeliveries[questionID] = current
+	s.questionDeliveryMu.Unlock()
+
+	err := deliver()
+	s.questionDeliveryMu.Lock()
+	current.err = err
+	delete(s.questionDeliveries, questionID)
+	close(current.done)
+	s.questionDeliveryMu.Unlock()
+	return err
+}
+
+// ResolveQuestion records a typed response before forwarding it to the active
+// adapter. Replays of an already answered question are idempotent and do not
+// send a second control message.
+func (s *Service) ResolveQuestion(ctx context.Context, runID, questionID string, response domain.QuestionResponse, by string) (*domain.QuestionRequest, error) {
+	var result *domain.QuestionRequest
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		q, err := s.store.Questions().Get(ctx, questionID)
+		if err != nil {
+			return err
+		}
+		if q.RunID != runID {
+			return domain.ErrNotFound
+		}
+		if q.Status == domain.QuestionAnswered {
+			if q.Response != nil && q.Response.Equal(response) && (q.ProviderAnswers == nil || q.MatchesProviderAnswers(q.ProviderAnswers)) {
+				result = q
+				return nil
+			}
+			return fmt.Errorf("%w: question already has a different answer", domain.ErrStateConflict)
+		}
+		r, err := s.store.Runs().Get(ctx, q.RunID)
+		if err != nil {
+			return err
+		}
+		if r.Status.IsTerminal() {
+			return fmt.Errorf("%w: run is terminal", domain.ErrStateConflict)
+		}
+		if err := q.PrepareResponse(response); err != nil {
+			return err
+		}
+		if err := s.store.Questions().Update(ctx, q); err != nil {
+			return err
+		}
+		result = q
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil || result.Status == domain.QuestionAnswered {
+		return result, nil
+	}
+	if s.QuestionForwarder == nil {
+		return nil, fmt.Errorf("%w: question delivery unavailable", domain.ErrCapabilityMissing)
+	}
+	var completed *domain.QuestionRequest
+	if err := s.deliverQuestionSingleflight(ctx, result.ID, response, func() error {
+		if err := s.QuestionForwarder(ctx, result.RunID, result.ID, response); err != nil {
+			// Provider acceptance is unknown on transport cancellation/timeouts;
+			// preserve the immutable prepared answer for native replay/40902
+			// reconciliation instead of allowing a different answer to race in.
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, runtime.ErrQuestionProviderAlreadyResolved) {
+				_ = s.store.InTx(context.WithoutCancel(ctx), func(ctx context.Context) error {
+					q, getErr := s.store.Questions().Get(ctx, result.ID)
+					if getErr != nil {
+						return getErr
+					}
+					if q.Status == domain.QuestionPending && q.Response != nil && q.Response.Equal(response) {
+						q.ClearPreparedResponse()
+					}
+					return s.store.Questions().Update(ctx, q)
+				})
+			}
+			return err
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	// The provider ACK is authoritative for normal delivery; a separate native
+	// question.answered event can also complete this transaction during replay.
+	err = s.store.InTx(ctx, func(ctx context.Context) error {
+		q, err := s.store.Questions().Get(ctx, result.ID)
+		if err != nil {
+			return err
+		}
+		if q.Status == domain.QuestionAnswered {
+			completed = q
+			return nil
+		}
+		if q.Response == nil || !q.Response.Equal(response) {
+			return fmt.Errorf("%w: prepared response changed during delivery", domain.ErrStateConflict)
+		}
+		if err := q.CompleteResponse(time.Now().UTC()); err != nil {
+			return err
+		}
+		if err := s.store.Questions().Update(ctx, q); err != nil {
+			return err
+		}
+		r, err := s.store.Runs().Get(ctx, q.RunID)
+		if err != nil {
+			return err
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		data := map[string]any{"run_id": r.ID, "work_item_id": r.WorkItemID, "question_id": q.ID,
+			"provider_question_id": q.ProviderID, "status": string(q.Status), "response": response,
+			"resolved_by": by, "record_kind": string(workItemRecordKind(wi))}
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventQuestionResolved, domain.AggregateExecutionRun, r.ID, r.Version,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventQuestionResolved, Payload: data}, data); err != nil {
+			return err
+		}
+		completed = q
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if completed != nil {
+		if r, err := s.store.Runs().Get(ctx, completed.RunID); err == nil {
+			s.notifier.Notify(r.WorkspaceID)
+		}
+	}
+	return completed, nil
+}
+
+func (s *Service) DismissQuestion(ctx context.Context, runID, questionID, by string) (*domain.QuestionRequest, error) {
+	var result *domain.QuestionRequest
+	err := s.store.InTx(ctx, func(ctx context.Context) error {
+		q, err := s.store.Questions().Get(ctx, questionID)
+		if err != nil {
+			return err
+		}
+		if q.RunID != runID {
+			return domain.ErrNotFound
+		}
+		run, err := s.store.Runs().Get(ctx, q.RunID)
+		if err != nil {
+			return err
+		}
+		if run.Status.IsTerminal() {
+			return fmt.Errorf("%w: run is terminal", domain.ErrStateConflict)
+		}
+		if q.Status == domain.QuestionDismissed {
+			result = q
+			return nil
+		}
+		if q.Status != domain.QuestionPending {
+			return fmt.Errorf("%w: question is %s", domain.ErrStateConflict, q.Status)
+		}
+		if err := q.Dismiss(time.Now().UTC()); err != nil {
+			return err
+		}
+		if err := s.store.Questions().Update(ctx, q); err != nil {
+			return err
+		}
+		r, err := s.store.Runs().Get(ctx, q.RunID)
+		if err != nil {
+			return err
+		}
+		wi, err := s.store.WorkItems().Get(ctx, r.WorkItemID)
+		if err != nil {
+			return err
+		}
+		data := map[string]any{"run_id": r.ID, "work_item_id": r.WorkItemID, "question_id": q.ID, "status": string(q.Status), "dismissed_by": by, "record_kind": string(workItemRecordKind(wi))}
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventQuestionDismissed, domain.AggregateExecutionRun, r.ID, r.Version,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventQuestionDismissed, Payload: data}, data); err != nil {
+			return err
+		}
+		result = q
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result != nil {
+		if r, err := s.store.Runs().Get(ctx, result.RunID); err == nil {
+			s.notifier.Notify(r.WorkspaceID)
+		}
+	}
+	return result, nil
 }
 
 // requestApprovalTx 是审批发起的事务内核心（RequestApproval 与 ApplyRunnerEvent

@@ -11,6 +11,7 @@ import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas
 import { CodeWorkspace } from '../components/code-workspace/code-workspace';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
+import { NativeQuestionCard } from '../components/chat/native-question-card';
 import { SendErrorNotice } from '../components/chat/send-error-notice';
 import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
@@ -33,6 +34,7 @@ import { readChatWorkspaceState, readLegacyTaskIntakeRecovery, useChatWorkspaceS
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
+import { useNativeQuestionsStore } from '../stores/questions.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
@@ -187,6 +189,7 @@ export default function ChatPage() {
   const conversationId = useChatStore((s) => s.conversationId);
   const runsLoadedConversationId = useChatStore((s) => s.runsLoadedConversationId);
   const selectAgent = useChatStore((s) => s.selectAgent);
+  const startConversation = useChatStore((s) => s.startConversation);
   const openConversation = useChatStore((s) => s.openConversation);
   const restoreWorkspace = useChatStore((s) => s.restoreWorkspace);
 
@@ -293,6 +296,7 @@ export default function ChatPage() {
       next.set('ws', workspaceId);
       next.delete('agent');
       next.delete('c');
+      next.delete('new');
       next.delete('knowledge');
       next.delete('version');
       next.delete('canvas');
@@ -332,6 +336,7 @@ export default function ChatPage() {
     setNarrowPanel('document');
   };
   const knowledgeQuery = searchParams.get('knowledge');
+  const freshConversation = searchParams.get('new') === '1';
   const requestedConversation = searchParams.get('c');
   const knowledgeKey = `${workspaceId ?? ''}:${generation}:${searchParams.get('agent') ?? ''}:${knowledgeQuery ?? ''}:${searchParams.get('version') ?? ''}:${requestedConversation ?? ''}`;
   const knowledgeKeyRef = useRef(knowledgeKey);
@@ -350,7 +355,7 @@ export default function ChatPage() {
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
-    if (!ownsChatScope || urlBooted.current || knowledgeQuery !== null) return;
+    if (!ownsChatScope || urlBooted.current || (knowledgeQuery !== null && !freshConversation)) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
     if (qAgent && agents.length === 0) return;
@@ -359,9 +364,22 @@ export default function ChatPage() {
       if (workspaceId) next.set('ws', workspaceId);
       next.delete('agent');
       next.delete('c');
+      next.delete('new');
       next.delete('knowledge');
       next.delete('version');
       next.delete('canvas');
+      setSearchParams(next, { replace: true });
+      urlBooted.current = true;
+      return;
+    }
+    if (freshConversation && qAgent) {
+      pendingUrlConversationRef.current = null;
+      startConversation(qAgent);
+      setPromptSeed({ id: Date.now(), text: '' });
+      setSidebarView('chats');
+      const next = new URLSearchParams(searchParams);
+      next.delete('new');
+      next.delete('c');
       setSearchParams(next, { replace: true });
       urlBooted.current = true;
       return;
@@ -381,11 +399,11 @@ export default function ChatPage() {
       });
     }
     urlBooted.current = true;
-  }, [knowledgeQuery, searchParams, agents, agentId, selectAgent, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
+  }, [knowledgeQuery, freshConversation, searchParams, agents, agentId, selectAgent, startConversation, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
 
   // 新会话创建时同步 ?c=，便于刷新后恢复。
   useEffect(() => {
-    if (!ownsChatScope || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
+    if (!ownsChatScope || freshConversation || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
     const current = useChatStore.getState();
     if (current.agentId !== agentId || current.conversationId !== conversationId) return;
     const qAgent = searchParams.get('agent');
@@ -404,7 +422,7 @@ export default function ChatPage() {
     if (knowledgeQuery !== null && qConv) return;
     next.delete('c');
     setSearchParams(next, { replace: true });
-  }, [agentId, conversationId, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
+  }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
 
   const pick = (id: string) => {
     selectAgent(id);
@@ -932,6 +950,21 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const latestRunId = runIds[runIds.length - 1];
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
   const latestRunNotice = latestRunId ? runAlerts[latestRunId] : undefined;
+  const nativeQuestionItems = useNativeQuestionsStore((state) => latestRunId ? state.itemsByRun[latestRunId] : undefined);
+  const nativeQuestions = latestRun && ACTIVE.has(latestRun.status) ? nativeQuestionItems ?? [] : [];
+  const nativeQuestionError = useNativeQuestionsStore((state) => latestRunId && latestRun && ACTIVE.has(latestRun.status) ? state.errorByRun[latestRunId] : undefined);
+  const nativeQuestionSubmitting = useNativeQuestionsStore((state) => state.submittingByQuestion);
+  const refreshNativeQuestions = useNativeQuestionsStore((state) => state.refresh);
+  const resolveNativeQuestion = useNativeQuestionsStore((state) => state.resolve);
+  const clearNativeQuestions = useNativeQuestionsStore((state) => state.clear);
+
+  useEffect(() => {
+    if (!latestRunId) {
+      clearNativeQuestions();
+      return;
+    }
+    void refreshNativeQuestions(latestRunId);
+  }, [clearNativeQuestions, latestRunId, refreshNativeQuestions]);
 
   useEffect(() => {
     if (!workspaceId || !agentId || !conversationId) {
@@ -1526,7 +1559,16 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
               const next = { runId, swarmId, memberId: member.id };
               setSelectedSwarmMember((current) => isSameSwarmMemberSelection(current, next) ? null : next);
             }}
-          />
+            />
+          {nativeQuestions.map((question) => (
+            <NativeQuestionCard
+              key={question.id}
+              question={question}
+              submitting={nativeQuestionSubmitting[question.id] === true}
+              onResolve={(response) => resolveNativeQuestion(question.run_id, question.id, response)}
+            />
+          ))}
+          {nativeQuestionError && latestRunId && <div className="flex items-center gap-tight text-caption text-status-error" role="alert"><span>{nativeQuestionError}</span><Button type="button" size="sm" onClick={() => void refreshNativeQuestions(latestRunId)}>重试读取问题</Button></div>}
           {latestRunId && latestRun && TERMINAL.has(latestRun.status) && (
             <FileChangesCard runId={latestRunId} />
           )}

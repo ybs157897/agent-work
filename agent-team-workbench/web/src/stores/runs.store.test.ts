@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CanonicalEvent } from '../api/types';
-import { buildMessages } from './chat.store';
+import { aggregateRunStream, buildMessages } from './chat.store';
 import { useRunsStore } from './runs.store';
 import { clearOutputTrace, getOutputTrace } from '../utils/output-trace';
 import { buildTranscriptSegments } from '../utils/chronological-transcript';
@@ -384,6 +384,25 @@ describe('runs.store 推理折叠（超帽时间线）', () => {
     runEvent(seq, 'message.delta', { raw: { chunk: { text, type: 'reasoning-delta' } }, role: 'assistant' });
   const textDelta = (seq: number, text: string): CanonicalEvent =>
     runEvent(seq, 'message.delta', { raw: { chunk: { text, type: 'text-delta' } }, role: 'assistant' });
+
+  it('live reasoning keeps its text, start and disclosure identity as the 500-event window moves', () => {
+    useRunsStore.getState().reset();
+    const { applyEvent } = useRunsStore.getState();
+    applyEvent(runEvent(1, 'run.created', { status: 'running' }));
+    for (let seq = 2; seq <= 650; seq += 1) {
+      applyEvent({ ...reasoningDelta(seq, 'R'), occurred_at: new Date(Date.parse('2026-08-21T00:00:00Z') + seq * 100).toISOString() });
+      if (seq < 499) continue;
+      const stream = aggregateRunStream(useRunsStore.getState().timelines.run_1);
+      expect(stream.phaseId).toBe('run-seq-2');
+      expect(stream.phaseStartedAt).toBe('2026-08-21T00:00:00.200Z');
+      expect(stream.reasoning).toBe('R'.repeat(seq - 1));
+      expect(useRunsStore.getState().timelines.run_1.filter((entry) => entry.type === 'message.delta' && entry.data?.reasoning_folded)).toHaveLength(seq > 500 ? 1 : 0);
+    }
+    applyEvent({ ...textDelta(651, 'answer'), occurred_at: '2026-08-21T00:01:06Z' });
+    applyEvent({ ...runEvent(652, 'tool.started', { tool: 'Read', call_id: 'after-thinking' }), occurred_at: '2026-08-21T00:01:07Z' });
+    const thinking = buildMessages(['run_1'], useRunsStore.getState().timelines).find((message) => message.kind === 'thinking');
+    expect(thinking).toMatchObject({ phaseId: 'run-seq-2', startedAt: '2026-08-21T00:00:00.200Z', completedAt: '2026-08-21T00:01:05.000Z' });
+  });
 
   it('推理帧前段被逐出后，completed 锚点携带尾部预算截断的折叠全量推理', () => {
     const { applyEvent } = useRunsStore.getState();
