@@ -948,7 +948,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		_ = json.Unmarshal(frame.Payload, &ev)
 		if !isMainAgent(ev.AgentID) {
 			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
-				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": ev.Delta}}})
+				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeText, "text": ev.Delta}}})
 				c.answer.WriteString(ev.Delta)
 			}
 			return false
@@ -958,7 +958,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		}
 		// raw.chunk 结构与前端 extractDeltaChunk 契约一致。
 		p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
-			"raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": ev.Delta}},
+			"raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeText, "text": ev.Delta}},
 		})
 		p.state.answer.WriteString(ev.Delta)
 	case "thinking.delta":
@@ -966,7 +966,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 		_ = json.Unmarshal(frame.Payload, &ev)
 		if !isMainAgent(ev.AgentID) {
 			if c := p.childIfActive(ev.AgentID, ev.TurnID); c != nil {
-				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": ev.Delta}}})
+				p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": ev.AgentID, "raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeReasoning, "text": ev.Delta}}})
 			}
 			return false
 		}
@@ -974,7 +974,7 @@ func (p *eventPump) handle(frame wsFrame) bool {
 			return false
 		}
 		p.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{
-			"raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": ev.Delta}},
+			"raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeReasoning, "text": ev.Delta}},
 		})
 	case "turn.step.completed":
 		// usage 权威来源：逐 step 累计（per_run）；input 计入 cacheRead/Creation。

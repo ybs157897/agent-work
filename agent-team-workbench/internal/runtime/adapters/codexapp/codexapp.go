@@ -883,7 +883,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 					s.appendAnswer(text)
 				}
 				payload := map[string]any{
-					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "text-delta", "text": text}},
+					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeText, "text": text}},
 				}
 				if agent != "" {
 					payload["agent_id"] = agent
@@ -893,7 +893,7 @@ func (s *execStream) pump(reader *bufio.Reader) *pumpResult {
 		case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta":
 			if text := codexDeltaText(frame.Params); text != "" {
 				payload := map[string]any{
-					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": text}},
+					"role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeReasoning, "text": text}},
 				}
 				if agent := s.eventAgent(frame.Params); agent != "" {
 					payload["agent_id"] = agent
@@ -1295,7 +1295,7 @@ func (s *execStream) emitHydratedItem(child string, item map[string]any) {
 	switch typ {
 	case "reasoning", "reasoningSummary":
 		if text != "" {
-			s.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": child, "role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": "reasoning-delta", "text": text}}})
+			s.ex.Callbacks.OnEvent(domain.EventMessageDelta, map[string]any{"agent_id": child, "role": "assistant", "raw": map[string]any{"chunk": map[string]any{"type": domain.DeltaChunkTypeReasoning, "text": text}}})
 		}
 	case "agentMessage", "plan":
 		if text != "" {

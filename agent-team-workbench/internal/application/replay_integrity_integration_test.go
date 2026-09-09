@@ -281,3 +281,82 @@ func TestCreateRunDigestTierInlinesCompressedHistory(t *testing.T) {
 		t.Fatalf("digest 档 est_tokens 应为正: %#v", stats)
 	}
 }
+
+// TestConversationReplayExcludesInterruptedReasoning 防回归（线上缺陷
+// notes/implemented/bug-fix/2026-09-09-reasoning-delta-not-assistant-text.md）：
+// 中断 run 没有 message.completed，回放助手侧只能取答案通道正文 + 工具轨迹；
+// 推理链一旦冒充上一轮回答，会以数万字符规模灌进下一轮 prompt。
+func TestConversationReplayExcludesInterruptedReasoning(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	now := time.Now().UTC()
+	ws := &domain.Workspace{ID: "ws_interrupted_reasoning", Name: "reasoning", Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now}
+	if err := store.Workspaces().Create(ctx, ws); err != nil {
+		t.Fatal(err)
+	}
+	seedCtx(t, store, ctx, ws.ID)
+	agentID, _ := seedReplayEnv(t, ctx, store, ws.ID)
+	wi, err := svc.CreateWorkItem(ctx, ws.ID, application.CreateWorkItemParams{Title: "看板搜索"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: agentID, Instruction: "整理看板搜索需求",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startRun(t, ctx, svc, first)
+	if err := svc.RecordRunStatus(ctx, first.ID, domain.RunRunning, nil); err != nil {
+		t.Fatal(err)
+	}
+	delta := func(chunkType, text string) map[string]any {
+		return map[string]any{"role": "assistant", "raw": map[string]any{
+			"chunk": map[string]any{"type": chunkType, "text": text}}}
+	}
+	for _, e := range []struct {
+		typ     string
+		payload map[string]any
+	}{
+		{domain.EventMessageDelta, delta(domain.DeltaChunkTypeReasoning, "我在内心盘算要不要拆子代理")},
+		{domain.EventMessageDelta, delta(domain.DeltaChunkTypeText, "看板搜索我确认了三点")},
+		{domain.EventToolStarted, map[string]any{"tool": "shell", "call_id": "t1", "args_summary": "rg 看板"}},
+	} {
+		if err := svc.RecordRunEvent(ctx, first.ID, e.typ, e.payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 用户中断：没有 message.completed，run 落 interrupted 终态。
+	if err := svc.RecordRunStatus(ctx, first.ID, domain.RunInterrupting, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordRunStatus(ctx, first.ID, domain.RunInterrupted, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := svc.CreateRun(ctx, wi.ID, application.CreateRunParams{
+		AgentProfileID: agentID, Instruction: "继续",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := conversationHistoryOf(t, second)
+	if len(history) != 2 {
+		t.Fatalf("单轮历史应产出 user+assistant 两条，实际 %d 条: %#v", len(history), history)
+	}
+	assistantText, _ := history[1]["text"].(string)
+	if !strings.Contains(assistantText, "看板搜索我确认了三点") {
+		t.Fatalf("中断 run 的答案通道正文丢失: %q", assistantText)
+	}
+	if !strings.Contains(assistantText, "[本轮执行轨迹]") {
+		t.Fatalf("工具轨迹附录缺失: %q", assistantText)
+	}
+	if strings.Contains(assistantText, "我在内心盘算") {
+		t.Fatal("推理链进入回放（违反负向保证）")
+	}
+}

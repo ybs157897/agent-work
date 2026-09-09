@@ -60,11 +60,13 @@ func historyExceedsBudget(history []map[string]any, spec orchestrator.ModelSpec)
 //   - 用户侧：原始指令全文 + 轮中追加输入（steering，按时间序）；
 //   - 助手侧：最终文本 + 工具轨迹 digest 附录（一行一次调用）。
 //
-// 负向保证：推理链不进回放（reasoning delta 只服务实时流）；审批内容永不进回放
-// ——run_events 里 approval.requested/resolved 只有空载荷事件行（动作与同意/拒绝
-// 只落在 stream data、audit_logs、activities），没有干净的裁决来源就不硬造，
-// 整类审批事件维持排除。回放路径也永不承诺与 provider 上下文等价，只承诺
-// ≥ 工作台台账可呈现的信息档位。
+// 负向保证：推理链不进回放（reasoning delta 只服务实时流）——由
+// domain.MessageDeltaChannel 在 completedOrDeltaText 的 delta 兜底处强制
+// （notes/implemented/bug-fix/2026-09-09-reasoning-delta-not-assistant-text.md）。
+// 审批内容永不进回放——run_events 里 approval.requested/resolved 只有空载荷事件行
+// （动作与同意/拒绝只落在 stream data、audit_logs、activities），没有干净的裁决
+// 来源就不硬造，整类审批事件维持排除。回放路径也永不承诺与 provider 上下文等价，
+// 只承诺 ≥ 工作台台账可呈现的信息档位。
 var (
 	// DigestRecentTurns digest 压缩时最近 K 轮保留全文。K=4 覆盖 lead→worker→
 	// 评估一类的即时往返依赖（当前 plan、文件清单、报错栈），又给更早轮次的
@@ -389,7 +391,8 @@ func mainAgentEvents(events []RunEvent) []RunEvent {
 }
 
 // completedOrDeltaText 助手最终文本提取核心（conversationHistory 与
-// runFinalText 共用）：completed 缺失时以非用户 delta 全量兜底；role=user 的
+// runFinalText 共用）：completed 缺失时以非用户 delta 兜底，且只收答案通道——
+// 推理通道（reasoning-delta）只服务实时流，永不冒充助手正文；role=user 的
 // message.delta（steering）不混入助手文本，由 userReplayText 并入用户侧。
 func completedOrDeltaText(events []RunEvent) string {
 	var completed []string
@@ -402,6 +405,11 @@ func completedOrDeltaText(events []RunEvent) string {
 			}
 		case domain.EventMessageDelta:
 			if role, _ := event.Payload["role"].(string); role == "user" {
+				continue
+			}
+			// 通道过滤必须在这里，而不是 eventDeltaText 内部：那个提取器是无
+			// 通道的「找任意 text 字段」，两个通道的线形都长得一样。
+			if domain.MessageDeltaChannel(event.Payload) == domain.DeltaChannelReasoning {
 				continue
 			}
 			if text := eventDeltaText(event.Payload); text != "" {
