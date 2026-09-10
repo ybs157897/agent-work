@@ -194,6 +194,15 @@ rows. The final Agent answer stays outside the collapsed work timeline and is
 never absorbed into a status card. Code, tables, KaTeX, Mermaid, content
 blocks, citations, and safe links keep their existing rendering contracts.
 
+Adjacent Markdown blocks retain paragraph spacing; paragraph resets must not
+override the reading surface's vertical rhythm. A standalone, unfenced JSON
+document that explicitly declares `languagegui/v1` is recovered through the
+same validated LanguageGUI renderer, in its original position. Ordinary JSON,
+unknown versions, and code examples keep their literal meaning. Recognized
+incomplete output is buffered while streaming; invalid final output remains
+available in a code panel. This is a display projection: stored messages and
+copied source text remain unchanged, and canonical blocks retain precedence.
+
 The global light/dark mode also controls syntax and Mermaid contrast. Streaming
 uses the established throttled Markdown cadence and a single caret; reduced
 motion removes rotation and shimmer while preserving state text.
