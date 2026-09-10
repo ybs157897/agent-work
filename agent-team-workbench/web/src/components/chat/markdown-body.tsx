@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import { normalizeBareLanguageGuiDocuments } from "../../utils/bare-languagegui";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -248,7 +249,8 @@ export function MarkdownBody({
   runId?: string;
   messageId?: string;
 }) {
-  const parsedText = useThrottledMarkdown(normalizeKimiMathDelimiters(stripThinkTags(text)), streaming);
+  const throttledText = useThrottledMarkdown(normalizeKimiMathDelimiters(stripThinkTags(text)), streaming);
+  const parsedText = useMemo(() => normalizeBareLanguageGuiDocuments(throttledText, streaming), [throttledText, streaming]);
   const streamSlice = useMemo<StreamingMarkdownBlocks>(
     () => streaming
       ? splitStreamingMarkdownBlocks(parsedText)

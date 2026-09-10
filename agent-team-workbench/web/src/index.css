@@ -1051,6 +1051,10 @@
   line-height: 1.75;
 }
 
+.chat-prose :where(p) {
+  margin: 0;
+}
+
 .chat-prose > * + * {
   margin-top: 0.85em;
 }
@@ -1106,10 +1110,6 @@
 .chat-prose h6 {
   color: hsl(var(--color-text-secondary));
   font-size: 0.875rem;
-}
-
-.chat-prose p {
-  margin: 0;
 }
 
 .chat-prose strong {

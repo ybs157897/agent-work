@@ -104,6 +104,42 @@ describe('MarkdownBody · LeAgent 内容覆盖', () => {
     expect(streaming).not.toContain('language-languagegui');
   });
 
+  it.each([false, true])('将正文里的裸协议 JSON 原位渲染为指标与表格（streaming=%s）', (streaming) => {
+    const source = JSON.stringify({
+      version: 'languagegui/v1',
+      blocks: [
+        { type: 'metric', title: '需求拆解速览', items: [{ label: '需求条目', value: 6, tone: 'positive' }] },
+        { type: 'table', title: '需求点与现状对照', columns: [{ key: 'req', label: '需求点' }], rows: [{ req: '只搜标题' }] },
+        { type: 'table', title: '验收条件（草案）', columns: [{ key: 'check', label: '检查' }], rows: [{ check: '清空恢复列表' }] },
+      ],
+    });
+    const html = renderToStaticMarkup(
+      <MarkdownBody streaming={streaming} text={`需求本身不大。\n\n${source}\n\n待你拍板。`} />,
+    );
+    expect(html).toContain('<p>需求本身不大。</p>');
+    expect(html.match(/data-content-block="metric"/g)).toHaveLength(1);
+    expect(html.match(/data-content-block="table"/g)).toHaveLength(2);
+    expect(html).toContain('需求拆解速览');
+    expect(html).toContain('只搜标题');
+    expect(html).not.toContain('&quot;version&quot;');
+    expect(html).not.toContain('chat-code-panel');
+    expect(html.indexOf('需求本身不大')).toBeLessThan(html.indexOf('data-content-block="metric"'));
+    expect(html.indexOf('待你拍板')).toBeGreaterThan(html.lastIndexOf('data-content-block="table"'));
+  });
+
+  it('裸协议输出在流式未完成时缓冲，最终失败时保留可读源文', () => {
+    const text = '可见 **前缀**。\n\n{"version":"languagegui/v1","blocks":[';
+    const streaming = renderToStaticMarkup(<MarkdownBody streaming text={text} />);
+    expect(streaming).toContain('<strong>前缀</strong>');
+    expect(streaming).not.toContain('version');
+    expect(streaming).not.toContain('chat-code-panel');
+
+    const final = render(text);
+    expect(final).toContain('<strong>前缀</strong>');
+    expect(final).toContain('chat-code-panel');
+    expect(final).toContain('languagegui/v1');
+  });
+
   it('流式阶段始终走 Markdown 树，并隐藏未闭合复杂尾部', () => {
     const ordinary = renderToStaticMarkup(
       <MarkdownBody
