@@ -50,6 +50,22 @@ describe('AssistantTurn · canonical ContentBlock placement', () => {
     expect(html.indexOf('data-content-block="metric"')).toBeGreaterThan(html.indexOf('正文。'));
   });
 
+  it.each([
+    JSON.stringify({ version: 'languagegui/v1', blocks: [{ type: 'metric', title: '原始指标', items: [{ label: '旧值', value: 1 }] }] }),
+    '{"version":"languagegui/v1","blocks":[}',
+    '{"version":"languagegui/v1","blocks":[',
+  ])('在裸协议 JSON 的原位置只渲染一次 canonical block：%s', (source) => {
+    const html = renderToStaticMarkup(
+      <AssistantTurn text={`上方正文。\n\n${source}\n\n下方正文。`} contentBlocks={document} />,
+    );
+    expect(html.match(/data-content-block="metric"/g)).toHaveLength(1);
+    expect(html).toContain('完成态指标');
+    expect(html).not.toContain('原始指标');
+    expect(html).not.toContain('chat-code-panel');
+    expect(html.indexOf('上方正文')).toBeLessThan(html.indexOf('data-content-block="metric"'));
+    expect(html.indexOf('下方正文')).toBeGreaterThan(html.indexOf('data-content-block="metric"'));
+  });
+
   it('支持 tilde fence，并在多个 fence 违反契约时保留原始顺序', () => {
     const tilde = renderToStaticMarkup(
       <AssistantTurn

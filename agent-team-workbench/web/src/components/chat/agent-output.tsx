@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { MarkdownBody } from './markdown-body';
+import { normalizeBareLanguageGuiDocuments } from '../../utils/bare-languagegui';
 import type { ContentBlockDocument } from '../../utils/content-blocks';
 import {
   countLanguageGuiFences,
@@ -38,12 +39,13 @@ export function AgentOutput({
   messageId?: string;
   showCaret?: boolean;
 }) {
-  const languageGuiFenceCount = contentBlocks ? countLanguageGuiFences(text) : 0;
+  const normalizedText = useMemo(() => normalizeBareLanguageGuiDocuments(text, streaming), [text, streaming]);
+  const languageGuiFenceCount = contentBlocks ? countLanguageGuiFences(normalizedText) : 0;
   const embeddedText = contentBlocks && languageGuiFenceCount === 1
-    ? embedCanonicalLanguageGuiFence(text, contentBlocks)
+    ? embedCanonicalLanguageGuiFence(normalizedText, contentBlocks)
     : null;
   const displayText = embeddedText
-    ?? (contentBlocks && languageGuiFenceCount === 0 ? stripLanguageGuiFences(text) : text);
+    ?? (contentBlocks && languageGuiFenceCount === 0 ? stripLanguageGuiFences(normalizedText) : normalizedText);
   const standaloneContentBlocks = contentBlocks && languageGuiFenceCount === 0
     ? contentBlocks
     : undefined;
