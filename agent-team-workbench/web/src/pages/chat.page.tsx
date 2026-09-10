@@ -951,8 +951,10 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const latestRun = latestRunId ? runSnapshots[latestRunId] ?? runs[runs.length - 1] : undefined;
   const latestRunNotice = latestRunId ? runAlerts[latestRunId] : undefined;
   const nativeQuestionItems = useNativeQuestionsStore((state) => latestRunId ? state.itemsByRun[latestRunId] : undefined);
-  const nativeQuestions = latestRun && ACTIVE.has(latestRun.status) ? nativeQuestionItems ?? [] : [];
-  const nativeQuestionError = useNativeQuestionsStore((state) => latestRunId && latestRun && ACTIVE.has(latestRun.status) ? state.errorByRun[latestRunId] : undefined);
+  // 待答问题以 questions store 为权威，不再拿 run 状态快照二次门控：快照缺失或
+  // 瞬时非活跃都会把提问卡藏起来，用户答不了就只能等 idle 看门狗把 run 判死。
+  const nativeQuestions = useMemo(() => nativeQuestionItems ?? [], [nativeQuestionItems]);
+  const nativeQuestionError = useNativeQuestionsStore((state) => latestRunId ? state.errorByRun[latestRunId] : undefined);
   const nativeQuestionSubmitting = useNativeQuestionsStore((state) => state.submittingByQuestion);
   const refreshNativeQuestions = useNativeQuestionsStore((state) => state.refresh);
   const resolveNativeQuestion = useNativeQuestionsStore((state) => state.resolve);
@@ -1104,8 +1106,11 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
       const status = runSnapshots[id]?.status ?? listedRuns.get(id)?.status;
       if (status) map[id] = status;
     }
+    // 有待答问题的 run 一律按运行中投影：提问是等人，不是停滞——否则在途工具行
+    // 会被渲染成「已中断」，用户据此以为流程断了。
+    for (const question of nativeQuestions) map[question.run_id] = 'running';
     return map;
-  }, [runIds, runSnapshots, runs]);
+  }, [runIds, runSnapshots, runs, nativeQuestions]);
   const runTimings = useMemo(() => {
     const map: Record<string, { createdAt?: string; updatedAt?: string }> = {};
     const listedRuns = new Map(runs.map((run) => [run.id, run]));
