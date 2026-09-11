@@ -1310,21 +1310,6 @@
   font-size: 12px;
 }
 
-.chat-prose details {
-  margin-block: 0.85em;
-  border: 1px solid hsl(var(--color-border-subtle));
-  border-radius: 8px;
-  background: hsl(var(--color-surface-sunken) / 0.3);
-}
-
-.chat-prose details > summary {
-  cursor: pointer;
-  padding: 8px 12px;
-  color: hsl(var(--color-text-primary));
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
 .chat-callout {
   --chat-callout-color: var(--color-status-info);
   display: flow-root;
