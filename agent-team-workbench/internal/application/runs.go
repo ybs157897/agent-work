@@ -1574,6 +1574,14 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 			return err
 		}
 	}
+	// 原生提问收敛：run 落终态时把名下仍 pending 的提问置 expired（同事务发
+	// question.expired）。否则 ListPending 的终态过滤会把它们永久隐藏且永不
+	// 回收——数据停在 pending、API 永远查不到。
+	if to.IsTerminal() {
+		if _, err := s.expireRunPendingQuestions(ctx, r, wi); err != nil {
+			return err
+		}
+	}
 	if to == domain.RunRunning && (from == domain.RunQueued || from == domain.RunStarting) {
 		if err := s.emit(ctx, r.WorkspaceID, domain.EventRunStarted,
 			domain.AggregateExecutionRun, r.ID, r.Version,
@@ -2011,6 +2019,37 @@ func (s *Service) RequestApproval(ctx context.Context, runID, kind, risk, summar
 		s.autoResolveFromGrant(approval, grant)
 	}
 	return approval, nil
+}
+
+// expireRunPendingQuestions 在 run 已落终态的前提下，把其名下仍 pending 的原生
+// 提问批量收敛为 expired，并逐条发 question.expired（载荷与 requested/resolved/
+// dismissed 同构，浏览器据此撤卡片）。必须在写侧事务内调用（transitionRunLocked
+// 或启动对账的自建事务）；幂等：无 pending 行时不动数据、不发事件。返回收敛数量。
+func (s *Service) expireRunPendingQuestions(ctx context.Context, r *domain.ExecutionRun, wi *domain.WorkItem) (int, error) {
+	pending, err := s.store.Questions().ListPendingByRun(ctx, r.ID)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	if _, err := s.store.Questions().ExpirePendingByRun(ctx, r.ID, time.Now().UTC()); err != nil {
+		return 0, err
+	}
+	for _, q := range pending {
+		data := map[string]any{
+			"run_id": r.ID, "work_item_id": r.WorkItemID, "question_id": q.ID,
+			"provider_question_id": q.ProviderID, "session_ref": q.SessionRef,
+			"agent_id": q.AgentID, "status": string(domain.QuestionExpired),
+			"reason": "run_terminal", "record_kind": string(workItemRecordKind(wi)),
+		}
+		if err := s.emit(ctx, r.WorkspaceID, domain.EventQuestionExpired,
+			domain.AggregateExecutionRun, r.ID, r.Version,
+			&RunEventRecord{RunID: r.ID, EventType: domain.EventQuestionExpired, Payload: data}, data); err != nil {
+			return len(pending), err
+		}
+	}
+	return len(pending), nil
 }
 
 // RequestQuestion persists one native AskUserQuestion interaction and emits a
