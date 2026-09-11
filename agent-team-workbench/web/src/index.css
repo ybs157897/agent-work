@@ -1126,36 +1126,8 @@
   text-decoration-thickness: 1px;
 }
 
-.chat-prose mark {
-  padding-inline: 0.2em;
-  border-radius: 3px;
-  background: hsl(var(--color-brand-primary) / 0.18);
-  color: inherit;
-}
-
-.chat-prose sub,
 .chat-prose sup {
   font-size: 0.75em;
-}
-
-.chat-prose abbr[title] {
-  cursor: help;
-  text-decoration: underline dotted;
-  text-underline-offset: 2px;
-}
-
-.chat-prose kbd {
-  display: inline-block;
-  padding: 1px 6px;
-  border: 1px solid hsl(var(--color-border-strong));
-  border-bottom-width: 2px;
-  border-radius: 5px;
-  background: hsl(var(--color-surface-sunken));
-  color: hsl(var(--color-text-primary));
-  font-family: theme('fontFamily.mono');
-  font-size: 0.78em;
-  line-height: 1.4;
-  white-space: nowrap;
 }
 
 .chat-prose a {
