@@ -1055,6 +1055,13 @@
   margin: 0;
 }
 
+/* ul/ol/blockquote/pre 的 margin 归零与 p 同池。:where() 只归零特异性，
+   同为 (0,1,0) 时后声明胜出，因此必须排在 > * + * 之前，否则
+   段落→列表/引用/代码 的间距会重新被压平（门禁：chat-prose-spacing.test.ts）。 */
+.chat-prose :where(ul, ol, blockquote, pre) {
+  margin: 0;
+}
+
 .chat-prose > * + * {
   margin-top: 0.85em;
 }
@@ -1142,9 +1149,7 @@
   text-decoration-color: hsl(var(--color-brand-primary));
 }
 
-.chat-prose ul,
-.chat-prose ol {
-  margin: 0;
+.chat-prose :where(ul, ol) {
   padding-left: 1.5em;
 }
 
@@ -1204,8 +1209,7 @@
   color: hsl(var(--color-text-secondary));
 }
 
-.chat-prose blockquote {
-  margin: 0;
+.chat-prose :where(blockquote) {
   padding: 8px 16px;
   border-left: 3px solid hsl(var(--color-brand-primary) / 0.5);
   border-radius: 0 8px 8px 0;
@@ -1233,10 +1237,6 @@
   font-size: 0.875em;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-}
-
-.chat-prose pre {
-  margin: 0;
 }
 
 .chat-table-wrap {
