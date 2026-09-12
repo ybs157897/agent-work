@@ -367,8 +367,20 @@ export interface QueryLibraryInput {
   limit?: number;
 }
 
-/** `/reindex`、`/expand` 的响应体未在契约中固定字段，按原样透传由调用方展示。 */
+/** `/expand` 的响应体未在契约中固定字段，按原样透传由调用方展示。 */
 export type LibraryReceipt = Record<string, unknown>;
+
+/**
+ * 索引重建的回执：重建是写入队列里的一次写入，接口只返回排队结果，
+ * 不代表索引已经与已发布版本一致。
+ */
+export interface ReindexReceipt {
+  task_id: string;
+  accepted: boolean;
+  queue_seq: number;
+  status: string;
+  enqueued_at?: string;
+}
 
 const segment = (value: string): string => encodeURIComponent(value);
 
@@ -633,5 +645,13 @@ export const getStatus = async (workspaceId: string): Promise<LibraryStatus> => 
   };
 };
 
-export const reindex = (workspaceId: string) =>
-  apiFetch<LibraryReceipt>(`${libraryRoot(workspaceId)}/reindex`, { method: 'POST' });
+export const reindex = async (workspaceId: string): Promise<ReindexReceipt> => {
+  const raw = await apiFetch<ReindexReceipt>(`${libraryRoot(workspaceId)}/reindex`, { method: 'POST' });
+  return {
+    ...raw,
+    task_id: typeof raw?.task_id === 'string' ? raw.task_id : '',
+    accepted: raw?.accepted === true,
+    queue_seq: typeof raw?.queue_seq === 'number' ? raw.queue_seq : 0,
+    status: typeof raw?.status === 'string' ? raw.status : 'queued',
+  };
+};

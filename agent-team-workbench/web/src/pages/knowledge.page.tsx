@@ -2896,8 +2896,11 @@ export default function KnowledgePage() {
               setReindexing(true);
               void (async () => {
                 try {
-                  await reindex(workspaceId);
-                  toast.success('已提交索引重建，后台异步执行');
+                  const receipt = await reindex(workspaceId);
+                  const seq = typeof receipt.queue_seq === 'number' ? receipt.queue_seq : null;
+                  toast.success(
+                    seq === null ? '索引重建已进入写入队列' : `索引重建已排队（第 ${seq} 位），轮到后重建`,
+                  );
                   refresh();
                 } catch (error) {
                   toast.error(apiErrorMessage(error, '提交索引重建失败'));
