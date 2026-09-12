@@ -1271,9 +1271,30 @@ func (r *LibraryRepo) RefreshReleaseTotals(ctx context.Context, libraryID string
 		if err != nil {
 			return 0, err
 		}
+		// The written counts are derived too: a document version belongs to the
+		// release that first published it, so "what this publish wrote" is
+		// reproducible for releases published before the field existed.
+		var writtenDocs, writtenAssertions, writtenRelations int
+		if err := r.db(ctx).QueryRowContext(ctx, `SELECT
+				(SELECT COUNT(*) FROM knowledge_release_documents rd
+					JOIN knowledge_document_versions v ON v.id = rd.document_version_id
+					WHERE rd.release_id=? AND v.release_id=rd.release_id),
+				(SELECT COUNT(*) FROM knowledge_assertions a
+					JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+					JOIN knowledge_document_versions v ON v.id = rd.document_version_id
+					WHERE rd.release_id=? AND v.release_id=rd.release_id),
+				(SELECT COUNT(*) FROM knowledge_assertion_relations x
+					JOIN knowledge_release_documents rd ON rd.document_version_id = x.document_version_id
+					JOIN knowledge_document_versions v ON v.id = rd.document_version_id
+					WHERE rd.release_id=? AND v.release_id=rd.release_id)`,
+			id, id, id).Scan(&writtenDocs, &writtenAssertions, &writtenRelations); err != nil {
+			return 0, err
+		}
 		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases
-			SET assertion_count=?, relation_count=?, evidence_count=? WHERE id=?`,
-			assertions, relations, evidence, id); err != nil {
+			SET assertion_count=?, relation_count=?, evidence_count=?,
+			    written_document_count=?, written_assertion_count=?, written_relation_count=?
+			WHERE id=?`,
+			assertions, relations, evidence, writtenDocs, writtenAssertions, writtenRelations, id); err != nil {
 			return 0, err
 		}
 	}

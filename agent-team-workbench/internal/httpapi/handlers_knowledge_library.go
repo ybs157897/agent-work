@@ -750,7 +750,13 @@ func releaseJSON(rel *domain.KnowledgeRelease) map[string]any {
 		"parent_release_id": rel.ParentReleaseID, "projection_digest": rel.ProjectionDigest,
 		"document_count": rel.DocumentCount, "assertion_count": rel.AssertionCount,
 		"relation_count": rel.RelationCount, "evidence_count": rel.EvidenceCount,
-		"coverage": jsonObject(rel.CoverageJSON), "notes": rel.Notes,
+		// What the release contains versus what this publish wrote: an
+		// incremental release carries most documents forward, so a client that
+		// shows one number must show both.
+		"written_document_count":  rel.WrittenDocumentCount,
+		"written_assertion_count": rel.WrittenAssertionCount,
+		"written_relation_count":  rel.WrittenRelationCount,
+		"coverage":                jsonObject(rel.CoverageJSON), "notes": rel.Notes,
 		"status": rel.Status, "published_at": rel.PublishedAt,
 	}
 }
