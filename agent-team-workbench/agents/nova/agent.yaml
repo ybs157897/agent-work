@@ -7,7 +7,7 @@ runtime:
     preferred: kimi_local
     mode: default
 model:
-    ref: kimi-2-7
+    ref: glm-5-3-flash
 permissions:
     approval_policy: auto
     sandbox: danger-full-access
