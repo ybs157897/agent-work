@@ -84,6 +84,24 @@ func (s *Service) processLibrary(ctx context.Context, lib *domain.KnowledgeLibra
 	}
 	switch head.Status {
 	case domain.KnowledgeTaskQueued:
+		// A task that already has a successful agent turn must re-run the
+		// harness step (ingest and publish), not the model turn: reviving a
+		// blocked task or retrying after a harness failure must not spend
+		// another model turn on work the model already did.
+		if head.StagingPath != "" && head.CurrentRunID != "" {
+			if run, runErr := s.store.Runs().Get(ctx, head.CurrentRunID); runErr == nil && run.Status == domain.RunSucceeded {
+				if ok, claimErr := s.store.Library().ClaimTask(ctx, lib.ID, head.ID, domain.NewID("knowner_")); claimErr != nil {
+					return claimErr
+				} else if ok {
+					claimed, getErr := s.store.Library().GetTask(ctx, lib.ID, head.ID)
+					if getErr != nil {
+						return getErr
+					}
+					return s.ingestRunningTask(ctx, lib, claimed)
+				}
+				return nil
+			}
+		}
 		return s.prepareAndDispatch(ctx, lib, head)
 	case domain.KnowledgeTaskRunning, domain.KnowledgeTaskAwaitingAgent:
 		if head.CurrentRunID == "" {
@@ -1071,15 +1089,14 @@ func (s *Service) recoverLibraryPublications(ctx context.Context, lib *domain.Kn
 	return nil
 }
 
-// taskOccupiesQueue reports whether a task still has its own retry budget to
-// spend, i.e. whether the worker state machine will run it again.
+// taskOccupiesQueue reports whether a task still owns the queue head, i.e.
+// whether it is still managed by the worker state machine rather than by
+// recovery. A blocked task counts: it is waiting for an operator's retry, and
+// letting recovery act on its publication would spend the materialization
+// attempts its own budget already exhausted. Only a terminal task — or one
+// that no longer exists — leaves its publication to recovery.
 func taskOccupiesQueue(status domain.KnowledgeTaskStatus) bool {
-	switch status {
-	case domain.KnowledgeTaskQueued, domain.KnowledgeTaskRunning,
-		domain.KnowledgeTaskAwaitingAgent, domain.KnowledgeTaskRetryWait:
-		return true
-	}
-	return false
+	return status.OccupiesHead()
 }
 
 // ── Materialize the published Markdown view ────────────────────────────

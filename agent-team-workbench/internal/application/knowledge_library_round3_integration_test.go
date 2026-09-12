@@ -556,10 +556,43 @@ func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 		t.Fatalf("only the last complete release may be listed: %+v", visible)
 	}
 
-	// Once the obstruction is gone, recovery finishes the same release: no new
-	// release, and the official files catch up.
+	// A blocked task is still the queue head's business: recovery must not
+	// spend more materialization attempts behind its back, so nothing changes
+	// until an operator retries it.
+	attemptsWhenBlocked := blocked.Attempt
+	for i := 0; i < 3; i++ {
+		h.tick(t)
+	}
+	stillBlocked := h.headTask(t)
+	if stillBlocked == nil || stillBlocked.Status != domain.KnowledgeTaskBlocked {
+		t.Fatalf("a blocked task must stay blocked until it is retried: %+v", stillBlocked)
+	}
+	if stillBlocked.Attempt != attemptsWhenBlocked {
+		t.Fatalf("recovery must not spend the task's retry budget: %d vs %d",
+			stillBlocked.Attempt, attemptsWhenBlocked)
+	}
+	// The official files still describe the last complete release: the planted
+	// obstruction is untouched and INDEX.md has not moved.
+	if info, err := os.Stat(obstruction); err != nil || !info.IsDir() {
+		t.Fatalf("recovery must not materialize a blocked task's publication: %v %v", info, err)
+	}
+	if got := libraryIndexRelease(t, h.libRoot); got != firstRelease.ID {
+		t.Fatalf("the official index must still name %s, got %s", firstRelease.ID, got)
+	}
+	if pub, err := h.store.Library().GetPublicationByTask(ctx, blocked.ID); err != nil {
+		t.Fatal(err)
+	} else if pub.Status != "prepared" {
+		t.Fatalf("the publication must stay prepared while the task is blocked: %+v", pub)
+	}
+
+	// Once the obstruction is gone and the operator retries, the task's own
+	// state machine finishes the same release: no new release, and the
+	// official files catch up.
 	if err := os.RemoveAll(obstruction); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := h.svc.RetryKnowledgeWriteTask(ctx, h.wsID, blocked.ID); err != nil {
+		t.Fatalf("a blocked head must be retryable: %v", err)
 	}
 	h.tick(t)
 	body, err := os.ReadFile(filepath.Join(h.libRoot, "content", "components", "order-service.md"))
@@ -594,6 +627,23 @@ func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 	}
 	if pubAfter != "committed" || committedAtAfter == nil {
 		t.Fatalf("recovery must commit the publication: %s %v", pubAfter, committedAtAfter)
+	}
+	// Publication, task and event must reach their terminal states together.
+	settled, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Status != domain.KnowledgeTaskCompleted || settled.TargetReleaseID != pending {
+		t.Fatalf("the retried task must finish against its own release: %+v", settled)
+	}
+	if settled.EventID != "" {
+		event, err := h.store.Library().GetEvent(ctx, lib.ID, settled.EventID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Status != domain.KnowledgeEventCompleted || event.TaskID != settled.ID {
+			t.Fatalf("the event must agree with the task: %+v", event)
+		}
 	}
 }
 
@@ -1252,6 +1302,167 @@ func TestKnowledgeCancelContract(t *testing.T) {
 	}
 }
 
+// TestKnowledgeCancelAndRecoveryStateBoundary pins the boundary between the two
+// state machines that can finish a publish: the task's own head retry policy,
+// and the recovery pass that exists for tasks that no longer have an owner.
+func TestKnowledgeCancelAndRecoveryStateBoundary(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	first := publishInitializeRelease(t, h)
+
+	// A publish that fails to materialize blocks after spending its budget, and
+	// then stays where it is: recovery must not spend attempts the task's own
+	// policy already exhausted.
+	obstruction := filepath.Join(h.libRoot, "content", "components", "order-service.md")
+	if err := os.Remove(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(obstruction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "boundary-1",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
+		"订单服务在取消分支发布取消事件（边界用例）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+	blocked := h.headTask(t)
+	for i := 0; i < 8 && blocked != nil && blocked.Status != domain.KnowledgeTaskBlocked; i++ {
+		if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_write_tasks SET next_attempt_at=NULL WHERE id=?`, blocked.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.tick(t)
+		blocked = h.headTask(t)
+	}
+	if blocked == nil || blocked.Status != domain.KnowledgeTaskBlocked {
+		t.Fatalf("the task must block after its budget: %+v", blocked)
+	}
+	pending := pendingReleaseID(t, h, blocked)
+
+	// 1. Repeated ticks on a blocked task neither advance its attempts nor
+	//    publish its prepared release.
+	attempts := blocked.Attempt
+	headBefore := h.headTask(t).ID
+	for i := 0; i < 5; i++ {
+		h.tick(t)
+	}
+	still := h.headTask(t)
+	if still == nil || still.ID != headBefore || still.Status != domain.KnowledgeTaskBlocked || still.Attempt != attempts {
+		t.Fatalf("blocked must stay blocked within its budget: %+v (was attempt %d)", still, attempts)
+	}
+	pub, err := h.store.Library().GetPublicationByTask(ctx, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.Status != "prepared" || pub.CommittedAt != nil {
+		t.Fatalf("a blocked task's publication must stay prepared: %+v", pub)
+	}
+	if current, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, ""); err != nil || current.ID != first.ID {
+		t.Fatalf("the visible release must not move while the task is blocked: %+v %v", current, err)
+	}
+
+	// 2. A task that entered the publish phase cannot be cancelled: cancelling
+	//    it would hand its release to recovery and publish for a cancelled
+	//    task.
+	if _, err := h.svc.CancelKnowledgeWriteTask(ctx, h.wsID, blocked.ID, "试一试"); err == nil {
+		t.Fatal("a task with a prepared publication must not be cancellable")
+	} else if !strings.Contains(err.Error(), "发布阶段") {
+		t.Fatalf("the refusal must point at recovery: %v", err)
+	}
+
+	// A task that never published can be cancelled, and stays unpublished.
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "boundary-2",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A blocked write holds the queue head, so the new task waits behind it.
+	tasks, err := h.svc.ListKnowledgeWriteTasks(ctx, h.wsID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) == 0 || tasks[0].ID == blocked.ID || tasks[0].Status != domain.KnowledgeTaskQueued {
+		t.Fatalf("expected a newly queued task behind the blocked head: %+v", tasks)
+	}
+	queued := tasks[0]
+	if head := h.headTask(t); head == nil || head.ID != blocked.ID {
+		t.Fatalf("the blocked task must still hold the head: %+v", head)
+	}
+	if _, err := h.svc.CancelKnowledgeWriteTask(ctx, h.wsID, queued.ID, "重复事件"); err != nil {
+		t.Fatalf("an unpublished task must be cancellable: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		h.tick(t)
+	}
+	cancelled, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != domain.KnowledgeTaskCancelled || cancelled.TargetReleaseID != "" {
+		t.Fatalf("a cancelled task must stay unpublished: %+v", cancelled)
+	}
+	if current, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, ""); err != nil || current.ID != first.ID {
+		t.Fatalf("a cancelled task must never become current: %+v %v", current, err)
+	}
+	if _, err := h.store.Library().GetPublicationByTask(ctx, queued.ID); err == nil {
+		t.Fatal("a cancelled task must not own a publication")
+	}
+
+	// 3. The legitimate path — the head is retried — settles publication, task
+	//    and event together on the same release.
+	if err := os.RemoveAll(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.RetryKnowledgeWriteTask(ctx, h.wsID, blocked.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	settled, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Status != domain.KnowledgeTaskCompleted {
+		t.Fatalf("the retried task must finish: %+v", settled)
+	}
+	settledPub, err := h.store.Library().GetPublicationByTask(ctx, blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settledPub.Status != "committed" || settledPub.CommittedAt == nil || settledPub.ReleaseID != pending {
+		t.Fatalf("the publication must commit to the same release: %+v", settledPub)
+	}
+	if settled.TargetReleaseID != pending {
+		t.Fatalf("the task must point at that release: %+v", settled)
+	}
+	if settled.EventID != "" {
+		event, err := h.store.Library().GetEvent(ctx, h.libID(t), settled.EventID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Status != domain.KnowledgeEventCompleted || event.TaskID != settled.ID {
+			t.Fatalf("the event must reach its terminal state with the task: %+v", event)
+		}
+	}
+	current, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil || current.ID != pending {
+		t.Fatalf("the committed release must become current: %+v %v", current, err)
+	}
+}
+
 // TestKnowledgePublicReadReleaseGate covers every public read path that can
 // name a release: they must all resolve a committed release and check that the
 // object they return is a member of it. A prepared publish is invisible
@@ -1423,9 +1634,14 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 		t.Fatalf("the listed release must be %s: %v", first.ID, items[0])
 	}
 
-	// Recovery commits the same release: every path above flips to it.
+	// The blocked head is retried by an operator (recovery must not spend its
+	// budget), and that retry commits the same release: every path above flips
+	// to it.
 	if err := os.RemoveAll(obstruction); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := h.svc.RetryKnowledgeWriteTask(ctx, h.wsID, blocked.ID); err != nil {
+		t.Fatalf("the blocked head must be retryable: %v", err)
 	}
 	h.tick(t)
 	committed, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
@@ -1514,6 +1730,16 @@ func evidenceOfDocument(t *testing.T, h *libraryHarness, releaseID, documentID s
 		t.Fatalf("no evidence cited by %s in %s: %s", documentID, releaseID, raw)
 	}
 	return match
+}
+
+// libID returns the library id of a harness workspace.
+func (h *libraryHarness) libID(t *testing.T) string {
+	t.Helper()
+	lib, err := h.svc.EnsureKnowledgeLibrary(context.Background(), h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lib.ID
 }
 
 // asList tolerates the JSON shapes a decoded body may use for a list.

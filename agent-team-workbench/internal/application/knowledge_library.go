@@ -831,8 +831,20 @@ func (s *Service) CancelKnowledgeWriteTask(ctx context.Context, workspaceID, tas
 	default:
 		return nil, fmt.Errorf("%w: 任务 %s 已处于 %s，无法取消", domain.ErrStateConflict, taskID, task.Status)
 	}
-	if pub, err := s.store.Library().GetPublicationByTask(ctx, taskID); err == nil && pub.Status == "committed" {
-		return nil, fmt.Errorf("%w: 任务 %s 已经发布 %s", domain.ErrStateConflict, taskID, pub.ReleaseID)
+	// A task that already entered the publish phase owns a release that exists
+	// in the database (possibly not yet materialized). Cancelling it would
+	// leave that release to the recovery pass, which would then publish on
+	// behalf of a task the operator was told was cancelled. Publishing is not
+	// rolled back by cancellation, so the honest answer is to recover or retry
+	// instead — the smallest rule that keeps the two state machines apart.
+	if pub, err := s.store.Library().GetPublicationByTask(ctx, taskID); err == nil {
+		switch pub.Status {
+		case "prepared":
+			return nil, fmt.Errorf("%w: 任务 %s 已进入发布阶段（发布产物 %s 等待物化），不能取消；请先恢复或重试该任务",
+				domain.ErrStateConflict, taskID, pub.ReleaseID)
+		case "committed":
+			return nil, fmt.Errorf("%w: 任务 %s 已经发布 %s", domain.ErrStateConflict, taskID, pub.ReleaseID)
+		}
 	}
 	now := time.Now().UTC()
 	task.Status = domain.KnowledgeTaskCancelled
