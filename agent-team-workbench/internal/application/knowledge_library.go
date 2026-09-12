@@ -1029,6 +1029,11 @@ func (s *Service) reindexProjection(ctx context.Context, lib *domain.KnowledgeLi
 	if err != nil {
 		return 0, err
 	}
+	// Release counts are derived from the versions each release pins, so the
+	// same rebuild repairs them.
+	if _, err := s.store.Library().RefreshReleaseTotals(ctx, lib.ID); err != nil {
+		return count, err
+	}
 	if err := s.materializeLibraryFiles(ctx, lib); err != nil {
 		return count, err
 	}
@@ -1313,9 +1318,19 @@ func (s *Service) knowledgeExpandAssertion(ctx context.Context, workspaceID, rel
 	if err != nil {
 		return nil, nil, err
 	}
-	if v, _, _, verr := s.store.Library().DocumentVersionDetail(ctx, list[0].DocumentID, 0); verr == nil && v.Path != "" && v.ID == list[0].DocumentVersionID {
-		doc.Path = v.Path
+	// The pinned version row, not the document's current row, is the authority
+	// for path, title and version number: an expanded historical assertion must
+	// not be dressed in metadata written after it was published.
+	if v, verr := s.store.Library().DocumentVersionByID(ctx, list[0].DocumentVersionID); verr == nil {
+		if v.Path != "" {
+			doc.Path = v.Path
+		} else {
+			doc.Path = ""
+		}
 		doc.Title = v.Title
+		doc.CurrentVersion = v.Version
+	} else if v, _, _, verr := s.store.Library().DocumentVersionDetail(ctx, list[0].DocumentID, 0); verr == nil {
+		doc.CurrentVersion = v.Version
 	}
 	return &list[0], doc, nil
 }

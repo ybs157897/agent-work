@@ -658,8 +658,22 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 		}
 	}
 	rel.DocumentCount = len(docIDs)
-	rel.AssertionCount = assertionCount
-	rel.RelationCount = relationCount
+	// A release carries every document of the library, so its counts must
+	// describe what the release contains, not what this one publish happened to
+	// rewrite: an incremental release that inherits seven unchanged documents
+	// must not report three assertions.
+	totalAssertions, totalRelations, totalEvidence, err := r.releaseTotals(ctx, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	rel.AssertionCount = totalAssertions
+	rel.RelationCount = totalRelations
+	rel.EvidenceCount = totalEvidence
+	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases
+		SET assertion_count=?, relation_count=?, evidence_count=? WHERE id=?`,
+		totalAssertions, totalRelations, totalEvidence, releaseID); err != nil {
+		return nil, err
+	}
 	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
 		WHERE library_id=? AND id<>? AND status='published'`, in.LibraryID, releaseID); err != nil {
 		return nil, err
@@ -959,6 +973,21 @@ func (r *LibraryRepo) CurrentDocumentVersion(ctx context.Context, documentID str
 
 // DocumentVersionDetail returns one pinned version with its records. A version
 // number of 0 means the current version.
+// DocumentVersionByID reads one exact version row. A release pins versions by
+// ID, so a pinned read must be able to load that row directly instead of
+// resolving the document's current version and hoping it is the same one.
+func (r *LibraryRepo) DocumentVersionByID(ctx context.Context, versionID string) (*domain.KnowledgeDocumentVersion, error) {
+	row := r.db(ctx).QueryRowContext(ctx, `SELECT id, document_id, library_id, version, title, path,
+		content_markdown, frontmatter_json, content_digest, snapshot_id, task_id, release_id,
+		evidence_alias_json, derived_from_version_id, created_at FROM knowledge_document_versions
+		WHERE id=?`, versionID)
+	v, err := scanDocumentVersion(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return v, err
+}
+
 func (r *LibraryRepo) DocumentVersionDetail(ctx context.Context, documentID string, version int) (*domain.KnowledgeDocumentVersion, []domain.KnowledgeAssertion, []domain.KnowledgeAssertionRelation, error) {
 	var v *domain.KnowledgeDocumentVersion
 	var err error
@@ -1128,6 +1157,87 @@ func (r *LibraryRepo) OwnedContentPaths(ctx context.Context, libraryID string) (
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// RefreshReleaseTotals recomputes the derived counts of every release of one
+// library. The counts are a projection of the release's pinned document
+// versions, so rebuilding projections must be able to repair them.
+func (r *LibraryRepo) RefreshReleaseTotals(ctx context.Context, libraryID string) (int, error) {
+	rows, err := r.db(ctx).QueryContext(ctx, `SELECT id FROM knowledge_releases WHERE library_id=?`, libraryID)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	for _, id := range ids {
+		assertions, relations, evidence, err := r.releaseTotals(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases
+			SET assertion_count=?, relation_count=?, evidence_count=? WHERE id=?`,
+			assertions, relations, evidence, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
+}
+
+// releaseTotals counts what one release actually contains: its assertions and
+// relations across every document version it pins, and the distinct evidence
+// those records cite.
+func (r *LibraryRepo) releaseTotals(ctx context.Context, releaseID string) (int, int, int, error) {
+	var assertions, relations int
+	if err := r.db(ctx).QueryRowContext(ctx, `SELECT
+			(SELECT COUNT(*) FROM knowledge_assertions a JOIN knowledge_release_documents rd
+				ON rd.document_version_id = a.document_version_id WHERE rd.release_id=?),
+			(SELECT COUNT(*) FROM knowledge_assertion_relations x JOIN knowledge_release_documents rd
+				ON rd.document_version_id = x.document_version_id WHERE rd.release_id=?)`,
+		releaseID, releaseID).Scan(&assertions, &relations); err != nil {
+		return 0, 0, 0, err
+	}
+	rows, err := r.db(ctx).QueryContext(ctx, `SELECT a.evidence_json FROM knowledge_assertions a
+		JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+		WHERE rd.release_id=?
+		UNION ALL
+		SELECT x.evidence_json FROM knowledge_assertion_relations x
+		JOIN knowledge_release_documents rd ON rd.document_version_id = x.document_version_id
+		WHERE rd.release_id=?`, releaseID, releaseID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer rows.Close()
+	distinct := map[string]bool{}
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return 0, 0, 0, err
+		}
+		var refs []struct {
+			EvidenceID string `json:"evidence_id"`
+		}
+		if json.Unmarshal([]byte(raw), &refs) != nil {
+			continue
+		}
+		for _, ref := range refs {
+			if ref.EvidenceID != "" {
+				distinct[ref.EvidenceID] = true
+			}
+		}
+	}
+	return assertions, relations, len(distinct), rows.Err()
 }
 
 // ReprojectRecordJSON rebuilds the assertion/relation JSON columns from the

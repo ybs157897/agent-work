@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -267,6 +268,217 @@ func TestKnowledgeNonActiveViewIsRejected(t *testing.T) {
 	}
 }
 
+// TestKnowledgeVersionResolvesItsOwnEvidenceAliases: a version stored the way
+// pre-canonicalization releases were — Markdown citing the staged key, the
+// canonical ID only in its alias map — must still open its evidence instead of
+// reporting a broken citation.
+func TestKnowledgeVersionResolvesItsOwnEvidenceAliases(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	release := publishInitializeRelease(t, h)
+
+	docs, _, err := h.svc.ListKnowledgeDocuments(ctx, h.wsID, release.ID, "", "", 0)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("published document missing: %v", err)
+	}
+	docID := docs[0].ID
+	var (
+		markdown, frontmatter, snapshotID, aliasJSON, assertionID, basis string
+	)
+	if err := h.db.QueryRowContext(ctx, `SELECT content_markdown, frontmatter_json, snapshot_id,
+		evidence_alias_json FROM knowledge_document_versions WHERE document_id=? AND version=1`,
+		docID).Scan(&markdown, &frontmatter, &snapshotID, &aliasJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRowContext(ctx, `SELECT assertion_id, basis FROM knowledge_assertions
+		WHERE document_id=? ORDER BY ordinal LIMIT 1`, docID).Scan(&assertionID, &basis); err != nil {
+		t.Fatal(err)
+	}
+	if aliasJSON == "" || aliasJSON == "{}" {
+		t.Fatalf("a published version must keep the alias map it was written with: %q", aliasJSON)
+	}
+	aliases := map[string]string{}
+	if err := json.Unmarshal([]byte(aliasJSON), &aliases); err != nil {
+		t.Fatal(err)
+	}
+	stagedKey, canonicalID := "", ""
+	for staged, id := range aliases {
+		stagedKey, canonicalID = staged, id
+	}
+	if stagedKey == "" {
+		t.Fatal("no alias pair to exercise")
+	}
+	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyMarkdown := strings.ReplaceAll(markdown, canonicalID, stagedKey)
+	if legacyMarkdown == markdown {
+		t.Fatalf("aliases must name the IDs the markdown cites: %v", aliases)
+	}
+	now := time.Now().UTC()
+	const versionID = "kdocv_accept_legacy"
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO knowledge_document_versions
+		(id, document_id, library_id, version, title, path, content_markdown, frontmatter_json,
+		 content_digest, snapshot_id, release_id, evidence_alias_json, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		versionID, docID, lib.ID, 2, "订单服务", "content/components/order-service.md",
+		legacyMarkdown, frontmatter, "sha256:legacy", snapshotID, release.ID, aliasJSON, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.ExecContext(ctx, `INSERT INTO knowledge_assertions
+		(row_id, assertion_id, library_id, document_id, document_version_id, heading, about_json,
+		 perspective, basis, statement, scope_json, evidence_json, content_digest, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"kasrt_accept_legacy", assertionID, lib.ID, docID, versionID, "职责",
+		`["entity:service:order-service"]`, "descriptive", basis, "订单服务在取消分支发布取消事件。",
+		`{"conditions":[],"environments":[]}`,
+		`[{"evidence_id":"`+stagedKey+`","role":"supports"}]`, "sha256:legacy", now); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	var evidenceJSON string
+	if err := h.db.QueryRowContext(ctx, `SELECT evidence_json FROM knowledge_assertions
+		WHERE document_version_id=? AND assertion_id=?`, versionID, assertionID).Scan(&evidenceJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(evidenceJSON, canonicalID) || strings.Contains(evidenceJSON, stagedKey) {
+		t.Fatalf("the version alias map must resolve the staged key %q: %s", stagedKey, evidenceJSON)
+	}
+}
+
+// TestKnowledgeIncrementalReleaseCountsWhatItContains: an incremental release
+// inherits every unchanged document, so its counts must describe the whole
+// release rather than only the version rows this publish rewrote.
+func TestKnowledgeIncrementalReleaseCountsWhatItContains(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	first := publishInitializeRelease(t, h)
+	if first.DocumentCount != 1 || first.AssertionCount != 1 {
+		t.Fatalf("first release counts wrong: %+v", first)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "count-2",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes", "订单服务在取消分支发布取消事件。",
+		"ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+
+	second, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Seq != 2 || second.DocumentCount != 1 {
+		t.Fatalf("second release should carry the one document: %+v", second)
+	}
+	var versionCount, assertionCount int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_release_documents
+		WHERE release_id=?`, second.ID).Scan(&versionCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_assertions a
+		JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+		WHERE rd.release_id=?`, second.ID).Scan(&assertionCount); err != nil {
+		t.Fatal(err)
+	}
+	if second.AssertionCount != assertionCount || assertionCount == 0 {
+		t.Fatalf("release assertion count must describe the release: reported %d, contains %d",
+			second.AssertionCount, assertionCount)
+	}
+	if second.EvidenceCount == 0 {
+		t.Fatalf("release evidence count must describe the release: %+v", second)
+	}
+	// The counts are derived, so the rebuild path must be able to repair them
+	// for a release that was published under older counting rules.
+	if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_releases SET assertion_count=999 WHERE id=?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	repaired, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.AssertionCount != assertionCount {
+		t.Fatalf("reindex must repair derived release counts: %d vs %d", repaired.AssertionCount, assertionCount)
+	}
+}
+
+// TestKnowledgeExpandEvidenceHandleIsOpenable: a query hands the client an
+// evidence handle, so that exact URL must open the evidence — including the
+// consistency triple the client checks. The dedicated evidence route and the
+// generic expand route must serve the same object.
+func TestKnowledgeExpandEvidenceHandleIsOpenable(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	release := publishInitializeRelease(t, h)
+	answer, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
+		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceID := ""
+	for _, handle := range answer.Expandables {
+		if handle.Kind == "evidence" {
+			evidenceID = handle.ID
+			break
+		}
+	}
+	if evidenceID == "" {
+		t.Fatalf("the answer must offer an evidence handle: %+v", answer.Expandables)
+	}
+	mux := httpapi.NewServer(h.svc, h.store, nil).Routes()
+	get := func(path string) (int, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		body := map[string]any{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body
+	}
+	base := "/api/v1/workspaces/" + h.wsID + "/library"
+	status, expanded := get(base + "/expand?kind=evidence&id=" + evidenceID)
+	if status != http.StatusOK {
+		t.Fatalf("the evidence handle from a query must be openable, got %d: %v", status, expanded)
+	}
+	if expanded["id"] != evidenceID || expanded["excerpt"] == nil {
+		t.Fatalf("expanded evidence is not the one asked for: %v", expanded)
+	}
+	consistency, ok := expanded["consistency"].(map[string]any)
+	if !ok || consistency["snapshot_id"] == nil || consistency["binding_id"] == nil ||
+		consistency["representation_id"] == nil {
+		t.Fatalf("expand must report the snapshot/binding/representation triple: %v", expanded)
+	}
+	directStatus, direct := get(base + "/evidence/" + evidenceID)
+	if directStatus != http.StatusOK {
+		t.Fatalf("the dedicated evidence route must keep working, got %d", directStatus)
+	}
+	if direct["id"] != expanded["id"] || direct["excerpt_digest"] != expanded["excerpt_digest"] {
+		t.Fatalf("both routes must serve the same evidence: %v vs %v", direct, expanded)
+	}
+	_ = release
+}
+
 // TestKnowledgeRegisteredRefMustResolve: a ref the server can already disprove
 // is refused when the source is saved, and a ref that disappears afterwards
 // stops the task with a message naming it.
@@ -363,6 +575,21 @@ func TestKnowledgeDocumentHistoryKeepsItsOwnPaths(t *testing.T) {
 	}
 	if current.Document.Path != "content/business/rules/order-service-rules.md" {
 		t.Fatalf("the current read must follow the move: %+v", current.Document)
+	}
+	// A pinned assertion expand reports the pinned version's metadata, not the
+	// document row's current state.
+	oldAssertion, oldDoc, err := h.svc.ExpandKnowledgeAssertion(ctx, h.wsID, first.ID, "assertion:order-cancel-publishes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldDoc.Path != "content/components/order-service.md" || oldDoc.Title != "订单服务" {
+		t.Fatalf("pinned expand leaked current document metadata: %+v", oldDoc)
+	}
+	if oldDoc.CurrentVersion != 1 {
+		t.Fatalf("pinned expand must report the pinned version number, got %d", oldDoc.CurrentVersion)
+	}
+	if oldAssertion.DocumentVersionID == "" {
+		t.Fatalf("expanded assertion must name its version: %+v", oldAssertion)
 	}
 	// The rename must not have destroyed the old release's own citations.
 	if len(history.Assertions) != 1 {

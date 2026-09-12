@@ -623,6 +623,11 @@ func (s *Server) handleLibraryExpand(w http.ResponseWriter, r *http.Request) {
 	}
 	switch kind {
 	case "evidence":
+		// The expand route carries the evidence ID as a query parameter, while
+		// the shared projection reads it from the path of the dedicated
+		// /evidence/{evidence_id} route. Handing it over explicitly is what
+		// makes an evidence handle returned by a query actually openable.
+		r.SetPathValue("evidence_id", id)
 		s.handleLibraryEvidence(w, r)
 		return
 	case "assertion", "":
