@@ -80,6 +80,9 @@ const release = (over: Partial<Release> = {}): Release => ({
   assertion_count: 9,
   relation_count: 6,
   evidence_count: 12,
+  written_document_count: 2,
+  written_assertion_count: 3,
+  written_relation_count: 1,
   coverage: { sources_read: ['订单服务', 'common'], sources_missed: [], notes: '全部来源已读' },
   notes: '',
   status: 'published',
@@ -277,7 +280,15 @@ const queryResponse = (over: Partial<QueryResponse> = {}): QueryResponse => ({
       evidence: [evidence()],
     },
   ],
-  coverage: { status: 'partial', truncated: true, scanned_versions: 37, notes: ['订单服务只读到已提交字节'] },
+  coverage: {
+    status: 'partial',
+    truncated: true,
+    scanned_versions: 37,
+    gap_count: 2,
+    evidence_missing: 1,
+    unknown_count: 1,
+    notes: ['订单服务只读到已提交字节'],
+  },
   freshness: {
     release_id: 'rel_3',
     published_at: '2026-09-12T02:00:00Z',
@@ -746,9 +757,12 @@ describe('资料库管理页 · 查询', () => {
       />,
     );
     expect(html).toContain('部分覆盖');
-    expect(html).toContain('结果被截断');
+    expect(html).toContain('检索被截断');
     expect(html).toContain('已有更新的发布');
     expect(html).toContain('待处理事件 2');
+    // 检索维度与知识维度必须分开：命中未截断不等于没有缺口。
+    expect(html).toContain('覆盖缺口 2');
+    expect(html).toContain('无证据条目 1');
     expect(html).toContain('还有 2 个事件没有处理完');
     expect(html).toContain('来源已过期：支付网关');
     expect(html).toContain('订单服务只读到已提交字节');
@@ -766,7 +780,15 @@ describe('资料库管理页 · 查询', () => {
     const notReady: QueryResponse = {
       release: null,
       results: [],
-      coverage: { status: 'not_ready', truncated: false, scanned_versions: 0, notes: ['资料库尚未发布任何版本，初始化任务完成后才能查询。'] },
+      coverage: {
+        status: 'not_ready',
+        truncated: false,
+        scanned_versions: 0,
+        gap_count: 0,
+        evidence_missing: 0,
+        unknown_count: 0,
+        notes: ['资料库尚未发布任何版本，初始化任务完成后才能查询。'],
+      },
       freshness: { pending_events: 2, newer_release_available: false, stale_sources: [] },
       unknowns: [],
       expand_handles: [],

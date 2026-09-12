@@ -115,6 +115,8 @@ export const SOURCE_KIND_OPTIONS: { value: SourceKind; label: string }[] = [
   { value: 'service', label: '服务仓库（service）' },
   { value: 'common', label: '公共仓库（common）' },
   { value: 'documents', label: '文档仓库（documents）' },
+  // 需求输入源由系统在受理 requirement.imported 时登记，不在表单里手工创建。
+  { value: 'requirement', label: '需求输入（requirement，系统登记）' },
   { value: 'other', label: '其他（other）' },
 ];
 
@@ -585,11 +587,15 @@ export function CurrentReleaseCard({ release }: { release: Release | null }) {
         </div>
       </div>
       <dl className="mt-snug grid grid-cols-2 gap-snug md:grid-cols-4">
-        <MetaItem label="文档" value={release.document_count} mono />
-        <MetaItem label="断言" value={release.assertion_count} mono />
-        <MetaItem label="关系" value={release.relation_count} mono />
-        <MetaItem label="证据" value={release.evidence_count} mono />
+        <MetaItem label="文档（该发布包含）" value={release.document_count} mono />
+        <MetaItem label="断言（该发布包含）" value={release.assertion_count} mono />
+        <MetaItem label="关系（该发布包含）" value={release.relation_count} mono />
+        <MetaItem label="证据（该发布包含）" value={release.evidence_count} mono />
       </dl>
+      <p className="mt-micro text-caption text-text-tertiary">
+        本次发布写入：文档 {release.written_document_count} · 断言 {release.written_assertion_count} · 关系{' '}
+        {release.written_relation_count}；其余为上一版本沿用（carry-forward）。
+      </p>
       <p className="mt-snug text-caption text-text-secondary">
         覆盖：{coverageLine(release.coverage, (release.coverage_state ?? 'reported') as CoverageState)}
       </p>
@@ -1819,7 +1825,19 @@ export function QueryCoverageCard({ response }: { response: QueryResponse }) {
       ) : null}
       <div className="flex flex-wrap items-center gap-tight">
         <StateBadge tone={meta.tone}>{meta.label}</StateBadge>
-        {response.coverage.truncated ? <StateBadge tone="warning">结果被截断</StateBadge> : null}
+        {/* 检索维度与知识维度分开显示：命中没被截断，不等于知识没有缺口。 */}
+        <StateBadge tone={response.coverage.truncated ? 'warning' : 'neutral'}>
+          {response.coverage.truncated ? '检索被截断' : '检索未截断'}
+        </StateBadge>
+        {response.coverage.gap_count > 0 ? (
+          <StateBadge tone="warning">覆盖缺口 {response.coverage.gap_count}</StateBadge>
+        ) : null}
+        {response.coverage.evidence_missing > 0 ? (
+          <StateBadge tone="warning">无证据条目 {response.coverage.evidence_missing}</StateBadge>
+        ) : null}
+        {response.coverage.unknown_count > 0 ? (
+          <StateBadge tone="warning">未知 {response.coverage.unknown_count}</StateBadge>
+        ) : null}
         {response.freshness.newer_release_available ? <StateBadge tone="warning">已有更新的发布</StateBadge> : null}
         <StateBadge tone={response.freshness.pending_events > 0 ? 'warning' : 'success'}>
           待处理事件 {response.freshness.pending_events}
@@ -2061,7 +2079,7 @@ export function ReleasesTable({ releases }: { releases: Release[] }) {
           <Th>序号</Th>
           <Th>发布</Th>
           <Th>文档 / 断言 / 关系 / 证据</Th>
-          <Th>覆盖</Th>
+          <Th>包含 / 本次写入</Th>
           <Th>状态</Th>
           <Th>发布时间</Th>
         </tr>
@@ -2082,7 +2100,13 @@ export function ReleasesTable({ releases }: { releases: Release[] }) {
               ) : null}
             </Td>
             <Td mono>
-              {release.document_count} / {release.assertion_count} / {release.relation_count} / {release.evidence_count}
+              <span className="block">
+                {release.document_count} / {release.assertion_count} / {release.relation_count} /{' '}
+                {release.evidence_count}
+              </span>
+              <span className="block text-caption text-text-tertiary">
+                本次写入 文档 {release.written_document_count} · 断言 {release.written_assertion_count}
+              </span>
             </Td>
             <Td>
               <span className="block text-caption text-text-secondary">

@@ -51,7 +51,7 @@ export interface SourceUsage {
 export interface Source {
   id: string;
   name: string;
-  kind: 'service' | 'common' | 'documents' | 'other';
+  kind: 'service' | 'common' | 'documents' | 'requirement' | 'other';
   repo_path: string;
   default_ref: string;
   /** 空数组 = 一个隐式使用方（后端语义）；读取路径统一归一化为真数组。 */
@@ -140,6 +140,10 @@ export interface Release {
   assertion_count: number;
   relation_count: number;
   evidence_count: number;
+  /** 本次发布实际写入的数量（增量发布里远小于上面四个“该发布包含”的总数）。 */
+  written_document_count: number;
+  written_assertion_count: number;
+  written_relation_count: number;
   coverage: Coverage;
   coverage_state?: CoverageState;
   notes: string;
@@ -276,7 +280,18 @@ export interface QueryResult {
 export interface QueryResponse {
   release: Release | null;
   results: QueryResult[];
-  coverage: { status: 'complete' | 'partial' | 'not_ready'; truncated: boolean; scanned_versions: number; notes: string[] };
+  coverage: {
+    status: 'complete' | 'partial' | 'not_ready';
+    /** 本次检索是否被预算截断（检索维度）。 */
+    truncated: boolean;
+    scanned_versions: number;
+    /** 固定版本登记的覆盖缺口数（知识维度）。 */
+    gap_count: number;
+    /** 命中但没有登记证据的条目数。 */
+    evidence_missing: number;
+    unknown_count: number;
+    notes: string[];
+  };
   freshness: {
     release_id?: string;
     published_at?: string;
@@ -523,6 +538,13 @@ export const normalizeTaskDetail = (raw: TaskDetail): TaskDetail => ({
 
 export const normalizeRelease = (raw: Release): Release => ({
   ...raw,
+  document_count: raw?.document_count ?? 0,
+  assertion_count: raw?.assertion_count ?? 0,
+  relation_count: raw?.relation_count ?? 0,
+  evidence_count: raw?.evidence_count ?? 0,
+  written_document_count: raw?.written_document_count ?? 0,
+  written_assertion_count: raw?.written_assertion_count ?? 0,
+  written_relation_count: raw?.written_relation_count ?? 0,
   coverage: asObject(raw?.coverage) as Release['coverage'],
   coverage_state: raw?.coverage_state,
   notes: raw?.notes ?? '',
@@ -611,6 +633,9 @@ export const normalizeQueryResponse = (raw: QueryResponse): QueryResponse => ({
     status: raw?.coverage?.status ?? 'not_ready',
     truncated: Boolean(raw?.coverage?.truncated),
     scanned_versions: raw?.coverage?.scanned_versions ?? 0,
+    gap_count: raw?.coverage?.gap_count ?? 0,
+    evidence_missing: raw?.coverage?.evidence_missing ?? 0,
+    unknown_count: raw?.coverage?.unknown_count ?? 0,
     notes: asArray(raw?.coverage?.notes),
   },
   freshness: {
