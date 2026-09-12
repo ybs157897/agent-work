@@ -652,15 +652,28 @@ func (s *Server) handleLibraryExpand(w http.ResponseWriter, r *http.Request) {
 // queue receipt so the caller can watch the task instead of assuming the index
 // already matches the published versions.
 func (s *Server) handleLibraryReindex(w http.ResponseWriter, r *http.Request) {
-	receipt, err := s.svc.ReindexKnowledgeLibrary(r.Context(), s.libraryWorkspace(r))
+	// The body is optional: an empty POST is a fresh reindex, and a body with a
+	// client_key makes a retried submission idempotent.
+	var req libraryReindexRequest
+	if r.ContentLength > 0 {
+		if !s.decodeLibraryBody(w, r, &req) {
+			return
+		}
+	}
+	receipt, err := s.svc.ReindexKnowledgeLibrary(r.Context(), s.libraryWorkspace(r), req.ClientKey)
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"task_id": receipt.TaskID, "accepted": receipt.Accepted, "queue_seq": receipt.QueueSeq,
-		"status": receipt.Status, "enqueued_at": receipt.EnqueuedAt,
+		"task_id": receipt.TaskID, "accepted": receipt.Accepted, "duplicate": receipt.Duplicate,
+		"queue_seq": receipt.QueueSeq, "status": receipt.Status, "enqueued_at": receipt.EnqueuedAt,
 	})
+}
+
+// libraryReindexRequest is the optional body of POST /library/reindex.
+type libraryReindexRequest struct {
+	ClientKey string `json:"client_key"`
 }
 
 // ── JSON projections ───────────────────────────────────────────────────

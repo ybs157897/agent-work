@@ -95,6 +95,10 @@ type Requirement struct {
 	Digest        string `json:"digest,omitempty"`
 	Text          string `json:"text,omitempty"`
 	Path          string `json:"path,omitempty"`
+	// Binding is the frozen snapshot binding that holds this text. The agent
+	// cites it, not the staging path, so the requirement's own bytes are
+	// collected as evidence.
+	Binding string `json:"binding,omitempty"`
 	// Unresolved records why the referenced text could not be read. A task
 	// with an unresolved requirement must say so instead of inventing text.
 	Unresolved string            `json:"unresolved,omitempty"`
@@ -114,7 +118,14 @@ type Focus struct {
 	Branch      string
 	HeadSHA     string
 	PreviousSHA string
-	Notes       string
+	// The requirement this task was opened for. When no body could be
+	// accepted, RequirementUnresolved carries the reason so the brief reports
+	// the gap instead of silently having no requirement section.
+	RequirementID         string
+	RequirementVersion    string
+	RequirementTitle      string
+	RequirementUnresolved string
+	Notes                 string
 }
 
 // ExistingDocument is one published document in the catalog digest.
@@ -218,13 +229,32 @@ func RenderBrief(in BriefInput) (string, error) {
 			b.WriteString("本轮不要凭标题猜测需求内容；按现有来源照常整理，并在 plan.json 的 coverage.gaps 里写明「需求原文缺失，无法核对」。\n\n")
 		default:
 			if r.Path != "" {
-				b.WriteString("完整原文另存为：`" + r.Path + "`。\n\n")
+				b.WriteString("完整原文另存为：`" + r.Path + "`（仅供阅读；证据必须引用下面的冻结绑定，不要引用这个暂存路径）。\n\n")
 			}
 			b.WriteString("```text\n" + r.Text + "\n```\n\n")
 			b.WriteString("处理要求：\n\n")
 			b.WriteString("- 把需求正文作为 `basis: source_statement`、`perspective: normative` 的条目记进对应的业务规则/流程文档，陈述里保留可核对的原文关键值（阈值、时限、状态名、字段名）。\n")
 			b.WriteString("- 需求是「要求」，不是「现状」：不要写「已实现」「已上线」「代码中已生效」，也不要写 `approved`／`review_state`／任何审批或发布状态——这些字段会被整篇拒绝。\n")
-			b.WriteString("- 来源仓库里能核对的实现要单独用 `basis: code_static` 或 `runtime_observed` 的条目写，并明确说明它与需求是否一致；找不到对应实现就写进「说明与未知」或 coverage.gaps。\n\n")
+			b.WriteString("- 来源仓库里能核对的实现要单独用 `basis: code_static` 或 `runtime_observed` 的条目写，并明确说明它与需求是否一致；找不到对应实现就写进「说明与未知」或 coverage.gaps。\n")
+			b.WriteString("- **需求条目必须登记证据**：需求原文已作为下面的冻结来源绑定进本轮快照，")
+			if r.Binding != "" {
+				b.WriteString("binding 写 `" + r.Binding + "`")
+			} else {
+				b.WriteString("binding 写上面来源表里 `requirement:` 开头的那一行")
+			}
+			b.WriteString("，`path` 写 `requirement.md`，locator 用 `source_text` + 行区间引用冻结原文；不要引用暂存目录里的 requirement.md（它不是证据来源）。\n\n")
+			b.WriteString("需求证据的 evidence.yaml 样例：\n\n```yaml\n")
+			b.WriteString("evidence:\n")
+			b.WriteString("  - key: ev-requirement-time-limit\n")
+			if r.Binding != "" {
+				b.WriteString("    binding: " + r.Binding + "\n")
+			} else {
+				b.WriteString("    binding: requirement:<需求 ID>\n")
+			}
+			b.WriteString("    path: requirement.md\n")
+			b.WriteString("    locator:\n      kind: source_text\n      interval: half_open\n")
+			b.WriteString("      start: {line: 0, column: 0}\n      end: {line: 3, column: 0}\n")
+			b.WriteString("    note: 需求正文中的时限条款\n```\n\n")
 		}
 	}
 
@@ -385,6 +415,11 @@ func clipDocs(in []ExistingDocument, max int) []ExistingDocument {
 // artifactLabel marks an artifact version as declared or resolved so a
 // registered value is never presented as the actually resolved artifact.
 func artifactLabel(artifact, resolution string) string {
+	if resolution == "not_applicable" {
+		// A requirement document is not a build artifact; saying "unverified"
+		// here would imply a dependency claim that was never made.
+		return "不适用"
+	}
 	if strings.TrimSpace(artifact) == "" {
 		return "未核实"
 	}

@@ -65,11 +65,35 @@ type KnowledgeLibraryEventReceipt struct {
 // KnowledgeTaskReceipt is the answer to a queue-only write request: it says
 // the work was accepted and where it sits, never that it is done.
 type KnowledgeTaskReceipt struct {
-	TaskID     string                     `json:"task_id"`
-	Accepted   bool                       `json:"accepted"`
+	TaskID   string `json:"task_id"`
+	Accepted bool   `json:"accepted"`
+	// Duplicate says this key was already accepted; TaskID is the original
+	// task and no second write was enqueued.
+	Duplicate  bool                       `json:"duplicate"`
 	QueueSeq   int                        `json:"queue_seq"`
 	Status     domain.KnowledgeTaskStatus `json:"status"`
 	EnqueuedAt time.Time                  `json:"enqueued_at"`
+}
+
+// mergeFocusJSON merges extra keys into a focus object, keeping the existing
+// fields and ignoring empty additions.
+func mergeFocusJSON(raw string, extra map[string]any) string {
+	focus := map[string]any{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &focus)
+	}
+	for key, value := range extra {
+		text, isText := value.(string)
+		if isText && strings.TrimSpace(text) == "" {
+			continue
+		}
+		focus[key] = value
+	}
+	out, err := json.Marshal(focus)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // validateSourceRef rejects a registered ref the server can already disprove.
@@ -366,16 +390,41 @@ func resolveSourcePath(workspaceRoot, candidate string) (string, error) {
 	}
 	realPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		// A not-yet-existing path is allowed only if it is lexically inside.
-		if !strings.HasPrefix(abs+string(filepath.Separator), realRoot+string(filepath.Separator)) {
+		// The path does not exist yet. Its deepest existing ancestor is still
+		// resolved, so containment is decided on real paths: comparing a
+		// lexical path against a symlink-resolved root rejects legitimate
+		// paths on systems where the root itself is reached through a symlink.
+		resolved, rest, ok := evalExistingAncestor(abs)
+		if !ok {
+			return "", fmt.Errorf("%w: source path %q cannot be resolved", domain.ErrValidation, candidate)
+		}
+		if resolved != realRoot && !strings.HasPrefix(resolved+string(filepath.Separator), realRoot+string(filepath.Separator)) {
 			return "", fmt.Errorf("%w: source path %q is outside the workspace root", domain.ErrValidation, candidate)
 		}
-		return abs, nil
+		return filepath.Join(resolved, rest), nil
 	}
 	if realPath != realRoot && !strings.HasPrefix(realPath+string(filepath.Separator), realRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: source path %q is outside the workspace root", domain.ErrValidation, candidate)
 	}
 	return realPath, nil
+}
+
+// evalExistingAncestor resolves the deepest existing ancestor of a path and
+// returns it together with the not-yet-existing remainder.
+func evalExistingAncestor(path string) (string, string, bool) {
+	current := filepath.Clean(path)
+	rest := ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			return resolved, rest, true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", "", false
+		}
+		rest = filepath.Join(filepath.Base(current), rest)
+		current = parent
+	}
 }
 
 // ── Events: async acceptance ───────────────────────────────────────────
@@ -422,6 +471,18 @@ func (s *Service) SubmitKnowledgeLibraryEvent(ctx context.Context, in KnowledgeL
 		ClientKey: clientKey, RequestDigest: digest,
 		Status: domain.KnowledgeEventAccepted, ReceivedAt: now, UpdatedAt: now,
 	}
+	// The requirement text is read and digested now, at acceptance: a queued
+	// task must document the text that was accepted, not whatever the
+	// referenced path happens to contain when the task reaches the head.
+	draft, err := s.prepareRequirementDraft(ctx, in.WorkspaceID, event)
+	if err != nil {
+		return nil, err
+	}
+	kl, err := s.libraryRoot(lib)
+	if err != nil {
+		return nil, err
+	}
+	var input *domain.KnowledgeRequirementInput
 	var receipt *KnowledgeLibraryEventReceipt
 	err = s.store.InTx(ctx, func(ctx context.Context) error {
 		created, err := s.store.Library().InsertEvent(ctx, event)
@@ -440,9 +501,32 @@ func (s *Service) SubmitKnowledgeLibraryEvent(ctx context.Context, in KnowledgeL
 			}
 			return nil
 		}
+		if draft != nil && draft.Text != "" {
+			input, err = s.freezeRequirementInput(ctx, lib, kl, event.ID, draft)
+			if err != nil {
+				return err
+			}
+		}
 		task, err := s.enqueueTaskLocked(ctx, lib, event)
 		if err != nil {
 			return err
+		}
+		if input != nil {
+			task.RequirementInputID = input.ID
+		}
+		if draft != nil && input == nil {
+			// The accepted event declares a requirement whose text could not be
+			// obtained: keep the identity and the reason on the task so the
+			// brief reports the gap instead of dropping the requirement.
+			task.FocusJSON = mergeFocusJSON(task.FocusJSON, map[string]any{
+				"requirement_id": draft.RequirementID, "requirement_version": draft.Version,
+				"title": draft.Title, "requirement_unresolved": draft.Unresolved,
+			})
+		}
+		if input != nil || (draft != nil && draft.Unresolved != "") {
+			if err := s.store.Library().UpdateTask(ctx, task); err != nil {
+				return err
+			}
 		}
 		event.Status = domain.KnowledgeEventQueued
 		event.TaskID = task.ID
@@ -479,16 +563,9 @@ func (s *Service) taskForEvent(ctx context.Context, libraryID, taskID string) (*
 // kind is derived from the event, never chosen by the caller.
 func (s *Service) enqueueTaskLocked(ctx context.Context, lib *domain.KnowledgeLibrary, event *domain.KnowledgeLibraryEvent) (*domain.KnowledgeWriteTask, error) {
 	// The tail is the highest sequence ever allocated, not the head's
-	// successor: several events may be accepted while one task still holds the
-	// head, and each must get its own position in the FIFO.
-	tasks, err := s.store.Library().ListTasks(ctx, lib.ID, "", 1)
-	if err != nil {
-		return nil, err
-	}
-	nextSeq := 1
-	if len(tasks) > 0 {
-		nextSeq = tasks[0].Seq + 1
-	}
+	// The queue position is allocated by the insert itself: several events may
+	// be accepted while one task holds the head, and a concurrent reindex must
+	// not be able to claim the same position.
 	kind := taskKindForEvent(event.EventType, lib.CurrentReleaseID == "")
 	// Only record a baseline the library can actually resolve. A dangling
 	// current_release_id must surface as a clear block at head time rather than
@@ -501,7 +578,7 @@ func (s *Service) enqueueTaskLocked(ctx context.Context, lib *domain.KnowledgeLi
 	}
 	now := time.Now().UTC()
 	task := &domain.KnowledgeWriteTask{
-		ID: domain.NewID("ktask_"), LibraryID: lib.ID, Seq: nextSeq, Kind: kind,
+		ID: domain.NewID("ktask_"), LibraryID: lib.ID, Kind: kind,
 		EventID: event.ID, Status: domain.KnowledgeTaskQueued, BaseReleaseID: baseReleaseID,
 		ViewID: viewForEvent(event), FocusJSON: focusForEvent(event),
 		MaxAttempts: 3, MaxRepairAttempts: knowledgeLibraryMaxRepairAttempts, CreatedAt: now, UpdatedAt: now,
@@ -939,26 +1016,29 @@ func (s *Service) ListKnowledgeBridges(ctx context.Context, workspaceID, release
 // not race a publish: the index would be built from a version that is about to
 // be superseded. Queueing it behind the head is what makes the ordering
 // guarantee real, and the receipt lets the caller watch it like any other task.
-func (s *Service) ReindexKnowledgeLibrary(ctx context.Context, workspaceID string) (*KnowledgeTaskReceipt, error) {
+//
+// The queue position is allocated by the inserted statement, so a reindex
+// accepted at the same moment as an event cannot claim the same position. A
+// caller that retries with the same client key gets the original receipt back
+// instead of a second rebuild.
+func (s *Service) ReindexKnowledgeLibrary(ctx context.Context, workspaceID, clientKey string) (*KnowledgeTaskReceipt, error) {
 	lib, err := s.EnsureKnowledgeLibrary(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	// The next sequence number comes from the highest sequence ever used, not
-	// from the head: a completed task is no longer the head, and reusing its
-	// seq would collide with the queue's uniqueness constraint.
-	tasks, err := s.store.Library().ListTasks(ctx, lib.ID, "", 1)
-	if err != nil {
-		return nil, err
-	}
-	nextSeq := 1
-	if len(tasks) > 0 {
-		nextSeq = tasks[0].Seq + 1
+	clientKey = strings.TrimSpace(clientKey)
+	if clientKey != "" {
+		if existing, err := s.store.Library().TaskByClientKey(ctx, lib.ID, clientKey); err == nil {
+			return &KnowledgeTaskReceipt{
+				TaskID: existing.ID, Accepted: true, Duplicate: true, QueueSeq: existing.Seq,
+				Status: existing.Status, EnqueuedAt: existing.CreatedAt,
+			}, nil
+		}
 	}
 	now := time.Now().UTC()
 	task := &domain.KnowledgeWriteTask{
-		ID: domain.NewID("ktask_"), LibraryID: lib.ID, Seq: nextSeq, Kind: knowledgelib.TaskReindex,
-		Status: domain.KnowledgeTaskQueued, BaseReleaseID: lib.CurrentReleaseID,
+		ID: domain.NewID("ktask_"), LibraryID: lib.ID, Kind: knowledgelib.TaskReindex,
+		Status: domain.KnowledgeTaskQueued, BaseReleaseID: lib.CurrentReleaseID, ClientKey: clientKey,
 		ViewID: knowledgelib.DefaultViewID, FocusJSON: `{"event_type":"library.reindex","source":"admin"}`,
 		MaxAttempts: 3, MaxRepairAttempts: knowledgeLibraryMaxRepairAttempts, CreatedAt: now, UpdatedAt: now,
 	}
@@ -990,13 +1070,10 @@ func (s *Service) runReindexTask(ctx context.Context, lib *domain.KnowledgeLibra
 	}
 	count, err := s.reindexProjection(ctx, lib)
 	if err != nil {
-		task.LastError = err.Error()
-		task.Status = domain.KnowledgeTaskQueued
-		task.UpdatedAt = time.Now().UTC()
-		if updateErr := s.store.Library().UpdateTask(ctx, task); updateErr != nil {
-			return updateErr
-		}
-		return err
+		// A failing rebuild spends the same bounded retry budget as any other
+		// knowledge write and ends up blocked with a reason, instead of
+		// resetting to queued forever and hiding a permanent failure.
+		return s.deferTask(ctx, lib, task, err)
 	}
 	lines := []string{fmt.Sprintf("索引已重建：%d 篇文档的检索行由已发布版本重新生成", count)}
 	diag, _ := json.Marshal(lines)
@@ -1034,7 +1111,14 @@ func (s *Service) reindexProjection(ctx context.Context, lib *domain.KnowledgeLi
 	if _, err := s.store.Library().RefreshReleaseTotals(ctx, lib.ID); err != nil {
 		return count, err
 	}
-	if err := s.materializeLibraryFiles(ctx, lib); err != nil {
+	// A rebuild republishes nothing, so it re-renders the release the library
+	// currently points at — read here, inside the task, after any earlier
+	// publish already moved the pointer.
+	fresh, err := s.store.Library().GetLibraryByID(ctx, lib.ID)
+	if err != nil {
+		return count, err
+	}
+	if err := s.materializeLibraryFiles(ctx, fresh, fresh.CurrentReleaseID); err != nil {
 		return count, err
 	}
 	return count, nil
@@ -1100,11 +1184,10 @@ func (s *Service) QueryKnowledgeLibrary(ctx context.Context, in KnowledgeLibrary
 		return nil, err
 	}
 	answer.Hits = hits
-	answer.Coverage.Status = "complete"
-	if truncated {
-		answer.Coverage.Status = "partial"
-		answer.Coverage.Notes = append(answer.Coverage.Notes, "结果按预算截断，可缩小问题或继续展开条目。")
-	}
+	// "Truncated" is about this search; the coverage status is about the
+	// knowledge behind the answer. A complete search over a release that
+	// reports gaps, or whose matched statements have no evidence, is not a
+	// complete answer — saying so is the whole point of the coverage field.
 	answer.Coverage.Truncated = truncated
 	answer.Coverage.ScannedVersions = scanned
 	answer.Coverage.Notes = append(answer.Coverage.Notes, coverageNotes(rel)...)
@@ -1134,8 +1217,52 @@ func (s *Service) QueryKnowledgeLibrary(ctx context.Context, in KnowledgeLibrary
 			answer.Unknowns = append(answer.Unknowns, hit.Assertion.ID+": "+firstLine(hit.Assertion.UnknownNotes))
 		}
 	}
-	answer.Unknowns = append(answer.Unknowns, coverageGaps(rel)...)
+	gaps := coverageGaps(rel)
+	answer.Unknowns = append(answer.Unknowns, gaps...)
+	answer.Coverage.Gaps = len(gaps)
+	answer.Coverage.Unknowns = len(answer.Unknowns)
+	missingEvidence := 0
+	for _, hit := range hits {
+		if len(hit.Evidence) == 0 && len(jsonArrayOf(hit.Assertion.EvidenceJSON)) == 0 {
+			missingEvidence++
+		}
+	}
+	answer.Coverage.EvidenceMissing = missingEvidence
+	answer.Coverage.Status = "complete"
+	if truncated {
+		answer.Coverage.Status = "partial"
+		answer.Coverage.Notes = append(answer.Coverage.Notes, "结果按预算截断，可缩小问题或继续展开条目。")
+	}
+	if answer.Coverage.Gaps > 0 {
+		answer.Coverage.Status = "partial"
+		answer.Coverage.Notes = append(answer.Coverage.Notes,
+			fmt.Sprintf("本次发布登记了 %d 条覆盖缺口，命中条目之外的结论并未被覆盖。", answer.Coverage.Gaps))
+	}
+	if missingEvidence > 0 {
+		answer.Coverage.Status = "partial"
+		answer.Coverage.Notes = append(answer.Coverage.Notes,
+			fmt.Sprintf("命中的 %d 条知识没有登记证据，只能作为线索而不是已核实结论。", missingEvidence))
+	}
+	if answer.Coverage.Unknowns > 0 {
+		answer.Coverage.Status = "partial"
+	}
+	if pending+blocked > 0 {
+		answer.Coverage.Status = "partial"
+	}
 	return answer, nil
+}
+
+// jsonArrayOf counts the entries of a JSON array column, tolerating the empty
+// and malformed values older rows carry.
+func jsonArrayOf(raw string) []any {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []any
+	if json.Unmarshal([]byte(raw), &out) != nil {
+		return nil
+	}
+	return out
 }
 
 func coverageNotes(rel *domain.KnowledgeRelease) []string {

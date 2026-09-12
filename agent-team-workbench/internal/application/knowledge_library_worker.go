@@ -74,6 +74,11 @@ func (s *Service) processLibrary(ctx context.Context, lib *domain.KnowledgeLibra
 		switch head.Status {
 		case domain.KnowledgeTaskQueued, domain.KnowledgeTaskRunning, domain.KnowledgeTaskAwaitingAgent:
 			return s.runReindexTask(ctx, lib, head)
+		case domain.KnowledgeTaskRetryWait:
+			if head.NextAttemptAt != nil && head.NextAttemptAt.After(time.Now().UTC()) {
+				return nil
+			}
+			return s.runReindexTask(ctx, lib, head)
 		}
 		return nil
 	}
@@ -185,11 +190,21 @@ func (s *Service) prepareAndDispatch(ctx context.Context, lib *domain.KnowledgeL
 	if baseRelease != nil {
 		baseRef = &knowledgelib.ReleaseRef{ID: baseRelease.ID, Seq: baseRelease.Seq, PublishedAt: baseRelease.PublishedAt.Format(time.RFC3339)}
 	}
+	focus := focusFromTask(task)
+	requirement := s.requirementForTask(ctx, lib, task, staging)
+	if requirement == nil && focus.RequirementUnresolved != "" {
+		// Nothing was accepted, but the caller did ask for a requirement: say
+		// so in the brief rather than quietly omitting it.
+		requirement = &knowledgelib.Requirement{
+			RequirementID: focus.RequirementID, Title: focus.RequirementTitle,
+			Version: focus.RequirementVersion, Unresolved: focus.RequirementUnresolved,
+		}
+	}
 	if _, err := knowledgelib.RenderBrief(knowledgelib.BriefInput{
 		TaskID: task.ID, TaskKind: task.Kind, LibraryRoot: kl.Root, StagingDir: staging,
 		ViewID: task.ViewID, BaseRelease: baseRef,
-		Sources: briefSources, Focus: focusFromTask(task),
-		Requirement:       s.requirementForTask(ctx, lib, task, staging),
+		Sources: briefSources, Focus: focus,
+		Requirement:       requirement,
 		ExistingDocuments: existing, EntityCatalog: entityCatalog,
 	}); err != nil {
 		return s.deferTask(ctx, lib, task, err)
@@ -256,6 +271,12 @@ func (s *Service) captureSnapshot(ctx context.Context, lib *domain.KnowledgeLibr
 	runner := knowledgelib.ExecGitRunner{}
 	var briefSources []knowledgelib.BriefSource
 	for _, src := range sources {
+		// A requirement input is not a repository: its bytes were frozen when
+		// the event was accepted, and it joins the snapshot below as the
+		// binding for this task's own requirement.
+		if src.Kind == domain.SourceKindRequirement {
+			continue
+		}
 		for _, usage := range src.EffectiveUsages() {
 			spec := knowledgelib.SourceSpec{
 				ID: src.ID, Name: src.Name, Kind: string(src.Kind), RepoPath: src.RepoPath,
@@ -296,6 +317,29 @@ func (s *Service) captureSnapshot(ctx context.Context, lib *domain.KnowledgeLibr
 				Consumer: usage.Consumer, Environment: usage.Environment,
 			})
 		}
+	}
+	// A frozen requirement input joins the snapshot as a real binding: its
+	// text is a source the librarian cites, the collector resolves and the
+	// ledger references, not a note that only exists in the brief.
+	if strings.TrimSpace(task.RequirementInputID) != "" {
+		input, err := s.store.Library().GetRequirementInput(ctx, lib.ID, task.RequirementInputID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: 本次任务冻结的需求原文不可读：%v", domain.ErrValidation, err)
+		}
+		sourceName := "requirement:" + input.RequirementID
+		binding := requirementBinding(snapshot.ID, input, sourceName)
+		snapshot.Bindings = append(snapshot.Bindings, domain.KnowledgeSnapshotBinding{
+			ID: binding.ID, SnapshotID: snapshot.ID, SourceID: input.SourceID, SourceName: sourceName,
+			SourceKind: string(domain.SourceKindRequirement), RepoPath: binding.RepoPath,
+			GitRef: binding.GitRef, CommitSHA: binding.CommitSHA, ObjectFormat: binding.ObjectFormat,
+			Untracked: []string{}, CapturedAt: binding.CapturedAt,
+		})
+		briefSources = append(briefSources, knowledgelib.BriefSource{
+			Binding: binding.QualifiedName(), Name: sourceName, Kind: string(domain.SourceKindRequirement),
+			RepoPath: binding.RepoPath, ReadPath: binding.TreeDir, GitRef: binding.GitRef,
+			CommitSHA: binding.CommitSHA, ObjectFmt: binding.ObjectFormat,
+			Artifact: "", ArtifactResolution: "not_applicable",
+		})
 	}
 	if err := s.store.Library().CreateSnapshot(ctx, snapshot); err != nil {
 		return nil, nil, err
@@ -361,16 +405,22 @@ func (s *Service) libraryCatalog(ctx context.Context, lib *domain.KnowledgeLibra
 // external declared input, and a repair turn must see exactly the same text as
 // the first turn.
 func (s *Service) requirementForTask(ctx context.Context, lib *domain.KnowledgeLibrary, task *domain.KnowledgeWriteTask, staging string) *knowledgelib.Requirement {
-	if strings.TrimSpace(task.EventID) == "" {
+	if strings.TrimSpace(task.RequirementInputID) == "" {
 		return nil
 	}
-	event, err := s.store.Library().GetEvent(ctx, lib.ID, task.EventID)
+	input, err := s.store.Library().GetRequirementInput(ctx, lib.ID, task.RequirementInputID)
 	if err != nil {
-		// A task whose event row is gone must say so: the alternative is a
-		// silent run against an unknown requirement.
-		return &knowledgelib.Requirement{Unresolved: "触发事件 " + task.EventID + " 已不可读：" + err.Error()}
+		// A task whose frozen requirement is gone must say so: the alternative
+		// is a silent run against an unknown requirement.
+		return &knowledgelib.Requirement{
+			Unresolved: "本次任务冻结的需求原文 " + task.RequirementInputID + " 已不可读：" + err.Error(),
+		}
 	}
-	return requirementFromEvent(event, staging)
+	req := requirementFromInput(input, staging)
+	if source, err := s.store.Library().GetSource(ctx, lib.ID, input.SourceID); err == nil {
+		req.Binding = source.Name
+	}
+	return req
 }
 
 func focusFromTask(task *domain.KnowledgeWriteTask) knowledgelib.Focus {
@@ -397,6 +447,18 @@ func focusFromTask(task *domain.KnowledgeWriteTask) knowledgelib.Focus {
 	}
 	if v, ok := raw["previous_sha"].(string); ok {
 		focus.PreviousSHA = v
+	}
+	if v, ok := raw["requirement_id"].(string); ok {
+		focus.RequirementID = v
+	}
+	if v, ok := raw["requirement_version"].(string); ok {
+		focus.RequirementVersion = v
+	}
+	if v, ok := raw["title"].(string); ok {
+		focus.RequirementTitle = v
+	}
+	if v, ok := raw["requirement_unresolved"].(string); ok {
+		focus.RequirementUnresolved = v
 	}
 	if prev, ok := raw["previous_version"].(string); ok {
 		focus.Notes = "观测到的前一版本：" + prev
@@ -588,8 +650,17 @@ func (s *Service) completeTask(ctx context.Context, lib *domain.KnowledgeLibrary
 		return err
 	}
 	task.TargetReleaseID = release.ID
-	if err := s.materializeLibraryFiles(ctx, lib); err != nil {
-		log.Printf("knowledge library %s: materialize published files: %v", lib.ID, err)
+	// Materialize by the release that was just published, never through the
+	// library row: the caller's lib was loaded before the publish, so its
+	// current_release_id still points at the previous release and the official
+	// Markdown would lag one version behind the database.
+	if err := s.materializeLibraryFiles(ctx, lib, release.ID); err != nil {
+		// A task is not finished while the official files disagree with the
+		// release it published. Surfacing this as a task failure keeps it in
+		// the retry/block policy; the publication stays prepared, and the
+		// recovery path below picks the same release up again without
+		// publishing a second copy.
+		return s.deferTask(ctx, lib, task, fmt.Errorf("%w: 正式知识文件与发布 %s 不一致：%v", domain.ErrStateConflict, release.ID, err))
 	}
 	if err := s.store.Library().CommitPublication(ctx, task.ID); err != nil {
 		return err
@@ -641,14 +712,23 @@ func (s *Service) buildProjection(ctx context.Context, lib *domain.KnowledgeLibr
 	}
 	bindings := make([]*knowledgelib.Binding, 0, len(snapshot.Bindings))
 	for _, b := range snapshot.Bindings {
+		treeDir := kl.SnapshotTreeDirFor(b.SnapshotID, b.ID)
+		frozenDir := kl.SnapshotWorktreeDirFor(b.SnapshotID, b.ID)
+		if b.SourceKind == string(domain.SourceKindRequirement) {
+			// A frozen requirement input is not exported from a repository
+			// checkout: it lives where it was frozen, and that directory is
+			// exactly the pinned version this binding names.
+			treeDir = b.RepoPath
+			frozenDir = ""
+		}
 		binding := &knowledgelib.Binding{
 			ID: b.ID, SnapshotID: b.SnapshotID, SourceID: b.SourceID, SourceName: b.SourceName,
 			SourceKind: b.SourceKind, RepoPath: b.RepoPath, GitRef: b.GitRef, CommitSHA: b.CommitSHA,
 			ObjectFormat: b.ObjectFormat, Dirty: b.Dirty, DirtyDigest: b.DirtyDigest,
 			Untracked: b.Untracked, Artifact: b.Artifact, Consumer: b.Consumer, Environment: b.Environment,
 			DirtyPaths: map[string]bool{},
-			FrozenDir:  kl.SnapshotWorktreeDirFor(b.SnapshotID, b.ID),
-			TreeDir:    kl.SnapshotTreeDirFor(b.SnapshotID, b.ID),
+			FrozenDir:  frozenDir,
+			TreeDir:    treeDir,
 		}
 		for _, u := range b.Untracked {
 			binding.DirtyPaths[u] = true
@@ -940,16 +1020,35 @@ func (s *Service) recoverLibraryPublications(ctx context.Context, lib *domain.Kn
 		return err
 	}
 	for _, pub := range prepared {
-		rel, err := s.store.Library().GetRelease(ctx, lib.ID, pub.ReleaseID)
+		// The identity of a prepared publish is its projection digest, not a
+		// release row: the journal entry is written before the release exists,
+		// so release_id is empty until the publish commits. Looking the release
+		// up by digest is what tells the two crash windows apart.
+		rel, err := s.store.Library().ReleaseByProjectionDigest(ctx, lib.ID, pub.ProjectionDigest)
 		switch {
-		case err == nil && rel.ProjectionDigest == pub.ProjectionDigest:
+		case err == nil:
+			// The release exists, so the only remaining work is the official
+			// files. While the owning task is still active it owns that work —
+			// and its bounded retry/block policy must not be bypassed by a
+			// recovery pass that would retry forever without ever blocking.
+			if task, taskErr := s.store.Library().GetTask(ctx, lib.ID, pub.TaskID); taskErr == nil && taskOccupiesQueue(task.Status) {
+				continue
+			}
+			// A failure here must stay visible and retryable: leaving the
+			// publication prepared is what makes the next pass redo it.
+			if err := s.materializeLibraryFiles(ctx, lib, rel.ID); err != nil {
+				return fmt.Errorf("knowledge library %s: 恢复发布 %s 的正式文件失败：%w", lib.ID, rel.ID, err)
+			}
 			if err := s.store.Library().CommitPublication(ctx, pub.TaskID); err != nil {
 				return err
 			}
-			if err := s.materializeLibraryFiles(ctx, lib); err != nil {
-				log.Printf("knowledge library %s: recover materialize: %v", lib.ID, err)
-			}
 		case errors.Is(err, domain.ErrNotFound):
+			// No release for this digest: either the publish never happened or
+			// the task is still going to do it. Abandoning under an active task
+			// would erase the journal entry that its own recovery relies on.
+			if task, taskErr := s.store.Library().GetTask(ctx, lib.ID, pub.TaskID); taskErr == nil && taskOccupiesQueue(task.Status) {
+				continue
+			}
 			if err := s.store.Library().AbandonPublication(ctx, pub.TaskID); err != nil {
 				return err
 			}
@@ -960,13 +1059,24 @@ func (s *Service) recoverLibraryPublications(ctx context.Context, lib *domain.Kn
 	return nil
 }
 
+// taskOccupiesQueue reports whether a task still has its own retry budget to
+// spend, i.e. whether the worker state machine will run it again.
+func taskOccupiesQueue(status domain.KnowledgeTaskStatus) bool {
+	switch status {
+	case domain.KnowledgeTaskQueued, domain.KnowledgeTaskRunning,
+		domain.KnowledgeTaskAwaitingAgent, domain.KnowledgeTaskRetryWait:
+		return true
+	}
+	return false
+}
+
 // ── Materialize the published Markdown view ────────────────────────────
 
 // materializeLibraryFiles writes the published release back out as ordinary
 // Markdown: content/, catalog/views, _sources/manifest.yaml and INDEX.md.
 // The database rows are the durable record; the files are the same projection
 // rendered for humans, Obsidian and the library agent's own reading.
-func (s *Service) materializeLibraryFiles(ctx context.Context, lib *domain.KnowledgeLibrary) error {
+func (s *Service) materializeLibraryFiles(ctx context.Context, lib *domain.KnowledgeLibrary, releaseID string) error {
 	kl, err := s.libraryRoot(lib)
 	if err != nil {
 		return err
@@ -974,7 +1084,7 @@ func (s *Service) materializeLibraryFiles(ctx context.Context, lib *domain.Knowl
 	if err := kl.Ensure(); err != nil {
 		return err
 	}
-	current, err := s.resolveRelease(ctx, lib, lib.CurrentReleaseID)
+	current, err := s.resolveRelease(ctx, lib, releaseID)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil
 	}

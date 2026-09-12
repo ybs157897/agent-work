@@ -182,6 +182,27 @@ type StagedDocument struct {
 	Raw     []byte
 }
 
+// RequirementStoreDir is where frozen requirement documents live, one
+// directory per accepted version, content-addressed by digest.
+func (l Library) RequirementStoreDir() string {
+	return filepath.Join(l.Root, "_system", "requirements")
+}
+
+// StoreRequirementInput writes the accepted requirement text under its own
+// directory and returns the file path. Two accepted versions never share a
+// directory, so a binding that pins one version can only read that version.
+func (l Library) StoreRequirementInput(requirementID, version, digest string, content []byte) (string, error) {
+	dir := filepath.Join(l.RequirementStoreDir(), safeSegment(requirementID), safeSegment(version)+"-"+ShortID(digest)[:12])
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	target := filepath.Join(dir, RequirementFileName)
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
 // ReadStaging reads and parses everything a librarian turn produced.
 // Missing optional files are tolerated; a malformed required file is not.
 func (l Library) ReadStaging(taskID string) (*Staged, error) {

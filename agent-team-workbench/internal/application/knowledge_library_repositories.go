@@ -54,6 +54,9 @@ type KnowledgeLibraryRepo interface {
 	CreateTaskWithEvent(ctx context.Context, task *domain.KnowledgeWriteTask) error
 	HeadTask(ctx context.Context, libraryID string) (*domain.KnowledgeWriteTask, error)
 	TaskByWorkItem(ctx context.Context, workItemID string) (*domain.KnowledgeWriteTask, error)
+	TaskByClientKey(ctx context.Context, libraryID, clientKey string) (*domain.KnowledgeWriteTask, error)
+	CreateRequirementInput(ctx context.Context, in *domain.KnowledgeRequirementInput) error
+	GetRequirementInput(ctx context.Context, libraryID, inputID string) (*domain.KnowledgeRequirementInput, error)
 	GetTask(ctx context.Context, libraryID, taskID string) (*domain.KnowledgeWriteTask, error)
 	ListTasks(ctx context.Context, libraryID, status string, limit int) ([]*domain.KnowledgeWriteTask, error)
 	ClaimTask(ctx context.Context, libraryID, taskID, ownerToken string) (bool, error)

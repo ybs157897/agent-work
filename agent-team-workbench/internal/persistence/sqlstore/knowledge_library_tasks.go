@@ -114,26 +114,29 @@ func (r *LibraryRepo) UpdateEventStatus(ctx context.Context, eventID string, sta
 const taskCols = `id, library_id, seq, kind, event_id, status, base_release_id, target_release_id,
 	snapshot_id, view_id, focus_json, plan_json, coverage_json, staging_path, work_item_id,
 	current_run_id, attempt, repair_attempt, max_attempts, max_repair_attempts, turn_seq,
-	next_attempt_at, owner_token, last_error, blocked_reason, diagnostics_json,
-	created_at, updated_at, finished_at`
+	next_attempt_at, owner_token, last_error, blocked_reason, diagnostics_json, client_key,
+	requirement_input_id, created_at, updated_at, finished_at`
 
 func scanTask(row interface{ Scan(...any) error }) (*domain.KnowledgeWriteTask, error) {
 	var t domain.KnowledgeWriteTask
 	var eventID, baseRelease, targetRelease, snapshotID, workItem, currentRun, nextAttempt, finished *string
-	var plan, coverage, diagnostics string
+	var plan, coverage, diagnostics, clientKey, requirementInputID *string
 	var created, updated scanTime
 	var nextAttemptAt, finishedAt scanTime
 	if err := row.Scan(&t.ID, &t.LibraryID, &t.Seq, &t.Kind, &eventID, &t.Status, &baseRelease, &targetRelease,
 		&snapshotID, &t.ViewID, &t.FocusJSON, &plan, &coverage, &t.StagingPath, &workItem, &currentRun,
 		&t.Attempt, &t.RepairAttempt, &t.MaxAttempts, &t.MaxRepairAttempts, &t.TurnSeq,
-		&nextAttemptAt, &t.OwnerToken, &t.LastError, &t.BlockedReason, &diagnostics, &created, &updated, &finishedAt); err != nil {
+		&nextAttemptAt, &t.OwnerToken, &t.LastError, &t.BlockedReason, &diagnostics, &clientKey,
+		&requirementInputID, &created, &updated, &finishedAt); err != nil {
 		return nil, err
 	}
 	_ = nextAttempt
 	_ = finished
 	t.EventID, t.BaseReleaseID, t.TargetReleaseID = deref(eventID), deref(baseRelease), deref(targetRelease)
 	t.SnapshotID, t.WorkItemID, t.CurrentRunID = deref(snapshotID), deref(workItem), deref(currentRun)
-	t.PlanJSON, t.CoverageJSON, t.DiagnosticsJSON = plan, coverage, diagnostics
+	t.PlanJSON, t.CoverageJSON, t.DiagnosticsJSON = deref(plan), deref(coverage), deref(diagnostics)
+	t.ClientKey = deref(clientKey)
+	t.RequirementInputID = deref(requirementInputID)
 	t.CreatedAt, t.UpdatedAt = created.T, updated.T
 	t.NextAttemptAt = optTime(nextAttemptAt)
 	t.FinishedAt = optTime(finishedAt)
@@ -142,6 +145,39 @@ func scanTask(row interface{ Scan(...any) error }) (*domain.KnowledgeWriteTask, 
 
 // CreateTaskWithEvent inserts one queued task and points its event at it in
 // the same transaction, so an accepted event always has exactly one task.
+// CreateRequirementInput stores one frozen requirement document.
+func (r *LibraryRepo) CreateRequirementInput(ctx context.Context, in *domain.KnowledgeRequirementInput) error {
+	_, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_requirement_inputs
+		(id, library_id, event_id, source_id, requirement_id, requirement_version, title, content_ref,
+		 stored_path, content_digest, byte_size, payload_json, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		in.ID, in.LibraryID, nullString(in.EventID), in.SourceID, in.RequirementID,
+		in.RequirementVersion, in.Title, in.ContentRef, in.StoredPath, in.ContentDigest,
+		in.ByteSize, in.PayloadJSON, in.CreatedAt)
+	return err
+}
+
+// GetRequirementInput reads one frozen requirement document by ID.
+func (r *LibraryRepo) GetRequirementInput(ctx context.Context, libraryID, inputID string) (*domain.KnowledgeRequirementInput, error) {
+	row := r.db(ctx).QueryRowContext(ctx, `SELECT id, library_id, event_id, source_id, requirement_id,
+		requirement_version, title, content_ref, stored_path, content_digest, byte_size, payload_json,
+		created_at FROM knowledge_requirement_inputs WHERE library_id=? AND id=?`, libraryID, inputID)
+	var in domain.KnowledgeRequirementInput
+	var eventID *string
+	var created scanTime
+	if err := row.Scan(&in.ID, &in.LibraryID, &eventID, &in.SourceID, &in.RequirementID,
+		&in.RequirementVersion, &in.Title, &in.ContentRef, &in.StoredPath, &in.ContentDigest,
+		&in.ByteSize, &in.PayloadJSON, &created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	in.EventID = deref(eventID)
+	in.CreatedAt = created.T
+	return &in, nil
+}
+
 // CreateTask enqueues a task that has no external event behind it, such as an
 // administrator-requested reindex. It is the same FIFO insert as
 // CreateTaskWithEvent, minus the event bookkeeping.
@@ -164,21 +200,61 @@ func (r *LibraryRepo) CreateTaskWithEvent(ctx context.Context, t *domain.Knowled
 }
 
 func (r *LibraryRepo) insertTask(ctx context.Context, t *domain.KnowledgeWriteTask) error {
+	// The queue position is allocated by the insert itself when the caller does
+	// not supply one: reading MAX(seq) and inserting as two steps lets two
+	// concurrent submissions (an event and an administrator's reindex) pick the
+	// same position and collide on the queue's uniqueness constraint.
+	if t.Seq > 0 {
+		if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_write_tasks
+			(id, library_id, seq, kind, event_id, status, base_release_id, target_release_id, snapshot_id,
+			 view_id, focus_json, plan_json, coverage_json, staging_path, work_item_id, current_run_id,
+			 attempt, repair_attempt, max_attempts, max_repair_attempts, turn_seq, next_attempt_at,
+			 owner_token, last_error, blocked_reason, diagnostics_json, client_key, requirement_input_id,
+			 created_at, updated_at, finished_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			t.ID, t.LibraryID, t.Seq, t.Kind, nullString(t.EventID), t.Status,
+			nullString(t.BaseReleaseID), nullString(t.TargetReleaseID), nullString(t.SnapshotID),
+			t.ViewID, t.FocusJSON, t.PlanJSON, t.CoverageJSON, t.StagingPath,
+			nullString(t.WorkItemID), nullString(t.CurrentRunID), t.Attempt, t.RepairAttempt,
+			t.MaxAttempts, t.MaxRepairAttempts, t.TurnSeq, t.NextAttemptAt,
+			t.OwnerToken, t.LastError, t.BlockedReason, t.DiagnosticsJSON, nullString(t.ClientKey),
+			nullString(t.RequirementInputID), t.CreatedAt, t.UpdatedAt, t.FinishedAt); err != nil {
+			return err
+		}
+		return nil
+	}
 	if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_write_tasks
 		(id, library_id, seq, kind, event_id, status, base_release_id, target_release_id, snapshot_id,
 		 view_id, focus_json, plan_json, coverage_json, staging_path, work_item_id, current_run_id,
 		 attempt, repair_attempt, max_attempts, max_repair_attempts, turn_seq, next_attempt_at,
-		 owner_token, last_error, blocked_reason, diagnostics_json, created_at, updated_at, finished_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		t.ID, t.LibraryID, t.Seq, t.Kind, nullString(t.EventID), t.Status,
+		 owner_token, last_error, blocked_reason, diagnostics_json, client_key, requirement_input_id,
+		 created_at, updated_at, finished_at)
+		VALUES (?,?, (SELECT COALESCE(MAX(seq),0)+1 FROM knowledge_write_tasks WHERE library_id=?),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		t.ID, t.LibraryID, t.LibraryID, t.Kind, nullString(t.EventID), t.Status,
 		nullString(t.BaseReleaseID), nullString(t.TargetReleaseID), nullString(t.SnapshotID),
 		t.ViewID, t.FocusJSON, t.PlanJSON, t.CoverageJSON, t.StagingPath,
 		nullString(t.WorkItemID), nullString(t.CurrentRunID), t.Attempt, t.RepairAttempt,
 		t.MaxAttempts, t.MaxRepairAttempts, t.TurnSeq, t.NextAttemptAt,
-		t.OwnerToken, t.LastError, t.BlockedReason, t.DiagnosticsJSON, t.CreatedAt, t.UpdatedAt, t.FinishedAt); err != nil {
+		t.OwnerToken, t.LastError, t.BlockedReason, t.DiagnosticsJSON, nullString(t.ClientKey),
+		nullString(t.RequirementInputID), t.CreatedAt, t.UpdatedAt, t.FinishedAt); err != nil {
 		return err
 	}
-	return nil
+	return r.db(ctx).QueryRowContext(ctx, `SELECT seq FROM knowledge_write_tasks WHERE id=?`, t.ID).Scan(&t.Seq)
+}
+
+// TaskByClientKey finds a queue request by its caller key, which is how a
+// retried submission returns the original receipt instead of a second task.
+func (r *LibraryRepo) TaskByClientKey(ctx context.Context, libraryID, clientKey string) (*domain.KnowledgeWriteTask, error) {
+	if strings.TrimSpace(clientKey) == "" {
+		return nil, domain.ErrNotFound
+	}
+	row := r.db(ctx).QueryRowContext(ctx, `SELECT `+taskCols+` FROM knowledge_write_tasks
+		WHERE library_id=? AND client_key=?`, libraryID, clientKey)
+	t, err := scanTask(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return t, err
 }
 
 // HeadTask returns the oldest task that still occupies the queue head.
@@ -266,13 +342,14 @@ func (r *LibraryRepo) UpdateTask(ctx context.Context, t *domain.KnowledgeWriteTa
 		status=?, base_release_id=?, target_release_id=?, snapshot_id=?, focus_json=?, plan_json=?,
 		coverage_json=?, staging_path=?, work_item_id=?, current_run_id=?, attempt=?, repair_attempt=?,
 		max_attempts=?, max_repair_attempts=?, turn_seq=?, next_attempt_at=?, owner_token=?,
-		last_error=?, blocked_reason=?, diagnostics_json=?, updated_at=?, finished_at=?
+		last_error=?, blocked_reason=?, diagnostics_json=?, requirement_input_id=?,
+		updated_at=?, finished_at=?
 		WHERE id=? AND library_id=?`,
 		t.Status, nullString(t.BaseReleaseID), nullString(t.TargetReleaseID), nullString(t.SnapshotID),
 		t.FocusJSON, t.PlanJSON, t.CoverageJSON, t.StagingPath, nullString(t.WorkItemID),
 		nullString(t.CurrentRunID), t.Attempt, t.RepairAttempt, t.MaxAttempts, t.MaxRepairAttempts,
 		t.TurnSeq, t.NextAttemptAt, t.OwnerToken, t.LastError, t.BlockedReason, t.DiagnosticsJSON,
-		t.UpdatedAt, t.FinishedAt, t.ID, t.LibraryID)
+		nullString(t.RequirementInputID), t.UpdatedAt, t.FinishedAt, t.ID, t.LibraryID)
 	return err
 }
 
@@ -633,14 +710,19 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 	// The release row must exist before its membership rows, because
 	// knowledge_release_documents.release_id is a real foreign key.
 	rel.DocumentCount = len(carried)
-	rel.AssertionCount = assertionCount
-	rel.RelationCount = relationCount
+	// The per-publish numbers are kept as their own fields: the release totals
+	// are computed below from the versions it pins.
+	rel.WrittenAssertionCount = assertionCount
+	rel.WrittenRelationCount = relationCount
 	if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_releases
 		(id, library_id, seq, snapshot_id, task_id, parent_release_id, projection_digest,
-		 document_count, assertion_count, relation_count, evidence_count, coverage_json, notes, status, published_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 document_count, assertion_count, relation_count, evidence_count,
+		 written_document_count, written_assertion_count, written_relation_count,
+		 coverage_json, notes, status, published_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rel.ID, rel.LibraryID, rel.Seq, rel.SnapshotID, nullString(rel.TaskID), nullString(rel.ParentReleaseID),
 		rel.ProjectionDigest, rel.DocumentCount, rel.AssertionCount, rel.RelationCount, rel.EvidenceCount,
+		rel.WrittenDocumentCount, rel.WrittenAssertionCount, rel.WrittenRelationCount,
 		rel.CoverageJSON, rel.Notes, rel.Status, rel.PublishedAt); err != nil {
 		return nil, err
 	}
@@ -670,8 +752,8 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 	rel.RelationCount = totalRelations
 	rel.EvidenceCount = totalEvidence
 	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases
-		SET assertion_count=?, relation_count=?, evidence_count=? WHERE id=?`,
-		totalAssertions, totalRelations, totalEvidence, releaseID); err != nil {
+		SET assertion_count=?, relation_count=?, evidence_count=?, written_document_count=? WHERE id=?`,
+		totalAssertions, totalRelations, totalEvidence, len(in.Documents), releaseID); err != nil {
 		return nil, err
 	}
 	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
@@ -684,9 +766,12 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 		releaseID, in.SnapshotID, now, in.LibraryID); err != nil {
 		return nil, err
 	}
-	// The journal row moves to committed in the same transaction as the
-	// release and the current-release pointer: a crash can therefore never
-	// leave a published release without a matching completion record.
+	// The journal row records that this release exists, but it stays
+	// 'prepared' until the official Markdown has been written: the database
+	// rows and the files a human reads are two different artifacts, and a
+	// release whose files were never materialized must not look finished. The
+	// publish transaction is still atomic — the row and the release move
+	// together — so recovery can find the release by projection digest.
 	if in.TaskID != "" {
 		pubID := in.PublicationID
 		if pubID == "" {
@@ -694,11 +779,11 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 		}
 		if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_publications
 			(id, library_id, task_id, release_id, status, projection_digest, prepared_at, committed_at)
-			VALUES (?,?,?,?, 'committed', ?, ?, ?)
+			VALUES (?,?,?,?, 'prepared', ?, ?, NULL)
 			ON CONFLICT(task_id) DO UPDATE SET
-			  release_id=excluded.release_id, status='committed',
-			  projection_digest=excluded.projection_digest, committed_at=excluded.committed_at`,
-			pubID, in.LibraryID, in.TaskID, releaseID, in.ProjectionDigest, now, now); err != nil {
+			  release_id=excluded.release_id,
+			  projection_digest=excluded.projection_digest`,
+			pubID, in.LibraryID, in.TaskID, releaseID, in.ProjectionDigest, now); err != nil {
 			return nil, err
 		}
 	}

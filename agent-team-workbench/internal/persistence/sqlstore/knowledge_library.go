@@ -529,7 +529,9 @@ func (r *LibraryRepo) GetDocument(ctx context.Context, libraryID, documentID str
 // ── Releases ───────────────────────────────────────────────────────────
 
 const releaseCols = `id, library_id, seq, snapshot_id, task_id, parent_release_id, projection_digest,
-	document_count, assertion_count, relation_count, evidence_count, coverage_json, notes, status, published_at`
+	document_count, assertion_count, relation_count, evidence_count,
+	written_document_count, written_assertion_count, written_relation_count,
+	coverage_json, notes, status, published_at`
 
 func scanRelease(row interface{ Scan(...any) error }) (*domain.KnowledgeRelease, error) {
 	var rel domain.KnowledgeRelease
@@ -537,7 +539,8 @@ func scanRelease(row interface{ Scan(...any) error }) (*domain.KnowledgeRelease,
 	var published scanTime
 	if err := row.Scan(&rel.ID, &rel.LibraryID, &rel.Seq, &rel.SnapshotID, &taskID, &parent,
 		&rel.ProjectionDigest, &rel.DocumentCount, &rel.AssertionCount, &rel.RelationCount,
-		&rel.EvidenceCount, &rel.CoverageJSON, &rel.Notes, &rel.Status, &published); err != nil {
+		&rel.EvidenceCount, &rel.WrittenDocumentCount, &rel.WrittenAssertionCount,
+		&rel.WrittenRelationCount, &rel.CoverageJSON, &rel.Notes, &rel.Status, &published); err != nil {
 		return nil, err
 	}
 	rel.TaskID = deref(taskID)

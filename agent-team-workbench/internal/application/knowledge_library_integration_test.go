@@ -376,7 +376,7 @@ func TestKnowledgeLibraryInitializePublishesAndAnswers(t *testing.T) {
 
 	// The search projection is derived: the queued rebuild reproduces the same
 	// answers from the published versions.
-	reindexReceipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID)
+	reindexReceipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, "")
 	if err != nil {
 		t.Fatal(err)
 	}

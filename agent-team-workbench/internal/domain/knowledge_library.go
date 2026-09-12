@@ -31,12 +31,16 @@ const (
 	SourceKindService   KnowledgeSourceKind = "service"
 	SourceKindCommon    KnowledgeSourceKind = "common"
 	SourceKindDocuments KnowledgeSourceKind = "documents"
-	SourceKindOther     KnowledgeSourceKind = "other"
+	// SourceKindRequirement is an external requirement input the library froze
+	// from an imported requirement document. It is a source so the librarian
+	// can cite its text as evidence, exactly like a repository binding.
+	SourceKindRequirement KnowledgeSourceKind = "requirement"
+	SourceKindOther       KnowledgeSourceKind = "other"
 )
 
 func (k KnowledgeSourceKind) Valid() bool {
 	switch k {
-	case SourceKindService, SourceKindCommon, SourceKindDocuments, SourceKindOther:
+	case SourceKindService, SourceKindCommon, SourceKindDocuments, SourceKindRequirement, SourceKindOther:
 		return true
 	}
 	return false
@@ -147,6 +151,25 @@ type KnowledgeSnapshot struct {
 	Reason           string
 	CapturedAt       time.Time
 	Bindings         []KnowledgeSnapshotBinding
+}
+
+// KnowledgeRequirementInput is one imported requirement document, frozen at
+// acceptance time. Identity is the digest of the accepted bytes, so a later
+// edit to the referenced path cannot change what a task documented.
+type KnowledgeRequirementInput struct {
+	ID                 string
+	LibraryID          string
+	EventID            string
+	SourceID           string
+	RequirementID      string
+	RequirementVersion string
+	Title              string
+	ContentRef         string
+	StoredPath         string
+	ContentDigest      string
+	ByteSize           int
+	PayloadJSON        string
+	CreatedAt          time.Time
 }
 
 // KnowledgeSnapshotBinding freezes one source inside one snapshot.
@@ -311,14 +334,23 @@ type KnowledgeRelease struct {
 	TaskID           string
 	ParentReleaseID  string
 	ProjectionDigest string
-	DocumentCount    int
-	AssertionCount   int
-	RelationCount    int
-	EvidenceCount    int
-	CoverageJSON     string
-	Notes            string
-	Status           string
-	PublishedAt      time.Time
+	// DocumentCount/AssertionCount/RelationCount/EvidenceCount describe what
+	// the release contains, inherited documents included.
+	DocumentCount  int
+	AssertionCount int
+	RelationCount  int
+	EvidenceCount  int
+	// WrittenDocumentCount/WrittenAssertionCount/WrittenRelationCount describe
+	// what this publish actually wrote. An incremental release carries most of
+	// its documents forward, so the two pairs are different numbers and are
+	// reported separately instead of being conflated.
+	WrittenDocumentCount  int
+	WrittenAssertionCount int
+	WrittenRelationCount  int
+	CoverageJSON          string
+	Notes                 string
+	Status                string
+	PublishedAt           time.Time
 }
 
 // KnowledgeReleaseDocument pins one document version into a release.
@@ -407,35 +439,42 @@ func (s KnowledgeTaskStatus) OccupiesHead() bool {
 // KnowledgeWriteTask is one complete unit of knowledge writing. All
 // persistent knowledge changes are tasks in this one queue.
 type KnowledgeWriteTask struct {
-	ID                string
-	LibraryID         string
-	Seq               int
-	Kind              string
-	EventID           string
-	Status            KnowledgeTaskStatus
-	BaseReleaseID     string
-	TargetReleaseID   string
-	SnapshotID        string
-	ViewID            string
-	FocusJSON         string
-	PlanJSON          string
-	CoverageJSON      string
-	StagingPath       string
-	WorkItemID        string
-	CurrentRunID      string
-	Attempt           int
-	RepairAttempt     int
-	MaxAttempts       int
-	MaxRepairAttempts int
-	TurnSeq           int
-	NextAttemptAt     *time.Time
-	OwnerToken        string
-	LastError         string
-	BlockedReason     string
-	DiagnosticsJSON   string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	FinishedAt        *time.Time
+	ID        string
+	LibraryID string
+	Seq       int
+	Kind      string
+	// ClientKey is the caller's idempotency key for a queue request that has no
+	// external event behind it (an administrator-requested reindex). An event
+	// task carries the event's own key instead.
+	ClientKey string
+	EventID   string
+	// RequirementInputID is the frozen requirement document this task must
+	// document. The text is read from the frozen copy, never from content_ref.
+	RequirementInputID string
+	Status             KnowledgeTaskStatus
+	BaseReleaseID      string
+	TargetReleaseID    string
+	SnapshotID         string
+	ViewID             string
+	FocusJSON          string
+	PlanJSON           string
+	CoverageJSON       string
+	StagingPath        string
+	WorkItemID         string
+	CurrentRunID       string
+	Attempt            int
+	RepairAttempt      int
+	MaxAttempts        int
+	MaxRepairAttempts  int
+	TurnSeq            int
+	NextAttemptAt      *time.Time
+	OwnerToken         string
+	LastError          string
+	BlockedReason      string
+	DiagnosticsJSON    string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	FinishedAt         *time.Time
 }
 
 // KnowledgeTaskTurn is one model turn belonging to a task.
@@ -488,10 +527,18 @@ type KnowledgeQueryHit struct {
 }
 
 // KnowledgeCoverage reports what a result set did and did not cover.
+//
+// Truncated is about this search: the hit budget ran out. Status is about the
+// knowledge behind the answer: whether the pinned release reports gaps and
+// whether the matched statements carry evidence at all. They are separate
+// facts and must not be collapsed into one "complete" badge.
 type KnowledgeCoverage struct {
 	Status          string   `json:"status"`
 	Truncated       bool     `json:"truncated"`
 	ScannedVersions int      `json:"scanned_versions"`
+	Gaps            int      `json:"gap_count"`
+	EvidenceMissing int      `json:"evidence_missing"`
+	Unknowns        int      `json:"unknown_count"`
 	Notes           []string `json:"notes"`
 }
 

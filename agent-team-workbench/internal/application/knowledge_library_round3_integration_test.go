@@ -1,13 +1,17 @@
 package application_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +166,7 @@ func TestKnowledgeReindexIsQueuedBehindTheHead(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	receipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID)
+	receipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +191,6 @@ func TestKnowledgeReindexIsQueuedBehindTheHead(t *testing.T) {
 	writeStaging(t, staging, files)
 	h.completeAgentTurn(t, domain.RunSucceeded)
 	h.tick(t)
-
 	release, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
 	if err != nil {
 		t.Fatal(err)
@@ -337,7 +340,7 @@ func TestKnowledgeVersionResolvesItsOwnEvidenceAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID); err != nil {
+	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, ""); err != nil {
 		t.Fatal(err)
 	}
 	h.tick(t)
@@ -348,6 +351,456 @@ func TestKnowledgeVersionResolvesItsOwnEvidenceAliases(t *testing.T) {
 	}
 	if !strings.Contains(evidenceJSON, canonicalID) || strings.Contains(evidenceJSON, stagedKey) {
 		t.Fatalf("the version alias map must resolve the staged key %q: %s", stagedKey, evidenceJSON)
+	}
+}
+
+// libraryIndexRelease reads the release ID the official INDEX.md advertises.
+func libraryIndexRelease(t *testing.T, root string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(root, "INDEX.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile("`(rel_[A-Za-z0-9]+)`").FindStringSubmatch(string(raw))
+	if len(match) != 2 {
+		t.Fatalf("INDEX.md names no release:\n%s", raw)
+	}
+	return match[1]
+}
+
+// TestKnowledgePublishMaterializesImmediately is the F14 regression: the
+// official Markdown must describe the release that was just published, not the
+// one before it. The defect was a stale in-memory library pointer, so it only
+// shows up on the second consecutive publish.
+func TestKnowledgePublishMaterializesImmediately(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	first := publishInitializeRelease(t, h)
+	if got := libraryIndexRelease(t, h.libRoot); got != first.ID {
+		t.Fatalf("INDEX.md must name the first release %s, got %s", first.ID, got)
+	}
+
+	// Second publish through the same code path, one release later.
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "f14-2",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
+		"订单服务在取消分支发布取消事件（第二版）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+
+	second, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Seq != 2 {
+		t.Fatalf("expected a second release: %+v", second)
+	}
+	if got := libraryIndexRelease(t, h.libRoot); got != second.ID {
+		t.Fatalf("INDEX.md must name the release just published %s, got %s (official files lag one version)",
+			second.ID, got)
+	}
+	body, err := os.ReadFile(filepath.Join(h.libRoot, "content", "components", "order-service.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "第二版") {
+		t.Fatalf("content must be the version just published:\n%s", body)
+	}
+}
+
+// TestKnowledgeMaterializeFailureIsNotCompleted: a task may not report success
+// while the official files disagree with the release it published, and the
+// retry must not publish a second copy.
+func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	publishInitializeRelease(t, h)
+
+	// Obstruct the next write: the document target becomes a directory, so
+	// materialization fails while the database publish succeeds.
+	obstruction := filepath.Join(h.libRoot, "content", "components", "order-service.md")
+	if err := os.Remove(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(obstruction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "f14-fail",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
+		"订单服务在取消分支发布取消事件（物化失败版）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+
+	task := h.headTask(t)
+	if task == nil {
+		t.Fatal("the task must stay in the queue while the official files are inconsistent")
+	}
+	if task.Status == domain.KnowledgeTaskCompleted {
+		t.Fatalf("a task must not be completed while materialization fails: %+v", task)
+	}
+	if !strings.Contains(task.LastError, "不一致") {
+		t.Fatalf("the failure must be recorded on the task: %q", task.LastError)
+	}
+	// The retry budget must be spent on the harness step, not on a new model
+	// turn, and the release must not be published twice.
+	for i := 0; i < 6; i++ {
+		if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_write_tasks SET next_attempt_at=NULL WHERE id=?`, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.tick(t)
+		current := h.headTask(t)
+		if current == nil || current.Status == domain.KnowledgeTaskBlocked {
+			break
+		}
+	}
+	blocked := h.headTask(t)
+	if blocked == nil || blocked.Status != domain.KnowledgeTaskBlocked {
+		t.Fatalf("a permanent materialization failure must block with a reason: %+v", blocked)
+	}
+	if blocked.BlockedReason == "" || !strings.Contains(blocked.LastError, "不一致") {
+		t.Fatalf("the block must explain itself: %+v", blocked)
+	}
+	releases, err := h.svc.ListKnowledgeReleases(ctx, h.wsID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(releases) != 2 {
+		t.Fatalf("retrying the harness step must not publish extra releases: %d", len(releases))
+	}
+
+	// Once the obstruction is gone, recovery finishes the same release: no new
+	// release, and the official files catch up.
+	if err := os.RemoveAll(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	body, err := os.ReadFile(filepath.Join(h.libRoot, "content", "components", "order-service.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "物化失败版") {
+		t.Fatalf("recovery must write the published version:\n%s", body)
+	}
+	after, err := h.svc.ListKnowledgeReleases(ctx, h.wsID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(releases) {
+		t.Fatalf("recovery must not add a release: %d vs %d", len(after), len(releases))
+	}
+	if got := libraryIndexRelease(t, h.libRoot); got != releases[0].ID {
+		t.Fatalf("recovered INDEX.md must name %s, got %s", releases[0].ID, got)
+	}
+}
+
+// requirementDoc renders a normative statement whose evidence is the frozen
+// requirement text, which is what the brief asks the librarian to produce.
+func requirementDoc(statement, evidenceKey, requirementBinding string) string {
+	return "---\n" +
+		"schema_version: kb-note/0.2-draft\n" +
+		"id: doc:order-cancel-acceptance-sla\n" +
+		"kind: business.rule\n" +
+		"title: 订单取消受理时限\n" +
+		"summary: 外部提交的受理时限要求。\n" +
+		"about: [entity:service:order-service]\n" +
+		"domains: [order]\n" +
+		"---\n\n" +
+		"# 订单取消受理时限\n\n## 知识条目\n\n### 受理时限上限\n\n" +
+		"```yaml\n" +
+		"kind: assertion\n" +
+		"id: assertion:order-cancel-acceptance-time-limit\n" +
+		"about: [entity:service:order-service]\n" +
+		"perspective: normative\n" +
+		"basis: source_statement\n" +
+		"scope:\n  conditions: []\n  environments: []\n" +
+		"evidence:\n  - evidence_id: " + evidenceKey + "\n    role: supports\n" +
+		"```\n\n" +
+		"#### 陈述\n\n" + statement + "\n\n" +
+		"#### 说明与未知\n\n需求是否已在代码中实现尚未核实。\n"
+}
+
+// TestKnowledgeRequirementTextIsFrozenAndCitable covers the requirement-import
+// boundary end to end: the accepted text is frozen at acceptance, registered
+// as a source binding, cited by the librarian and collected as evidence.
+func TestKnowledgeRequirementTextIsFrozenAndCitable(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqPath := filepath.Join(h.fixture.root, "REQ-KB-ACCEPT-01-v1.md")
+	v1 := "REQ-KB-ACCEPT-01 v1：订单取消受理时限上限为 17分钟；超时转人工处理。\n"
+	if err := os.WriteFile(reqPath, []byte(v1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "requirement.imported", Source: "business-harness",
+		ClientKey: "req-evidence-v1", ContentRef: reqPath,
+		Subject: map[string]any{"requirement_id": "REQ-KB-ACCEPT-01", "requirement_version": "v1"},
+		Payload: map[string]any{"title": "订单取消受理时限", "owner": "业务运营"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := h.headTask(t)
+	if task == nil || task.RequirementInputID == "" {
+		t.Fatalf("the accepted requirement must be frozen and linked to the task: %+v", task)
+	}
+	input, err := h.store.Library().GetRequirementInput(ctx, lib.ID, task.RequirementInputID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := os.ReadFile(input.StoredPath)
+	if err != nil {
+		t.Fatalf("the frozen requirement must exist on disk: %v", err)
+	}
+	if string(frozen) != v1 {
+		t.Fatalf("the frozen copy must be the accepted bytes:\n%s", frozen)
+	}
+	if input.ContentDigest != "sha256:"+requirementDigestOf(v1) {
+		t.Fatalf("digest must cover the accepted text exactly: %s", input.ContentDigest)
+	}
+	source, err := h.store.Library().GetSource(ctx, lib.ID, input.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Kind != domain.SourceKindRequirement {
+		t.Fatalf("the requirement must be a registered source: %+v", source)
+	}
+
+	// The referenced path changes before the task runs: the frozen copy, not
+	// the new content, is what the task documents.
+	if err := os.WriteFile(reqPath, []byte("REQ-KB-ACCEPT-01 v2：23分钟。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	task = h.headTask(t)
+	snapshot, err := h.store.Library().GetSnapshot(ctx, task.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirementBinding := ""
+	for _, b := range snapshot.Bindings {
+		if b.SourceKind == string(domain.SourceKindRequirement) {
+			requirementBinding = b.SourceName
+			if b.CommitSHA != input.ContentDigest {
+				t.Fatalf("the binding must pin the frozen digest: %+v", b)
+			}
+		}
+	}
+	if requirementBinding == "" {
+		t.Fatalf("the frozen requirement must appear as a binding: %+v", snapshot.Bindings)
+	}
+	briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := string(briefRaw)
+	if !strings.Contains(brief, requirementBinding) || !strings.Contains(brief, "requirement.md") {
+		t.Fatalf("the brief must name the requirement binding and its path:\n%s", brief)
+	}
+	if !strings.Contains(brief, "17分钟") {
+		t.Fatal("the brief must carry the frozen text that was accepted")
+	}
+
+	// The agent cites the frozen binding; the program collects the evidence.
+	files := map[string]string{
+		"content/business/rules/order-cancel-acceptance-sla.md": requirementDoc(
+			"订单取消受理时限上限为 17 分钟。", "ev-req-limit", requirementBinding),
+		"entities.yaml": "entities:\n  - id: entity:service:order-service\n    kind: service\n    name: order-service\n",
+		"evidence.yaml": "evidence:\n" +
+			"  - key: ev-req-limit\n" +
+			"    binding: " + requirementBinding + "\n" +
+			"    path: requirement.md\n" +
+			"    locator:\n      kind: source_text\n      interval: half_open\n" +
+			"      start: {line: 0, column: 0}\n      end: {line: 1, column: 0}\n" +
+			"    note: 需求正文的时限条款\n",
+		"plan.json": `{"summary":"需求导入","documents":["content/business/rules/order-cancel-acceptance-sla.md"],` +
+			`"removals":[],"renames":[],"coverage":{"sources_read":["` + requirementBinding + `"],"sources_missed":[],` +
+			`"gaps":[],"notes":""}}`,
+	}
+	writeStaging(t, task.StagingPath, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+	if head := h.headTask(t); head != nil {
+		t.Fatalf("the requirement publish must finish: %+v err=%q", head, head.LastError)
+	}
+	release, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	docs, _, err := h.svc.ListKnowledgeDocuments(ctx, h.wsID, release.ID, "", "", 0)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("published document missing: %v %+v", err, docs)
+	}
+	detail, err := h.svc.GetKnowledgeDocument(ctx, h.wsID, docs[0].ID, release.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Assertions) != 1 {
+		t.Fatalf("the requirement assertion must be published: %+v", detail.Assertions)
+	}
+	evidenceID := evidenceIDOf(t, detail.Assertions[0].EvidenceJSON)
+	ev, binding, rep, err := h.svc.GetKnowledgeEvidence(ctx, h.wsID, evidenceID)
+	if err != nil {
+		t.Fatalf("the requirement evidence must be readable: %v", err)
+	}
+	if binding.SourceKind != string(domain.SourceKindRequirement) {
+		t.Fatalf("evidence must come from the requirement binding: %+v", binding)
+	}
+	if !strings.Contains(ev.Excerpt, "17分钟") {
+		t.Fatalf("the excerpt must be the frozen original text: %q", ev.Excerpt)
+	}
+	if rep.ContentDigest != input.ContentDigest {
+		t.Fatalf("the representation must be the accepted bytes: %s vs %s", rep.ContentDigest, input.ContentDigest)
+	}
+	if ev.Availability != "available" {
+		t.Fatalf("a frozen requirement representation stays available: %+v", ev)
+	}
+}
+
+// TestKnowledgeRequirementRefIsAuthorized: an import may not read outside the
+// workspace root, follow a symlink out of it, or smuggle in an oversized file.
+func TestKnowledgeRequirementRefIsAuthorized(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("outside the workspace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "requirement.imported", Source: "business-harness",
+		ClientKey: "req-outside", ContentRef: outside,
+		Subject: map[string]any{"requirement_id": "REQ-OUTSIDE"},
+	}); err == nil || !strings.Contains(err.Error(), "授权范围") {
+		t.Fatalf("a content_ref outside the workspace root must be refused: %v", err)
+	}
+	link := filepath.Join(h.fixture.root, "escape.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "requirement.imported", Source: "business-harness",
+		ClientKey: "req-symlink", ContentRef: link,
+		Subject: map[string]any{"requirement_id": "REQ-SYMLINK"},
+	}); err == nil {
+		t.Fatal("a symlink escaping the workspace root must be refused")
+	}
+	big := filepath.Join(h.fixture.root, "big-requirement.md")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("x"), 2*1024*1024), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "requirement.imported", Source: "business-harness",
+		ClientKey: "req-big", ContentRef: big,
+		Subject: map[string]any{"requirement_id": "REQ-BIG"},
+	}); err == nil || !strings.Contains(err.Error(), "上限") {
+		t.Fatalf("an oversized requirement must be refused, not truncated: %v", err)
+	}
+}
+
+func requirementDigestOf(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+// TestKnowledgeReindexFailureIsBounded covers the queue's failure policy for a
+// reindex: it must spend the same bounded retry budget as any other write and
+// end up blocked with a reason, instead of resetting to queued forever.
+func TestKnowledgeReindexFailureIsBounded(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	publishInitializeRelease(t, h)
+
+	receipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, "reindex-bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Idempotent acceptance: the same key returns the original task.
+	again, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, "reindex-bounded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Duplicate || again.TaskID != receipt.TaskID || again.QueueSeq != receipt.QueueSeq {
+		t.Fatalf("a repeated client key must return the original receipt: %+v vs %+v", again, receipt)
+	}
+	tasks, err := h.svc.ListKnowledgeWriteTasks(ctx, h.wsID, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("a repeated key must not enqueue a second task: %d", len(tasks))
+	}
+
+	// Permanent failure: the library root cannot be created, so writing the
+	// derived files always fails while every database step succeeds.
+	if err := os.RemoveAll(h.libRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(h.libRoot, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_write_tasks SET next_attempt_at=NULL WHERE id=?`, receipt.TaskID); err != nil {
+			t.Fatal(err)
+		}
+		h.tick(t)
+		task, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, receipt.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if task.Status == domain.KnowledgeTaskBlocked {
+			break
+		}
+		if task.Status != domain.KnowledgeTaskQueued && task.Status != domain.KnowledgeTaskRetryWait &&
+			task.Status != domain.KnowledgeTaskRunning {
+			t.Fatalf("unexpected reindex state %s", task.Status)
+		}
+		if task.Attempt == 0 && i > 0 {
+			t.Fatalf("a failing reindex must spend its retry budget, attempt stayed 0")
+		}
+	}
+	task, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, receipt.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != domain.KnowledgeTaskBlocked {
+		t.Fatalf("a permanently failing reindex must be blocked: %+v", task)
+	}
+	if task.Attempt < 2 || task.BlockedReason == "" || task.LastError == "" {
+		t.Fatalf("the block must record attempts and a reason: %+v", task)
+	}
+	// It is still the queue head: a blocked write holds the queue.
+	if head := h.headTask(t); head == nil || head.ID != receipt.TaskID {
+		t.Fatalf("a blocked reindex must keep the queue head: %+v", head)
 	}
 }
 
@@ -410,7 +863,7 @@ func TestKnowledgeIncrementalReleaseCountsWhatItContains(t *testing.T) {
 	if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_releases SET assertion_count=999 WHERE id=?`, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID); err != nil {
+	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID, ""); err != nil {
 		t.Fatal(err)
 	}
 	h.tick(t)
