@@ -858,70 +858,90 @@ func TestKnowledgeOrdinaryEventsDoNotInventRequirements(t *testing.T) {
 // TestKnowledgeCodeEventsKeepTheirReferencesAsContext covers the two variants
 // the protocol already ships: a code pull whose content_ref is a commit, and a
 // code change whose payload carries a summary. Neither is a requirement
-// import, and both must keep their reference as context for the change.
+// import, and both keep their reference as context for the change.
 func TestKnowledgeCodeEventsKeepTheirReferencesAsContext(t *testing.T) {
-	ctx := context.Background()
-	h := newLibraryHarness(t)
-	h.registerAllSources(t)
-	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name     string
+		event    application.KnowledgeLibraryEventInput
+		contexts []string
+	}{
+		{
+			name: "commit reference",
+			event: application.KnowledgeLibraryEventInput{
+				EventType: "code.pulled", Source: "git-hook", ClientKey: "variant-pull",
+				ContentRef: "commit:9f2c1a",
+				Subject:    map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+			},
+			contexts: []string{"commit:9f2c1a"},
+		},
+		{
+			name: "change summary",
+			event: application.KnowledgeLibraryEventInput{
+				EventType: "code.changed", Source: "git-hook", ClientKey: "variant-summary",
+				Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+				Payload: map[string]any{"summary": "拉取代码更新"},
+			},
+			contexts: []string{"拉取代码更新"},
+		},
 	}
-	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
-		WorkspaceID: h.wsID, EventType: "code.pulled", Source: "git-hook", ClientKey: "variant-pull",
-		ContentRef: "commit:9f2c1a",
-		Subject:    map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	task := h.headTask(t)
-	if task == nil {
-		t.Fatal("the pull must still be queued")
-	}
-	if task.RequirementInputID != "" {
-		t.Fatalf("a commit reference must not be frozen as a requirement: %+v", task)
-	}
-	if strings.Contains(task.FocusJSON, "requirement_unresolved") {
-		t.Fatalf("a commit reference must not report a missing requirement: %s", task.FocusJSON)
-	}
-	h.tick(t)
-	task = h.headTask(t)
-	briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	brief := string(briefRaw)
-	if !strings.Contains(brief, "commit:9f2c1a") {
-		t.Fatalf("the commit reference must survive as change context:\n%s", brief)
-	}
-	for _, forbidden := range []string{"本次需求原文", "需求的原文没有取到", "requirement:"} {
-		if strings.Contains(brief, forbidden) {
-			t.Fatalf("a code pull must not become a requirement import (%q):\n%s", forbidden, brief)
-		}
-	}
-
-	// The second variant: a code change whose summary is a change note.
-	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
-		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "variant-summary",
-		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
-		Payload: map[string]any{"summary": "拉取代码更新"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	head := h.headTask(t)
-	if head == nil || strings.Contains(head.FocusJSON, "requirement") {
-		t.Fatalf("a change summary must not be read as a requirement body: %+v", head)
-	}
-	// No requirement source or input may have been created for either variant.
-	var inputs, sources int
-	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_requirement_inputs WHERE library_id=?`, lib.ID).Scan(&inputs); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_library_sources WHERE library_id=? AND kind='requirement'`, lib.ID).Scan(&sources); err != nil {
-		t.Fatal(err)
-	}
-	if inputs != 0 || sources != 0 {
-		t.Fatalf("code events must not register requirement inputs or sources: inputs=%d sources=%d", inputs, sources)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			h := newLibraryHarness(t)
+			h.registerAllSources(t)
+			lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := tc.event
+			in.WorkspaceID = h.wsID
+			if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			task := h.headTask(t)
+			if task == nil {
+				t.Fatal("the notification must still be queued")
+			}
+			if task.RequirementInputID != "" {
+				t.Fatalf("a code notification must not freeze a requirement body: %+v", task)
+			}
+			for _, key := range []string{"requirement_unresolved", "requirement_id"} {
+				if strings.Contains(task.FocusJSON, key) {
+					t.Fatalf("a code notification must not report a requirement (%s): %s", key, task.FocusJSON)
+				}
+			}
+			h.tick(t)
+			task = h.headTask(t)
+			if task == nil || task.StagingPath == "" {
+				t.Fatalf("the notification must reach the brief stage: %+v", task)
+			}
+			briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			brief := string(briefRaw)
+			for _, want := range tc.contexts {
+				if !strings.Contains(brief, want) {
+					t.Fatalf("the code event context %q must survive in the brief:\n%s", want, brief)
+				}
+			}
+			for _, forbidden := range []string{"本次需求原文", "需求的原文没有取到", "requirement:"} {
+				if strings.Contains(brief, forbidden) {
+					t.Fatalf("a code notification must not become a requirement import (%q):\n%s", forbidden, brief)
+				}
+			}
+			// No requirement input or source may exist for either variant.
+			var inputs, sources int
+			if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_requirement_inputs WHERE library_id=?`, lib.ID).Scan(&inputs); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_library_sources WHERE library_id=? AND kind='requirement'`, lib.ID).Scan(&sources); err != nil {
+				t.Fatal(err)
+			}
+			if inputs != 0 || sources != 0 {
+				t.Fatalf("code events must not register requirement inputs or sources: inputs=%d sources=%d", inputs, sources)
+			}
+		})
 	}
 }
 
