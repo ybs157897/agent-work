@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1154,6 +1155,103 @@ func httpGetJSON(t *testing.T, mux http.Handler, path string) (int, map[string]a
 	return rec.Code, body
 }
 
+// TestKnowledgeCancelContract: cancelling takes an empty body, works for a task
+// that is still waiting, and refuses the states where it would orphan a running
+// turn or rewrite published history.
+func TestKnowledgeCancelContract(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	h.registerAllSources(t)
+	mux := httpapi.NewServer(h.svc, h.store, nil).Routes()
+	base := "/api/v1/workspaces/" + h.wsID + "/library"
+
+	submit := func(clientKey string) string {
+		t.Helper()
+		receipt, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+			WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: clientKey,
+			Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return receipt.TaskID
+	}
+	post := func(path, body string) (int, map[string]any) {
+		t.Helper()
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, reader)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		mux.ServeHTTP(rec, req)
+		parsed := map[string]any{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &parsed)
+		return rec.Code, parsed
+	}
+
+	// An empty body is a valid cancel request: requiring JSON here produced
+	// "EOF" for every caller that had nothing to add.
+	queued := submit("cancel-empty")
+	if status, body := post(base+"/tasks/"+queued+"/cancel", ""); status != http.StatusOK {
+		t.Fatalf("an empty cancel body must be accepted: %d %v", status, body)
+	}
+	task, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != domain.KnowledgeTaskCancelled {
+		t.Fatalf("a queued task must be cancellable: %+v", task)
+	}
+
+	// A reason travels through the body.
+	withReason := submit("cancel-reason")
+	if status, _ := post(base+"/tasks/"+withReason+"/cancel", `{"reason":"重复事件"}`); status != http.StatusOK {
+		t.Fatalf("a cancel with a reason must be accepted: %d", status)
+	}
+	task, _, err = h.svc.GetKnowledgeWriteTask(ctx, h.wsID, withReason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.BlockedReason != "重复事件" {
+		t.Fatalf("the reason must be kept: %+v", task)
+	}
+
+	// A task whose model turn is in flight refuses, and says why.
+	running := submit("cancel-running")
+	h.tick(t)
+	if status, body := post(base+"/tasks/"+running+"/cancel", "{}"); status != http.StatusConflict {
+		t.Fatalf("a running task must refuse cancellation: %d %v", status, body)
+	} else if detail, _ := body["detail"].(string); !strings.Contains(detail, "模型轮次") {
+		t.Fatalf("the refusal must explain itself: %v", body)
+	}
+	// Published history is not cancellable either.
+	task, _, err = h.svc.GetKnowledgeWriteTask(ctx, h.wsID, running)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := task.StagingPath
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes", "订单服务在取消分支发布取消事件。",
+		"ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+	if status, body := post(base+"/tasks/"+running+"/cancel", "{}"); status != http.StatusConflict {
+		t.Fatalf("a completed task must refuse cancellation: %d %v", status, body)
+	} else if detail, _ := body["detail"].(string); !strings.Contains(detail, "已经发布") {
+		t.Fatalf("the refusal must explain itself: %v", body)
+	}
+}
+
 // TestKnowledgePublicReadReleaseGate covers every public read path that can
 // name a release: they must all resolve a committed release and check that the
 // object they return is a member of it. A prepared publish is invisible
@@ -1162,28 +1260,25 @@ func httpGetJSON(t *testing.T, mux http.Handler, path string) (int, map[string]a
 func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 	ctx := context.Background()
 	h := newLibraryHarness(t)
-	first := publishInitializeRelease(t, h)
+	first := publishTwoDocumentRelease(t, h)
 
 	docs, _, err := h.svc.ListKnowledgeDocuments(ctx, h.wsID, first.ID, "", "", 0)
-	if err != nil || len(docs) != 1 {
-		t.Fatalf("fixture document missing: %v", err)
+	if err != nil || len(docs) != 2 {
+		t.Fatalf("fixture documents missing: %v %+v", err, docs)
 	}
-	docID := docs[0].ID
-	firstAnswer, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
-		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstEvidence := ""
-	for _, handle := range firstAnswer.Expandables {
-		if handle.Kind == "evidence" {
-			firstEvidence = handle.ID
-			break
-		}
-	}
-	if firstEvidence == "" {
+	docID := "doc:order-service"
+	carriedDocID := "doc:common"
+	carriedEvidence := ""
+	firstEvidence := evidenceOfDocument(t, h, first.ID, docID)
+	carriedEvidence = evidenceOfDocument(t, h, first.ID, carriedDocID)
+	if firstEvidence == "" || carriedEvidence == "" {
 		t.Fatal("fixture evidence missing")
+	}
+	firstVersion := 0
+	if err := h.db.QueryRowContext(ctx, `SELECT v.version FROM knowledge_release_documents rd
+		JOIN knowledge_document_versions v ON v.id = rd.document_version_id
+		WHERE rd.release_id=? AND rd.document_id=?`, first.ID, docID).Scan(&firstVersion); err != nil {
+		t.Fatal(err)
 	}
 
 	// Second publish that fails to materialize: its rows exist, its files do
@@ -1207,8 +1302,12 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 	files["content/components/order-service.md"] = libraryDoc(
 		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
 		"订单服务在取消分支发布取消事件（未物化版）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["content/components/order-service-notes.md"] = libraryDoc(
+		"doc:order-service-notes", "订单服务补充说明", "assertion:order-service-unmaterialized",
+		"这条知识只存在于未物化的发布中。", "ev-order-cancel", []string{"entity:service:order-service"})
 	files["entities.yaml"] = "entities: []\n"
-	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md",` +
+		`"content/components/order-service-notes.md"],` +
 		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
 		`"gaps":[],"notes":""}}`
 	writeStaging(t, staging, files)
@@ -1258,12 +1357,21 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 	}{
 		{"发布列表不含半完成版本", base + "/releases", http.StatusOK},
 		{"文档浏览-pending", base + "/documents?release_id=" + pending, http.StatusNotFound},
+		// 省略 release_id 的默认读取同样必须落在已提交版本上：正文、断言与
+		// 版本历史都不含 prepared 的那一版。
+		{"文档详情-默认读", base + "/documents/" + docID, http.StatusOK},
+		{"文档详情-默认读+prepared版本号", base + "/documents/" + docID + "?version=" + pendingVersion, http.StatusNotFound},
 		{"文档详情-pending", base + "/documents/" + docID + "?release_id=" + pending, http.StatusNotFound},
 		{"文档详情-pending+version", base + "/documents/" + docID + "?release_id=" + pending + "&version=" + pendingVersion, http.StatusNotFound},
 		// 版本号与 release 固定的版本冲突时必须拒绝，而不是用旧 release 标注新版本。
 		{"文档详情-旧release+新version", base + "/documents/" + docID + "?release_id=" + first.ID + "&version=" + pendingVersion, http.StatusUnprocessableEntity},
 		{"断言展开-pending", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + pending, http.StatusNotFound},
+		{"新文档-默认读", base + "/documents/doc:order-service-notes", http.StatusNotFound},
+		{"新文档-默认读+prepared版本号", base + "/documents/doc:order-service-notes?version=1", http.StatusNotFound},
+		{"新文档-指定release", base + "/documents/doc:order-service-notes?release_id=" + pending, http.StatusNotFound},
 		{"断言展开-旧release", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + first.ID, http.StatusOK},
+		// 未物化期间，连沿用的旧证据也不可见（该发布整体未提交）。
+		{"证据展开-新release沿用的旧证据-未提交", base + "/expand?kind=evidence&id=" + carriedEvidence + "&release_id=" + pending, http.StatusNotFound},
 		{"证据展开-旧release引用新证据", base + "/expand?kind=evidence&id=" + newEvidence + "&release_id=" + first.ID, http.StatusNotFound},
 		{"证据展开-旧release自身证据", base + "/expand?kind=evidence&id=" + firstEvidence + "&release_id=" + first.ID, http.StatusOK},
 		{"桥接-pending", base + "/bridges?release_id=" + pending, http.StatusNotFound},
@@ -1275,6 +1383,36 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 			t.Fatalf("%s: status=%d want=%d body=%v", tc.name, status, tc.status, body)
 		}
 	}
+	// The default read serves the last committed version, and neither its body
+	// nor its version history mentions the unmaterialized one.
+	{
+		status, body := httpGetJSON(t, mux, base+"/documents/"+docID)
+		if status != http.StatusOK {
+			t.Fatalf("the default read must serve the committed version: %d %v", status, body)
+		}
+		doc, _ := body["document"].(map[string]any)
+		version, _ := body["version"].(map[string]any)
+		if doc == nil || version == nil {
+			t.Fatalf("default read shape changed: %v", body)
+		}
+		if got, _ := version["version"].(float64); int(got) != firstVersion {
+			t.Fatalf("the default read must serve version %d, got %v", firstVersion, version["version"])
+		}
+		if markdown, _ := version["content_markdown"].(string); strings.Contains(markdown, "未物化版") {
+			t.Fatalf("the default read leaked the unmaterialized version:\n%s", markdown)
+		}
+		for _, a := range asList(body["assertions"]) {
+			statement, _ := a.(map[string]any)["statement"].(string)
+			if strings.Contains(statement, "未物化版") {
+				t.Fatalf("the default read leaked an unmaterialized assertion: %s", statement)
+			}
+		}
+		history, _ := body["versions"].([]any)
+		if len(history) != 1 {
+			t.Fatalf("the version history must contain published versions only: %v", body["versions"])
+		}
+	}
+
 	// The release list must name the complete release only.
 	_, listBody := httpGetJSON(t, mux, base+"/releases")
 	items, _ := listBody["items"].([]any)
@@ -1301,6 +1439,10 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 		name string
 		path string
 	}{
+		{"默认读切到新版本", base + "/documents/" + docID},
+		{"新文档可读", base + "/documents/doc:order-service-notes"},
+		// 正例：新发布沿用了未改文档的旧证据，提交后必须能展开。
+		{"证据展开-新release沿用的旧证据", base + "/expand?kind=evidence&id=" + carriedEvidence + "&release_id=" + pending},
 		{"文档详情", base + "/documents/" + docID + "?release_id=" + pending},
 		{"文档详情+正确版本", base + "/documents/" + docID + "?release_id=" + pending + "&version=" + pendingVersion},
 		{"断言展开", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + pending},
@@ -1312,6 +1454,74 @@ func TestKnowledgePublicReadReleaseGate(t *testing.T) {
 			t.Fatalf("%s must succeed once committed: status=%d body=%v", tc.name, status, body)
 		}
 	}
+}
+
+// publishTwoDocumentRelease publishes one release containing two documents, so
+// a later incremental publish can carry one of them forward.
+func publishTwoDocumentRelease(t *testing.T, h *libraryHarness) *domain.KnowledgeRelease {
+	t.Helper()
+	ctx := context.Background()
+	h.registerAllSources(t)
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "workspace.connected", Source: "test", ClientKey: "init-two-docs",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	span := lineSpan(t, h.fixture.repos["common"], "src/main/java/com/example/common/messaging/EventPublisher.java")
+	files["evidence.yaml"] = files["evidence.yaml"] +
+		"  - key: ev-common-publisher\n" +
+		"    binding: common@order-service#com.example:common:1.4.2\n" +
+		"    path: src/main/java/com/example/common/messaging/EventPublisher.java\n" +
+		"    locator:\n      kind: source_text\n      interval: half_open\n" +
+		"      start: {line: 0, column: 0}\n      end: {line: " + span + ", column: 0}\n" +
+		"    note: 共享事件发布接口\n"
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes", "订单服务在取消分支发布取消事件。",
+		"ev-order-cancel", []string{"entity:service:order-service"})
+	files["content/components/common.md"] = libraryDoc(
+		"doc:common", "common 共享契约库", "assertion:common-publisher-interface",
+		"common 提供 EventPublisher 接口供各服务发布事件。", "ev-common-publisher", []string{"entity:common:common"})
+	files["entities.yaml"] = "entities:\n  - id: entity:common:common\n    kind: common\n    name: common\n"
+	files["plan.json"] = `{"summary":"初始化","documents":["content/components/order-service.md","content/components/common.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service","common"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+	release, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return release
+}
+
+// evidenceOfDocument returns one evidence ID an assertion of that document
+// cites inside one release.
+func evidenceOfDocument(t *testing.T, h *libraryHarness, releaseID, documentID string) string {
+	t.Helper()
+	var raw string
+	if err := h.db.QueryRowContext(context.Background(), `SELECT a.evidence_json
+		FROM knowledge_assertions a
+		JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+		WHERE rd.release_id=? AND a.document_id=? ORDER BY a.ordinal LIMIT 1`, releaseID, documentID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`evidence:[0-9a-f]+`).FindString(raw)
+	if match == "" {
+		t.Fatalf("no evidence cited by %s in %s: %s", documentID, releaseID, raw)
+	}
+	return match
+}
+
+// asList tolerates the JSON shapes a decoded body may use for a list.
+func asList(value any) []any {
+	if list, ok := value.([]any); ok {
+		return list
+	}
+	return nil
 }
 
 // releaseVersionOfDocument reads the version number a release pins.

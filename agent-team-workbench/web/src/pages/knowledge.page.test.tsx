@@ -1,4 +1,4 @@
-import { representationOriginLabel } from './knowledge.page';
+import { representationOriginLabel, taskCancelState } from './knowledge.page';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -899,5 +899,20 @@ describe('需求输入证据的用语', () => {
     expect(representationOriginLabel('frozen_requirement')).toBe('受理时冻结的需求原文');
     expect(representationOriginLabel('committed')).toBe('已提交字节');
     expect(representationOriginLabel('worktree')).toBe('工作树字节');
+  });
+});
+
+describe('任务取消的可用状态', () => {
+  it('只有排队中的任务可取消，运行中与已结束状态必须禁用', () => {
+    for (const status of ['queued', 'retry_wait', 'blocked']) {
+      expect(taskCancelState(status).cancellable).toBe(true);
+    }
+    for (const status of ['running', 'awaiting_agent', 'completed', 'failed', 'cancelled']) {
+      const state = taskCancelState(status);
+      expect(state.cancellable).toBe(false);
+      expect(state.hint.length).toBeGreaterThan(0);
+    }
+    expect(taskCancelState('running').hint).toContain('模型轮次');
+    expect(taskCancelState('completed').hint).toContain('已发布');
   });
 });

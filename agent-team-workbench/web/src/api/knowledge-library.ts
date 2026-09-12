@@ -462,8 +462,15 @@ export const getTask = async (workspaceId: string, taskId: string): Promise<Task
 export const retryTask = (workspaceId: string, taskId: string) =>
   apiFetch<void>(`${libraryRoot(workspaceId)}/tasks/${segment(taskId)}/retry`, { method: 'POST' });
 
-export const cancelTask = (workspaceId: string, taskId: string) =>
-  apiFetch<void>(`${libraryRoot(workspaceId)}/tasks/${segment(taskId)}/cancel`, { method: 'POST' });
+/**
+ * 取消一个还在排队的任务。接口要求 JSON 正文（可选 reason），空正文会被拒为
+ * EOF；只有 queued / retry_wait / blocked 可取消，其它状态应先在界面上禁用。
+ */
+export const cancelTask = (workspaceId: string, taskId: string, reason?: string) =>
+  apiFetch<void>(`${libraryRoot(workspaceId)}/tasks/${segment(taskId)}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: reason?.trim() ?? '' }),
+  });
 
 export const listReleases = async (
   workspaceId: string,

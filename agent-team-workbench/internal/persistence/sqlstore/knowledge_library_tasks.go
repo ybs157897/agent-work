@@ -1329,6 +1329,31 @@ func (r *LibraryRepo) RefreshReleaseTotals(ctx context.Context, libraryID string
 	return len(ids), nil
 }
 
+// ListPublishedDocumentVersions lists a document's versions, hiding any whose
+// release never reached the commit point.
+func (r *LibraryRepo) ListPublishedDocumentVersions(ctx context.Context, documentID string) ([]*domain.KnowledgeDocumentVersion, error) {
+	rows, err := r.db(ctx).QueryContext(ctx, `SELECT id, document_id, library_id, version, title, path,
+		content_markdown, frontmatter_json, content_digest, snapshot_id, task_id, release_id,
+		evidence_alias_json, derived_from_version_id, created_at FROM knowledge_document_versions v
+		WHERE v.document_id=? AND NOT EXISTS (
+			SELECT 1 FROM knowledge_publications p
+			WHERE p.release_id = v.release_id AND p.status <> 'committed')
+		ORDER BY v.version DESC`, documentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.KnowledgeDocumentVersion
+	for rows.Next() {
+		v, err := scanDocumentVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // ReleaseCitesEvidence reports whether an evidence ID is referenced by any
 // assertion or relation of one release. That is the membership rule a
 // release-scoped evidence read must apply: an evidence collected for a newer

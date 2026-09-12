@@ -385,9 +385,14 @@ type libraryCancelRequest struct {
 }
 
 func (s *Server) handleLibraryCancelTask(w http.ResponseWriter, r *http.Request) {
+	// Cancelling has no required fields, so an empty body is a valid request:
+	// requiring JSON here only produced "EOF" for callers that had nothing to
+	// say. A body, when present, may carry the reason.
 	var req libraryCancelRequest
-	if !s.decodeLibraryBody(w, r, &req) {
-		return
+	if r.ContentLength > 0 {
+		if !s.decodeLibraryBody(w, r, &req) {
+			return
+		}
 	}
 	task, err := s.svc.CancelKnowledgeWriteTask(r.Context(), s.libraryWorkspace(r), r.PathValue("task_id"), req.Reason)
 	if err != nil {

@@ -818,14 +818,21 @@ func (s *Service) CancelKnowledgeWriteTask(ctx context.Context, workspaceID, tas
 	if err != nil {
 		return nil, err
 	}
-	if task.Status == domain.KnowledgeTaskCompleted {
-		return nil, fmt.Errorf("%w: task %s already published; submit a new knowledge change instead", domain.ErrStateConflict, taskID)
-	}
-	if task.Status == domain.KnowledgeTaskRunning {
-		return nil, fmt.Errorf("%w: task %s is running; wait for it to reach a terminal state", domain.ErrStateConflict, taskID)
+	// Cancellation is only defined for a task that is waiting: one whose model
+	// turn is in flight would keep running after the row was flipped, and one
+	// that already published is history. The rule is explicit so the client can
+	// disable the action instead of offering one that always fails.
+	switch task.Status {
+	case domain.KnowledgeTaskQueued, domain.KnowledgeTaskRetryWait, domain.KnowledgeTaskBlocked:
+	case domain.KnowledgeTaskRunning, domain.KnowledgeTaskAwaitingAgent:
+		return nil, fmt.Errorf("%w: 任务 %s 的模型轮次正在进行，无法取消；请等待它到达终态", domain.ErrStateConflict, taskID)
+	case domain.KnowledgeTaskCompleted:
+		return nil, fmt.Errorf("%w: 任务 %s 已经发布，请改为提交一次新的知识变更", domain.ErrStateConflict, taskID)
+	default:
+		return nil, fmt.Errorf("%w: 任务 %s 已处于 %s，无法取消", domain.ErrStateConflict, taskID, task.Status)
 	}
 	if pub, err := s.store.Library().GetPublicationByTask(ctx, taskID); err == nil && pub.Status == "committed" {
-		return nil, fmt.Errorf("%w: task %s already published release %s", domain.ErrStateConflict, taskID, pub.ReleaseID)
+		return nil, fmt.Errorf("%w: 任务 %s 已经发布 %s", domain.ErrStateConflict, taskID, pub.ReleaseID)
 	}
 	now := time.Now().UTC()
 	task.Status = domain.KnowledgeTaskCancelled
@@ -1006,7 +1013,26 @@ func (s *Service) GetKnowledgeDocument(ctx context.Context, workspaceID, documen
 		return nil, err
 	}
 	pinnedReleaseID := strings.TrimSpace(releaseID)
-	if pinnedReleaseID != "" {
+	if pinnedReleaseID == "" {
+		// A default read is a read of the library's published state, so the
+		// current committed release decides which version is current. Reading
+		// the document row's own current_version would expose a version whose
+		// publish never finished.
+		rel, err := s.requirePublicRelease(ctx, lib, "")
+		if err != nil {
+			return nil, err
+		}
+		pinned, err := s.store.Library().ReleaseDocumentVersion(ctx, rel.ID, documentID)
+		if err != nil {
+			// A document that no published release contains is not visible.
+			return nil, err
+		}
+		if version > 0 && version != pinned.Version {
+			// The caller asked for a version this library has not published.
+			return nil, domain.ErrNotFound
+		}
+		version = pinned.Version
+	} else {
 		// A pinned read must name a committed release and a document that
 		// release actually contains; the version, when also given, must be the
 		// one that release pins. Selecting an arbitrary version number and
@@ -1030,7 +1056,9 @@ func (s *Service) GetKnowledgeDocument(ctx context.Context, workspaceID, documen
 	if err != nil {
 		return nil, err
 	}
-	versions, err := s.store.Library().ListDocumentVersions(ctx, documentID)
+	// The history a reader sees contains published versions only: a version
+	// whose publish never finished is not part of the document's past.
+	versions, err := s.store.Library().ListPublishedDocumentVersions(ctx, documentID)
 	if err != nil {
 		return nil, err
 	}

@@ -302,6 +302,29 @@ export function scopeText(scope: Assertion['scope'] | undefined): string {
  */
 export type CoverageState = 'pending' | 'in_progress' | 'not_computed' | 'reported';
 
+/**
+ * 取消只对「还在队列里」的任务成立：queued / retry_wait / blocked。
+ * 模型轮次进行中（running / awaiting_agent）与已结束状态都无法取消，
+ * 界面必须禁用而不是提供一个点了必失败的操作。
+ */
+export function taskCancelState(status: string): { cancellable: boolean; hint: string } {
+  switch (status) {
+    case 'queued':
+      return { cancellable: true, hint: '取消这个排队任务' };
+    case 'retry_wait':
+      return { cancellable: true, hint: '取消这个等待重试的任务' };
+    case 'blocked':
+      return { cancellable: true, hint: '取消这个已阻塞的任务' };
+    case 'running':
+    case 'awaiting_agent':
+      return { cancellable: false, hint: '模型轮次正在进行，无法取消；请等待它到达终态' };
+    case 'completed':
+      return { cancellable: false, hint: '任务已发布，如需变更请提交一次新的知识变更' };
+    default:
+      return { cancellable: false, hint: '任务已结束，无法取消' };
+  }
+}
+
 export function coverageLine(coverage: Coverage | undefined, state: CoverageState = 'reported'): string {
   if (state === 'pending') return '尚未收到覆盖报告（覆盖未知）';
   if (state === 'in_progress') return '统计中（任务仍在处理，覆盖范围未定）';
@@ -2189,7 +2212,7 @@ export function TasksTable({
       <tbody>
         {tasks.map((task) => {
           const busy = busyTaskId === task.id;
-          const closed = ['succeeded', 'cancelled'].includes(task.status);
+          const cancelState = taskCancelState(task.status);
           return (
             <tr key={task.id}>
               <Td mono>#{task.seq}</Td>
@@ -2224,7 +2247,13 @@ export function TasksTable({
                     <RotateCcw className="h-3.5 w-3.5" aria-hidden />
                     重试
                   </Button>
-                  <Button size="sm" variant="danger-outline" onClick={() => onCancel(task.id)} disabled={busy || closed}>
+                  <Button
+                    size="sm"
+                    variant="danger-outline"
+                    onClick={() => onCancel(task.id)}
+                    disabled={busy || !cancelState.cancellable}
+                    title={cancelState.hint}
+                  >
                     取消
                   </Button>
                 </div>

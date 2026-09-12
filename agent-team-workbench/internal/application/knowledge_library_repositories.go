@@ -84,6 +84,7 @@ type KnowledgeLibraryRepo interface {
 	AssertionsInRelease(ctx context.Context, releaseID string, assertionIDs []string) ([]domain.KnowledgeAssertion, error)
 	DocumentVersionDetail(ctx context.Context, documentID string, version int) (*domain.KnowledgeDocumentVersion, []domain.KnowledgeAssertion, []domain.KnowledgeAssertionRelation, error)
 	DocumentVersionByID(ctx context.Context, versionID string) (*domain.KnowledgeDocumentVersion, error)
+	ListPublishedDocumentVersions(ctx context.Context, documentID string) ([]*domain.KnowledgeDocumentVersion, error)
 	CurrentDocumentVersion(ctx context.Context, documentID string) (*domain.KnowledgeDocumentVersion, error)
 	ListDocumentVersions(ctx context.Context, documentID string) ([]*domain.KnowledgeDocumentVersion, error)
 	ReleaseAssertionsByIDs(ctx context.Context, assertionIDs []string) ([]domain.KnowledgeAssertion, error)
