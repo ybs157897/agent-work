@@ -600,9 +600,14 @@ func (s *Server) handleLibraryQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"release": releaseJSON(answer.Release), "results": results,
+		// Truncated is about this search; the counts are about the knowledge
+		// behind the answer. Both are reported so a client never has to infer
+		// "complete" from "the hit budget was enough".
 		"coverage": map[string]any{
 			"status": answer.Coverage.Status, "truncated": answer.Coverage.Truncated,
-			"scanned_versions": answer.Coverage.ScannedVersions, "notes": nonNilStrings(answer.Coverage.Notes),
+			"scanned_versions": answer.Coverage.ScannedVersions,
+			"gap_count":        answer.Coverage.Gaps, "evidence_missing": answer.Coverage.EvidenceMissing,
+			"unknown_count": answer.Coverage.Unknowns, "notes": nonNilStrings(answer.Coverage.Notes),
 		},
 		"freshness": map[string]any{
 			"release_id": answer.Freshness.ReleaseID, "published_at": answer.Freshness.PublishedAt,

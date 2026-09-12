@@ -61,6 +61,60 @@ func discoverMigrations(dir string) ([]string, error) {
 	return files, nil
 }
 
+// noTransactionMarker marks a migration that must run outside the wrapper
+// transaction (schema rebuilds that need PRAGMA foreign_keys=OFF).
+const noTransactionMarker = "-- migrate:no-transaction"
+
+// applyWithoutTransaction runs one migration on a single pinned connection.
+// Each statement is executed separately because PRAGMAs and BEGIN/COMMIT are
+// connection state: a pooled *sql.DB could hand the next statement a different
+// connection and silently drop the foreign_keys switch.
+func applyWithoutTransaction(db *sql.DB, version, body string) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	for _, stmt := range splitStatements(body) {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("应用 %s 失败: %w", version, err)
+		}
+	}
+	var violations int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil {
+		return fmt.Errorf("校验 %s 的外键失败: %w", version, err)
+	}
+	if violations > 0 {
+		return fmt.Errorf("应用 %s 后存在 %d 条外键违规，请人工检查", version, violations)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version) VALUES (?)`, version); err != nil {
+		return err
+	}
+	return nil
+}
+
+// splitStatements splits a migration file on statement boundaries, keeping
+// comment-only lines attached to the statement that follows them.
+func splitStatements(body string) []string {
+	var out []string
+	var current []string
+	for _, line := range strings.Split(body, "\n") {
+		current = append(current, line)
+		if strings.HasSuffix(strings.TrimSpace(line), ";") {
+			stmt := strings.TrimSpace(strings.Join(current, "\n"))
+			if stmt != "" {
+				out = append(out, stmt)
+			}
+			current = nil
+		}
+	}
+	if rest := strings.TrimSpace(strings.Join(current, "\n")); rest != "" {
+		out = append(out, rest)
+	}
+	return out
+}
+
 // applyMigrations 幂等应用全部未应用迁移：每个文件一个事务，SQL 与版本记录同事务提交。
 func applyMigrations(db *sql.DB, files []string) error {
 	for _, f := range files {
@@ -76,6 +130,18 @@ func applyMigrations(db *sql.DB, files []string) error {
 		body, err := os.ReadFile(filepath.Clean(f))
 		if err != nil {
 			return err
+		}
+		// SQLite cannot change a CHECK constraint in place, so a schema rebuild
+		// must drop and recreate the table — which requires foreign key
+		// enforcement to be off, and a PRAGMA cannot be changed inside a
+		// transaction. Such a file opts out of the wrapper with a marker and
+		// manages its own BEGIN/COMMIT on one pinned connection.
+		if strings.Contains(string(body), noTransactionMarker) {
+			if err := applyWithoutTransaction(db, version, string(body)); err != nil {
+				return err
+			}
+			fmt.Printf("已应用迁移 %s（无外层事务）\n", version)
+			continue
 		}
 		tx, err := db.Begin()
 		if err != nil {

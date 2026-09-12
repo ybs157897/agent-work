@@ -1,9 +1,12 @@
 -- 0062_knowledge_requirement_source_kind.sql — a frozen requirement input is a
 -- registered source so evidence collected from its text has a binding the
 -- ledger can reference. SQLite cannot extend a CHECK constraint in place, so
--- the table is rebuilt; defer_foreign_keys lets the child rows survive the
--- swap inside this one transaction.
-PRAGMA defer_foreign_keys = ON;
+-- the table is rebuilt with the procedure the SQLite documentation prescribes
+-- for schema changes: foreign keys off, swap inside one transaction, then a
+-- check that nothing was left dangling.
+-- migrate:no-transaction
+PRAGMA foreign_keys = OFF;
+BEGIN;
 
 CREATE TABLE knowledge_library_sources_new (
     id            TEXT PRIMARY KEY,
@@ -32,3 +35,6 @@ FROM knowledge_library_sources;
 
 DROP TABLE knowledge_library_sources;
 ALTER TABLE knowledge_library_sources_new RENAME TO knowledge_library_sources;
+
+COMMIT;
+PRAGMA foreign_keys = ON;

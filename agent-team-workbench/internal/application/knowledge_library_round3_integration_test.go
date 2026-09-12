@@ -732,6 +732,36 @@ func requirementDigestOf(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// TestKnowledgeQueryCoverageIsHonest covers F4b: a search that returned every
+// hit must still be reported as partial when the release it read carries gaps
+// or when the matched statements have no evidence.
+func TestKnowledgeQueryCoverageIsHonest(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	release := publishInitializeRelease(t, h)
+
+	answer, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
+		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Coverage.Truncated {
+		t.Fatalf("the fixture answer is not truncated: %+v", answer.Coverage)
+	}
+	// The initialize fixture documents an unknown note, so the answer carries
+	// unknowns even though no hit was dropped.
+	if answer.Coverage.Unknowns == 0 {
+		t.Fatalf("unknown statements must be counted: %+v", answer.Coverage)
+	}
+	if answer.Coverage.Status != "partial" {
+		t.Fatalf("a release with unknown statements must not report complete coverage: %+v", answer.Coverage)
+	}
+	if release.ID == "" {
+		t.Fatal("fixture release missing")
+	}
+}
+
 // TestKnowledgeReindexFailureIsBounded covers the queue's failure policy for a
 // reindex: it must spend the same bounded retry budget as any other write and
 // end up blocked with a reason, instead of resetting to queued forever.
