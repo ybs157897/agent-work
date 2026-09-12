@@ -11,25 +11,28 @@ const ALIGN_CLASS: Record<TableBlockValue['columns'][number]['align'], string> =
 export function StructuredTableBlock({ block }: { block: TableBlockValue }) {
   return (
     <ContentBlockShell block={block} icon={Table2}>
-      <div className="chat-content-table-scroll">
-        <table className="chat-content-table">
+      <div className="chat-content-table-responsive">
+        <table className="chat-content-table" role="table">
           <caption className="sr-only">{block.title ?? '数据表'}</caption>
-          <thead>
-            <tr>
+          <thead role="rowgroup">
+            <tr role="row">
               {block.columns.map((column) => (
-                <th key={column.key} scope="col" className={ALIGN_CLASS[column.align]}>{column.label}</th>
+                <th key={column.key} scope="col" role="columnheader" className={ALIGN_CLASS[column.align]}>{column.label}</th>
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             {block.rows.length > 0 ? block.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
+              <tr key={rowIndex} role="row">
                 {block.columns.map((column) => (
-                  <td key={column.key} className={ALIGN_CLASS[column.align]}>{formatCell(row[column.key])}</td>
+                  <td key={column.key} role="cell" className={ALIGN_CLASS[column.align]}>
+                    <span className="chat-content-table-field" aria-hidden="true">{column.label}</span>
+                    <span className="chat-content-table-value">{formatCell(row[column.key])}</span>
+                  </td>
                 ))}
               </tr>
             )) : (
-              <tr><td colSpan={block.columns.length} className="chat-content-table-empty">暂无记录</td></tr>
+              <tr role="row"><td role="cell" colSpan={block.columns.length} className="chat-content-table-empty">暂无记录</td></tr>
             )}
           </tbody>
         </table>

@@ -1980,6 +1980,59 @@
   @apply bg-brand-muted/20;
 }
 
+.chat-content-table-responsive {
+  @apply min-w-0 max-w-full rounded-card border border-border-subtle;
+  container: structured-table / inline-size;
+}
+
+.chat-content-table-responsive .chat-content-table {
+  @apply min-w-0;
+}
+
+.chat-content-table-responsive th,
+.chat-content-table-value {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-content-table-field {
+  display: none;
+}
+
+@container structured-table (max-width: 640px) {
+  .chat-content-table-responsive .chat-content-table,
+  .chat-content-table-responsive tbody,
+  .chat-content-table-responsive tr {
+    @apply block w-full;
+  }
+
+  .chat-content-table-responsive thead {
+    @apply sr-only;
+  }
+
+  .chat-content-table-responsive tbody tr {
+    @apply border-b border-border-subtle py-tight last:border-b-0;
+  }
+
+  .chat-content-table-responsive tbody td {
+    @apply grid min-w-0 gap-tight border-0 text-left;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
+  }
+
+  .chat-content-table-field {
+    @apply block text-caption font-medium text-text-tertiary;
+    overflow-wrap: anywhere;
+  }
+
+  .chat-content-table-value {
+    @apply min-w-0;
+  }
+
+  .chat-content-table-responsive .chat-content-table-empty {
+    @apply block text-center;
+  }
+}
+
 .chat-content-table-empty {
   @apply py-comfortable text-center text-caption text-text-tertiary;
 }
