@@ -977,8 +977,9 @@ type KnowledgeDocumentDetail struct {
 	Assertions []domain.KnowledgeAssertion         `json:"assertions"`
 	Relations  []domain.KnowledgeAssertionRelation `json:"relations"`
 	Versions   []*domain.KnowledgeDocumentVersion  `json:"versions"`
-	// ReleaseID and Pinned say whether this read was pinned to one release
-	// rather than to the document's current version.
+	// ReleaseID names the release this read was served from and Pinned marks
+	// that the read came from a published release rather than from the
+	// document row's own current pointer: an unpublished version is invisible.
 	ReleaseID string `json:"release_id,omitempty"`
 	Pinned    bool   `json:"pinned"`
 	// EvidenceAliases maps staged evidence keys to canonical IDs for versions
@@ -1032,6 +1033,9 @@ func (s *Service) GetKnowledgeDocument(ctx context.Context, workspaceID, documen
 			return nil, domain.ErrNotFound
 		}
 		version = pinned.Version
+		// Every read is a read of a published state, so the answer names the
+		// release that served it even when the caller did not pin one.
+		pinnedReleaseID = rel.ID
 	} else {
 		// A pinned read must name a committed release and a document that
 		// release actually contains; the version, when also given, must be the
