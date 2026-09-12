@@ -115,5 +115,22 @@ Run 的指令给出 staging 与各来源仓库的绝对路径，agent 用 CLI �
 Codex 动态工具 `atw_knowledge`、Web 知识画布与聊天交接。
 保留：`consult_knowledge` Plan 动词（改指向新库）、`chat_analysis` 的 knowledge 来源种类
 （改指向新库文档/release）。
-数据：`migrations/0057_knowledge_library.sql` 把 13 张旧表改名为 `legacy_knowledge_*`，
-不删除行；旧表不再有任何写入方，因此不存在双写。
+数据：`migrations/0057_knowledge_library.sql` **不改名、不删除**任何旧表——旧表保持原名继续存在，
+行数据逐字保留；新库使用独立命名空间（`knowledge_libraries`/`knowledge_write_tasks`/…）。
+退役由代码级测试证明：`internal/persistence/sqlstore/knowledge_library_retirement_test.go`
+同时断言「Go 源码对旧表零引用」与「旧表仍在」，而不是靠 RENAME/DROP。
+（早期设计曾计划改名为 `legacy_knowledge_*`；SQLite 的 `ALTER TABLE RENAME` 会重新解析全库触发器，
+  触发 `record_kind_migration_test.go` 失败，故否决该方案。）
+
+## 7. 第三轮修正（2026-09-12 续）
+
+| 主题 | 决定 |
+|---|---|
+| 需求正文入口 | `requirement.imported` / `document.revised` 的 `content_ref` 与 `payload` 一律在队头重新读取事件行，写成 staging 的 `requirement.md` 并在 `brief.md` 内联；`content_ref` 指向的文档优先于 payload 摘要。取不到正文时 brief 明说「原文没有取到」，要求写进 `coverage.gaps`，不得凭标题猜测 |
+| 需求 vs 现状 | 需求正文是 `basis: source_statement`、`perspective: normative` 的**声明输入**；brief 明文禁止写「已实现/已上线」，禁止写 `approved`/`review_state`（写了整篇被拒） |
+| 登记 ref 语义 | 来源登记了 `DefaultRef` 就按该 ref 解析提交；解析失败即拒绝本轮（保存来源时先做一次可验证性检查），绝不静默退回工作树 HEAD。当登记 ref 与工作树检出提交不同，本轮不叠加未提交改动，并在来源表里写明原因 |
+| 视图 | 一个资料库只有一个活动视图（`baseline`）。事件声明其它 `view_id` 直接拒绝并说明「分支视图需要独立历史链，本版本未实现」；`branch.switched` 视为同一视图内的新版本增量读取 |
+| 索引重建 | `POST /library/reindex` 只入队并返回 `202` + 队列回执（`task_id`/`queue_seq`/`status`/`enqueued_at`），由 worker 在队头执行；崩溃中断的重建任务下次 tick 直接重跑（派生数据幂等），不占用模型轮次、不产生新 release |
+| 历史可读性 | 文档版本行是路径/标题的权威：按 release 读取永远返回该版本固定的 path/title。版本同时保存发布时的 staged-key → 规范 evidence ID 映射（`0058_knowledge_evidence_aliases.sql`），历史引用用自己那版的映射解析 |
+| 客户端形状 | 领域响应结构（`KnowledgeQueryHit`/`KnowledgeCoverage`/`KnowledgeFreshness`/`KnowledgeExpandHandle`）补齐 json tag：展开句柄此前序列化成 `undefined:undefined` |
+| 证据读取边界 | 固定版本后的证据读取优先读冻结副本（`<snapshot>/tree/...`），来源仓库被移动或不可读时既定证据仍然可取；活仓库只作为副本已被释放时的兜底 |
