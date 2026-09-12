@@ -81,13 +81,17 @@ type ProjectedRelation struct {
 
 // Projection is the validated candidate content of one release.
 type Projection struct {
-	Documents []ProjectedDocument
-	Entities  []EntitySpec
-	Evidence  []*CollectedEvidence
-	Removals  []string
-	Renames   []Rename
-	Coverage  Coverage
-	Digest    string
+	// EvidenceAliases maps each staged evidence key to the canonical evidence
+	// ID the collector assigned, so the published version can always resolve
+	// the citations its own Markdown was written with.
+	EvidenceAliases map[string]string
+	Documents       []ProjectedDocument
+	Entities        []EntitySpec
+	Evidence        []*CollectedEvidence
+	Removals        []string
+	Renames         []Rename
+	Coverage        Coverage
+	Digest          string
 }
 
 // ProjectionInput is everything the builder needs.
@@ -340,6 +344,7 @@ func BuildProjection(in ProjectionInput) (*Projection, error) {
 		proj.Documents[i].ContentMarkdown = string(canonical)
 		proj.Documents[i].ContentDigest = DigestMarkdown(canonical)
 	}
+	proj.EvidenceAliases = keyToID
 	proj.Digest = projectionDigest(proj)
 	return proj, nil
 }

@@ -62,6 +62,43 @@ type KnowledgeLibraryEventReceipt struct {
 	ReceivedAt time.Time                   `json:"received_at"`
 }
 
+// KnowledgeTaskReceipt is the answer to a queue-only write request: it says
+// the work was accepted and where it sits, never that it is done.
+type KnowledgeTaskReceipt struct {
+	TaskID     string                     `json:"task_id"`
+	Accepted   bool                       `json:"accepted"`
+	QueueSeq   int                        `json:"queue_seq"`
+	Status     domain.KnowledgeTaskStatus `json:"status"`
+	EnqueuedAt time.Time                  `json:"enqueued_at"`
+}
+
+// validateSourceRef rejects a registered ref the server can already disprove.
+// The capture path re-checks against the frozen repository, but an operator
+// must learn about a typo when saving the source, not one queue turn later.
+func validateSourceRef(ctx context.Context, repoPath, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	path := strings.TrimSpace(repoPath)
+	if path == "" {
+		return nil
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		// The capture path reports an unreadable repository with its own
+		// message; there is nothing to verify here.
+		return nil
+	}
+	runner := knowledgelib.ExecGitRunner{}
+	if _, err := runner.Run(ctx, path, "rev-parse", "--git-dir"); err != nil {
+		return nil
+	}
+	if _, err := runner.Run(ctx, path, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		return fmt.Errorf("%w: ref %q 在 %s 中无法解析；请填写真实存在的分支、标签或提交", domain.ErrValidation, ref, path)
+	}
+	return nil
+}
+
 // KnowledgeLibrarySourceInput registers or updates one source.
 type KnowledgeLibrarySourceInput struct {
 	Name         string
@@ -201,6 +238,9 @@ func (s *Service) CreateKnowledgeSource(ctx context.Context, workspaceID string,
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSourceRef(ctx, repoPath, in.DefaultRef); err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	enabled := true
 	if in.Enabled != nil {
@@ -238,6 +278,9 @@ func (s *Service) UpdateKnowledgeSource(ctx context.Context, workspaceID, source
 	}
 	repoPath, err := resolveSourcePath(root, in.RepoPath)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateSourceRef(ctx, repoPath, in.DefaultRef); err != nil {
 		return nil, err
 	}
 	next := *current
@@ -357,6 +400,15 @@ func (s *Service) SubmitKnowledgeLibraryEvent(ctx context.Context, in KnowledgeL
 	}
 	subjectJSON := jsonTextOrEmpty(in.Subject)
 	payloadJSON := jsonTextOrEmpty(in.Payload)
+	// One active view per library: a view the publish path cannot keep
+	// separate must be refused here rather than silently folded into the
+	// shared baseline.
+	requestedView := eventViewFromJSON(subjectJSON, payloadJSON)
+	activeView := s.activeViewID(ctx, lib)
+	if requestedView != activeView {
+		return nil, fmt.Errorf("%w: 本版本一个资料库只有一个活动视图 %q，事件请求的视图 %q 不受支持：分支视图需要独立的历史链，本版本尚未实现",
+			domain.ErrValidation, activeView, requestedView)
+	}
 	protocol := strings.TrimSpace(in.ProtocolVersion)
 	if protocol == "" {
 		protocol = "1"
@@ -475,30 +527,80 @@ func taskKindForEvent(eventType string, empty bool) string {
 		return knowledgelib.TaskRemove
 	case "source.renamed":
 		return knowledgelib.TaskRename
-	case "branch.switched":
-		return knowledgelib.TaskBranchView
 	default:
+		// branch.switched belongs here: the library has one active view, so a
+		// switched branch is a new revision of the same input to re-read, not
+		// a second knowledge line.
 		return knowledgelib.TaskIncremental
 	}
 }
 
-func viewForEvent(event *domain.KnowledgeLibraryEvent) string {
-	var subject map[string]any
-	_ = json.Unmarshal([]byte(event.SubjectJSON), &subject)
-	if v, ok := subject["view_id"].(string); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
+// eventViewFromJSON reads the declared view from either the subject or the
+// payload, the same way focusForEvent does.
+func eventViewFromJSON(subjectJSON, payloadJSON string) string {
+	for _, raw := range []string{subjectJSON, payloadJSON} {
+		if v, ok := decodeJSONObject(raw)["view_id"].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
 	}
-	return "baseline"
+	return knowledgelib.DefaultViewID
+}
+
+func viewForEvent(event *domain.KnowledgeLibraryEvent) string {
+	if v := eventField(event, "view_id"); v != nil {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	return knowledgelib.DefaultViewID
+}
+
+// activeViewID is the single view this library writes into. This build keeps
+// one active view per library: branch overlays would need their own
+// parent/current release chain, and pretending to isolate a view the publish
+// path does not separate would be worse than refusing it.
+func (s *Service) activeViewID(ctx context.Context, lib *domain.KnowledgeLibrary) string {
+	if strings.TrimSpace(lib.CurrentSnapshotID) == "" {
+		return knowledgelib.DefaultViewID
+	}
+	snap, err := s.store.Library().GetSnapshot(ctx, lib.CurrentSnapshotID)
+	if err != nil || strings.TrimSpace(snap.ViewID) == "" {
+		return knowledgelib.DefaultViewID
+	}
+	return snap.ViewID
+}
+
+// eventField reads one field from the event subject, falling back to the
+// payload. Integrators legitimately put commit facts in either place; the
+// library must not lose them just because it picked one location.
+func eventField(event *domain.KnowledgeLibraryEvent, key string) any {
+	var subject map[string]any
+	if err := json.Unmarshal([]byte(event.SubjectJSON), &subject); err == nil {
+		if v, ok := subject[key]; ok && v != nil {
+			return v
+		}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err == nil {
+		if v, ok := payload[key]; ok && v != nil {
+			return v
+		}
+	}
+	return nil
 }
 
 func focusForEvent(event *domain.KnowledgeLibraryEvent) string {
 	focus := map[string]any{"event_type": event.EventType, "source": event.Source}
-	var subject map[string]any
-	if err := json.Unmarshal([]byte(event.SubjectJSON), &subject); err == nil {
-		for _, key := range []string{"changed_paths", "removed_paths", "renamed_paths", "source_names", "previous_version", "observed_version"} {
-			if v, ok := subject[key]; ok {
-				focus[key] = v
-			}
+	for _, key := range []string{
+		"changed_paths", "removed_paths", "renamed_paths", "source_names",
+		"previous_version", "observed_version",
+		// code.pulled / code.changed carry their commit facts in the payload.
+		"branch", "ref", "head_sha", "previous_sha", "base_sha", "compare_url",
+		// requirement.imported identifies the requirement being revised.
+		"requirement_id", "requirement_version", "title",
+	} {
+		if v := eventField(event, key); v != nil {
+			focus[key] = v
 		}
 	}
 	raw, _ := json.Marshal(focus)
@@ -697,6 +799,22 @@ type KnowledgeDocumentDetail struct {
 	// rather than to the document's current version.
 	ReleaseID string `json:"release_id,omitempty"`
 	Pinned    bool   `json:"pinned"`
+	// EvidenceAliases maps staged evidence keys to canonical IDs for versions
+	// published before canonical rewriting; the client resolves a citation
+	// through it instead of reporting a broken link.
+	EvidenceAliases map[string]string `json:"-"`
+}
+
+// decodeAliasMap tolerates the empty and malformed values older rows carry.
+func decodeAliasMap(raw string) map[string]string {
+	out := map[string]string{}
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return map[string]string{}
+	}
+	return out
 }
 
 // GetKnowledgeDocument returns a document's records. A non-zero version pins
@@ -728,17 +846,26 @@ func (s *Service) GetKnowledgeDocument(ctx context.Context, workspaceID, documen
 	if err != nil {
 		return nil, err
 	}
-	// A historical read reports the pinned path and title, and says which
-	// release it came from.
+	// The version row is the authority for path and title: a document that was
+	// renamed or rewritten after this version was published must not leak its
+	// current metadata into a historical read.
 	if v.Path != "" {
 		doc.Path = v.Path
-		doc.Title = v.Title
+	} else {
+		doc.Path = ""
 	}
+	doc.Title = v.Title
+	doc.CurrentVersion = v.Version
 	detail := &KnowledgeDocumentDetail{Document: doc, Version: v, Assertions: assertions, Relations: relations, Versions: versions}
+	detail.Pinned = true
 	if pinnedReleaseID != "" {
 		detail.ReleaseID = pinnedReleaseID
-		detail.Pinned = true
+	} else if v.ReleaseID != "" {
+		detail.ReleaseID = v.ReleaseID
 	}
+	// Resolve the version's own evidence aliases so a release published before
+	// canonical rewriting still opens its citations instead of failing.
+	detail.EvidenceAliases = decodeAliasMap(v.EvidenceAliasJSON)
 	return detail, nil
 }
 
@@ -804,11 +931,94 @@ func (s *Service) ListKnowledgeBridges(ctx context.Context, workspaceID, release
 // ReindexKnowledgeLibrary rebuilds the search projection from the immutable
 // document versions and the ledger. It is the recovery path that proves the
 // index is derived, not authoritative.
-func (s *Service) ReindexKnowledgeLibrary(ctx context.Context, workspaceID string) (int, error) {
+//
+// It rewrites index rows and content files, so it is a knowledge write and
+// must run as a queued task head — never inline from a request handler.
+// ReindexKnowledgeLibrary enqueues a reindex as a normal FIFO write task and
+// returns its receipt. Rebuilding the index rewrites derived data, but it must
+// not race a publish: the index would be built from a version that is about to
+// be superseded. Queueing it behind the head is what makes the ordering
+// guarantee real, and the receipt lets the caller watch it like any other task.
+func (s *Service) ReindexKnowledgeLibrary(ctx context.Context, workspaceID string) (*KnowledgeTaskReceipt, error) {
 	lib, err := s.EnsureKnowledgeLibrary(ctx, workspaceID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
+	// The next sequence number comes from the highest sequence ever used, not
+	// from the head: a completed task is no longer the head, and reusing its
+	// seq would collide with the queue's uniqueness constraint.
+	tasks, err := s.store.Library().ListTasks(ctx, lib.ID, "", 1)
+	if err != nil {
+		return nil, err
+	}
+	nextSeq := 1
+	if len(tasks) > 0 {
+		nextSeq = tasks[0].Seq + 1
+	}
+	now := time.Now().UTC()
+	task := &domain.KnowledgeWriteTask{
+		ID: domain.NewID("ktask_"), LibraryID: lib.ID, Seq: nextSeq, Kind: knowledgelib.TaskReindex,
+		Status: domain.KnowledgeTaskQueued, BaseReleaseID: lib.CurrentReleaseID,
+		ViewID: knowledgelib.DefaultViewID, FocusJSON: `{"event_type":"library.reindex","source":"admin"}`,
+		MaxAttempts: 3, MaxRepairAttempts: knowledgeLibraryMaxRepairAttempts, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.store.Library().CreateTask(ctx, task); err != nil {
+		return nil, err
+	}
+	return &KnowledgeTaskReceipt{
+		TaskID: task.ID, Accepted: true, QueueSeq: task.Seq,
+		Status: domain.KnowledgeTaskQueued, EnqueuedAt: now,
+	}, nil
+}
+
+// runReindexTask executes one queued reindex at the head of the FIFO queue.
+// It is idempotent by construction: every step rebuilds a derived projection
+// from the immutable document versions and the evidence ledger, so a re-run
+// after a crash converges on the same result.
+func (s *Service) runReindexTask(ctx context.Context, lib *domain.KnowledgeLibrary, task *domain.KnowledgeWriteTask) error {
+	owner := domain.NewID("knowner_")
+	claimed, err := s.store.Library().ClaimTask(ctx, lib.ID, task.ID, owner)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	task, err = s.store.Library().GetTask(ctx, lib.ID, task.ID)
+	if err != nil {
+		return err
+	}
+	count, err := s.reindexProjection(ctx, lib)
+	if err != nil {
+		task.LastError = err.Error()
+		task.Status = domain.KnowledgeTaskQueued
+		task.UpdatedAt = time.Now().UTC()
+		if updateErr := s.store.Library().UpdateTask(ctx, task); updateErr != nil {
+			return updateErr
+		}
+		return err
+	}
+	lines := []string{fmt.Sprintf("索引已重建：%d 篇文档的检索行由已发布版本重新生成", count)}
+	diag, _ := json.Marshal(lines)
+	task.DiagnosticsJSON = string(diag)
+	task.Status = domain.KnowledgeTaskCompleted
+	task.LastError = ""
+	task.BlockedReason = ""
+	finished := time.Now().UTC()
+	task.FinishedAt = &finished
+	task.UpdatedAt = finished
+	if err := s.store.Library().UpdateTask(ctx, task); err != nil {
+		return err
+	}
+	if s.notifier != nil {
+		s.notifier.Notify(lib.WorkspaceID)
+	}
+	return nil
+}
+
+// reindexProjection rebuilds every derived projection from the published
+// Markdown. It never publishes a new version: the documents are the input.
+func (s *Service) reindexProjection(ctx context.Context, lib *domain.KnowledgeLibrary) (int, error) {
 	// Re-project the record columns from the Markdown first: they are derived
 	// from the record grammar, so a grammar change must be repairable without
 	// republishing.
@@ -965,7 +1175,7 @@ func coverageGaps(rel *domain.KnowledgeRelease) []string {
 
 // reprojectRecords re-derives the projected JSON columns of one document from
 // its published Markdown. It is the repair half of "the index is a projection".
-func reprojectRecords(markdown string) (map[string]struct {
+func reprojectRecords(markdown string, aliases map[string]string) (map[string]struct {
 	About, Scope, Evidence string
 }, map[string]string, error) {
 	doc, err := knowledgelib.ParseDocument("content/reindex.md", []byte(markdown))
@@ -975,17 +1185,27 @@ func reprojectRecords(markdown string) (map[string]struct {
 	assertions := map[string]struct {
 		About, Scope, Evidence string
 	}{}
+	resolve := func(refs []knowledgelib.EvidenceRef) []knowledgelib.EvidenceRef {
+		out := make([]knowledgelib.EvidenceRef, 0, len(refs))
+		for _, ref := range refs {
+			if canonical, ok := aliases[ref.EvidenceID]; ok {
+				ref.EvidenceID = canonical
+			}
+			out = append(out, ref)
+		}
+		return out
+	}
 	for _, a := range doc.Assertions {
 		about, _ := json.Marshal(a.About)
 		scope, _ := json.Marshal(a.Scope)
-		evidence, _ := json.Marshal(a.Evidence)
+		evidence, _ := json.Marshal(resolve(a.Evidence))
 		assertions[a.ID] = struct {
 			About, Scope, Evidence string
 		}{About: string(about), Scope: string(scope), Evidence: string(evidence)}
 	}
 	relations := map[string]string{}
 	for _, rel := range doc.Relations {
-		evidence, _ := json.Marshal(rel.Evidence)
+		evidence, _ := json.Marshal(resolve(rel.Evidence))
 		relations[rel.ID] = string(evidence)
 	}
 	return assertions, relations, nil

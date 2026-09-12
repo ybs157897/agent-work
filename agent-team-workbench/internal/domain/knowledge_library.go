@@ -249,11 +249,14 @@ type KnowledgeDocumentVersion struct {
 	ContentMarkdown string
 	FrontmatterJSON string
 	ContentDigest   string
-	SnapshotID      string
-	TaskID          string
-	ReleaseID       string
-	DerivedFromID   string
-	CreatedAt       time.Time
+	// EvidenceAliasJSON maps the staged evidence keys this version was written
+	// with to the canonical evidence IDs the collector assigned.
+	EvidenceAliasJSON string
+	SnapshotID        string
+	TaskID            string
+	ReleaseID         string
+	DerivedFromID     string
+	CreatedAt         time.Time
 }
 
 // KnowledgeAssertion is one materialized assertion of a document version.
@@ -476,29 +479,29 @@ type KnowledgeQueryRequest struct {
 
 // KnowledgeQueryHit is one assertion matched by a query.
 type KnowledgeQueryHit struct {
-	Assertion KnowledgeAssertion
-	Document  KnowledgeDocument
-	Version   KnowledgeDocumentVersion
-	Score     float64
-	Snippet   string
-	Evidence  []KnowledgeEvidence
+	Assertion KnowledgeAssertion       `json:"assertion"`
+	Document  KnowledgeDocument        `json:"document"`
+	Version   KnowledgeDocumentVersion `json:"version"`
+	Score     float64                  `json:"score"`
+	Snippet   string                   `json:"snippet"`
+	Evidence  []KnowledgeEvidence      `json:"evidence"`
 }
 
 // KnowledgeCoverage reports what a result set did and did not cover.
 type KnowledgeCoverage struct {
-	Status          string
-	Truncated       bool
-	ScannedVersions int
-	Notes           []string
+	Status          string   `json:"status"`
+	Truncated       bool     `json:"truncated"`
+	ScannedVersions int      `json:"scanned_versions"`
+	Notes           []string `json:"notes"`
 }
 
 // KnowledgeFreshness reports version and staleness for a query answer.
 type KnowledgeFreshness struct {
-	ReleaseID             string
-	PublishedAt           *time.Time
-	PendingEvents         int
-	NewerReleaseAvailable bool
-	StaleSources          []string
+	ReleaseID             string     `json:"release_id"`
+	PublishedAt           *time.Time `json:"published_at"`
+	PendingEvents         int        `json:"pending_events"`
+	NewerReleaseAvailable bool       `json:"newer_release_available"`
+	StaleSources          []string   `json:"stale_sources"`
 }
 
 // KnowledgeQueryResult is a complete, bounded answer.
@@ -512,8 +515,10 @@ type KnowledgeQueryResult struct {
 }
 
 // KnowledgeExpandHandle is a reference the caller can expand later.
+// The JSON tags are the wire contract: the client sends kind/id straight back
+// to the expand endpoint, so a missing tag makes every handle unusable.
 type KnowledgeExpandHandle struct {
-	Kind  string
-	ID    string
-	Label string
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }

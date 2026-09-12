@@ -642,13 +642,20 @@ func (s *Server) handleLibraryExpand(w http.ResponseWriter, r *http.Request) {
 
 // ── Reindex ────────────────────────────────────────────────────────────
 
+// handleLibraryReindex only enqueues: rebuilding the index is a knowledge
+// write and must not run inline ahead of a queued publish. The 202 carries the
+// queue receipt so the caller can watch the task instead of assuming the index
+// already matches the published versions.
 func (s *Server) handleLibraryReindex(w http.ResponseWriter, r *http.Request) {
-	count, err := s.svc.ReindexKnowledgeLibrary(r.Context(), s.libraryWorkspace(r))
+	receipt, err := s.svc.ReindexKnowledgeLibrary(r.Context(), s.libraryWorkspace(r))
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"indexed_versions": count})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"task_id": receipt.TaskID, "accepted": receipt.Accepted, "queue_seq": receipt.QueueSeq,
+		"status": receipt.Status, "enqueued_at": receipt.EnqueuedAt,
+	})
 }
 
 // ── JSON projections ───────────────────────────────────────────────────

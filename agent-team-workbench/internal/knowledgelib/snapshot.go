@@ -88,6 +88,12 @@ type Binding struct {
 	// FrozenDir holds the byte-for-byte copy of every dirty/untracked file
 	// taken at capture time. Reads never go back to a mutable worktree.
 	FrozenDir string
+	// RefPinned records that the pinned commit came from the registered ref
+	// (or from a detached HEAD named as such) rather than from a floating
+	// branch name.
+	RefPinned bool
+	// WorktreeNote explains why the working tree was not part of this input.
+	WorktreeNote string
 	// TreeDir is the exported pinned commit, with the frozen dirty files
 	// overlaid. The agent reads this directory; the repository path is never
 	// handed to it, so a later edit to the worktree cannot change its input.
@@ -181,7 +187,20 @@ func CaptureBinding(ctx context.Context, runner GitRunner, snapshotID string, sp
 	if err != nil {
 		return nil, errf(ErrValidation, "source %q has no HEAD commit: %v", spec.Name, err)
 	}
-	b.CommitSHA = strings.TrimSpace(string(head))
+	headSHA := strings.TrimSpace(string(head))
+	b.CommitSHA = headSHA
+	declaredRef := strings.TrimSpace(spec.DefaultRef)
+	if declaredRef != "" {
+		// A registered ref is a promise about which revision the library
+		// reads. Silently snapshotting HEAD instead would label the input with
+		// a branch it never came from, so an unresolvable ref is an error.
+		resolved, refErr := runner.Run(ctx, abs, "rev-parse", "--verify", "--quiet", declaredRef+"^{commit}")
+		if refErr != nil {
+			return nil, errf(ErrValidation, "source %q declares ref %q but it cannot be resolved: %v", spec.Name, declaredRef, refErr)
+		}
+		b.CommitSHA = strings.TrimSpace(string(resolved))
+		b.RefPinned = true
+	}
 	format, err := runner.Run(ctx, abs, "rev-parse", "--show-object-format")
 	if err != nil {
 		format = []byte("sha1")
@@ -190,24 +209,37 @@ func CaptureBinding(ctx context.Context, runner GitRunner, snapshotID string, sp
 	if b.ObjectFormat == "" {
 		b.ObjectFormat = "sha1"
 	}
-	if ref, err := runner.Run(ctx, abs, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+	if declaredRef != "" {
+		b.GitRef = declaredRef
+	} else if ref, err := runner.Run(ctx, abs, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
 		b.GitRef = strings.TrimSpace(string(ref))
 	}
 	if b.GitRef == "" {
-		b.GitRef = spec.DefaultRef
+		// Detached HEAD without a registered ref: say so instead of naming a
+		// branch the checkout is not on.
+		b.GitRef = "detached@" + shortSHA(headSHA)
+		b.RefPinned = true
 	}
-	statusOut, err := runner.Run(ctx, abs, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return nil, errf(ErrValidation, "source %q status failed: %v", spec.Name, err)
+	if b.CommitSHA != headSHA {
+		// The declared ref is not what is checked out, so the working tree
+		// belongs to a different revision. Overlaying it would publish
+		// uncommitted edits as if they were part of the registered ref.
+		b.WorktreeNote = fmt.Sprintf("登记 ref %s 指向 %s，与工作树检出提交 %s 不同，本轮不叠加未提交改动",
+			declaredRef, shortSHA(b.CommitSHA), shortSHA(headSHA))
+	} else {
+		statusOut, err := runner.Run(ctx, abs, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+		if err != nil {
+			return nil, errf(ErrValidation, "source %q status failed: %v", spec.Name, err)
+		}
+		dirtyPaths, dirtyDigest, untracked, err := analyseWorktree(abs, statusOut, spec)
+		if err != nil {
+			return nil, err
+		}
+		b.DirtyPaths = dirtyPaths
+		b.Dirty = len(dirtyPaths) > 0
+		b.DirtyDigest = dirtyDigest
+		b.Untracked = untracked
 	}
-	dirtyPaths, dirtyDigest, untracked, err := analyseWorktree(abs, statusOut, spec)
-	if err != nil {
-		return nil, err
-	}
-	b.Dirty = len(dirtyPaths) > 0
-	b.DirtyDigest = dirtyDigest
-	b.Untracked = untracked
-	b.DirtyPaths = dirtyPaths
 	return b, nil
 }
 
@@ -376,6 +408,18 @@ func ReadBindingFile(ctx context.Context, runner GitRunner, b *Binding, relPath 
 			return nil, errf(ErrValidation, "read frozen worktree file %s: %v", clean, err)
 		}
 		return &BindingPath{Binding: b, Path: clean, Content: raw, Origin: "worktree", Digest: DigestBytes(raw)}, nil
+	}
+	// Prefer the frozen tree: once a snapshot is captured, evidence must be
+	// collectable from the snapshot's own bytes even if the source repository
+	// moves, is rebuilt, or becomes unreadable. The live repository is only a
+	// fallback for a snapshot whose tree was already released.
+	if b.TreeDir != "" {
+		if raw, readErr := os.ReadFile(filepath.Join(b.TreeDir, filepath.FromSlash(clean))); readErr == nil {
+			return &BindingPath{Binding: b, Path: clean, Content: raw, Origin: "committed", Digest: DigestBytes(raw)}, nil
+		}
+	}
+	if b.RepoPath == "" {
+		return nil, errf(ErrNotFound, "frozen snapshot does not contain %s and no repository is available", clean)
 	}
 	out, err := runner.Run(ctx, b.RepoPath, "show", b.CommitSHA+":"+clean)
 	if err != nil {

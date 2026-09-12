@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ybs/agent-team-workbench/internal/domain"
@@ -115,5 +116,38 @@ func TestKnowledgeSourceUsageEffectiveState(t *testing.T) {
 				t.Fatalf("claim = %q, want %q", got, tc.wantClaim)
 			}
 		})
+	}
+}
+
+// TestExpandHandlesAreUsableByTheClient pins the wire shape of the expand
+// handles a query returns. The client feeds kind/id straight back into the
+// expand endpoint, so Go field names would make every handle unusable.
+func TestExpandHandlesAreUsableByTheClient(t *testing.T) {
+	handles := []domain.KnowledgeExpandHandle{
+		{Kind: "assertion", ID: "assertion:x", Label: "订单取消"},
+		{Kind: "evidence", ID: "evidence:y", Label: "source_text"},
+	}
+	raw, err := json.Marshal(handles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range decoded {
+		for _, key := range []string{"kind", "id", "label"} {
+			value, ok := item[key].(string)
+			if !ok || value == "" {
+				t.Fatalf("handle %d is missing %q: %s", i, key, raw)
+			}
+		}
+		if _, leaked := item["Kind"]; leaked {
+			t.Fatalf("handle leaked a Go field name: %s", raw)
+		}
+	}
+	// The exact regression the round-2 report saw: kind/id undefined.
+	if string(raw[:1]) != "[" || !strings.Contains(string(raw), `"kind":"assertion"`) {
+		t.Fatalf("unexpected handle encoding: %s", raw)
 	}
 }

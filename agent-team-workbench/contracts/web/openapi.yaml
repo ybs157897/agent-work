@@ -458,9 +458,11 @@ paths:
     post:
       tags: [knowledge-library]
       operationId: reindexKnowledgeLibrary
-      summary: 从正式 Markdown 与来源账本重建检索投影
+      summary: 排队重建检索投影；返回队列回执而非直接执行
       responses:
-        "200": { content: { application/json: { schema: { type: object } } } }
+        "202":
+          description: 已进入写入队列；索引在轮到这个任务时重建
+          content: { application/json: { schema: { type: object } } }
 
 
   /workspaces/{workspace_id}/events:

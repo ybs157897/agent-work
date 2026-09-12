@@ -67,6 +67,16 @@ func (s *Service) processLibrary(ctx context.Context, lib *domain.KnowledgeLibra
 	if err != nil {
 		return err
 	}
+	// A reindex is a knowledge write with no model turn: it is executed here,
+	// at the head of the queue, and re-executed if a crash left it running.
+	// Blocking it as "running without a Run" would strand the queue forever.
+	if head.Kind == knowledgelib.TaskReindex {
+		switch head.Status {
+		case domain.KnowledgeTaskQueued, domain.KnowledgeTaskRunning, domain.KnowledgeTaskAwaitingAgent:
+			return s.runReindexTask(ctx, lib, head)
+		}
+		return nil
+	}
 	switch head.Status {
 	case domain.KnowledgeTaskQueued:
 		return s.prepareAndDispatch(ctx, lib, head)
@@ -179,6 +189,7 @@ func (s *Service) prepareAndDispatch(ctx context.Context, lib *domain.KnowledgeL
 		TaskID: task.ID, TaskKind: task.Kind, LibraryRoot: kl.Root, StagingDir: staging,
 		ViewID: task.ViewID, BaseRelease: baseRef,
 		Sources: briefSources, Focus: focusFromTask(task),
+		Requirement:       s.requirementForTask(ctx, lib, task, staging),
 		ExistingDocuments: existing, EntityCatalog: entityCatalog,
 	}); err != nil {
 		return s.deferTask(ctx, lib, task, err)
@@ -280,7 +291,8 @@ func (s *Service) captureSnapshot(ctx context.Context, lib *domain.KnowledgeLibr
 				RepoPath: binding.RepoPath, ReadPath: binding.TreeDir,
 				GitRef: binding.GitRef, CommitSHA: binding.CommitSHA, ObjectFmt: binding.ObjectFormat,
 				Dirty: binding.Dirty, Untracked: binding.Untracked,
-				Artifact: usage.Artifact, ArtifactResolution: usage.ArtifactState(),
+				WorktreeNote: binding.WorktreeNote,
+				Artifact:     usage.Artifact, ArtifactResolution: usage.ArtifactState(),
 				Consumer: usage.Consumer, Environment: usage.Environment,
 			})
 		}
@@ -344,6 +356,23 @@ func (s *Service) libraryCatalog(ctx context.Context, lib *domain.KnowledgeLibra
 	return out, catalog, nil
 }
 
+// requirementForTask hands the agent the text that opened this task. It reads
+// the event row rather than the task row because the requirement body is
+// external declared input, and a repair turn must see exactly the same text as
+// the first turn.
+func (s *Service) requirementForTask(ctx context.Context, lib *domain.KnowledgeLibrary, task *domain.KnowledgeWriteTask, staging string) *knowledgelib.Requirement {
+	if strings.TrimSpace(task.EventID) == "" {
+		return nil
+	}
+	event, err := s.store.Library().GetEvent(ctx, lib.ID, task.EventID)
+	if err != nil {
+		// A task whose event row is gone must say so: the alternative is a
+		// silent run against an unknown requirement.
+		return &knowledgelib.Requirement{Unresolved: "触发事件 " + task.EventID + " 已不可读：" + err.Error()}
+	}
+	return requirementFromEvent(event, staging)
+}
+
 func focusFromTask(task *domain.KnowledgeWriteTask) knowledgelib.Focus {
 	var raw map[string]any
 	_ = json.Unmarshal([]byte(task.FocusJSON), &raw)
@@ -358,6 +387,17 @@ func focusFromTask(task *domain.KnowledgeWriteTask) knowledgelib.Focus {
 	focus.RemovedPaths = stringSlice(raw["removed_paths"])
 	focus.RenamedPaths = stringSlice(raw["renamed_paths"])
 	focus.SourceNames = stringSlice(raw["source_names"])
+	if v, ok := raw["branch"].(string); ok {
+		focus.Branch = v
+	} else if v, ok := raw["ref"].(string); ok {
+		focus.Branch = v
+	}
+	if v, ok := raw["head_sha"].(string); ok {
+		focus.HeadSHA = v
+	}
+	if v, ok := raw["previous_sha"].(string); ok {
+		focus.PreviousSHA = v
+	}
 	if prev, ok := raw["previous_version"].(string); ok {
 		focus.Notes = "观测到的前一版本：" + prev
 	}
@@ -681,6 +721,8 @@ func (s *Service) buildProjection(ctx context.Context, lib *domain.KnowledgeLibr
 		// the collector's IDs); publishing the raw staging bytes would leave
 		// the Markdown citing keys nothing can resolve.
 		pd.ContentMarkdown = d.ContentMarkdown
+		aliasRaw, _ := json.Marshal(proj.EvidenceAliases)
+		pd.EvidenceAliasJSON = string(aliasRaw)
 		for _, a := range d.Assertions {
 			scopeJSON, _ := json.Marshal(a.Scope)
 			evJSON, _ := json.Marshal(a.Evidence)

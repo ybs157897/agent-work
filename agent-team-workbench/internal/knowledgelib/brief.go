@@ -16,10 +16,14 @@ const (
 	TaskRemove       = "remove"
 	TaskRename       = "rename"
 	TaskInvalidate   = "invalidate"
-	TaskBranchView   = "branch_view"
 	TaskLegacyImport = "legacy_import"
 	TaskReindex      = "reindex"
 )
+
+// DefaultViewID is the one active view a library writes into. Views exist in
+// the record syntax so a branch overlay can be added later; this build accepts
+// only the default view and rejects a task that names another one.
+const DefaultViewID = "baseline"
 
 // BriefInput is the trusted description of one write task.
 type BriefInput struct {
@@ -30,6 +34,9 @@ type BriefInput struct {
 	ViewID      string
 	BaseRelease *ReleaseRef
 	Sources     []BriefSource
+	// Requirement is the external requirement text this task was opened for.
+	// It is declared input, not repository evidence.
+	Requirement *Requirement
 	// Focus lists what changed for an incremental task.
 	Focus Focus
 	// ExistingDocuments is the published catalog the agent may extend.
@@ -60,13 +67,38 @@ type BriefSource struct {
 	ObjectFmt string
 	Dirty     bool
 	Untracked []string
-	Artifact  string
+	// WorktreeNote explains why the working tree was excluded from this input.
+	WorktreeNote string
+	Artifact     string
 	// ArtifactResolution is 'declared' unless a real resolution produced the
 	// version; the agent must not treat a registered value as the artifact a
 	// service actually resolved.
 	ArtifactResolution string
 	Consumer           string
 	Environment        string
+}
+
+// RequirementFileName is the staging file holding the full requirement text.
+// The text is also inlined in brief.md; the file exists so a long requirement
+// can be read in full without truncating the brief.
+const RequirementFileName = "requirement.md"
+
+// Requirement is the external requirement text that opened this task. It is
+// declared input: the library records what was asked for, never that the code
+// implements it.
+type Requirement struct {
+	RequirementID string `json:"requirement_id,omitempty"`
+	Title         string `json:"title,omitempty"`
+	Version       string `json:"version,omitempty"`
+	Source        string `json:"source,omitempty"`
+	ContentRef    string `json:"content_ref,omitempty"`
+	Digest        string `json:"digest,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Path          string `json:"path,omitempty"`
+	// Unresolved records why the referenced text could not be read. A task
+	// with an unresolved requirement must say so instead of inventing text.
+	Unresolved string            `json:"unresolved,omitempty"`
+	Extra      map[string]string `json:"extra,omitempty"`
 }
 
 // Focus narrows an incremental task.
@@ -76,7 +108,13 @@ type Focus struct {
 	RemovedPaths []string
 	RenamedPaths []string
 	SourceNames  []string
-	Notes        string
+	// Branch and the commit SHAs are the observed revision of the reported
+	// change. They tell the agent which line to keep reading, and are never
+	// presented as something the library verified.
+	Branch      string
+	HeadSHA     string
+	PreviousSHA string
+	Notes       string
 }
 
 // ExistingDocument is one published document in the catalog digest.
@@ -98,6 +136,14 @@ func RenderBrief(in BriefInput) (string, error) {
 	if err := os.MkdirAll(filepath.Join(in.StagingDir, ContentZone), 0o755); err != nil {
 		return "", err
 	}
+	// The requirement text is written before the brief so the path the brief
+	// advertises always exists by the time the agent can read anything.
+	if r := in.Requirement; r != nil && r.Unresolved == "" {
+		body := "# " + firstNonEmpty(r.Title, r.RequirementID, "本次需求原文") + "\n\n" + r.Text + "\n"
+		if err := os.WriteFile(filepath.Join(in.StagingDir, RequirementFileName), []byte(body), 0o644); err != nil {
+			return "", err
+		}
+	}
 	var b strings.Builder
 	b.WriteString("# 资料整理任务\n\n")
 	b.WriteString(fmt.Sprintf("- 任务 ID：`%s`\n- 任务类型：`%s`\n- 视图：`%s`\n", in.TaskID, in.TaskKind, in.ViewID))
@@ -117,13 +163,16 @@ func RenderBrief(in BriefInput) (string, error) {
 	b.WriteString("| binding | 类型 | 只读路径（固定版本副本） | 分支 | commit | 工作树 | 依赖版本（登记声明值） | 使用方 | 环境 |\n|---|---|---|---|---|---|---|---|---|\n")
 	for _, s := range in.Sources {
 		wt := "干净"
-		if s.Dirty {
+		if s.WorktreeNote != "" {
+			wt = s.WorktreeNote
+		} else if s.Dirty {
 			wt = fmt.Sprintf("含未提交改动（%d 个文件）", len(s.Untracked))
 		}
 		b.WriteString(fmt.Sprintf("| %s | %s | `%s` | %s | `%s` | %s | %s | %s | %s |\n",
 			s.Binding, s.Kind, s.ReadPath, orDash(s.GitRef), shortSHA(s.CommitSHA), wt,
 			artifactLabel(s.Artifact, s.ArtifactResolution), orDash(s.Consumer), orDash(s.Environment)))
 	}
+	b.WriteString("\n分支列写的是本次固定版本实际来自的 ref（登记 ref 优先于工作树当前分支；工作树列写明未提交改动是否被算作输入）。\n")
 	b.WriteString("\n**只读上面的副本目录**：那是本轮固定版本的实际内容，来源仓库路径会随时间变化，不要读它们。\n")
 	b.WriteString("同一逻辑来源可能出现多个 binding：名字里带 `@使用方`、`#制品`、`~环境`，只要其中之一不同就是两个不同绑定，不要合并，也不要互相套用结论。\n")
 	b.WriteString("依赖版本列写的是**登记声明值**，不代表构建时实际解析到的制品；没有解析证据时请在 coverage.gaps 中写明「实际制品版本未核实」。\n\n")
@@ -137,8 +186,50 @@ func RenderBrief(in BriefInput) (string, error) {
 		b.WriteString("\n还需要别的实体（业务流程、事件、数据对象等）时，在 `entities.yaml` 里显式登记，不要临时编造 ID。\n\n")
 	}
 
+	if r := in.Requirement; r != nil {
+		b.WriteString("## 三、本次需求原文（外部声明输入）\n\n")
+		b.WriteString("下面这段文本是本次任务的直接依据，由外部系统在事件里提交，**不是你从来源仓库读到的**。\n")
+		b.WriteString("它只说明「被要求做什么」，不证明代码、配置或线上行为已经做到。\n\n")
+		if r.RequirementID != "" {
+			b.WriteString("- 需求 ID：`" + r.RequirementID + "`（同一需求 ID 的后续版本要沿用已发布条目里同一个 `assertion:` ID，只更新陈述，不要新建第二条）\n")
+		}
+		if r.Title != "" {
+			b.WriteString("- 标题：" + r.Title + "\n")
+		}
+		if r.Version != "" {
+			b.WriteString("- 需求版本：" + r.Version + "\n")
+		}
+		if r.Source != "" {
+			b.WriteString("- 提交方：" + r.Source + "\n")
+		}
+		if r.ContentRef != "" {
+			b.WriteString("- 原文引用：" + r.ContentRef + "\n")
+		}
+		if r.Digest != "" {
+			b.WriteString("- 文本摘要（sha256）：`" + r.Digest + "`\n")
+		}
+		for _, key := range requirementExtraKeys(r.Extra) {
+			b.WriteString("- " + key + "：" + r.Extra[key] + "\n")
+		}
+		b.WriteString("\n")
+		switch {
+		case r.Unresolved != "":
+			b.WriteString("**这段需求的原文没有取到**：" + r.Unresolved + "\n")
+			b.WriteString("本轮不要凭标题猜测需求内容；按现有来源照常整理，并在 plan.json 的 coverage.gaps 里写明「需求原文缺失，无法核对」。\n\n")
+		default:
+			if r.Path != "" {
+				b.WriteString("完整原文另存为：`" + r.Path + "`。\n\n")
+			}
+			b.WriteString("```text\n" + r.Text + "\n```\n\n")
+			b.WriteString("处理要求：\n\n")
+			b.WriteString("- 把需求正文作为 `basis: source_statement`、`perspective: normative` 的条目记进对应的业务规则/流程文档，陈述里保留可核对的原文关键值（阈值、时限、状态名、字段名）。\n")
+			b.WriteString("- 需求是「要求」，不是「现状」：不要写「已实现」「已上线」「代码中已生效」，也不要写 `approved`／`review_state`／任何审批或发布状态——这些字段会被整篇拒绝。\n")
+			b.WriteString("- 来源仓库里能核对的实现要单独用 `basis: code_static` 或 `runtime_observed` 的条目写，并明确说明它与需求是否一致；找不到对应实现就写进「说明与未知」或 coverage.gaps。\n\n")
+		}
+	}
+
 	if f := in.Focus; f.EventType != "" || len(f.ChangedPaths) > 0 || len(f.RemovedPaths) > 0 {
-		b.WriteString("## 三、本次变更范围\n\n")
+		b.WriteString("## 四、本次变更范围\n\n")
 		if f.EventType != "" {
 			b.WriteString(fmt.Sprintf("触发事件：`%s`\n\n", f.EventType))
 		}
@@ -156,6 +247,16 @@ func RenderBrief(in BriefInput) (string, error) {
 			}
 			b.WriteString("\n失去依据的条目要在新版本中撤下，不要直接宣布业务规则废止。\n\n")
 		}
+		if f.Branch != "" {
+			b.WriteString("报告的分支：" + f.Branch + "\n\n")
+		}
+		if f.HeadSHA != "" {
+			b.WriteString("报告的提交：" + shortSHA(f.HeadSHA))
+			if f.PreviousSHA != "" {
+				b.WriteString("（前一版本 " + shortSHA(f.PreviousSHA) + "）")
+			}
+			b.WriteString("\n\n")
+		}
 		if f.Notes != "" {
 			b.WriteString("补充说明：" + f.Notes + "\n\n")
 		}
@@ -163,7 +264,7 @@ func RenderBrief(in BriefInput) (string, error) {
 	}
 
 	if len(in.ExistingDocuments) > 0 {
-		b.WriteString("## 四、当前已发布文档目录\n\n")
+		b.WriteString("## 五、当前已发布文档目录\n\n")
 		b.WriteString("| 文档 ID | 路径 | 标题 | 已有条目 ID |\n|---|---|---|---|\n")
 		for _, d := range clipDocs(in.ExistingDocuments, 300) {
 			b.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %s |\n", d.ID, d.Path, d.Title, orDash(strings.Join(clipList(d.AssertionIDs, 12), ", "))))
@@ -171,7 +272,7 @@ func RenderBrief(in BriefInput) (string, error) {
 		b.WriteString("\n已发布正文可以直接读取：`" + filepath.Join(in.LibraryRoot, ContentZone) + "/`。沿用某个条目时保留它的稳定 ID，只更新内容。\n\n")
 	}
 
-	b.WriteString("## 五、必须产出的文件\n\n")
+	b.WriteString("## 六、必须产出的文件\n\n")
 	b.WriteString("```text\n")
 	b.WriteString("content/<主类>/.../<主题>.md    正式知识文档（至少一篇，除非本轮只做删除）\n")
 	b.WriteString("plan.json                       本轮计划与覆盖情况\n")
@@ -179,7 +280,7 @@ func RenderBrief(in BriefInput) (string, error) {
 	b.WriteString("entities.yaml                   你新登记的实体（没有就写空列表）\n")
 	b.WriteString("```\n\n")
 
-	b.WriteString("### 5.1 知识文档格式\n\n")
+	b.WriteString("### 6.1 知识文档格式\n\n")
 	b.WriteString("文档以 YAML frontmatter 开始，正文用标题块承载知识条目。每个条目块 = 标题 + ```yaml 元数据 + `#### 陈述` 正文小节（可选 `#### 说明与未知`）。\n\n")
 	b.WriteString("主类目录：`content/business/rules/`、`content/business/flows/`、`content/components/`、`content/contracts/apis/`、`content/contracts/events/`、`content/contracts/data/`、`content/operations/`、`content/decisions/`。\n\n")
 	b.WriteString("完整样例：\n\n")
@@ -198,7 +299,7 @@ func RenderBrief(in BriefInput) (string, error) {
 	b.WriteString("\n\n关系块的元数据**只有** `kind/id/from/predicate/to/perspective/basis/scope/evidence`：\n")
 	b.WriteString("`from` 与 `to` 已经指明了两个对象，所以关系块里**没有** `about`；解释写在「陈述」小节。\n")
 	b.WriteString("需要描述单个对象的结论（包括「某事件被某服务消费」这类对单个对象的判断）时改用 `kind: assertion` 并用 `about`。\n\n")
-	b.WriteString("### 5.2 `evidence.yaml`：证据定位请求\n\n")
+	b.WriteString("### 6.2 `evidence.yaml`：证据定位请求\n\n")
 	b.WriteString("你只声明“去哪个来源、哪个文件的哪一段找证据”，内容、摘要和证据 ID 由程序采集。**不要**写 digest、hash、批准或校验结果。\n\n")
 	b.WriteString("```yaml\n")
 	b.WriteString("evidence:\n")
@@ -214,7 +315,7 @@ func RenderBrief(in BriefInput) (string, error) {
 	b.WriteString("```\n\n")
 	b.WriteString("定位必须在固定版本里真实命中。行号越界、引句在文件里出现多次却不给范围、或者指向不存在的文件，本次任务会被判不合格。\n\n")
 
-	b.WriteString("### 5.3 `plan.json`\n\n")
+	b.WriteString("### 6.3 `plan.json`\n\n")
 	b.WriteString("```json\n")
 	b.WriteString("{\n")
 	b.WriteString("  \"summary\": \"本轮做了什么\",\n")
@@ -383,3 +484,23 @@ evidence:
 
 原需求没有明确释放时限。
 ` + "\n````"
+
+// requirementExtraKeys lists declared requirement metadata in a stable order
+// so the brief does not reshuffle itself between runs.
+func requirementExtraKeys(extra map[string]string) []string {
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}

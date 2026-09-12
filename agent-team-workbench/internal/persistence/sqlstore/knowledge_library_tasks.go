@@ -61,6 +61,19 @@ func (r *LibraryRepo) GetEventByClientKey(ctx context.Context, libraryID, client
 	return e, err
 }
 
+// GetEvent reads one event row. The worker re-reads the event at head time so
+// the declared requirement text and the payload reach the agent from the
+// durable record rather than from whatever the caller happened to pass.
+func (r *LibraryRepo) GetEvent(ctx context.Context, libraryID, eventID string) (*domain.KnowledgeLibraryEvent, error) {
+	row := r.db(ctx).QueryRowContext(ctx, `SELECT `+eventCols+` FROM knowledge_library_events
+		WHERE library_id=? AND id=?`, libraryID, eventID)
+	e, err := scanEvent(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	return e, err
+}
+
 func (r *LibraryRepo) ListEvents(ctx context.Context, libraryID, status string, limit int) ([]*domain.KnowledgeLibraryEvent, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -129,7 +142,28 @@ func scanTask(row interface{ Scan(...any) error }) (*domain.KnowledgeWriteTask, 
 
 // CreateTaskWithEvent inserts one queued task and points its event at it in
 // the same transaction, so an accepted event always has exactly one task.
+// CreateTask enqueues a task that has no external event behind it, such as an
+// administrator-requested reindex. It is the same FIFO insert as
+// CreateTaskWithEvent, minus the event bookkeeping.
+func (r *LibraryRepo) CreateTask(ctx context.Context, t *domain.KnowledgeWriteTask) error {
+	return r.insertTask(ctx, t)
+}
+
 func (r *LibraryRepo) CreateTaskWithEvent(ctx context.Context, t *domain.KnowledgeWriteTask) error {
+	if err := r.insertTask(ctx, t); err != nil {
+		return err
+	}
+	if t.EventID != "" {
+		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_library_events
+			SET status=?, task_id=?, updated_at=? WHERE id=?`,
+			domain.KnowledgeEventQueued, t.ID, timeNow(), t.EventID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *LibraryRepo) insertTask(ctx context.Context, t *domain.KnowledgeWriteTask) error {
 	if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_write_tasks
 		(id, library_id, seq, kind, event_id, status, base_release_id, target_release_id, snapshot_id,
 		 view_id, focus_json, plan_json, coverage_json, staging_path, work_item_id, current_run_id,
@@ -143,13 +177,6 @@ func (r *LibraryRepo) CreateTaskWithEvent(ctx context.Context, t *domain.Knowled
 		t.MaxAttempts, t.MaxRepairAttempts, t.TurnSeq, t.NextAttemptAt,
 		t.OwnerToken, t.LastError, t.BlockedReason, t.DiagnosticsJSON, t.CreatedAt, t.UpdatedAt, t.FinishedAt); err != nil {
 		return err
-	}
-	if t.EventID != "" {
-		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_library_events
-			SET status=?, task_id=?, updated_at=? WHERE id=?`,
-			domain.KnowledgeEventQueued, t.ID, timeNow(), t.EventID); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -504,13 +531,18 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 		}
 		nextVersion := currentVersion + 1
 		versionID := domain.NewID("kdv_")
+		aliasJSON := doc.EvidenceAliasJSON
+		if aliasJSON == "" {
+			aliasJSON = "{}"
+		}
 		if _, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_document_versions
 			(id, document_id, library_id, version, title, path, content_markdown, frontmatter_json,
-			 content_digest, snapshot_id, task_id, release_id, derived_from_version_id, created_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			 content_digest, snapshot_id, task_id, release_id, evidence_alias_json,
+			 derived_from_version_id, created_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			versionID, docID, in.LibraryID, nextVersion, doc.Title, doc.Path, doc.ContentMarkdown,
 			doc.FrontmatterJSON, doc.ContentDigest, nullString(in.SnapshotID), nullString(in.TaskID),
-			releaseID, "", now); err != nil {
+			releaseID, aliasJSON, "", now); err != nil {
 			return nil, err
 		}
 		for i := range doc.Assertions {
@@ -884,7 +916,7 @@ func (r *LibraryRepo) ReleaseDocuments(ctx context.Context, releaseID, query, ki
 func (r *LibraryRepo) ReleaseDocumentVersion(ctx context.Context, releaseID, documentID string) (*domain.KnowledgeDocumentVersion, error) {
 	row := r.db(ctx).QueryRowContext(ctx, `SELECT v.id, v.document_id, v.library_id, v.version, v.title, v.path,
 		v.content_markdown, v.frontmatter_json, v.content_digest, v.snapshot_id, v.task_id, v.release_id,
-		v.derived_from_version_id, v.created_at
+		v.evidence_alias_json, v.derived_from_version_id, v.created_at
 		FROM knowledge_release_documents rd
 		JOIN knowledge_document_versions v ON v.id = rd.document_version_id
 		WHERE rd.release_id=? AND rd.document_id=?`, releaseID, documentID)
@@ -919,7 +951,7 @@ func (r *LibraryRepo) AssertionsInRelease(ctx context.Context, releaseID string,
 func (r *LibraryRepo) CurrentDocumentVersion(ctx context.Context, documentID string) (*domain.KnowledgeDocumentVersion, error) {
 	row := r.db(ctx).QueryRowContext(ctx, `SELECT v.id, v.document_id, v.library_id, v.version, v.title, v.path,
 		v.content_markdown, v.frontmatter_json, v.content_digest, v.snapshot_id, v.task_id, v.release_id,
-		v.derived_from_version_id, v.created_at
+		v.evidence_alias_json, v.derived_from_version_id, v.created_at
 		FROM knowledge_document_versions v WHERE v.document_id=?
 		ORDER BY v.version DESC LIMIT 1`, documentID)
 	return scanDocumentVersion(row)
@@ -935,7 +967,7 @@ func (r *LibraryRepo) DocumentVersionDetail(ctx context.Context, documentID stri
 	} else {
 		row := r.db(ctx).QueryRowContext(ctx, `SELECT id, document_id, library_id, version, title, path,
 			content_markdown, frontmatter_json, content_digest, snapshot_id, task_id, release_id,
-			derived_from_version_id, created_at FROM knowledge_document_versions
+			evidence_alias_json, derived_from_version_id, created_at FROM knowledge_document_versions
 			WHERE document_id=? AND version=?`, documentID, version)
 		v, err = scanDocumentVersion(row)
 	}
@@ -983,7 +1015,7 @@ func (r *LibraryRepo) relationsForVersion(ctx context.Context, versionID string)
 func (r *LibraryRepo) ListDocumentVersions(ctx context.Context, documentID string) ([]*domain.KnowledgeDocumentVersion, error) {
 	rows, err := r.db(ctx).QueryContext(ctx, `SELECT id, document_id, library_id, version, title, path,
 		content_markdown, frontmatter_json, content_digest, snapshot_id, task_id, release_id,
-		derived_from_version_id, created_at FROM knowledge_document_versions
+		evidence_alias_json, derived_from_version_id, created_at FROM knowledge_document_versions
 		WHERE document_id=? ORDER BY version DESC`, documentID)
 	if err != nil {
 		return nil, err
@@ -1005,7 +1037,8 @@ func scanDocumentVersion(row interface{ Scan(...any) error }) (*domain.Knowledge
 	var snapshotID, taskID, releaseID, derivedFrom *string
 	var created scanTime
 	if err := row.Scan(&v.ID, &v.DocumentID, &v.LibraryID, &v.Version, &v.Title, &v.Path, &v.ContentMarkdown,
-		&v.FrontmatterJSON, &v.ContentDigest, &snapshotID, &taskID, &releaseID, &derivedFrom, &created); err != nil {
+		&v.FrontmatterJSON, &v.ContentDigest, &snapshotID, &taskID, &releaseID, &v.EvidenceAliasJSON,
+		&derivedFrom, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -1102,18 +1135,19 @@ func (r *LibraryRepo) OwnedContentPaths(ctx context.Context, libraryID string) (
 // the record grammar, so they belong to the rebuildable projection: a change
 // in how the grammar serializes must not leave published rows in the old
 // shape.
-func (r *LibraryRepo) ReprojectRecordJSON(ctx context.Context, libraryID string, project func(markdown string) (map[string]struct {
+func (r *LibraryRepo) ReprojectRecordJSON(ctx context.Context, libraryID string, project func(markdown string, aliases map[string]string) (map[string]struct {
 	About, Scope, Evidence string
 }, map[string]string, error)) (int, error) {
-	rows, err := r.db(ctx).QueryContext(ctx, `SELECT id, content_markdown FROM knowledge_document_versions WHERE library_id=?`, libraryID)
+	rows, err := r.db(ctx).QueryContext(ctx, `SELECT id, content_markdown, evidence_alias_json
+		FROM knowledge_document_versions WHERE library_id=?`, libraryID)
 	if err != nil {
 		return 0, err
 	}
-	type version struct{ id, markdown string }
+	type version struct{ id, markdown, aliases string }
 	var versions []version
 	for rows.Next() {
 		var v version
-		if err := rows.Scan(&v.id, &v.markdown); err != nil {
+		if err := rows.Scan(&v.id, &v.markdown, &v.aliases); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -1126,7 +1160,11 @@ func (r *LibraryRepo) ReprojectRecordJSON(ctx context.Context, libraryID string,
 	rows.Close()
 	updated := 0
 	for _, v := range versions {
-		assertions, relations, err := project(v.markdown)
+		var aliases map[string]string
+		if err := json.Unmarshal([]byte(v.aliases), &aliases); err != nil {
+			aliases = map[string]string{}
+		}
+		assertions, relations, err := project(v.markdown, aliases)
 		if err != nil {
 			return updated, err
 		}

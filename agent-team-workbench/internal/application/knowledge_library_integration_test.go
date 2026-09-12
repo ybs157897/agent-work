@@ -374,9 +374,22 @@ func TestKnowledgeLibraryInitializePublishesAndAnswers(t *testing.T) {
 		t.Fatalf("library index missing: %v", err)
 	}
 
-	// The search projection is derived: rebuilding it keeps the same answers.
-	if _, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID); err != nil {
+	// The search projection is derived: the queued rebuild reproduces the same
+	// answers from the published versions.
+	reindexReceipt, err := h.svc.ReindexKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !reindexReceipt.Accepted || reindexReceipt.Status != domain.KnowledgeTaskQueued {
+		t.Fatalf("reindex must be enqueued, not executed inline: %+v", reindexReceipt)
+	}
+	h.tick(t)
+	reindexTask, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, reindexReceipt.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reindexTask.Status != domain.KnowledgeTaskCompleted {
+		t.Fatalf("queued reindex did not run: %+v (%s)", reindexTask, reindexTask.LastError)
 	}
 	again, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
 		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
@@ -1588,13 +1601,13 @@ func TestKnowledgeSourceResolvedSurvivesNormalEdit(t *testing.T) {
 	// exactly what the admin form does.
 	updated, err := h.svc.UpdateKnowledgeSource(ctx, h.wsID, created.ID, created.Version,
 		application.KnowledgeLibrarySourceInput{
-			Name: created.Name, Kind: created.Kind, RepoPath: created.RepoPath, DefaultRef: "release",
+			Name: created.Name, Kind: created.Kind, RepoPath: created.RepoPath, DefaultRef: "main",
 			Usages: created.Usages,
 		})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.DefaultRef != "release" {
+	if updated.DefaultRef != "main" {
 		t.Fatalf("the edited field did not change: %+v", updated)
 	}
 	if len(updated.Usages) != 2 || updated.Usages[0].ArtifactState() != "declared" ||

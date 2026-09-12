@@ -45,9 +45,11 @@ type KnowledgeLibraryRepo interface {
 
 	InsertEvent(ctx context.Context, e *domain.KnowledgeLibraryEvent) (bool, error)
 	GetEventByClientKey(ctx context.Context, libraryID, clientKey string) (*domain.KnowledgeLibraryEvent, error)
+	GetEvent(ctx context.Context, libraryID, eventID string) (*domain.KnowledgeLibraryEvent, error)
 	ListEvents(ctx context.Context, libraryID, status string, limit int) ([]*domain.KnowledgeLibraryEvent, error)
 	UpdateEventStatus(ctx context.Context, eventID string, status domain.KnowledgeEventStatus, taskID string) error
 
+	CreateTask(ctx context.Context, task *domain.KnowledgeWriteTask) error
 	CreateTaskWithEvent(ctx context.Context, task *domain.KnowledgeWriteTask) error
 	HeadTask(ctx context.Context, libraryID string) (*domain.KnowledgeWriteTask, error)
 	TaskByWorkItem(ctx context.Context, workItemID string) (*domain.KnowledgeWriteTask, error)
@@ -82,7 +84,7 @@ type KnowledgeLibraryRepo interface {
 	ReleaseGraph(ctx context.Context, libraryID, releaseID string) ([]*domain.KnowledgeEntity, []domain.KnowledgeAssertionRelation, []*domain.KnowledgeDocument, error)
 	ListBridges(ctx context.Context, libraryID, releaseID string) ([]*domain.KnowledgeBridgeView, error)
 	OwnedContentPaths(ctx context.Context, libraryID string) ([]string, error)
-	ReprojectRecordJSON(ctx context.Context, libraryID string, project func(markdown string) (map[string]struct {
+	ReprojectRecordJSON(ctx context.Context, libraryID string, project func(markdown string, aliases map[string]string) (map[string]struct {
 		About, Scope, Evidence string
 	}, map[string]string, error)) (int, error)
 	RebuildSearchIndex(ctx context.Context, libraryID string) (int, error)
@@ -99,8 +101,11 @@ type PublishDocument struct {
 	ContentMarkdown string
 	FrontmatterJSON string
 	ContentDigest   string
-	Assertions      []domain.KnowledgeAssertion
-	Relations       []domain.KnowledgeAssertionRelation
+	// EvidenceAliasJSON records the staged-key -> canonical-ID map so a later
+	// repair or historical read can resolve the Markdown's own citations.
+	EvidenceAliasJSON string
+	Assertions        []domain.KnowledgeAssertion
+	Relations         []domain.KnowledgeAssertionRelation
 }
 
 // PublishEntity is one entity to upsert as part of a release.
