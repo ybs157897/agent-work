@@ -228,7 +228,7 @@ theme attribute.
 
 ## Knowledge library / librarian admin
 
-`/knowledge` is the 资料库（知识管理员）management page. It keeps five dense
+`/library` is the 资料库（知识管理员）management page. It keeps five dense
 tabs in one page shell — 资料库与来源, 初始化与更新, 知识浏览, 查询与展开,
 版本与队列 — with an accessible `tablist` whose active tab is part of the URL.
 The library root, release counters, coverage, freshness, and queue state are
@@ -251,7 +251,7 @@ the old item/version knowledge store. Chat keeps only its code-workspace split
 (`chat-split-*`, defined in `components/code-workspace/code-workspace.css`),
 whose narrow-container tabs switch between the code pane and the conversation.
 No canvas, graph, or excerpt-reference surface may be reintroduced under
-`/chat`; library reading and evidence inspection belong to `/knowledge`.
+`/chat`; library reading and evidence inspection belong to `/library`.
 
 ## Interaction and accessibility
 

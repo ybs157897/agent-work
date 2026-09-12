@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { to: '/tasks', icon: KanbanSquare, label: '任务看板' },
   { to: '/chat', icon: MessageSquare, label: '对话' },
   { to: '/models', icon: Cpu, label: '模型' },
-  { to: '/knowledge', icon: BookOpen, label: '知识库' },
+  { to: '/library', icon: BookOpen, label: '知识库' },
   { to: '/logs', icon: ScrollText, label: '日志' },
   { to: '/settings', icon: Settings, label: '设置' },
 ];
@@ -26,7 +26,7 @@ const BREADCRUMBS: Record<string, string> = {
   '/tasks': '任务看板',
   '/chat': '对话',
   '/models': '模型',
-  '/knowledge': '知识库',
+  '/library': '知识库',
   '/logs': '日志',
   '/settings': '设置',
 };

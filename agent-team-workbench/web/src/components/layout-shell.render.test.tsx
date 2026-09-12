@@ -42,8 +42,8 @@ describe('global chat navigation', () => {
   });
 
   it('exposes the knowledge librarian as a first-class workspace destination', () => {
-    const html = renderShell('/knowledge');
-    expect(html).toMatch(/<a(?=[^>]*href="\/knowledge")(?=[^>]*aria-current="page")[^>]*>/);
+    const html = renderShell('/library');
+    expect(html).toMatch(/<a(?=[^>]*href="\/library")(?=[^>]*aria-current="page")[^>]*>/);
     expect(html).toContain('知识库');
     expect(html).toContain('workbench-main-surface');
     expect(html).not.toContain('mesh-bg');
