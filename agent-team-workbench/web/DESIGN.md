@@ -200,7 +200,9 @@ document that explicitly declares `languagegui/v1` is recovered through the
 same validated LanguageGUI renderer, in its original position. Ordinary JSON,
 unknown versions, and code examples keep their literal meaning. Recognized
 incomplete output is buffered while streaming; invalid final output remains
-available in a code panel. This is a display projection: stored messages and
+available in a code panel. Final LanguageGUI output with complete blocks may
+recover only a missing outer `}` or `]}` before the same whitelist validation;
+incomplete block contents are never filled in. This is a display projection: stored messages and
 copied source text remain unchanged, and canonical blocks retain precedence.
 
 The global light/dark mode also controls syntax and Mermaid contrast. Streaming
@@ -274,7 +276,10 @@ margins and grid columns at 1024px and 640px. The primary sidebar remains
 visible at every supported width using its compact widths. Chat's inner Agent
 and conversation rail may stack its controls at narrow widths so the main
 reading surface retains usable space; it must not hide the primary shell nav.
-Code and table blocks scroll horizontally rather than forcing tiny text.
+Code and Markdown tables may scroll horizontally rather than forcing tiny text.
+Structured LanguageGUI tables wrap long cell values within their reading rail;
+at container widths of 640px or less, each row stacks its labeled fields while
+retaining table semantics. They do not require horizontal scrolling.
 
 ## Forbidden presentation patterns
 
