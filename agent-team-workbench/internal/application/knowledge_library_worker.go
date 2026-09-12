@@ -326,7 +326,13 @@ func (s *Service) captureSnapshot(ctx context.Context, lib *domain.KnowledgeLibr
 		if err != nil {
 			return nil, nil, fmt.Errorf("%w: 本次任务冻结的需求原文不可读：%v", domain.ErrValidation, err)
 		}
+		// The binding carries the source's own name, so an inline payload copy
+		// is visibly a different source from the referenced document: the
+		// brief, the evidence and the ledger all name the same thing.
 		sourceName := "requirement:" + input.RequirementID
+		if source, err := s.store.Library().GetSource(ctx, lib.ID, input.SourceID); err == nil {
+			sourceName = source.Name
+		}
 		binding := requirementBinding(snapshot.ID, input, sourceName)
 		snapshot.Bindings = append(snapshot.Bindings, domain.KnowledgeSnapshotBinding{
 			ID: binding.ID, SnapshotID: snapshot.ID, SourceID: input.SourceID, SourceName: sourceName,

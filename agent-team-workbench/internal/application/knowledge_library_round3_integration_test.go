@@ -910,6 +910,25 @@ func TestKnowledgeInlineRequirementKeepsItsGap(t *testing.T) {
 	if !strings.Contains(brief, source.Name) {
 		t.Fatalf("the brief must name the inline binding: %s", source.Name)
 	}
+	// The snapshot binding must carry the inline source's own name, so the
+	// evidence collected from it is visibly not the referenced document.
+	snapshot, err := h.store.Library().GetSnapshot(ctx, task.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, b := range snapshot.Bindings {
+		if b.SourceID != input.SourceID {
+			continue
+		}
+		found = true
+		if b.SourceName != source.Name || b.SourceKind != string(domain.SourceKindRequirement) {
+			t.Fatalf("the inline binding must keep its own source identity: %+v", b)
+		}
+	}
+	if !found {
+		t.Fatalf("the frozen inline input must appear as a binding: %+v", snapshot.Bindings)
+	}
 }
 
 // TestKnowledgeQueryCoverageIsHonest covers F4b: a search that returned every
