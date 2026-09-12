@@ -40,10 +40,10 @@ describe('explicit fresh conversation entry', () => {
     const run = { ...oldRun, status };
     useChatStore.setState({ runs: [run] });
     useRunsStore.setState({ runs: { run_old: run } });
-    const savedOld = { composer: { draft: '旧会话未发送内容', reference: null }, queue: [{ text: '旧排队', clientKey: 'q:old' }] };
+    const savedOld = { composer: { draft: '旧会话未发送内容' }, queue: [{ text: '旧排队', clientKey: 'q:old' }] };
     writeChatWorkspaceState('ws_fresh', 'agent_librarian', oldChat.id, savedOld);
     writeChatWorkspaceState('ws_fresh', 'agent_librarian', null, {
-      composer: { draft: '上一次未发送的新会话草稿', reference: null }, queue: [{ text: '旧新建队列', clientKey: 'q:draft' }],
+      composer: { draft: '上一次未发送的新会话草稿' }, queue: [{ text: '旧新建队列', clientKey: 'q:draft' }],
     });
 
     vi.setSystemTime(new Date('2026-09-09T12:00:01Z'));
@@ -56,7 +56,7 @@ describe('explicit fresh conversation entry', () => {
     });
     expect(useRunsStore.getState().runs.run_old).toEqual(run);
     expect(readChatWorkspaceState('ws_fresh', 'agent_librarian', oldChat.id)).toMatchObject(savedOld);
-    expect(readChatWorkspaceState('ws_fresh', 'agent_librarian', null)).toMatchObject({ composer: { draft: '', reference: null }, queue: [] });
+    expect(readChatWorkspaceState('ws_fresh', 'agent_librarian', null)).toMatchObject({ composer: { draft: '' }, queue: [] });
     expect(readChatSelection('ws_fresh')).toEqual({ agentId: 'agent_librarian', conversationId: null });
     expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
   });

@@ -1277,7 +1277,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
     if (!state.workspaceId || !state.agentId) return;
     const saved = readChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId);
     writeChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId, {
-      composer: saved?.composer ?? { draft: '', reference: null },
+      composer: saved?.composer ?? { draft: '' },
       queue: state.queue,
     });
   };
@@ -1327,7 +1327,7 @@ export const useChatStore = create<ChatStore>()((set, get) => {
       const workspaceId = useWorkspaceStore.getState().workspace?.id ?? get().workspaceId;
       if (!workspaceId) return;
       writeChatWorkspaceState(workspaceId, agentId, null, {
-        composer: { draft: '', reference: null }, queue: [],
+        composer: { draft: '' }, queue: [],
         analysisDraft: null, decisionDraft: null, publicationDraft: null,
       });
       // Even the same Agent must invalidate pending history and send responses.

@@ -35,11 +35,6 @@ describe('humanizeToolName', () => {
 });
 
 describe('toolChipModel', () => {
-  it('把真实知识调用显示为管理员处理，不把工具完成冒充成已入库', () => {
-    const message = msg({ key: 'knowledge', runId: 'r1', kind: 'tool', at: '', tool: 'atw_knowledge', toolStatus: 'running', text: '查询知识' });
-    expect(toolChipModel(message)).toMatchObject({ title: '知识库管理员', summary: '知识库管理员正在处理' });
-    expect(toolChipModel({ ...message, toolStatus: 'success' }).summary).toBe('知识库管理员已返回结果');
-  });
   it('keeps the human title and terminal state stable for a chip', () => {
     const message = msg({ key: 'chip', runId: 'r1', kind: 'tool', at: '', tool: 'bash', toolStatus: 'failed', text: '调用工具 bash：pnpm test' });
     expect(toolChipModel(message)).toMatchObject({ title: 'Bash', summary: 'Command failed', state: 'error' });

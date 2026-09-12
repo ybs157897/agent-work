@@ -86,7 +86,7 @@ layout:
 This is a multi-agent control plane. Its visual language follows the production
 Agent正文: a quiet neutral canvas, readable sans-serif text, compact controls,
 raised white or dark surfaces, and one restrained blue action color. The shell,
-dashboard, configuration pages, task board, knowledge reader, and Chat share the
+dashboard, configuration pages, task board, knowledge library admin, and Chat share the
 same semantic variables in both modes.
 
 The active palette is defined in `src/index.css`. `tailwind.config.js` exposes
@@ -226,35 +226,32 @@ Drawer; only the top layer remains interactive and lower layers are inert and
 `aria-hidden`. Task dialogs retain the same global mode through the document
 theme attribute.
 
-## Knowledge reader
+## Knowledge library / librarian admin
 
-`/knowledge` is read-only. It uses type navigation, compact result lists, a
-wide Agent正文 reading surface, real Markdown headings as the table of
-contents, navigable sources and relations, version links, and a handoff into
-the shared Chat. There is no knowledge-specific palette, ingest form, or
-second editor surface. The full interaction and data contract lives in
-`docs/product/knowledge-reading.md`.
+`/knowledge` is the 资料库（知识管理员）management page. It keeps five dense
+tabs in one page shell — 资料库与来源, 初始化与更新, 知识浏览, 查询与展开,
+版本与队列 — with an accessible `tablist` whose active tab is part of the URL.
+The library root, release counters, coverage, freshness, and queue state are
+shown as data plus status text; raw internals (staging paths, plan JSON,
+diagnostics, projection digests) stay inside the diagnostics surfaces of the
+relevant tab. Updates are asynchronous by contract, so the page never presents
+an accepted event as an applied change: it shows the receipt, then the queue.
+Evidence is opened as a right-hand Drawer with locator, excerpt, commit, dirty
+state, and digest; it is the only "open the original evidence" path. The tab
+geometry is Tailwind semantic utilities plus `workbench-panel`; there is no
+knowledge-specific palette and no second editor surface. The full interaction
+and data contract lives in
+`notes/implemented/architecture/2026-09-12-knowledge-library-rebuild.md`.
 
-## Agent knowledge canvas
+## Retired Agent knowledge canvas
 
-The Product Agent workspace places its knowledge reader in the center and the
-existing Chat on the right. Document and graph views share the same knowledge
-items, source links, versions, and `AgentOutput` renderer. React Flow is a
-spatial reading layer, loaded only for the graph view; its surfaces, controls,
-nodes, and edges resolve the global semantic tokens in both modes.
-
-The primary workbench sidebar stays visible. The inner Agent/conversation rail
-can be opened from the workspace toolbar. When the available content width is
-too small for both document and Chat, explicit view buttons switch between
-them without unmounting the active conversation. A selected excerpt is shown
-as a removable, versioned reference above the existing composer; selecting it
-does not send a message. Reading position and layout preferences are scoped
-to the workspace and stable Agent ID.
-
-The HTML interaction proposal is not a palette source. Paper colors, ink
-ornaments, calligraphic type, and vermilion accents from early prototypes must
-not be reintroduced. See `docs/product/product-agent-canvas.md` for the
-ownership, permission, failure-recovery, and acceptance contract.
+The former Product Agent knowledge canvas and its Chat handoff (`?canvas=knowledge`,
+`?knowledge=` citation trailer, `knowledge-canvas/`) are retired together with
+the old item/version knowledge store. Chat keeps only its code-workspace split
+(`chat-split-*`, defined in `components/code-workspace/code-workspace.css`),
+whose narrow-container tabs switch between the code pane and the conversation.
+No canvas, graph, or excerpt-reference surface may be reintroduced under
+`/chat`; library reading and evidence inspection belong to `/knowledge`.
 
 ## Interaction and accessibility
 

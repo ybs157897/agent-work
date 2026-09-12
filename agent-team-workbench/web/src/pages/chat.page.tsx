@@ -1,4 +1,4 @@
-import { ArchiveRestore, BookOpen, Boxes, Code2, Columns2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
+import { ArchiveRestore, BookOpen, Boxes, Code2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
@@ -6,8 +6,6 @@ import { ChatAnalysisPanel } from '../components/chat/chat-analysis-panel';
 import { ChatDecisionPanel } from '../components/chat/chat-decision-panel';
 import { TaskDraftPreview } from '../components/chat/task-draft-preview';
 import { ChatSourceShelf } from '../components/chat/chat-source-shelf';
-import { KnowledgeChatHandoff, type KnowledgeChatSeed } from '../components/chat/knowledge-chat-handoff';
-import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas';
 import { CodeWorkspace } from '../components/code-workspace/code-workspace';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
@@ -30,7 +28,7 @@ import { usePublicationStore } from '../stores/publication.store';
 import { useWorkbenchThemeStore, type WorkbenchTheme } from '../stores/workbench-theme.store';
 import { buildMessages, conversationLabel, aggregateRunStream, formatTokenUsage, hideLiveRunDrafts, isRunLive, useChatStore, ACTIVE, TERMINAL, type ChatAttachmentInput, type ChatMessage } from '../stores/chat.store';
 import { useChatPreferencesStore } from '../stores/chat-preferences.store';
-import { readChatWorkspaceState, readLegacyTaskIntakeRecovery, useChatWorkspaceStorageNotice, writeChatWorkspaceState, type LegacyTaskIntakeRecovery, type LegacyTaskIntakeRecoveryEntry } from '../stores/chat-workspace-state';
+import { readChatWorkspaceState, readLegacyTaskIntakeRecovery, useChatWorkspaceStorageNotice, writeChatWorkspaceState, type ChatComposerDraft, type LegacyTaskIntakeRecovery, type LegacyTaskIntakeRecoveryEntry } from '../stores/chat-workspace-state';
 import { mergeApprovalSegments, transcriptSegmentKey } from '../utils/approval-transcript';
 import { conversationStatusDotClass, suggestedPrompts } from '../utils/chat-session-visuals';
 import { useRunsStore } from '../stores/runs.store';
@@ -39,8 +37,6 @@ import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
 import { isChatPath } from '../utils/route-layout';
-import { buildCanvasMessage, canReadAgentKnowledge, readCanvasPreference, referenceBelongsTo, restoreCanvasComposer, writeCanvasPreference, type CanvasComposerDraft, type KnowledgeCanvasReference } from '../utils/agent-knowledge-canvas';
-import './chat-knowledge-workspace.css';
 import { deriveChatDock } from '../utils/derive-chat-dock';
 import {
   buildTranscriptSegments,
@@ -225,19 +221,13 @@ export default function ChatPage() {
     return next;
   }, [workspaceId]);
   const currentAgent = agents.find((agent) => agent.id === agentId);
-  const [canvasOverrides, setCanvasOverrides] = useState<Record<string, boolean>>({});
   const [codeOverrides, setCodeOverrides] = useState<Record<string, boolean>>({});
-  const [canvasNavigationOpen, setCanvasNavigationOpen] = useState(false);
+  const [workspaceNavigationOpen, setWorkspaceNavigationOpen] = useState(false);
   const [narrowPanel, setNarrowPanel] = useState<'document' | 'chat'>('document');
-  const canvasKey = `${workspaceId ?? ''}:${agentId ?? ''}`;
   const codeKey = `${workspaceId ?? ''}:${agentId ?? ''}:${conversationId ?? 'new'}`;
-  const canvasAvailable = !!currentAgent && isUserManagedAgent(currentAgent);
   const codeAvailable = workspaceProjectReady && !!currentAgent && currentAgent.role === 'developer' && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
   const codeEnabled = codeAvailable && !!workspaceId && (codeOverrides[codeKey]
     ?? (searchParams.get('canvas') === 'code' && searchParams.get('agent') === agentId ? true : false));
-  const canvasEnabled = canvasAvailable && !!workspaceId && !codeEnabled && (canvasOverrides[canvasKey]
-    ?? (searchParams.get('canvas') === 'knowledge' && searchParams.get('agent') === agentId
-      ? true : readCanvasPreference(workspaceId, currentAgent)));
   const codeRunsLoaded = !conversationId || runsLoadedConversationId === conversationId;
 
   useEffect(() => {
@@ -297,32 +287,14 @@ export default function ChatPage() {
       next.delete('agent');
       next.delete('c');
       next.delete('new');
-      next.delete('knowledge');
-      next.delete('version');
       next.delete('canvas');
       setSearchParams(next, { replace: true });
     }
   }, [ownsChatScope, restoreWorkspace, searchParams, setSearchParams, workspaceId]);
-  const toggleCanvas = () => {
-    if (!workspaceId || !agentId) return;
-    const enabled = !canvasEnabled;
-    setCanvasOverrides((current) => ({ ...current, [canvasKey]: enabled }));
-    setCodeOverrides((current) => ({ ...current, [codeKey]: false }));
-    writeCanvasPreference(workspaceId, agentId, enabled);
-    const params = new URLSearchParams(searchParams);
-    if (workspaceId) params.set('ws', workspaceId);
-    params.delete('canvas');
-    setSearchParams(params, { replace: true });
-    setCanvasNavigationOpen(false);
-    setNarrowPanel('document');
-  };
   const toggleCode = () => {
     if (!workspaceId || !agentId || !codeAvailable) return;
     const enabled = !codeEnabled;
     setCodeOverrides((current) => ({ ...current, [codeKey]: enabled }));
-    if (enabled) {
-      setCanvasOverrides((current) => ({ ...current, [canvasKey]: false }));
-    }
     const params = new URLSearchParams(searchParams);
     if (workspaceId) params.set('ws', workspaceId);
     if (enabled) {
@@ -332,30 +304,14 @@ export default function ChatPage() {
       params.delete('canvas');
     }
     setSearchParams(params, { replace: true });
-    setCanvasNavigationOpen(false);
+    setWorkspaceNavigationOpen(false);
     setNarrowPanel('document');
   };
-  const knowledgeQuery = searchParams.get('knowledge');
   const freshConversation = searchParams.get('new') === '1';
-  const requestedConversation = searchParams.get('c');
-  const knowledgeKey = `${workspaceId ?? ''}:${generation}:${searchParams.get('agent') ?? ''}:${knowledgeQuery ?? ''}:${searchParams.get('version') ?? ''}:${requestedConversation ?? ''}`;
-  const knowledgeKeyRef = useRef(knowledgeKey);
-  useLayoutEffect(() => { knowledgeKeyRef.current = knowledgeKey; }, [knowledgeKey]);
-  const [preparedKnowledge, setPreparedKnowledge] = useState('');
-  const prepareKnowledge = useCallback(async (seed: KnowledgeChatSeed) => {
-    if (useChatStore.getState().agentId !== seed.agentId) selectAgent(seed.agentId);
-    const opened = await openConversation(requestedConversation);
-    if (knowledgeKeyRef.current !== knowledgeKey || !isChatNavigationCurrent()) return;
-    if (!opened) throw new Error('历史对话或运行记录暂时无法读取。请重试，或返回知识库重新打开。');
-    setSidebarView('chats');
-    setPromptSeed(requestedConversation ? null : { id: Date.now(), text: seed.text });
-    setPreparedKnowledge(knowledgeKey);
-    urlBooted.current = true;
-  }, [isChatNavigationCurrent, selectAgent, openConversation, knowledgeKey, requestedConversation]);
 
   // URL 初始值（如从 Agent 详情「发起对话」跳入）。
   useEffect(() => {
-    if (!ownsChatScope || urlBooted.current || (knowledgeQuery !== null && !freshConversation)) return;
+    if (!ownsChatScope || urlBooted.current) return;
     const qAgent = searchParams.get('agent');
     const qConv = searchParams.get('c');
     if (qAgent && agents.length === 0) return;
@@ -365,8 +321,6 @@ export default function ChatPage() {
       next.delete('agent');
       next.delete('c');
       next.delete('new');
-      next.delete('knowledge');
-      next.delete('version');
       next.delete('canvas');
       setSearchParams(next, { replace: true });
       urlBooted.current = true;
@@ -399,11 +353,11 @@ export default function ChatPage() {
       });
     }
     urlBooted.current = true;
-  }, [knowledgeQuery, freshConversation, searchParams, agents, agentId, selectAgent, startConversation, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
+  }, [freshConversation, searchParams, agents, agentId, selectAgent, startConversation, openConversation, setSearchParams, workspaceId, ownsChatScope, isChatNavigationCurrent]);
 
   // 新会话创建时同步 ?c=，便于刷新后恢复。
   useEffect(() => {
-    if (!ownsChatScope || freshConversation || !urlBooted.current || !agentId || (knowledgeQuery !== null && preparedKnowledge !== knowledgeKey)) return;
+    if (!ownsChatScope || freshConversation || !urlBooted.current || !agentId) return;
     const current = useChatStore.getState();
     if (current.agentId !== agentId || current.conversationId !== conversationId) return;
     const qAgent = searchParams.get('agent');
@@ -419,20 +373,19 @@ export default function ChatPage() {
       return;
     }
     if (qAgent === agentId && !qConv) return;
-    if (knowledgeQuery !== null && qConv) return;
     next.delete('c');
     setSearchParams(next, { replace: true });
-  }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, knowledgeQuery, preparedKnowledge, knowledgeKey, workspaceId, ownsChatScope]);
+  }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, workspaceId, ownsChatScope]);
 
   const pick = (id: string) => {
     selectAgent(id);
     setSidebarView('chats');
     setPromptSeed(null);
-    setCanvasNavigationOpen(false);
+    setWorkspaceNavigationOpen(false);
     setSearchParams(chatNavigationParams(id), { replace: true });
   };
   return (
-    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${canvasEnabled ? ' chat-knowledge-page' : codeEnabled ? ' chat-code-page' : ''}`} data-theme={chatTheme} data-navigation-open={canvasNavigationOpen}>
+    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}`} data-theme={chatTheme} data-navigation-open={workspaceNavigationOpen}>
       {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
@@ -483,11 +436,8 @@ export default function ChatPage() {
       </aside>
 
       {/* 右侧对话区 */}
-      <div className="chat-languagegui-main chat-knowledge-host flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {knowledgeQuery !== null && <KnowledgeChatHandoff query={searchParams.toString()} onReady={prepareKnowledge} />}
-        {knowledgeQuery !== null && preparedKnowledge !== knowledgeKey ? (
-          <div className="flex flex-1 items-center justify-center p-comfortable text-body text-text-secondary">知识引用读取完成后，可以在此编辑问题。</div>
-        ) : agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} canvasAvailable={canvasAvailable} canvasEnabled={canvasEnabled} onToggleCanvas={toggleCanvas} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} navigationOpen={canvasNavigationOpen} onToggleNavigation={() => setCanvasNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
+      <div className="chat-languagegui-main chat-split-host flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} navigationOpen={workspaceNavigationOpen} onToggleNavigation={() => setWorkspaceNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
@@ -759,13 +709,10 @@ function ConversationGroup({
   );
 }
 
-function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvailable, canvasEnabled, onToggleCanvas, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
   initialPrompt: string;
   chatTheme: WorkbenchTheme;
   onToggleTheme: () => void;
-  canvasAvailable: boolean;
-  canvasEnabled: boolean;
-  onToggleCanvas: () => void;
   codeAvailable: boolean;
   codeEnabled: boolean;
   onToggleCode: () => void;
@@ -776,9 +723,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   onNarrowPanelChange: (panel: 'document' | 'chat') => void;
 }) {
   const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
-  const workspaceName = useWorkspaceStore((state) => state.workspace?.name);
   const switchingWorkspace = useWorkspaceStore((state) => state.switching);
-  const userRole = useWorkspaceStore((state) => state.me?.role);
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
   const conversations = useChatStore((s) => s.conversations);
@@ -864,25 +809,18 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const savedComposer = workspaceId && agentId
     ? readChatWorkspaceState(workspaceId, agentId, conversationId)?.composer
     : undefined;
-  const [composer, setComposerState] = useState<CanvasComposerDraft>(initialPrompt
-    ? { draft: initialPrompt, reference: null }
-    : savedComposer ?? { draft: '', reference: null });
+  const [composer, setComposerState] = useState<ChatComposerDraft>(initialPrompt
+    ? { draft: initialPrompt }
+    : savedComposer ?? { draft: '' });
   const [composerAttachments, setComposerAttachments] = useState<readonly PromptAttachment[]>([]);
   const [attachmentSendPending, setAttachmentSendPending] = useState(false);
   const attachmentSendPendingRef = useRef(false);
   const [attachmentClearRequest, setAttachmentClearRequest] = useState(0);
   const [analysisLaunchPending, setAnalysisLaunchPending] = useState(false);
-  const { draft, reference: knowledgeReference } = composer;
+  const { draft } = composer;
   const setDraft = useCallback((value: string | ((previous: string) => string)) => {
     setComposerState((current) => {
       const next = { ...current, draft: typeof value === 'function' ? value(current.draft) : value };
-      if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: next, queue: useChatStore.getState().queue });
-      return next;
-    });
-  }, [agentId, conversationId, workspaceId]);
-  const setKnowledgeReference = useCallback((reference: KnowledgeCanvasReference | null) => {
-    setComposerState((current) => {
-      const next = { ...current, reference };
       if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: next, queue: useChatStore.getState().queue });
       return next;
     });
@@ -891,13 +829,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   const [selectedSwarmMember, setSelectedSwarmMember] = useState<SwarmMemberSelection | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const onKnowledgeReference = useCallback((reference: KnowledgeCanvasReference) => {
-    const currentWorkspace = useWorkspaceStore.getState().workspace?.id;
-    const currentAgent = useChatStore.getState().agentId;
-    if (!currentWorkspace || !currentAgent || !referenceBelongsTo(reference, currentWorkspace, currentAgent)) return;
-    setKnowledgeReference(reference);
-    onNarrowPanelChange('chat');
-  }, [setKnowledgeReference, onNarrowPanelChange]);
   const followStreamRef = useRef(true);
   const approvalAnchorsRef = useRef<Record<string, string>>({});
   const [approvalAnchors, setApprovalAnchors] = useState<Record<string, string>>({});
@@ -917,7 +848,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
       const restored = workspaceId && agentId
         ? readChatWorkspaceState(workspaceId, agentId, conversationId)?.composer
         : undefined;
-      setComposerState(restored ?? { draft: '', reference: null });
+      setComposerState(restored ?? { draft: '' });
       if (!attachmentSendPendingRef.current) setComposerAttachments([]);
     }
     setWorkspaceOpen(false);
@@ -934,9 +865,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   useEffect(() => {
     if (initialPrompt) textareaRef.current?.focus();
   }, [initialPrompt]);
-  useEffect(() => {
-    if (knowledgeReference) textareaRef.current?.focus();
-  }, [knowledgeReference]);
 
   const agent = agents.find((a) => a.id === agentId);
   const conversation = conversations.find((c) => c.id === conversationId);
@@ -1372,19 +1300,17 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
     const text = draft.trim();
     const messageText = text || options.fallbackText || '';
     if (!messageText && composerAttachments.length === 0) return false;
-    const reference = knowledgeReference && workspaceId && agentId && referenceBelongsTo(knowledgeReference, workspaceId, agentId) ? knowledgeReference : null;
-    const message = buildCanvasMessage(messageText, reference);
-    if (canvasEnabled || codeEnabled) onNarrowPanelChange('chat');
+    if (codeEnabled) onNarrowPanelChange('chat');
     const attachmentInputs: ChatAttachmentInput[] = composerAttachments.map((attachment) => ({ key: attachment.key, file: attachment.file }));
     if (attachmentInputs.length > 0) {
       attachmentSendPendingRef.current = true;
       setAttachmentSendPending(true);
     }
-    setComposerState({ draft: '', reference: null });
-    if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: { draft: '', reference: null }, queue: useChatStore.getState().queue });
+    setComposerState({ draft: '' });
+    if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: { draft: '' }, queue: useChatStore.getState().queue });
     let retained = false;
     try {
-      retained = await send(message, attachmentInputs, options.outputContract ? { outputContract: options.outputContract } : undefined);
+      retained = await send(messageText, attachmentInputs, options.outputContract ? { outputContract: options.outputContract } : undefined);
       if (retained) {
         if (options.clearAttachmentsAfterSend && attachmentInputs.length > 0) setAttachmentClearRequest((value) => value + 1);
         const activeConversationId = useChatStore.getState().conversationId;
@@ -1400,7 +1326,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
       }
     }
     if (!retained) setComposerState((current) => {
-      const next = restoreCanvasComposer(current, { draft: text, reference });
+      const restoredText = current.draft ? `${text}\n\n${current.draft}` : text;
+      const next = { ...current, draft: restoredText };
       const recoveryConversationId = useChatStore.getState().conversationId;
       if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, recoveryConversationId, { composer: next, queue: useChatStore.getState().queue });
       return next;
@@ -1444,28 +1371,23 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
   };
 
   return (
-    <div className="knowledge-chat-workspace flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="chat-split-workspace flex min-h-0 flex-1 flex-col overflow-hidden">
       {storageNotice && <p className="mx-auto w-full max-w-[920px] shrink-0 border-b border-status-warning/30 bg-status-warning/5 px-comfortable py-tight text-caption text-status-warning" role="status">{storageNotice}</p>}
-      {(canvasEnabled || codeEnabled) && (
-        <div className="knowledge-chat-mobile-tabs" role="group" aria-label={codeEnabled ? '代码工作区视图' : '产品工作区视图'}>
-          {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
-          <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}>{codeEnabled ? <Code2 className="h-4 w-4" aria-hidden /> : <BookOpen className="h-4 w-4" aria-hidden />}{codeEnabled ? '代码' : '文档'}</button>
+      {codeEnabled && (
+        <div className="chat-split-tabs" role="group" aria-label="代码工作区视图">
+          <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>
+          <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}><Code2 className="h-4 w-4" aria-hidden />代码</button>
           <button type="button" aria-pressed={narrowPanel === 'chat'} onClick={() => onNarrowPanelChange('chat')}><MessageSquare className="h-4 w-4" aria-hidden />对话</button>
-          <button type="button" onClick={codeEnabled ? onToggleCode : onToggleCanvas}>{codeEnabled ? '关闭代码' : '关闭画布'}</button>
+          <button type="button" onClick={onToggleCode}>关闭代码</button>
         </div>
       )}
-    <div className={`knowledge-chat-layout flex flex-1 min-h-0 overflow-hidden${canvasEnabled || codeEnabled ? ' knowledge-chat-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
-      {canvasEnabled && workspaceId && agentId && (
-        <section className="knowledge-chat-document" aria-label="Agent 知识画布">
-          <KnowledgeCanvas workspaceId={workspaceId} workspaceName={workspaceName} agentId={agentId} agentName={agent?.name ?? 'Agent'} requesterAgentId={canReadAgentKnowledge(userRole) ? agentId : undefined} onReference={onKnowledgeReference} refreshKey={latestRun && TERMINAL.has(latestRun.status) ? `${latestRun.id}:${latestRun.status}` : ''} />
-        </section>
-      )}
+    <div className={`chat-split-layout flex flex-1 min-h-0 overflow-hidden${codeEnabled ? ' chat-split-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
       {codeEnabled && workspaceId && agentId && (
-        <section className="knowledge-chat-document code-workspace-document" aria-label="Java 代码工作台">
+        <section className="chat-split-document code-workspace-document" aria-label="Java 代码工作台">
           <CodeWorkspace workspaceId={workspaceId} agentId={agentId} conversationId={conversationId} latestRunId={latestRunId} runsLoaded={codeRunsLoaded} theme={chatTheme} />
         </section>
       )}
-      <div className="chat-languagegui-main knowledge-chat-conversation flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="chat-languagegui-main chat-split-conversation flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <ChatChrome
         left={(
           <>
@@ -1480,9 +1402,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
         )}
         right={(
           <>
-            {(canvasEnabled || codeEnabled) && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="knowledge-chat-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
-            {codeAvailable && <button type="button" onClick={onToggleCode} aria-pressed={codeEnabled} aria-label={codeEnabled ? '关闭代码工作台' : '打开代码工作台'} className="knowledge-chat-code-toggle"><Code2 className="h-4 w-4" aria-hidden />代码</button>}
-            {canvasAvailable && <button type="button" onClick={onToggleCanvas} aria-pressed={canvasEnabled} aria-label={canvasEnabled ? '关闭知识画布' : '打开知识画布'} className="knowledge-chat-canvas-toggle"><Columns2 className="h-4 w-4" aria-hidden />画布</button>}
+            {codeEnabled && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="chat-split-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
+            {codeAvailable && <button type="button" onClick={onToggleCode} aria-pressed={codeEnabled} aria-label={codeEnabled ? '关闭代码工作台' : '打开代码工作台'} className="chat-split-code-toggle"><Code2 className="h-4 w-4" aria-hidden />代码</button>}
             <button
               type="button"
               onClick={() => void startAnalysis()}
@@ -1665,15 +1586,6 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, canvasAvail
             error={sourcesError}
             onRetry={() => conversationId && void refreshSources(conversationId)}
           />
-          {knowledgeReference && (
-            <div className="knowledge-chat-reference" aria-label="本轮知识引用">
-              <details>
-                <summary><BookOpen className="h-4 w-4 shrink-0" aria-hidden /><span>{knowledgeReference.title} · 第 {knowledgeReference.version} 版</span></summary>
-                <blockquote>{knowledgeReference.quote}</blockquote>
-              </details>
-              <button type="button" onClick={() => setKnowledgeReference(null)} aria-label="移除知识引用"><X className="h-4 w-4" aria-hidden /></button>
-            </div>
-          )}
           <PromptBox
             draft={draft}
             onDraftChange={setDraft}

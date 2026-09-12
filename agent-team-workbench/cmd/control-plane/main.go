@@ -25,7 +25,6 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/domain"
 	"github.com/ybs/agent-team-workbench/internal/hostregistry"
 	"github.com/ybs/agent-team-workbench/internal/httpapi"
-	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/modelconfig"
 	"github.com/ybs/agent-team-workbench/internal/observability"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
@@ -124,17 +123,6 @@ func run() error {
 	if err := projectSpace.Ensure(); err != nil {
 		return fmt.Errorf("初始化项目空间 %s 失败: %w", projectSpace.Root, err)
 	}
-	knowledgeAccessDir := filepath.Join(projectSpace.Root, "knowledge-access")
-	if info, err := os.Lstat(knowledgeAccessDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("知识访问目录不能是符号链接: %s", knowledgeAccessDir)
-	}
-	if err := os.MkdirAll(knowledgeAccessDir, 0o700); err != nil {
-		return fmt.Errorf("初始化知识访问目录 %s 失败: %w", knowledgeAccessDir, err)
-	}
-	if err := os.Chmod(knowledgeAccessDir, 0o700); err != nil {
-		return fmt.Errorf("收紧知识访问目录 %s 权限失败: %w", knowledgeAccessDir, err)
-	}
-	svc.KnowledgeAccessDir = knowledgeAccessDir
 	credStore := modelconfig.NewCredentialsStore(workbenchRoot)
 	// 本机受信 registry（RFC §4.3）：root 只存在于本机 yaml；ATW_HOST_REGISTRY
 	// 缺省 ./host-registry.yaml。加载失败（含文件不存在）时本机 mount 为空、
@@ -148,6 +136,22 @@ func run() error {
 	}
 	svc.SetProjectCanonicalKeyResolver(func(ctx context.Context, alias, generation, repository string) (string, error) {
 		return localRegistry.ProjectCanonicalKey(ctx, alias, generation, repository)
+	})
+	// 资料库根目录只从本机受信 registry 解析，调用方不能提供路径。优先使用
+	// canonical WorkspaceProject；尚未建立 project 映射的工作区退回其默认
+	// WorkspaceLocation，两者都只是 alias，绝对路径仍只存在于本机 registry。
+	svc.SetKnowledgeWorkspaceRootResolver(func(ctx context.Context, workspaceID string) (string, error) {
+		alias := ""
+		if project, err := store.WorkspaceProjects().Get(ctx, workspaceID); err == nil {
+			alias = project.MountAlias
+		} else {
+			location, lerr := store.WorkspaceLocations().DefaultFor(ctx, workspaceID)
+			if lerr != nil {
+				return "", lerr
+			}
+			alias = location.MountAlias
+		}
+		return localRegistry.AuthorizedRoot(alias)
 	})
 	svc.SetAnalysisCodeResolver(func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot, relative string) (string, error) {
 		resolved, err := localRegistry.Resolve(snapshot)
@@ -409,13 +413,10 @@ func run() error {
 	defer codeGateway.Close()
 	server.SetCodeWorkspaceGateway(codeGateway.Endpoint, localRegistry)
 	defer server.CloseCodeWorkspaces()
-	configureKnowledgeAccess(svc, addr, workbenchRoot)
-
-	// M2 consult_knowledge uses the published SQLite knowledge projection.  The
-	// legacy file retriever remains available to explicit import tooling/tests;
-	// it is not a second production source of effective knowledge.
-	svc.Knowledge = knowledge.NewScopedRetriever(store.Knowledge())
-	log.Printf("knowledge: SQLite published retriever enabled")
+	// M2 consult_knowledge reads the unified knowledge library, pinned to the
+	// current published release. No second, unpublished knowledge source exists.
+	svc.Knowledge = svc.NewKnowledgeLibraryRetriever()
+	log.Printf("knowledge: unified library retriever enabled")
 
 	// 0021 前遗留的非终态无快照 Run：落 failed(execution_context_missing) 并触发
 	// 既有 Coordinator 恢复（RFC §6.1；无快照的 Run 永不分派）。必须先于
@@ -473,8 +474,8 @@ func run() error {
 	// 轻量 due-scan；启动先扫一次，随后持续恢复连接中断或进程重启留下的控制线。
 	go svc.RunCoordinatorRecoveryLoop(ctx, 2*time.Second)
 	log.Printf("Task Coordinator 恢复循环已启动（tick 2s）")
-	go svc.RunKnowledgeLibrarianRecoveryLoop(ctx, 2*time.Second)
-	log.Printf("Knowledge Librarian 恢复循环已启动（tick 2s）")
+	go svc.RunKnowledgeLibraryWorker(ctx, 2*time.Second)
+	log.Printf("知识资料库写入队列已启动（tick 2s）")
 
 	root := http.NewServeMux()
 	root.Handle(runnergateway.ConnectPath, gateway)

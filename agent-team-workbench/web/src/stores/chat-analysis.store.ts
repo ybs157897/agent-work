@@ -70,7 +70,7 @@ function writeDraft(state: ChatAnalysisStore, draft: ChatAnalysisDraft | null): 
   if (!state.workspaceId || !state.agentId || !state.conversationId) return;
   const saved = readChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId);
   writeChatWorkspaceState(state.workspaceId, state.agentId, state.conversationId, {
-    composer: saved?.composer ?? { draft: '', reference: null },
+    composer: saved?.composer ?? { draft: '' },
     queue: saved?.queue ?? [],
     analysisDraft: draft,
   });

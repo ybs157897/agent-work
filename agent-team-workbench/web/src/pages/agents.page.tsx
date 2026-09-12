@@ -1,4 +1,4 @@
-import { BellRing, BookOpen, Bot, History, MessageSquare, Plus, RefreshCw } from 'lucide-react';
+import { BellRing, Bot, History, MessageSquare, Plus, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
@@ -476,9 +476,9 @@ function AgentConfigPanel({ agent }: { agent: AgentProfile }) {
               唤醒
             </Button>
             </>}
-            <Button type="button" onClick={() => navigate(`/chat?${new URLSearchParams({ agent: agent.id, ...(isUserManagedAgent(agent) && agent.role === 'pm' ? { canvas: 'knowledge' } : {}) })}`)}>
-              {isUserManagedAgent(agent) && agent.role === 'pm' ? <BookOpen className="w-4 h-4" aria-hidden /> : <MessageSquare className="w-4 h-4" aria-hidden />}
-              {isUserManagedAgent(agent) && agent.role === 'pm' ? '知识画布' : '对话'}
+            <Button type="button" onClick={() => navigate(`/chat?${new URLSearchParams({ agent: agent.id })}`)}>
+              <MessageSquare className="w-4 h-4" aria-hidden />
+              对话
             </Button>
           </div>
         </ConfigToolbar>

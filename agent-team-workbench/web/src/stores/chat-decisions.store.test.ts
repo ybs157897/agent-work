@@ -132,7 +132,7 @@ describe('Chat decisions store', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
     writeChatWorkspaceState('ws_1', 'agent_1', 'wi_1', {
-      composer: { draft: '', reference: null },
+      composer: { draft: '' },
       queue: [],
       decisionDraft: {
         version: 3,
@@ -210,7 +210,7 @@ describe('Chat decisions store', () => {
       workspace: { id: 'ws_1', name: '测试工作区', timezone: 'Asia/Shanghai', version: 1 },
     });
     writeChatWorkspaceState('ws_1', 'agent_1', 'wi_1', {
-      composer: { draft: '', reference: null },
+      composer: { draft: '' },
       queue: [],
       decisionDraft: {
         version: 3,
@@ -355,7 +355,7 @@ describe('Chat decisions store', () => {
     vi.stubGlobal('window', { localStorage: storage });
     seed();
     writeChatWorkspaceState('ws_1', 'agent_1', 'wi_1', {
-      composer: { draft: '', reference: null },
+      composer: { draft: '' },
       queue: [],
       decisionDraft: useChatDecisionsStore.getState().draft,
     });

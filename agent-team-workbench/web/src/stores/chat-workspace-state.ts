@@ -1,5 +1,4 @@
 import { useSyncExternalStore } from 'react';
-import type { CanvasComposerDraft, KnowledgeCanvasReference } from '../utils/agent-knowledge-canvas';
 import type { ChatSourceRef } from '../api/chat-sources';
 import type { PublicationDraftReceipt } from '../api/task-publications';
 
@@ -57,11 +56,15 @@ export interface PersistedPublicationDraft {
   error?: string;
 }
 
+export interface ChatComposerDraft {
+  draft: string;
+}
+
 export interface ChatWorkspaceState {
   workspaceId: string;
   agentId: string | null;
   conversationId: string | null;
-  composer: CanvasComposerDraft;
+  composer: ChatComposerDraft;
   queue: PersistedChatQueueItem[];
   analysisDraft?: PersistedChatAnalysisDraft;
   decisionDraft?: PersistedChatDecisionDraft;
@@ -123,26 +126,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function normalizeReference(value: unknown): KnowledgeCanvasReference | null {
-  if (!isRecord(value)) return null;
-  if (typeof value.workspaceId !== 'string' || typeof value.agentId !== 'string' || typeof value.itemId !== 'string'
-    || typeof value.version !== 'number' || !Number.isSafeInteger(value.version) || value.version < 1
-    || typeof value.title !== 'string' || typeof value.quote !== 'string') return null;
-  return {
-    workspaceId: value.workspaceId,
-    agentId: value.agentId,
-    itemId: value.itemId,
-    version: value.version,
-    title: value.title,
-    quote: value.quote,
-    ...(typeof value.heading === 'string' ? { heading: value.heading } : {}),
-  };
-}
-
-function normalizeComposer(value: unknown): CanvasComposerDraft {
-  if (!isRecord(value)) return { draft: '', reference: null };
-  const draft = typeof value.draft === 'string' ? value.draft : '';
-  return { draft, reference: normalizeReference(value.reference) };
+function normalizeComposer(value: unknown): ChatComposerDraft {
+  if (!isRecord(value)) return { draft: '' };
+  return { draft: typeof value.draft === 'string' ? value.draft : '' };
 }
 
 function normalizeQueue(value: unknown): PersistedChatQueueItem[] {
@@ -338,7 +324,7 @@ export function writeChatWorkspaceState(
 export function writeChatSelection(workspaceId: string, agentId: string | null, conversationId: string | null): void {
   if (!workspaceId || !agentId) return;
   const current = readChatWorkspaceState(workspaceId, agentId, conversationId);
-  writeChatWorkspaceState(workspaceId, agentId, conversationId, current ?? { composer: { draft: '', reference: null }, queue: [] });
+  writeChatWorkspaceState(workspaceId, agentId, conversationId, current ?? { composer: { draft: '' }, queue: [] });
 }
 
 export function readChatSelection(workspaceId: string): { agentId: string; conversationId: string | null } | null {

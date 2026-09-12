@@ -86,6 +86,119 @@
   background: hsl(var(--color-surface-base));
 }
 
+/* Chat 与代码工作台并排时的分栏几何：代码面板在左，对话在右。
+   窄容器下退化为「代码 / 对话」切换。 */
+.chat-code-page > .chat-languagegui-sidebar {
+  width: 192px;
+}
+
+.chat-code-page:not([data-navigation-open="true"]) > .chat-languagegui-sidebar {
+  display: none;
+}
+
+.chat-split-host {
+  container-type: inline-size;
+  container-name: chat-split;
+}
+
+.chat-split-document {
+  flex: 1 1 60%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid hsl(var(--color-border-subtle));
+  background: hsl(var(--color-surface-base));
+}
+
+.chat-split-layout-active > .chat-split-conversation {
+  flex: 0 0 40%;
+  min-width: 360px;
+  max-width: 520px;
+}
+
+.chat-split-layout-active .chat-chrome {
+  height: auto;
+  min-height: 48px;
+  padding: 8px 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-split-layout-active .chat-chrome > div:last-child {
+  flex-wrap: wrap;
+}
+
+.chat-split-layout-active .chat-languagegui-transcript,
+.chat-split-layout-active .chat-bottom-region {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.chat-split-tabs {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid hsl(var(--color-border-subtle));
+  background: hsl(var(--color-surface-raised));
+}
+
+.chat-split-tabs button,
+.chat-split-navigation-toggle,
+.chat-split-code-toggle {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: hsl(var(--color-text-secondary));
+}
+
+.chat-split-tabs button:hover,
+.chat-split-navigation-toggle:hover,
+.chat-split-code-toggle:hover {
+  background: hsl(var(--color-surface-sunken));
+  color: hsl(var(--color-text-primary));
+}
+
+.chat-split-tabs button[aria-pressed="true"],
+.chat-split-code-toggle[aria-pressed="true"] {
+  color: hsl(var(--color-brand-primary));
+  background: hsl(var(--color-brand-muted));
+}
+
+.chat-split-workspace button:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary));
+  outline-offset: 2px;
+}
+
+.chat-split-layout-active[data-inspector="true"] > .chat-split-document {
+  display: none;
+}
+
+.chat-split-layout-active[data-inspector="true"] > .chat-split-conversation {
+  flex: 1;
+  max-width: none;
+  min-width: 0;
+}
+
+@container chat-split (max-width: 800px) {
+  .chat-split-tabs { display: flex; }
+  .chat-split-layout-active > .chat-split-conversation { flex: 1; min-width: 0; max-width: none; }
+  .chat-split-layout-active[data-active-panel="document"] > .chat-split-conversation { display: none; }
+  .chat-split-layout-active[data-active-panel="chat"] > .chat-split-document { display: none; }
+  .chat-split-document { border-right: 0; }
+}
+
+.code-workspace-document {
+  background: hsl(var(--color-surface-base));
+}
+
 .code-workspace-state {
   display: flex;
   min-height: 0;

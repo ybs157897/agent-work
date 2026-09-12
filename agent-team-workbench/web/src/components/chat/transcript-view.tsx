@@ -1,6 +1,4 @@
 import { AssistantTurn } from './assistant-turn';
-import { BookOpen } from 'lucide-react';
-import { parseCanvasMessage } from '../../utils/agent-knowledge-canvas';
 import { MessageActions } from './message-actions';
 import { TurnDiffCard } from './turn-diff-card';
 import { OutputLoadingIndicator, WorkActivityTimeline } from './work-activity-timeline';
@@ -80,19 +78,9 @@ function TranscriptSegmentView({
 }
 
 function UserBubble({ msg }: { msg: ChatMessage }) {
-  const canvasMessage = parseCanvasMessage(msg.text);
   return (
     <article className="chat-user-turn group" aria-label="你的消息">
-      <div className="chat-user-card whitespace-pre-wrap break-words">
-        {canvasMessage?.question ?? msg.text}
-        {canvasMessage && <details className="mt-base whitespace-normal border-t border-border-subtle pt-snug text-caption text-text-secondary" aria-label="已发送的知识引用">
-          <summary className="flex cursor-pointer items-center gap-tight rounded-button focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-primary">
-            <BookOpen className="h-4 w-4 shrink-0" aria-hidden />
-            <span>{canvasMessage.reference.title} · 第 {canvasMessage.reference.version} 版</span>
-          </summary>
-          <blockquote className="mt-snug max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-l-2 border-border-strong pl-snug">{canvasMessage.reference.quote}</blockquote>
-        </details>}
-      </div>
+      <div className="chat-user-card whitespace-pre-wrap break-words">{msg.text}</div>
       <MessageActions text={msg.text} className="mt-1" />
     </article>
   );

@@ -41,7 +41,7 @@ describe('Chat analysis store', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
     writeChatWorkspaceState('ws_1', 'agent_1', 'wi_1', {
-      composer: { draft: '', reference: null },
+      composer: { draft: '' },
       queue: [],
       analysisDraft: { version: 3, revision: 2, questionId: 'q1', selectedOptionIds: ['a'], text: '补充说明' },
     });

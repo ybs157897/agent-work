@@ -1,4 +1,4 @@
-.PHONY: build test test-race vet fmt migrate knowledge-client run-control-plane run-runnerd code-workspace-build code-workspace-jdtls
+.PHONY: build test test-race vet fmt migrate run-control-plane run-runnerd code-workspace-build code-workspace-jdtls
 
 build:
 	go build ./...
@@ -36,11 +36,7 @@ code-workspace-build:
 code-workspace-jdtls:
 	bash ../integrations/web-idea/apps/jdtls-sidecar/scripts/fetch-jdtls.sh
 
-knowledge-client:
-	mkdir -p bin
-	go build -o bin/atw-knowledge ./cmd/atw-knowledge
-
-run-control-plane: knowledge-client
+run-control-plane:
 	go run ./cmd/control-plane
 
 run-runnerd:

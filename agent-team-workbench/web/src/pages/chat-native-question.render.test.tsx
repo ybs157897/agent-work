@@ -10,9 +10,6 @@ import { useWorkspaceStore } from '../stores/workspace.store';
 import { useWorkbenchThemeStore } from '../stores/workbench-theme.store';
 import ChatPage from './chat.page';
 
-vi.mock('../components/knowledge-canvas/knowledge-canvas', () => ({
-  KnowledgeCanvas: () => <div data-testid="knowledge-canvas" />,
-}));
 vi.mock('../stores/agents.store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../stores/agents.store')>();
   return { ...actual, useAgentsStore: Object.assign((selector: (state: ReturnType<typeof actual.useAgentsStore.getState>) => unknown) => selector(actual.useAgentsStore.getState()), actual.useAgentsStore) };

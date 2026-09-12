@@ -25,9 +25,9 @@ describe('chat workspace local recovery', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
     const longDraft = '未发送内容'.repeat(12_000);
-    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_a', { composer: { draft: longDraft, reference: null }, queue: [{ text: '排队消息', clientKey: 'q1' }] });
+    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_a', { composer: { draft: longDraft }, queue: [{ text: '排队消息', clientKey: 'q1' }] });
     writeChatSelection('ws_a', 'agent_1', 'wi_a');
-    writeChatWorkspaceState('ws_b', 'agent_2', null, { composer: { draft: 'B 的草稿', reference: null }, queue: [] });
+    writeChatWorkspaceState('ws_b', 'agent_2', null, { composer: { draft: 'B 的草稿' }, queue: [] });
     writeChatSelection('ws_b', 'agent_2', null);
     expect(readChatSelection('ws_a')).toEqual({ agentId: 'agent_1', conversationId: 'wi_a' });
     expect(readChatWorkspaceState('ws_a', 'agent_1', 'wi_a')?.composer.draft).toBe(longDraft);
@@ -38,8 +38,8 @@ describe('chat workspace local recovery', () => {
   it('切换不同 Chat 后返回原会话仍恢复该会话草稿，不被目标会话清空覆盖', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
-    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_first', { composer: { draft: 'A 会话草稿', reference: null }, queue: [] });
-    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_second', { composer: { draft: 'B 会话草稿', reference: null }, queue: [] });
+    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_first', { composer: { draft: 'A 会话草稿' }, queue: [] });
+    writeChatWorkspaceState('ws_a', 'agent_1', 'wi_second', { composer: { draft: 'B 会话草稿' }, queue: [] });
     expect(readChatWorkspaceState('ws_a', 'agent_1', 'wi_second')?.composer.draft).toBe('B 会话草稿');
     expect(readChatWorkspaceState('ws_a', 'agent_1', 'wi_first')?.composer.draft).toBe('A 会话草稿');
   });
@@ -48,7 +48,7 @@ describe('chat workspace local recovery', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
     writeChatWorkspaceState('ws_a', 'agent_1', 'wi_first', {
-      composer: { draft: '普通消息', reference: null },
+      composer: { draft: '普通消息' },
       queue: [],
       analysisDraft: { version: 4, revision: 2, questionId: 'q1', selectedOptionIds: ['read'], text: '补充' },
     });
@@ -62,7 +62,7 @@ describe('chat workspace local recovery', () => {
     const storage = memoryStorage();
     vi.stubGlobal('window', { localStorage: storage });
     writeChatWorkspaceState('ws_a', 'agent_1', 'wi_first', {
-      composer: { draft: '普通消息', reference: null },
+      composer: { draft: '普通消息' },
       queue: [{ text: '排队', clientKey: 'q1' }],
       analysisDraft: { version: 4, revision: 2, questionId: 'q1', selectedOptionIds: ['read'], text: '补充' },
       decisionDraft: { version: 4, revision: 2, itemId: 'item_1', outcome: 'confirmed', conclusion: '确认', basis: '依据', productVersion: 'v1', clientKey: 'decision:key' },

@@ -31,7 +31,7 @@ tags:
   - name: todos
   - name: handoffs
   - name: governance
-  - name: knowledge-librarian
+  - name: knowledge-library
     description: 知识管理员 Agent 的 workspace 管理面与 Run-bound Harness 面
   - name: code-workspaces
     description: 开发 Agent 的瞬态 Java 阅读会话；受限同源代理，无宿主路径或上游凭据
@@ -206,490 +206,262 @@ paths:
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Dashboard" } } } }
 
-  /workspaces/{workspace_id}/knowledge/config:
+  /workspaces/{workspace_id}/library:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeLibrarianConfig
-      summary: 读取 Workspace 的知识管理员配置
-      description: 系统为每个 Workspace 自动提供唯一的内置 knowledge_librarian 身份；缺失配置会惰性创建为 enabled 默认值，不提供人工选择管理员身份。
+      tags: [knowledge-library]
+      operationId: getKnowledgeLibrary
+      summary: 资料库总览（根目录、当前发布版本、计数、队列深度）
+      description: 一个 Workspace 只有一个统一资料库，覆盖其全部服务仓库与 common 公共模块；库在首次访问时惰性创建。
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfig" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/status:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: getKnowledgeLibraryStatus
+      summary: 观察面（队头、阻塞任务、最近错误、最后发布、待处理事件）
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/sources:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: listKnowledgeLibrarySources
+      summary: 已登记来源仓库
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+    post:
+      tags: [knowledge-library]
+      operationId: createKnowledgeLibrarySource
+      summary: 登记来源（name/kind/repo_path/artifact/consumer/globs）；路径必须位于 Workspace 授权根目录内
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "201": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/sources/{source_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: source_id, in: path, required: true, schema: { type: string } }
     patch:
-      tags: [knowledge-librarian]
-      operationId: updateKnowledgeLibrarianConfig
-      summary: 更新知识管理员的 Enabled/AutoCollect 开关
-      description: 管理员身份由系统固定；此处只更新启用和任务结束自动收集开关，运行方式与模型在内置 Agent Profile 上配置。
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      tags: [knowledge-library]
+      operationId: updateKnowledgeLibrarySource
+      summary: 修改来源（乐观版本 CAS）
       requestBody:
         required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfigPatch" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeLibrarianConfig" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /workspaces/{workspace_id}/knowledge/items:
-    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
-    get:
-      tags: [knowledge-librarian]
-      operationId: listKnowledgeItems
-      summary: 使用 keyset 分页列出当前可见的知识条目
-      parameters:
-        - name: status
-          in: query
-          required: false
-          schema: { $ref: "#/components/schemas/KnowledgeStatus" }
-          description: 默认 effective；candidate/draft 等状态需要管理权限。
-        - name: q
-          in: query
-          required: false
-          schema: { type: string }
-          description: 可选全文检索词；为空时浏览，命中结果按条目 id keyset 分页并可返回 search_excerpt。
-        - name: scope
-          in: query
-          required: false
-          schema: { type: string, maxLength: 512 }
-          description: 空值不加项目过滤；非空使用 key=value 或 JSON object。
-        - name: kind
-          in: query
-          required: false
-          schema: { type: string }
-          description: 按知识类型筛选。
-        - name: visibility
-          in: query
-          required: false
-          schema: { $ref: "#/components/schemas/KnowledgeVisibility" }
-          description: 按 private/workspace 筛选。
-        - name: agent_id
-          in: query
-          required: false
-          schema: { type: string }
-          description: 管理员查看某 Agent 的私有视图；不是由调用者自填的所有权声明。
-        - name: limit
-          in: query
-          required: false
-          schema: { type: integer, minimum: 1, maximum: 200, default: 100 }
-          description: 单页条目数；服务端使用 id 游标分页。
-        - { $ref: "#/components/parameters/Cursor" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemList" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/items/{item_id}:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-    get:
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeItem
-      summary: 读取条目当前版本和来源证据
-      parameters:
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/items/{item_id}/versions:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-    get:
-      tags: [knowledge-librarian]
-      operationId: listKnowledgeVersions
-      summary: 列出条目的不可变版本链
-      parameters:
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeVersionList" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/items/{item_id}/versions/{version}:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-      - { $ref: "#/components/parameters/KnowledgeVersionSelector" }
-    get:
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeVersion
-      summary: 读取指定数字版本或版本 ID
-      parameters:
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/items/{item_id}/relations:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-    get:
-      tags: [knowledge-librarian]
-      operationId: listKnowledgeRelations
-      summary: 读取条目的正向、反向或双向关系
-      parameters:
-        - name: direction
-          in: query
-          required: false
-          schema: { $ref: "#/components/schemas/KnowledgeRelationDirection" }
-          description: 默认 both。
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeRelationList" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/items/{item_id}/repeal:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-    post:
-      tags: [knowledge-librarian]
-      operationId: repealKnowledgeItem
-      summary: 废止一个知识条目并保留历史版本
-      parameters:
-        - { $ref: "#/components/parameters/IdempotencyKey" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeRepealRequest" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItem" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /workspaces/{workspace_id}/knowledge/submissions:
-    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
-    get:
-      tags: [knowledge-librarian]
-      operationId: listKnowledgeSubmissions
-      summary: 列出候选提交收件箱（可能被截断）
-      parameters:
-        - name: status
-          in: query
-          required: false
-          schema: { $ref: "#/components/schemas/KnowledgeSubmissionStatus" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmissionList" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    post:
-      tags: [knowledge-librarian]
-      operationId: submitKnowledgeCandidate
-      summary: 提交一批带来源的候选知识变化
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeSubmitCandidateRequest" }
-      responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
-    get:
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeSubmission
-      summary: 读取一个候选提交及其原始请求
-      parameters:
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}/curate:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
-    post:
-      tags: [knowledge-librarian]
-      operationId: curateKnowledgeSubmission
-      summary: 启动一次候选整理作业
-      parameters:
-        - { $ref: "#/components/parameters/IdempotencyKey" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      requestBody:
-        required: false
         content:
           application/json:
             schema: { type: object, additionalProperties: false }
       responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /workspaces/{workspace_id}/knowledge/submissions/{submission_id}/publish:
-    parameters:
-      - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeSubmissionId" }
-    post:
-      tags: [knowledge-librarian]
-      operationId: publishKnowledgeSubmission
-      summary: 发布已通过整理门的候选变化
-      parameters:
-        - { $ref: "#/components/parameters/IdempotencyKey" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema: { type: object, additionalProperties: false }
+        "200": { content: { application/json: { schema: { type: object } } } }
+    delete:
+      tags: [knowledge-library]
+      operationId: deleteKnowledgeLibrarySource
+      summary: 停用来源；来源账本与历史证据保留
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
+        "204": { description: 已停用 }
 
-  /workspaces/{workspace_id}/knowledge/inquiries:
+  /workspaces/{workspace_id}/library/events:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     post:
-      tags: [knowledge-librarian]
-      operationId: createKnowledgeInquiry
-      summary: 创建一次有界知识调查作业
-      parameters:
-        - { $ref: "#/components/parameters/IdempotencyKey" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      tags: [knowledge-library]
+      operationId: submitKnowledgeLibraryEvent
+      summary: 异步提交事件；返回轻量受理回执，不代表知识已更新
+      description: 同一 client_key 重复投递返回原受理记录，不会重复创建写入任务。
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeInquiryRequest" }
+            schema: { type: object, additionalProperties: false }
       responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
+        "202": { content: { application/json: { schema: { type: object } } } }
+    get:
+      tags: [knowledge-library]
+      operationId: listKnowledgeLibraryEvents
+      summary: 事件列表（受理状态与关联任务）
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /workspaces/{workspace_id}/knowledge/jobs:
+  /workspaces/{workspace_id}/library/initialize:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [knowledge-library]
+      operationId: initializeKnowledgeLibrary
+      summary: 便捷入口：提交一次初始化事件
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "202": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/tasks:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
-      tags: [knowledge-librarian]
-      operationId: listKnowledgeJobs
-      summary: 列出当前可见的知识调查和整理作业（可能被截断）
-      parameters:
-        - name: status
-          in: query
-          required: false
-          schema: { $ref: "#/components/schemas/KnowledgeJobStatus" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      tags: [knowledge-library]
+      operationId: listKnowledgeWriteTasks
+      summary: 写队列（FIFO 序号、状态、尝试、阻塞原因）；同一资料库同时至多一个 running
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJobList" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /workspaces/{workspace_id}/knowledge/jobs/{job_id}:
+  /workspaces/{workspace_id}/library/tasks/{task_id}:
     parameters:
       - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeJobId" }
+      - { name: task_id, in: path, required: true, schema: { type: string } }
     get:
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeJob
-      summary: 读取调查作业进度、覆盖和结果
-      parameters:
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      tags: [knowledge-library]
+      operationId: getKnowledgeWriteTask
+      summary: 任务详情（轮次、覆盖、诊断、暂存目录）
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /workspaces/{workspace_id}/knowledge/jobs/{job_id}/cancel:
+  /workspaces/{workspace_id}/library/tasks/{task_id}/retry:
     parameters:
       - { $ref: "#/components/parameters/WorkspaceId" }
-      - { $ref: "#/components/parameters/KnowledgeJobId" }
+      - { name: task_id, in: path, required: true, schema: { type: string } }
     post:
-      tags: [knowledge-librarian]
-      operationId: cancelKnowledgeJob
-      summary: 取消一项尚未终态的知识作业
-      parameters:
-        - { $ref: "#/components/parameters/IdempotencyKeyOptional" }
-        - { $ref: "#/components/parameters/KnowledgeAgentView" }
+      tags: [knowledge-library]
+      operationId: retryKnowledgeWriteTask
+      summary: 运维重试；仅允许重试队头任务
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/tasks/{task_id}/cancel:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: task_id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [knowledge-library]
+      operationId: cancelKnowledgeWriteTask
+      summary: 显式取消未发布任务；已发布版本不会被取消回滚
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema: { type: object, additionalProperties: false }
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /knowledge-agent/runs/{run_id}/items/{item_id}:
-    parameters:
-      - { $ref: "#/components/parameters/RunId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
+  /workspaces/{workspace_id}/library/releases:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     get:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: readKnowledgeItemFromRun
-      summary: Run-bound 读取条目当前版本
-      description: 身份由活动 Run 和 Bearer token 推导，调用方不能用 query/body 改写 workspace 或 Agent 身份。
+      tags: [knowledge-library]
+      operationId: listKnowledgeReleases
+      summary: 知识发布列表（不可变、可回查）
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /knowledge-agent/runs/{run_id}/items/{item_id}/versions/{version}:
+  /workspaces/{workspace_id}/library/releases/{release_id}:
     parameters:
-      - { $ref: "#/components/parameters/RunId" }
-      - { $ref: "#/components/parameters/KnowledgeItemId" }
-      - { $ref: "#/components/parameters/KnowledgeVersionSelector" }
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: release_id, in: path, required: true, schema: { type: string } }
     get:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: readKnowledgeVersionFromRun
-      summary: Run-bound 读取固定数字版本或版本 ID
+      tags: [knowledge-library]
+      operationId: getKnowledgeRelease
+      summary: 发布详情（覆盖、缺口、文档清单）
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeItemBundle" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
+        "200": { content: { application/json: { schema: { type: object } } } }
 
-  /knowledge-agent/runs/{run_id}/submissions:
-    parameters: [{ $ref: "#/components/parameters/RunId" }]
+  /workspaces/{workspace_id}/library/documents:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: listKnowledgeDocuments
+      summary: 按发布版本浏览 Markdown 主题文档
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - { name: release_id, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: kind, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/documents/{document_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: document_id, in: path, required: true, schema: { type: string } }
+      - { name: version, in: query, schema: { type: integer }, description: 非 0 时固定读取该历史版本正文 }
+    get:
+      tags: [knowledge-library]
+      operationId: getKnowledgeDocument
+      summary: 文档版本、Assertion、Relation（历史版本正文可回查）
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/evidence/{evidence_id}:
+    parameters:
+      - { $ref: "#/components/parameters/WorkspaceId" }
+      - { name: evidence_id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [knowledge-library]
+      operationId: getKnowledgeEvidence
+      summary: 证据（来源绑定、locator、摘录、程序计算摘要、可取性）
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/graph:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: getKnowledgeLibraryGraph
+      summary: 固定发布的实体与关系图
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/bridges:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: listKnowledgeBridges
+      summary: 派生桥接视图（来源与依赖版本、缺口）
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/query:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
     post:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: submitKnowledgeCandidateFromRun
-      summary: Run-bound 提交任务后的知识候选
-      description: server 从活动 Run 覆盖 workspace、agent、run 和 work_item 身份；请求中的同名字段会被覆盖。
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
+      tags: [knowledge-library]
+      operationId: queryKnowledgeLibrary
+      summary: 固定发布版本查询；返回条件、依据、覆盖缺口、未知与新鲜度
+      description: 无已发布版本时返回 coverage.status=not_ready，不返回可被误读为空答案的结果。
       requestBody:
         required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeAgentSubmitCandidateRequest" }
-      responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeSubmission" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /knowledge-agent/runs/{run_id}/records:
-    parameters: [{ $ref: "#/components/parameters/RunId" }]
-    post:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: recordKnowledgeFromRun
-      summary: Run-bound 提交自然语言知识记录并请求管理员整理
-      description: |
-        请求身份完全由当前活动 Run 的 Bearer capability 推导；客户端不能指定 workspace_id、agent_id 或 user_id。
-        content/text 二选一。服务端创建既有 KnowledgeSubmission 和 curation KnowledgeJob。
-        publish_intent=confirmed_requirement 仅表示调用 Agent 已获得用户确认；管理员仍需结构化并通过来源、权限、版本和冲突校验，不能据此声称实现已验证。
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeAgentRecordRequest" }
-      responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeAgentRecordResult" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /knowledge-agent/runs/{run_id}/inquiries:
-    parameters: [{ $ref: "#/components/parameters/RunId" }]
-    post:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: createKnowledgeInquiryFromRun
-      summary: Run-bound 创建知识调查
-      description: requester、workspace、source_run 和 agent 由活动 Run 固定；作业取消跟随该 Run 的控制面。
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/KnowledgeRunInquiryRequest" }
-      responses:
-        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /knowledge-agent/runs/{run_id}/jobs/{job_id}:
-    parameters:
-      - { $ref: "#/components/parameters/RunId" }
-      - { $ref: "#/components/parameters/KnowledgeJobId" }
-    get:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: getKnowledgeJobFromRun
-      summary: Run-bound 读取调查作业
-      responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-
-  /knowledge-agent/runs/{run_id}/jobs/{job_id}/cancel:
-    parameters:
-      - { $ref: "#/components/parameters/RunId" }
-      - { $ref: "#/components/parameters/KnowledgeJobId" }
-    post:
-      security:
-        - bearerAuth: []
-      tags: [knowledge-librarian]
-      operationId: cancelKnowledgeJobFromRun
-      summary: Run-bound 取消调查作业
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
-      requestBody:
-        required: false
         content:
           application/json:
             schema: { type: object, additionalProperties: false }
       responses:
-        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/KnowledgeJob" } } } }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/expand:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    get:
+      tags: [knowledge-library]
+      operationId: expandKnowledgeLibraryHandle
+      summary: 按查询返回的句柄展开证据或知识条目
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - { name: kind, in: query, schema: { type: string, enum: [assertion, evidence] } }
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
+  /workspaces/{workspace_id}/library/reindex:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+    post:
+      tags: [knowledge-library]
+      operationId: reindexKnowledgeLibrary
+      summary: 从正式 Markdown 与来源账本重建检索投影
+      responses:
+        "200": { content: { application/json: { schema: { type: object } } } }
+
 
   /workspaces/{workspace_id}/events:
     parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
