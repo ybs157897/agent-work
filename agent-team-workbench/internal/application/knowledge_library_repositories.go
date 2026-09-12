@@ -40,6 +40,7 @@ type KnowledgeLibraryRepo interface {
 	GetDocument(ctx context.Context, libraryID, documentID string) (*domain.KnowledgeDocument, error)
 
 	GetRelease(ctx context.Context, libraryID, releaseID string) (*domain.KnowledgeRelease, error)
+	ReleaseCitesEvidence(ctx context.Context, releaseID, evidenceID string) (bool, error)
 	RefreshReleaseTotals(ctx context.Context, libraryID string) (int, error)
 	CurrentRelease(ctx context.Context, libraryID string) (*domain.KnowledgeRelease, error)
 	ListReleases(ctx context.Context, libraryID string, limit int) ([]*domain.KnowledgeRelease, error)

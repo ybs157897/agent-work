@@ -466,6 +466,12 @@ func focusFromTask(task *domain.KnowledgeWriteTask) knowledgelib.Focus {
 	if v, ok := raw["requirement_unresolved"].(string); ok {
 		focus.RequirementUnresolved = v
 	}
+	if v, ok := raw["content_ref"].(string); ok {
+		focus.Reference = v
+	}
+	if v, ok := raw["summary"].(string); ok {
+		focus.Summary = v
+	}
 	if prev, ok := raw["previous_version"].(string); ok {
 		focus.Notes = "观测到的前一版本：" + prev
 	}

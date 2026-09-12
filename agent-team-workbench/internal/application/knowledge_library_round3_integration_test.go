@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -854,6 +855,76 @@ func TestKnowledgeOrdinaryEventsDoNotInventRequirements(t *testing.T) {
 	}
 }
 
+// TestKnowledgeCodeEventsKeepTheirReferencesAsContext covers the two variants
+// the protocol already ships: a code pull whose content_ref is a commit, and a
+// code change whose payload carries a summary. Neither is a requirement
+// import, and both must keep their reference as context for the change.
+func TestKnowledgeCodeEventsKeepTheirReferencesAsContext(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	h.registerAllSources(t)
+	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.pulled", Source: "git-hook", ClientKey: "variant-pull",
+		ContentRef: "commit:9f2c1a",
+		Subject:    map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := h.headTask(t)
+	if task == nil {
+		t.Fatal("the pull must still be queued")
+	}
+	if task.RequirementInputID != "" {
+		t.Fatalf("a commit reference must not be frozen as a requirement: %+v", task)
+	}
+	if strings.Contains(task.FocusJSON, "requirement_unresolved") {
+		t.Fatalf("a commit reference must not report a missing requirement: %s", task.FocusJSON)
+	}
+	h.tick(t)
+	task = h.headTask(t)
+	briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := string(briefRaw)
+	if !strings.Contains(brief, "commit:9f2c1a") {
+		t.Fatalf("the commit reference must survive as change context:\n%s", brief)
+	}
+	for _, forbidden := range []string{"本次需求原文", "需求的原文没有取到", "requirement:"} {
+		if strings.Contains(brief, forbidden) {
+			t.Fatalf("a code pull must not become a requirement import (%q):\n%s", forbidden, brief)
+		}
+	}
+
+	// The second variant: a code change whose summary is a change note.
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "variant-summary",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+		Payload: map[string]any{"summary": "拉取代码更新"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	head := h.headTask(t)
+	if head == nil || strings.Contains(head.FocusJSON, "requirement") {
+		t.Fatalf("a change summary must not be read as a requirement body: %+v", head)
+	}
+	// No requirement source or input may have been created for either variant.
+	var inputs, sources int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_requirement_inputs WHERE library_id=?`, lib.ID).Scan(&inputs); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_library_sources WHERE library_id=? AND kind='requirement'`, lib.ID).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if inputs != 0 || sources != 0 {
+		t.Fatalf("code events must not register requirement inputs or sources: inputs=%d sources=%d", inputs, sources)
+	}
+}
+
 // TestKnowledgeInlineRequirementKeepsItsGap: when the referenced document
 // cannot be read but the payload carries text, the text is a separate inline
 // source — the reference failure and the true origin must both survive.
@@ -909,6 +980,14 @@ func TestKnowledgeInlineRequirementKeepsItsGap(t *testing.T) {
 	}
 	if !strings.Contains(brief, source.Name) {
 		t.Fatalf("the brief must name the inline binding: %s", source.Name)
+	}
+	// The brief must not advertise a staging requirement.md: the inline case
+	// keeps the text in the brief and points at the frozen binding instead.
+	if strings.Contains(brief, filepath.Join(task.StagingPath, "requirement.md")) {
+		t.Fatalf("the inline branch must not name an unwritten staging file:\n%s", brief)
+	}
+	if _, err := os.Stat(filepath.Join(task.StagingPath, "requirement.md")); !os.IsNotExist(err) {
+		t.Fatal("the inline branch must not leave a requirement.md in staging")
 	}
 	// The snapshot binding must carry the inline source's own name, so the
 	// evidence collected from it is visibly not the referenced document.
@@ -1043,6 +1122,188 @@ func pendingReleaseID(t *testing.T, h *libraryHarness, task *domain.KnowledgeWri
 		t.Fatal(err)
 	}
 	return releaseID
+}
+
+// httpGetJSON issues one GET against the real router.
+func httpGetJSON(t *testing.T, mux http.Handler, path string) (int, map[string]any) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	body := map[string]any{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	return rec.Code, body
+}
+
+// TestKnowledgePublicReadReleaseGate covers every public read path that can
+// name a release: they must all resolve a committed release and check that the
+// object they return is a member of it. A prepared publish is invisible
+// everywhere, and an old release may not be pointed at an object that only the
+// new publish created.
+func TestKnowledgePublicReadReleaseGate(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	first := publishInitializeRelease(t, h)
+
+	docs, _, err := h.svc.ListKnowledgeDocuments(ctx, h.wsID, first.ID, "", "", 0)
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("fixture document missing: %v", err)
+	}
+	docID := docs[0].ID
+	firstAnswer, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
+		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEvidence := ""
+	for _, handle := range firstAnswer.Expandables {
+		if handle.Kind == "evidence" {
+			firstEvidence = handle.ID
+			break
+		}
+	}
+	if firstEvidence == "" {
+		t.Fatal("fixture evidence missing")
+	}
+
+	// Second publish that fails to materialize: its rows exist, its files do
+	// not, so no reader may see it.
+	obstruction := filepath.Join(h.libRoot, "content", "components", "order-service.md")
+	if err := os.Remove(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(obstruction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "gate-2",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	staging := h.stagingDir(t)
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
+		"订单服务在取消分支发布取消事件（未物化版）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, staging, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+	h.tick(t)
+
+	blocked := h.headTask(t)
+	if blocked == nil || blocked.Status != domain.KnowledgeTaskBlocked {
+		// Spend the retry budget so the task blocks and the release stays
+		// visible nowhere.
+		for i := 0; i < 6 && blocked != nil && blocked.Status != domain.KnowledgeTaskBlocked; i++ {
+			if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_write_tasks SET next_attempt_at=NULL WHERE id=?`, blocked.ID); err != nil {
+				t.Fatal(err)
+			}
+			h.tick(t)
+			blocked = h.headTask(t)
+		}
+	}
+	pending := pendingReleaseID(t, h, blocked)
+	pendingVersion := releaseVersionOfDocument(t, h, pending, docID)
+
+	// Evidence created by the pending publish only: the new assertion's
+	// citation, which the old release must not serve.
+	newEvidence := ""
+	{
+		var raw string
+		if err := h.db.QueryRowContext(ctx, `SELECT a.evidence_json FROM knowledge_assertions a
+			JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+			WHERE rd.release_id=? AND a.document_id=?`, pending, docID).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var refs []struct {
+			EvidenceID string `json:"evidence_id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &refs); err != nil || len(refs) == 0 {
+			t.Fatalf("pending publish recorded no evidence: %s %v", raw, err)
+		}
+		newEvidence = refs[0].EvidenceID
+	}
+
+	mux := httpapi.NewServer(h.svc, h.store, nil).Routes()
+	base := "/api/v1/workspaces/" + h.wsID + "/library"
+	matrix := []struct {
+		name   string
+		path   string
+		status int
+	}{
+		{"发布列表不含半完成版本", base + "/releases", http.StatusOK},
+		{"文档浏览-pending", base + "/documents?release_id=" + pending, http.StatusNotFound},
+		{"文档详情-pending", base + "/documents/" + docID + "?release_id=" + pending, http.StatusNotFound},
+		{"文档详情-pending+version", base + "/documents/" + docID + "?release_id=" + pending + "&version=" + pendingVersion, http.StatusNotFound},
+		// 版本号与 release 固定的版本冲突时必须拒绝，而不是用旧 release 标注新版本。
+		{"文档详情-旧release+新version", base + "/documents/" + docID + "?release_id=" + first.ID + "&version=" + pendingVersion, http.StatusUnprocessableEntity},
+		{"断言展开-pending", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + pending, http.StatusNotFound},
+		{"断言展开-旧release", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + first.ID, http.StatusOK},
+		{"证据展开-旧release引用新证据", base + "/expand?kind=evidence&id=" + newEvidence + "&release_id=" + first.ID, http.StatusNotFound},
+		{"证据展开-旧release自身证据", base + "/expand?kind=evidence&id=" + firstEvidence + "&release_id=" + first.ID, http.StatusOK},
+		{"桥接-pending", base + "/bridges?release_id=" + pending, http.StatusNotFound},
+		{"图-pending", base + "/graph?release_id=" + pending, http.StatusNotFound},
+	}
+	for _, tc := range matrix {
+		status, body := httpGetJSON(t, mux, tc.path)
+		if status != tc.status {
+			t.Fatalf("%s: status=%d want=%d body=%v", tc.name, status, tc.status, body)
+		}
+	}
+	// The release list must name the complete release only.
+	_, listBody := httpGetJSON(t, mux, base+"/releases")
+	items, _ := listBody["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("the release list must expose only the complete release: %v", listBody)
+	}
+	if id, _ := items[0].(map[string]any)["id"].(string); id != first.ID {
+		t.Fatalf("the listed release must be %s: %v", first.ID, items[0])
+	}
+
+	// Recovery commits the same release: every path above flips to it.
+	if err := os.RemoveAll(obstruction); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	committed, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.ID != pending {
+		t.Fatalf("recovery must switch to %s, got %s", pending, committed.ID)
+	}
+	after := []struct {
+		name string
+		path string
+	}{
+		{"文档详情", base + "/documents/" + docID + "?release_id=" + pending},
+		{"文档详情+正确版本", base + "/documents/" + docID + "?release_id=" + pending + "&version=" + pendingVersion},
+		{"断言展开", base + "/expand?kind=assertion&id=assertion:order-cancel-publishes&release_id=" + pending},
+		{"证据展开", base + "/expand?kind=evidence&id=" + newEvidence + "&release_id=" + pending},
+		{"桥接", base + "/bridges?release_id=" + pending},
+	}
+	for _, tc := range after {
+		if status, body := httpGetJSON(t, mux, tc.path); status != http.StatusOK {
+			t.Fatalf("%s must succeed once committed: status=%d body=%v", tc.name, status, body)
+		}
+	}
+}
+
+// releaseVersionOfDocument reads the version number a release pins.
+func releaseVersionOfDocument(t *testing.T, h *libraryHarness, releaseID, documentID string) string {
+	t.Helper()
+	var version int
+	if err := h.db.QueryRowContext(context.Background(), `SELECT v.version
+		FROM knowledge_release_documents rd JOIN knowledge_document_versions v ON v.id = rd.document_version_id
+		WHERE rd.release_id=? AND rd.document_id=?`, releaseID, documentID).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return strconv.Itoa(version)
 }
 
 // TestKnowledgeIncrementalReleaseCountsWhatItContains: an incremental release

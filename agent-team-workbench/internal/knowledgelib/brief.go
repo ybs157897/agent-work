@@ -129,7 +129,11 @@ type Focus struct {
 	RequirementVersion    string
 	RequirementTitle      string
 	RequirementUnresolved string
-	Notes                 string
+	// Reference and Summary are the change context a code notification
+	// carried. They are shown as context, never treated as a requirement.
+	Reference string
+	Summary   string
+	Notes     string
 }
 
 // ExistingDocument is one published document in the catalog digest.
@@ -239,9 +243,7 @@ func RenderBrief(in BriefInput) (string, error) {
 			// never presented as the referenced original.
 			b.WriteString("**引用的需求文档没有取到**：" + r.Unresolved + "\n\n")
 			b.WriteString("下面的正文来自**事件 payload 的内联文本**，不是那份文档的内容；请在 coverage.gaps 里写明「引用文档未取到，本轮依据内联副本」。\n\n")
-			if r.Path != "" {
-				b.WriteString("内联副本另存为：`" + r.Path + "`（仅供阅读；证据必须引用下面的冻结绑定）。\n\n")
-			}
+			b.WriteString("正文已内联在下方，并已固化为下面的来源绑定；证据请引用该绑定，不要引用暂存目录里的任何文件。\n\n")
 			b.WriteString("```text\n" + r.Text + "\n```\n\n")
 			b.WriteString("处理要求：\n\n")
 			b.WriteString("- 把这段内联正文作为 `basis: source_statement`、`perspective: normative` 的条目记录，并在陈述里写明依据是内联副本而非引用文档。\n")
@@ -315,6 +317,12 @@ func RenderBrief(in BriefInput) (string, error) {
 				b.WriteString("（前一版本 " + shortSHA(f.PreviousSHA) + "）")
 			}
 			b.WriteString("\n\n")
+		}
+		if f.Reference != "" {
+			b.WriteString("事件引用的代码版本：" + f.Reference + "（代码事件的引用，不是需求文档）\n\n")
+		}
+		if f.Summary != "" {
+			b.WriteString("事件摘要：" + f.Summary + "（变更说明，不是需求正文）\n\n")
 		}
 		if f.Notes != "" {
 			b.WriteString("补充说明：" + f.Notes + "\n\n")

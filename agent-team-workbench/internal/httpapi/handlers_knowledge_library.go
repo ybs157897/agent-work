@@ -481,13 +481,31 @@ func (s *Server) handleLibraryDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+// handleLibraryEvidenceInRelease serves an evidence read scoped to one
+// release: the release must be committed and must cite the evidence.
+func (s *Server) handleLibraryEvidenceInRelease(w http.ResponseWriter, r *http.Request, releaseID string) {
+	ev, binding, rep, err := s.svc.GetKnowledgeEvidenceInRelease(r.Context(), s.libraryWorkspace(r),
+		r.PathValue("evidence_id"), releaseID)
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, evidenceJSON(ev, binding, rep))
+}
+
 func (s *Server) handleLibraryEvidence(w http.ResponseWriter, r *http.Request) {
 	ev, binding, rep, err := s.svc.GetKnowledgeEvidence(r.Context(), s.libraryWorkspace(r), r.PathValue("evidence_id"))
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, http.StatusOK, evidenceJSON(ev, binding, rep))
+}
+
+// evidenceJSON is the one evidence projection both the ledger read and the
+// release-scoped read serve.
+func evidenceJSON(ev *domain.KnowledgeEvidence, binding *domain.KnowledgeSnapshotBinding, rep *domain.KnowledgeRepresentation) map[string]any {
+	return map[string]any{
 		"id": ev.ID, "snapshot_id": ev.SnapshotID, "binding_id": ev.BindingID,
 		"representation_id": ev.RepresentationID, "locator": jsonObject(ev.LocatorJSON),
 		"locator_kind": ev.LocatorKind, "excerpt": ev.Excerpt, "excerpt_digest": ev.ExcerptDigest,
@@ -513,7 +531,7 @@ func (s *Server) handleLibraryEvidence(w http.ResponseWriter, r *http.Request) {
 			"digest_algo": rep.DigestAlgo, "content_digest": rep.ContentDigest, "byte_size": rep.ByteSize,
 			"coverage": rep.Coverage, "origin": rep.Origin, "stored_path": rep.StoredPath,
 		},
-	})
+	}
 }
 
 func (s *Server) handleLibraryGraph(w http.ResponseWriter, r *http.Request) {
@@ -633,6 +651,10 @@ func (s *Server) handleLibraryExpand(w http.ResponseWriter, r *http.Request) {
 		// /evidence/{evidence_id} route. Handing it over explicitly is what
 		// makes an evidence handle returned by a query actually openable.
 		r.SetPathValue("evidence_id", id)
+		if releaseID := strings.TrimSpace(r.URL.Query().Get("release_id")); releaseID != "" {
+			s.handleLibraryEvidenceInRelease(w, r, releaseID)
+			return
+		}
 		s.handleLibraryEvidence(w, r)
 		return
 	case "assertion", "":

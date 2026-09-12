@@ -82,25 +82,51 @@ var requirementEventTypes = map[string]bool{
 	"document.revised":     true,
 }
 
-// declaresRequirement reports whether an event claims to carry a requirement:
-// an explicit content reference, an inline body, a declared requirement
-// identity, or an event type that is a requirement import by definition.
-// Everything else is an ordinary code or workspace notification.
+// codeEventTypes are notifications about a repository or the workspace itself.
+// Their content_ref is a commit-ish and their summary is a change note, not a
+// requirement body: the protocol's own UI puts "commit:9f2c1a" in that field.
+var codeEventTypes = map[string]bool{
+	"code.pulled":         true,
+	"code.changed":        true,
+	"branch.switched":     true,
+	"workspace.connected": true,
+	"source.added":        true,
+	"source.removed":      true,
+	"source.renamed":      true,
+}
+
+// declaresRequirement reports whether an event claims to carry a requirement.
+//
+// A declared requirement identity or a requirement-import event type always
+// counts. A code or workspace notification never does, however its references
+// and summaries are shaped: those are context for the change it reports, and
+// reading "commit:9f2c1a" as a requirement document would fabricate an import
+// nobody made. Everything else is judged by whether it carries a body.
 func declaresRequirement(event *domain.KnowledgeLibraryEvent) bool {
 	if event == nil {
+		return false
+	}
+	eventType := strings.TrimSpace(event.EventType)
+	if requirementEventTypes[eventType] {
+		return true
+	}
+	payload := decodeJSONObject(event.PayloadJSON)
+	if declaresRequirementIdentity(event, payload) {
+		return true
+	}
+	if codeEventTypes[eventType] {
 		return false
 	}
 	if strings.TrimSpace(event.ContentRef) != "" {
 		return true
 	}
-	if requirementEventTypes[strings.TrimSpace(event.EventType)] {
-		return true
-	}
-	payload := decodeJSONObject(event.PayloadJSON)
-	if firstString(payload, requirementTextKeys...) != "" {
-		return true
-	}
-	if firstString(payload, "requirement_id", "req_id", "requirement", "requirement_version", "req_version") != "" {
+	return firstString(payload, requirementTextKeys...) != ""
+}
+
+// declaresRequirementIdentity reports whether the caller named a requirement,
+// which is the one signal a code event may still use to import a body.
+func declaresRequirementIdentity(event *domain.KnowledgeLibraryEvent, payload map[string]any) bool {
+	if firstString(payload, "requirement_id", "req_id", "requirement", "requirement_version", "req_version", "req_version_id") != "" {
 		return true
 	}
 	return strings.TrimSpace(subjectString(event.SubjectJSON, "requirement_id")) != ""
@@ -718,6 +744,17 @@ func focusForEvent(event *domain.KnowledgeLibraryEvent) string {
 			focus[key] = v
 		}
 	}
+	// A code notification keeps its reference and summary as context for the
+	// change it reports; they are never read as a requirement body.
+	if ref := strings.TrimSpace(event.ContentRef); ref != "" {
+		focus["content_ref"] = ref
+	}
+	if summary := eventField(event, "summary"); summary != nil {
+		focus["summary"] = summary
+	}
+	if description := eventField(event, "description"); description != nil {
+		focus["description"] = description
+	}
 	raw, _ := json.Marshal(focus)
 	return string(raw)
 }
@@ -878,7 +915,7 @@ func (s *Service) ListKnowledgeDocuments(ctx context.Context, workspaceID, relea
 	if err != nil {
 		return nil, nil, err
 	}
-	rel, err := s.resolveRelease(ctx, lib, releaseID)
+	rel, err := s.resolvePublicRelease(ctx, lib, releaseID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -890,6 +927,29 @@ func (s *Service) ListKnowledgeDocuments(ctx context.Context, workspaceID, relea
 		return nil, nil, err
 	}
 	return docs, rel, nil
+}
+
+// resolvePublicRelease resolves the release a *reader* asked for. Empty means
+// the current release; an explicit ID must name a committed release, because a
+// version whose official files were never written is not a version any reader
+// may see. Internal paths (recovery, materialization, reindex) use
+// resolveRelease or a release they already hold instead.
+func (s *Service) resolvePublicRelease(ctx context.Context, lib *domain.KnowledgeLibrary, releaseID string) (*domain.KnowledgeRelease, error) {
+	return s.resolveRelease(ctx, lib, releaseID)
+}
+
+// requirePublicRelease is resolvePublicRelease for reads that cannot answer
+// without a release: an unknown, uncommitted or renamed-away release is a
+// not-found rather than an empty result.
+func (s *Service) requirePublicRelease(ctx context.Context, lib *domain.KnowledgeLibrary, releaseID string) (*domain.KnowledgeRelease, error) {
+	rel, err := s.resolvePublicRelease(ctx, lib, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	if rel == nil {
+		return nil, domain.ErrNotFound
+	}
+	return rel, nil
 }
 
 func (s *Service) resolveRelease(ctx context.Context, lib *domain.KnowledgeLibrary, releaseID string) (*domain.KnowledgeRelease, error) {
@@ -946,10 +1006,23 @@ func (s *Service) GetKnowledgeDocument(ctx context.Context, workspaceID, documen
 		return nil, err
 	}
 	pinnedReleaseID := strings.TrimSpace(releaseID)
-	if version <= 0 && pinnedReleaseID != "" {
-		pinned, err := s.store.Library().ReleaseDocumentVersion(ctx, pinnedReleaseID, documentID)
+	if pinnedReleaseID != "" {
+		// A pinned read must name a committed release and a document that
+		// release actually contains; the version, when also given, must be the
+		// one that release pins. Selecting an arbitrary version number and
+		// labelling it with the release would report a membership that does
+		// not exist.
+		rel, err := s.requirePublicRelease(ctx, lib, pinnedReleaseID)
 		if err != nil {
 			return nil, err
+		}
+		pinned, err := s.store.Library().ReleaseDocumentVersion(ctx, rel.ID, documentID)
+		if err != nil {
+			return nil, err
+		}
+		if version > 0 && version != pinned.Version {
+			return nil, fmt.Errorf("%w: 文档 %s 在发布 %s 中是第 %d 版，不是第 %d 版",
+				domain.ErrValidation, documentID, rel.ID, pinned.Version, version)
 		}
 		version = pinned.Version
 	}
@@ -1006,6 +1079,29 @@ func (s *Service) GetKnowledgeEvidence(ctx context.Context, workspaceID, evidenc
 	return ev, binding, rep, nil
 }
 
+// GetKnowledgeEvidenceInRelease reads one evidence as a member of a release.
+// An explicit release must be committed and must actually cite the evidence:
+// pointing an old release at an evidence collected for a newer version is a
+// not-found, while evidence the release carries forward still opens.
+func (s *Service) GetKnowledgeEvidenceInRelease(ctx context.Context, workspaceID, evidenceID, releaseID string) (*domain.KnowledgeEvidence, *domain.KnowledgeSnapshotBinding, *domain.KnowledgeRepresentation, error) {
+	lib, err := s.EnsureKnowledgeLibrary(ctx, workspaceID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	rel, err := s.requirePublicRelease(ctx, lib, releaseID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	cited, err := s.store.Library().ReleaseCitesEvidence(ctx, rel.ID, evidenceID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !cited {
+		return nil, nil, nil, domain.ErrNotFound
+	}
+	return s.GetKnowledgeEvidence(ctx, workspaceID, evidenceID)
+}
+
 // KnowledgeGraph is the entity/relation view of one release.
 type KnowledgeGraph struct {
 	ReleaseID string                              `json:"release_id"`
@@ -1040,7 +1136,14 @@ func (s *Service) ListKnowledgeBridges(ctx context.Context, workspaceID, release
 	if err != nil {
 		return nil, err
 	}
-	return s.store.Library().ListBridges(ctx, lib.ID, releaseID)
+	rel, err := s.resolvePublicRelease(ctx, lib, releaseID)
+	if err != nil {
+		return nil, err
+	}
+	if rel == nil {
+		return []*domain.KnowledgeBridgeView{}, nil
+	}
+	return s.store.Library().ListBridges(ctx, lib.ID, rel.ID)
 }
 
 // ReindexKnowledgeLibrary rebuilds the search projection from the immutable
@@ -1471,12 +1574,15 @@ func (s *Service) knowledgeExpandAssertion(ctx context.Context, workspaceID, rel
 	if err != nil {
 		return nil, nil, err
 	}
-	var list []domain.KnowledgeAssertion
-	if strings.TrimSpace(releaseID) != "" {
-		list, err = s.store.Library().AssertionsInRelease(ctx, releaseID, []string{assertionID})
-	} else {
-		list, err = s.store.Library().ReleaseAssertionsByIDs(ctx, []string{assertionID})
+	// The assertion is read from one committed release: an explicit ID must be
+	// committed and must contain the assertion, and a lookup without a release
+	// resolves the current committed release instead of matching whatever row
+	// carries the ID.
+	rel, err := s.requirePublicRelease(ctx, lib, releaseID)
+	if err != nil {
+		return nil, nil, err
 	}
+	list, err := s.store.Library().AssertionsInRelease(ctx, rel.ID, []string{assertionID})
 	if err != nil {
 		return nil, nil, err
 	}

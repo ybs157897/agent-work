@@ -297,7 +297,10 @@ func requirementFromInput(input *domain.KnowledgeRequirementInput, staging strin
 		ContentRef: input.ContentRef, Digest: strings.TrimPrefix(input.ContentDigest, "sha256:"),
 		Text: text, Extra: extra, Origin: input.InputOrigin, Unresolved: input.ReferenceError,
 	}
-	if strings.TrimSpace(staging) != "" {
+	// The staging copy is only announced when the brief will actually write it:
+	// an unresolved reference keeps the text inline and advertises the frozen
+	// binding, so the brief never names a file that does not exist.
+	if strings.TrimSpace(staging) != "" && req.Unresolved == "" {
 		req.Path = filepath.Join(staging, knowledgelib.RequirementFileName)
 	}
 	return req

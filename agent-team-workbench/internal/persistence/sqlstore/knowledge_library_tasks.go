@@ -1329,6 +1329,25 @@ func (r *LibraryRepo) RefreshReleaseTotals(ctx context.Context, libraryID string
 	return len(ids), nil
 }
 
+// ReleaseCitesEvidence reports whether an evidence ID is referenced by any
+// assertion or relation of one release. That is the membership rule a
+// release-scoped evidence read must apply: an evidence collected for a newer
+// version is not part of an older release, while one carried forward by the
+// release still is.
+func (r *LibraryRepo) ReleaseCitesEvidence(ctx context.Context, releaseID, evidenceID string) (bool, error) {
+	var found bool
+	err := r.db(ctx).QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM knowledge_assertions a
+			JOIN knowledge_release_documents rd ON rd.document_version_id = a.document_version_id
+			WHERE rd.release_id=? AND a.evidence_json LIKE '%'||?||'%'
+			UNION ALL
+			SELECT 1 FROM knowledge_assertion_relations x
+			JOIN knowledge_release_documents rd ON rd.document_version_id = x.document_version_id
+			WHERE rd.release_id=? AND x.evidence_json LIKE '%'||?||'%')`,
+		releaseID, evidenceID, releaseID, evidenceID).Scan(&found)
+	return found, err
+}
+
 // releaseTotals counts what one release actually contains: its assertions and
 // relations across every document version it pins, and the distinct evidence
 // those records cite.
