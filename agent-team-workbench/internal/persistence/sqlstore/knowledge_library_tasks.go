@@ -496,42 +496,65 @@ func (r *LibraryRepo) ListPreparedPublications(ctx context.Context, libraryID st
 	return out, rows.Err()
 }
 
-// CommitPublication is the visibility commit point of one publish: the
-// journal row becomes committed and, in the same transaction, the library
-// starts pointing at that release. Both move together, so a reader can never
-// see a current release whose official files were not written.
-func (r *LibraryRepo) CommitPublication(ctx context.Context, taskID string) error {
+// SettlePublication is the visibility commit point of one publish, and the one
+// transaction in which a finished publish becomes true: the journal row turns
+// committed, the library starts pointing at that release, the previous release
+// is superseded, and the task and its event reach their terminal states. They
+// move together or not at all, so there is no window in which a task is
+// completed while its event is still processing, or a release is current while
+// its publication is still prepared. Idempotent: a recovery pass that finds the
+// release already committed only re-applies the same terminal states.
+func (r *LibraryRepo) SettlePublication(ctx context.Context, in application.PublicationSettlement) error {
 	return r.store.InTx(ctx, func(ctx context.Context) error {
-		_, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_publications
-			SET status='committed', committed_at=? WHERE task_id=? AND status='prepared'`, timeNow(), taskID)
-		if err != nil {
+		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_publications
+			SET status='committed', committed_at=? WHERE task_id=? AND status='prepared'`, timeNow(), in.TaskID); err != nil {
 			return err
 		}
 		var libraryID, releaseID, snapshotID string
 		row := r.db(ctx).QueryRowContext(ctx, `SELECT p.library_id, p.release_id, COALESCE(r.snapshot_id,'')
 			FROM knowledge_publications p
 			JOIN knowledge_releases r ON r.id = p.release_id
-			WHERE p.task_id=?`, taskID)
+			WHERE p.task_id=?`, in.TaskID)
 		if err := row.Scan(&libraryID, &releaseID, &snapshotID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
 			}
 			return err
 		}
-		if strings.TrimSpace(releaseID) == "" {
-			return nil
+		if strings.TrimSpace(releaseID) != "" {
+			now := timeNow()
+			if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
+				WHERE library_id=? AND id<>? AND status='published'`, libraryID, releaseID); err != nil {
+				return err
+			}
+			if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_libraries
+				SET current_release_id=?, current_snapshot_id=COALESCE(NULLIF(?,''), current_snapshot_id),
+				    index_revision=index_revision+1, version=version+1, updated_at=? WHERE id=?`,
+				releaseID, snapshotID, now, libraryID); err != nil {
+				return err
+			}
 		}
-		now := timeNow()
-		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
-			WHERE library_id=? AND id<>? AND status='published'`, libraryID, releaseID); err != nil {
+		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_write_tasks SET
+				status='completed', target_release_id=?, diagnostics_json=?, last_error='',
+				blocked_reason='', owner_token='', next_attempt_at=NULL, finished_at=?, updated_at=?
+			WHERE id=?`, nullString(releaseID), in.DiagnosticsJSON, timeNow(), timeNow(), in.TaskID); err != nil {
 			return err
 		}
-		_, err = r.db(ctx).ExecContext(ctx, `UPDATE knowledge_libraries
-			SET current_release_id=?, current_snapshot_id=COALESCE(NULLIF(?,''), current_snapshot_id),
-			    index_revision=index_revision+1, version=version+1, updated_at=? WHERE id=?`,
-			releaseID, snapshotID, now, libraryID)
-		return err
+		if strings.TrimSpace(in.EventID) != "" {
+			if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_library_events
+				SET status=?, task_id=?, updated_at=? WHERE id=?`,
+				domain.KnowledgeEventCompleted, in.TaskID, timeNow(), in.EventID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+}
+
+// CommitPublication settles only the release side of a publish. It is used by
+// recovery for a release whose task already reached a terminal state.
+func (r *LibraryRepo) CommitPublication(ctx context.Context, taskID string) error {
+	return r.SettlePublication(ctx, application.PublicationSettlement{TaskID: taskID})
 }
 
 func (r *LibraryRepo) AbandonPublication(ctx context.Context, taskID string) error {

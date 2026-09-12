@@ -69,6 +69,10 @@ type KnowledgeLibraryRepo interface {
 	UpdateTurn(ctx context.Context, turnID, status, resultJSON, errMsg string) error
 	ListTurns(ctx context.Context, taskID string) ([]*domain.KnowledgeTaskTurn, error)
 
+	// SettlePublication seals one finished publish in a single transaction:
+	// publication and current pointer, task terminal state, event terminal
+	// state.
+	SettlePublication(ctx context.Context, in PublicationSettlement) error
 	CreatePublication(ctx context.Context, p *domain.KnowledgePublication) error
 	GetPublicationByTask(ctx context.Context, taskID string) (*domain.KnowledgePublication, error)
 	ListPreparedPublications(ctx context.Context, libraryID string) ([]*domain.KnowledgePublication, error)

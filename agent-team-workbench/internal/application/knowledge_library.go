@@ -62,6 +62,16 @@ type KnowledgeLibraryEventReceipt struct {
 	ReceivedAt time.Time                   `json:"received_at"`
 }
 
+// PublicationSettlement is everything one finished publish records durably.
+// The fields are written in one transaction: a task must never be completed
+// while its event is still processing, and the library must never point at a
+// release whose publication is still prepared.
+type PublicationSettlement struct {
+	TaskID          string
+	DiagnosticsJSON string
+	EventID         string
+}
+
 // KnowledgeTaskReceipt is the answer to a queue-only write request: it says
 // the work was accepted and where it sits, never that it is done.
 type KnowledgeTaskReceipt struct {

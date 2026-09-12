@@ -692,14 +692,6 @@ func (s *Service) completeTask(ctx context.Context, lib *domain.KnowledgeLibrary
 		// publishing a second copy.
 		return s.deferTask(ctx, lib, task, fmt.Errorf("%w: 正式知识文件与发布 %s 不一致：%v", domain.ErrStateConflict, release.ID, err))
 	}
-	if err := s.store.Library().CommitPublication(ctx, task.ID); err != nil {
-		return err
-	}
-	// The frozen working copies are no longer needed: every published value
-	// lives on as a content-addressed representation.
-	if err := kl.ReleaseSnapshotTrees(task.SnapshotID); err != nil {
-		log.Printf("knowledge library %s: release snapshot trees: %v", lib.ID, err)
-	}
 	// diagnostics is always a JSON array of human-readable lines; a structured
 	// summary would change the field's shape between task states and break any
 	// client that renders it as a list.
@@ -708,20 +700,27 @@ func (s *Service) completeTask(ctx context.Context, lib *domain.KnowledgeLibrary
 		release.ID, release.Seq, len(projection.Documents), len(projection.Evidence),
 		map[bool]string{true: "（从中断中恢复）", false: ""}[recovered]))
 	diag, _ := json.Marshal(lines)
+	// One transaction seals the publish: publication and current pointer, the
+	// task's terminal state and its event's terminal state. Written separately,
+	// a failure between them leaves a completed task with a processing event,
+	// or a release the library points at whose publication never committed.
+	if err := s.store.Library().SettlePublication(ctx, PublicationSettlement{
+		TaskID: task.ID, DiagnosticsJSON: string(diag), EventID: task.EventID,
+	}); err != nil {
+		return s.deferTask(ctx, lib, task, fmt.Errorf("%w: 发布封口失败：%v", domain.ErrStateConflict, err))
+	}
 	task.DiagnosticsJSON = string(diag)
-	task.UpdatedAt = time.Now().UTC()
 	task.Status = domain.KnowledgeTaskCompleted
 	task.LastError = ""
 	task.BlockedReason = ""
 	finished := time.Now().UTC()
 	task.FinishedAt = &finished
-	if err := s.store.Library().UpdateTask(ctx, task); err != nil {
-		return err
-	}
-	if task.EventID != "" {
-		if err := s.store.Library().UpdateEventStatus(ctx, task.EventID, domain.KnowledgeEventCompleted, task.ID); err != nil {
-			return err
-		}
+	task.UpdatedAt = finished
+	// The frozen working copies are released only after the seal succeeded:
+	// while recovery may still have to redo this step, the frozen input it
+	// re-collects evidence from must still exist.
+	if err := kl.ReleaseSnapshotTrees(task.SnapshotID); err != nil {
+		log.Printf("knowledge library %s: release snapshot trees: %v", lib.ID, err)
 	}
 	if s.notifier != nil {
 		s.notifier.Notify(lib.WorkspaceID)
@@ -1069,8 +1068,17 @@ func (s *Service) recoverLibraryPublications(ctx context.Context, lib *domain.Kn
 			if err := s.materializeLibraryFiles(ctx, lib, rel); err != nil {
 				return fmt.Errorf("knowledge library %s: 恢复发布 %s 的正式文件失败：%w", lib.ID, rel.ID, err)
 			}
-			if err := s.store.Library().CommitPublication(ctx, pub.TaskID); err != nil {
-				return err
+			// Sealed the same way the normal path seals it, so a recovery can
+			// never leave a completed task beside a processing event either.
+			settle := PublicationSettlement{TaskID: pub.TaskID, DiagnosticsJSON: "[]"}
+			if task, taskErr := s.store.Library().GetTask(ctx, lib.ID, pub.TaskID); taskErr == nil {
+				settle.EventID = task.EventID
+				if strings.TrimSpace(task.DiagnosticsJSON) != "" {
+					settle.DiagnosticsJSON = task.DiagnosticsJSON
+				}
+			}
+			if err := s.store.Library().SettlePublication(ctx, settle); err != nil {
+				return fmt.Errorf("knowledge library %s: 恢复发布 %s 的封口失败：%w", lib.ID, rel.ID, err)
 			}
 		case errors.Is(err, domain.ErrNotFound):
 			// No release for this digest: either the publish never happened or

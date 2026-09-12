@@ -1302,6 +1302,169 @@ func TestKnowledgeCancelContract(t *testing.T) {
 	}
 }
 
+// TestKnowledgeEventSettlementFailureKeepsRecoverableInput injects a failure
+// into the event's terminal write and checks the seal is all-or-nothing: no
+// completed task beside a processing event, the frozen input still available
+// for the retry, and a retry that neither publishes a second release nor asks
+// the model again.
+func TestKnowledgeEventSettlementFailureKeepsRecoverableInput(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	first := publishInitializeRelease(t, h)
+	lib := h.libID(t)
+
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "seal-1",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+	task := h.headTask(t)
+	if task == nil || task.SnapshotID == "" {
+		t.Fatalf("the task must be prepared: %+v", task)
+	}
+	files := orderServiceAssertionEvidence(t, h.fixture.repos["order-service"])
+	files["content/components/order-service.md"] = libraryDoc(
+		"doc:order-service", "订单服务", "assertion:order-cancel-publishes",
+		"订单服务在取消分支发布取消事件（封口用例）。", "ev-order-cancel", []string{"entity:service:order-service"})
+	files["entities.yaml"] = "entities: []\n"
+	files["plan.json"] = `{"summary":"增量","documents":["content/components/order-service.md"],` +
+		`"removals":[],"renames":[],"coverage":{"sources_read":["order-service"],"sources_missed":[],` +
+		`"gaps":[],"notes":""}}`
+	writeStaging(t, task.StagingPath, files)
+	h.completeAgentTurn(t, domain.RunSucceeded)
+
+	// Inject a failure into exactly the event's terminal write.
+	if _, err := h.db.ExecContext(ctx, `CREATE TRIGGER accept_fail_event_completion
+		BEFORE UPDATE ON knowledge_library_events WHEN NEW.status='completed'
+		BEGIN SELECT RAISE(ABORT, 'injected event settlement failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	h.tick(t)
+
+	failed := h.headTask(t)
+	if failed == nil {
+		t.Fatal("the task must stay in the queue after a failed seal")
+	}
+	if failed.Status == domain.KnowledgeTaskCompleted {
+		t.Fatalf("a failed seal must not complete the task: %+v", failed)
+	}
+	if !strings.Contains(failed.LastError, "封口失败") {
+		t.Fatalf("the failure must be recorded: %q", failed.LastError)
+	}
+	// No completed publication, no moved pointer, no completed task, and the
+	// event is not left behind as processing beside a completed task.
+	pub, err := h.store.Library().GetPublicationByTask(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.Status != "prepared" || pub.CommittedAt != nil {
+		t.Fatalf("the publication must stay prepared after a failed seal: %+v", pub)
+	}
+	current, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil || current.ID != first.ID {
+		t.Fatalf("the visible release must not move: %+v %v", current, err)
+	}
+	event, err := h.store.Library().GetEvent(ctx, lib, failed.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The two terminal states belong to the same transaction: while the task is
+	// unfinished the event must not claim completion (it goes back to waiting
+	// for the retry), and the reverse can never happen either.
+	if event.Status == domain.KnowledgeEventCompleted {
+		t.Fatalf("an unfinished task must not have a completed event: %+v", event)
+	}
+	if failed.Status == domain.KnowledgeTaskCompleted && event.Status != domain.KnowledgeEventCompleted {
+		t.Fatalf("a completed task must not have a processing event: %+v", event)
+	}
+	// The frozen input the retry needs is still there: the trees are released
+	// only after the seal succeeded.
+	snapshot, err := h.store.Library().GetSnapshot(ctx, failed.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kl, err := knowledgelib.NewLibrary(lib2root(t, h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range snapshot.Bindings {
+		if b.SourceKind != "requirement" {
+			continue
+		}
+		if _, err := os.Stat(kl.SnapshotTreeDirFor(b.SnapshotID, b.ID)); err != nil {
+			t.Fatalf("a failed seal must keep the frozen input: %v", err)
+		}
+	}
+
+	// Remove the injection and retry the harness step: the same release is
+	// sealed, with no second publish and no second model turn.
+	if _, err := h.db.ExecContext(ctx, `DROP TRIGGER accept_fail_event_completion`); err != nil {
+		t.Fatal(err)
+	}
+	turnsBefore := countRows(t, h, `SELECT COUNT(*) FROM knowledge_task_turns WHERE task_id=?`, failed.ID)
+	releasesBefore := countRows(t, h, `SELECT COUNT(*) FROM knowledge_releases WHERE library_id=?`, lib)
+	next := failed
+	for i := 0; i < 6 && next != nil && next.Status != domain.KnowledgeTaskCompleted; i++ {
+		if _, err := h.db.ExecContext(ctx, `UPDATE knowledge_write_tasks SET next_attempt_at=NULL WHERE id=?`, next.ID); err != nil {
+			t.Fatal(err)
+		}
+		h.tick(t)
+		next = h.headTask(t)
+	}
+	settled, _, err := h.svc.GetKnowledgeWriteTask(ctx, h.wsID, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Status != domain.KnowledgeTaskCompleted {
+		t.Fatalf("the retry must seal the publish: %+v", settled)
+	}
+	settledPub, err := h.store.Library().GetPublicationByTask(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settledPub.Status != "committed" || settledPub.CommittedAt == nil {
+		t.Fatalf("the publication must commit on the retry: %+v", settledPub)
+	}
+	if settled.TargetReleaseID == "" || settled.TargetReleaseID != settledPub.ReleaseID {
+		t.Fatalf("task and publication must agree on the release: %+v %+v", settled, settledPub)
+	}
+	settledEvent, err := h.store.Library().GetEvent(ctx, lib, settled.EventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settledEvent.Status != domain.KnowledgeEventCompleted || settledEvent.TaskID != settled.ID {
+		t.Fatalf("the event must reach its terminal state with the task: %+v", settledEvent)
+	}
+	if countRows(t, h, `SELECT COUNT(*) FROM knowledge_releases WHERE library_id=?`, lib) != releasesBefore {
+		t.Fatal("the retry must not publish a second release")
+	}
+	if countRows(t, h, `SELECT COUNT(*) FROM knowledge_task_turns WHERE task_id=?`, failed.ID) != turnsBefore {
+		t.Fatal("the retry must not start another model turn")
+	}
+}
+
+// countRows runs a one-row count query.
+func countRows(t *testing.T, h *libraryHarness, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := h.db.QueryRowContext(context.Background(), query, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// lib2root returns the library root of a harness workspace.
+func lib2root(t *testing.T, h *libraryHarness) string {
+	t.Helper()
+	lib, err := h.svc.EnsureKnowledgeLibrary(context.Background(), h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lib.RootPath
+}
+
 // TestKnowledgeCancelAndRecoveryStateBoundary pins the boundary between the two
 // state machines that can finish a publish: the task's own head retry policy,
 // and the recovery pass that exists for tasks that no longer have an owner.
