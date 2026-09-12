@@ -2820,10 +2820,14 @@ export default function KnowledgePage() {
             onRefresh={refresh}
             onSelectEvidence={setEvidenceId}
             onExpand={(kind, id) => {
-              const key = `${kind}:${id}`;
+              // Expand inside the release the answer is pinned to: a handle
+              // from a historical release must open that release's object.
+              const pinnedReleaseId =
+                queryState.kind === 'ready' ? queryState.value.release?.id : undefined;
+              const key = `${pinnedReleaseId ?? 'current'}:${kind}:${id}`;
               void (async () => {
                 try {
-                  const value = await expandHandle(workspaceId, kind, id);
+                  const value = await expandHandle(workspaceId, kind, id, pinnedReleaseId);
                   setExpanded((current) => ({ ...current, [key]: value }));
                 } catch (error) {
                   toast.error(apiErrorMessage(error, '展开句柄失败'));
@@ -2847,6 +2851,9 @@ export default function KnowledgePage() {
                     limit: parsedLimit > 0 ? parsedLimit : undefined,
                   });
                   setQueryState({ kind: 'ready', value });
+                  // Expansions belong to the release that was queried; a new
+                  // answer must not leave another release's objects on screen.
+                  setExpanded({});
                 } catch (error) {
                   setQueryState({ kind: 'error', message: apiErrorMessage(error, '查询失败') });
                 }

@@ -236,11 +236,19 @@ describe('资料库 HTTP 客户端', () => {
       limit: 5,
     });
 
-    await expandHandle('ws_1', 'evidence', 'ev 1');
+    // Expanding inside a pinned release must keep the pin, or a historical
+    // handle would open the current version of the object.
+    await expandHandle('ws_1', 'evidence', 'ev 1', 'rel_hist');
     const expandUrl = fetch.mock.calls[4][0] as string;
     expect(expandUrl.startsWith(`${ROOT}/expand?`)).toBe(true);
-    expect(new URLSearchParams(expandUrl.split('?')[1]).get('kind')).toBe('evidence');
-    expect(new URLSearchParams(expandUrl.split('?')[1]).get('id')).toBe('ev 1');
+    const expandParams = new URLSearchParams(expandUrl.split('?')[1]);
+    expect(expandParams.get('kind')).toBe('evidence');
+    expect(expandParams.get('id')).toBe('ev 1');
+    expect(expandParams.get('release_id')).toBe('rel_hist');
+    // Without a pin the parameter is absent rather than empty.
+    await expandHandle('ws_1', 'assertion', 'assertion:x');
+    const unpinned = new URLSearchParams((fetch.mock.calls[5][0] as string).split('?')[1]);
+    expect(unpinned.get('release_id')).toBeNull();
   });
 
   it('观察面与索引重建走 GET /status 与 POST /reindex', async () => {

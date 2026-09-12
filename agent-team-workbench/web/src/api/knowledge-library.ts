@@ -627,8 +627,12 @@ export const normalizeQueryResponse = (raw: QueryResponse): QueryResponse => ({
 export const queryLibrary = async (workspaceId: string, body: QueryLibraryInput): Promise<QueryResponse> =>
   normalizeQueryResponse(await apiFetch<QueryResponse>(`${libraryRoot(workspaceId)}/query`, { method: 'POST', body }));
 
-export const expandHandle = (workspaceId: string, kind: string, id: string) =>
-  apiFetch<LibraryReceipt>(withQuery(`${libraryRoot(workspaceId)}/expand`, { kind, id }));
+/**
+ * 展开一个句柄。releaseId 必须传当前正在查看的发布：展开是固定版本的读取，
+ * 不传就会落到当前发布，把历史问题回答成今天的知识。
+ */
+export const expandHandle = (workspaceId: string, kind: string, id: string, releaseId?: string) =>
+  apiFetch<LibraryReceipt>(withQuery(`${libraryRoot(workspaceId)}/expand`, { kind, id, release_id: releaseId }));
 
 export const getStatus = async (workspaceId: string): Promise<LibraryStatus> => {
   const raw = await apiFetch<LibraryStatus>(`${libraryRoot(workspaceId)}/status`);
