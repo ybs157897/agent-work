@@ -654,7 +654,7 @@ func (s *Service) completeTask(ctx context.Context, lib *domain.KnowledgeLibrary
 	// library row: the caller's lib was loaded before the publish, so its
 	// current_release_id still points at the previous release and the official
 	// Markdown would lag one version behind the database.
-	if err := s.materializeLibraryFiles(ctx, lib, release.ID); err != nil {
+	if err := s.materializeLibraryFiles(ctx, lib, release); err != nil {
 		// A task is not finished while the official files disagree with the
 		// release it published. Surfacing this as a task failure keeps it in
 		// the retry/block policy; the publication stays prepared, and the
@@ -1036,7 +1036,7 @@ func (s *Service) recoverLibraryPublications(ctx context.Context, lib *domain.Kn
 			}
 			// A failure here must stay visible and retryable: leaving the
 			// publication prepared is what makes the next pass redo it.
-			if err := s.materializeLibraryFiles(ctx, lib, rel.ID); err != nil {
+			if err := s.materializeLibraryFiles(ctx, lib, rel); err != nil {
 				return fmt.Errorf("knowledge library %s: 恢复发布 %s 的正式文件失败：%w", lib.ID, rel.ID, err)
 			}
 			if err := s.store.Library().CommitPublication(ctx, pub.TaskID); err != nil {
@@ -1072,27 +1072,20 @@ func taskOccupiesQueue(status domain.KnowledgeTaskStatus) bool {
 
 // ── Materialize the published Markdown view ────────────────────────────
 
-// materializeLibraryFiles writes the published release back out as ordinary
+// materializeLibraryFiles writes one release back out as ordinary
 // Markdown: content/, catalog/views, _sources/manifest.yaml and INDEX.md.
 // The database rows are the durable record; the files are the same projection
 // rendered for humans, Obsidian and the library agent's own reading.
-func (s *Service) materializeLibraryFiles(ctx context.Context, lib *domain.KnowledgeLibrary, releaseID string) error {
+func (s *Service) materializeLibraryFiles(ctx context.Context, lib *domain.KnowledgeLibrary, current *domain.KnowledgeRelease) error {
+	if current == nil {
+		return nil
+	}
 	kl, err := s.libraryRoot(lib)
 	if err != nil {
 		return err
 	}
 	if err := kl.Ensure(); err != nil {
 		return err
-	}
-	current, err := s.resolveRelease(ctx, lib, releaseID)
-	if errors.Is(err, domain.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if current == nil {
-		return nil
 	}
 	docs, err := s.store.Library().ReleaseDocuments(ctx, current.ID, "", "", 1000)
 	if err != nil {

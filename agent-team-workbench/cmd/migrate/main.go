@@ -75,10 +75,28 @@ func applyWithoutTransaction(db *sql.DB, version, body string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	// sql.Conn.Close only returns the connection to the pool: it does not roll
+	// back an open transaction and it does not restore connection state. A
+	// half-applied schema rebuild must therefore be undone explicitly, and the
+	// foreign-key switch must be put back, before the pooled connection is
+	// handed to anyone else.
+	inTx := false
+	defer func() {
+		if inTx {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+		_, _ = conn.ExecContext(ctx, "PRAGMA foreign_keys = ON")
+		_ = conn.Close()
+	}()
 	for _, stmt := range splitStatements(body) {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("应用 %s 失败: %w", version, err)
+		}
+		switch head := strings.ToUpper(strings.TrimSpace(stmt)); {
+		case strings.HasPrefix(head, "BEGIN"):
+			inTx = true
+		case strings.HasPrefix(head, "COMMIT"), strings.HasPrefix(head, "ROLLBACK"):
+			inTx = false
 		}
 	}
 	var violations int

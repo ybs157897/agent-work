@@ -549,9 +549,17 @@ func scanRelease(row interface{ Scan(...any) error }) (*domain.KnowledgeRelease,
 	return &rel, nil
 }
 
+// visibleReleasePredicate hides a release whose publish has not been committed:
+// its rows may exist, but its official Markdown was never written, so it is not
+// a version a reader may see. Recovery looks releases up by projection digest
+// instead, which is deliberately not filtered.
+const visibleReleasePredicate = `NOT EXISTS (
+	SELECT 1 FROM knowledge_publications p
+	WHERE p.release_id = knowledge_releases.id AND p.status <> 'committed')`
+
 func (r *LibraryRepo) GetRelease(ctx context.Context, libraryID, releaseID string) (*domain.KnowledgeRelease, error) {
 	row := r.db(ctx).QueryRowContext(ctx, `SELECT `+releaseCols+` FROM knowledge_releases
-		WHERE library_id=? AND id=?`, libraryID, releaseID)
+		WHERE library_id=? AND id=? AND `+visibleReleasePredicate, libraryID, releaseID)
 	rel, err := scanRelease(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -561,7 +569,7 @@ func (r *LibraryRepo) GetRelease(ctx context.Context, libraryID, releaseID strin
 
 func (r *LibraryRepo) CurrentRelease(ctx context.Context, libraryID string) (*domain.KnowledgeRelease, error) {
 	row := r.db(ctx).QueryRowContext(ctx, `SELECT `+releaseCols+` FROM knowledge_releases
-		WHERE library_id=? ORDER BY seq DESC LIMIT 1`, libraryID)
+		WHERE library_id=? AND `+visibleReleasePredicate+` ORDER BY seq DESC LIMIT 1`, libraryID)
 	rel, err := scanRelease(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -574,7 +582,7 @@ func (r *LibraryRepo) ListReleases(ctx context.Context, libraryID string, limit 
 		limit = 50
 	}
 	rows, err := r.db(ctx).QueryContext(ctx, `SELECT `+releaseCols+` FROM knowledge_releases
-		WHERE library_id=? ORDER BY seq DESC LIMIT ?`, libraryID, limit)
+		WHERE library_id=? AND `+visibleReleasePredicate+` ORDER BY seq DESC LIMIT ?`, libraryID, limit)
 	if err != nil {
 		return nil, err
 	}

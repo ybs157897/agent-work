@@ -1745,6 +1745,22 @@ export function BrowsePanel({
 // Tab 4 · 查询与展开
 // ---------------------------------------------------------------------------
 
+/** 需求输入的表示来源不是代码仓库，术语必须跟着来源类型走。 */
+export function isRequirementEvidence(evidence: Evidence): boolean {
+  return evidence.binding.source_kind === 'requirement';
+}
+
+export function representationOriginLabel(origin: string): string {
+  switch (origin) {
+    case 'worktree':
+      return '工作树字节';
+    case 'frozen_requirement':
+      return '受理时冻结的需求原文';
+    default:
+      return '已提交字节';
+  }
+}
+
 export function EvidenceDetailCard({ evidence }: { evidence: Evidence }) {
   return (
     <div className="space-y-snug">
@@ -1758,29 +1774,41 @@ export function EvidenceDetailCard({ evidence }: { evidence: Evidence }) {
 
       <dl className="grid grid-cols-1 gap-snug md:grid-cols-2">
         <MetaItem label="来源" value={evidence.binding.source_name || evidence.binding.source_kind || '—'} />
-        <MetaItem label="仓库路径" value={evidence.binding.repo_path || '—'} mono />
-        <MetaItem label="git ref" value={evidence.binding.git_ref || '—'} mono />
-        <MetaItem label="commit" value={evidence.binding.commit_sha || '—'} mono />
-        <MetaItem
-          label="工作树状态"
-          value={
-            evidence.binding.dirty ? (
-              <StateBadge tone="warning">包含未提交改动</StateBadge>
-            ) : (
-              <StateBadge tone="success">干净</StateBadge>
-            )
-          }
-        />
-        <MetaItem
-          label="制品 / 消费方"
-          value={`${evidence.binding.artifact || '—'} · ${evidence.binding.consumer || '—'}`}
-        />
+        {isRequirementEvidence(evidence) ? (
+          <>
+            {/* 需求输入不是 Git 仓库：commit_sha 是受理原文的 sha256，说成「提交」会误导。 */}
+            <MetaItem label="需求版本" value={evidence.binding.git_ref || '—'} mono />
+            <MetaItem label="受理原文摘要" value={evidence.binding.commit_sha || '—'} mono />
+            <MetaItem label="冻结文本" value="受理时固化的需求原文" />
+            <MetaItem label="来源类型" value="需求输入（非代码仓库）" />
+          </>
+        ) : (
+          <>
+            <MetaItem label="仓库路径" value={evidence.binding.repo_path || '—'} mono />
+            <MetaItem label="git ref" value={evidence.binding.git_ref || '—'} mono />
+            <MetaItem label="commit" value={evidence.binding.commit_sha || '—'} mono />
+            <MetaItem
+              label="工作树状态"
+              value={
+                evidence.binding.dirty ? (
+                  <StateBadge tone="warning">包含未提交改动</StateBadge>
+                ) : (
+                  <StateBadge tone="success">干净</StateBadge>
+                )
+              }
+            />
+            <MetaItem
+              label="制品 / 消费方"
+              value={`${evidence.binding.artifact || '—'} · ${evidence.binding.consumer || '—'}`}
+            />
+          </>
+        )}
         <MetaItem label="定位" value={formatLocator(evidence.locator)} mono />
         <MetaItem
           label="表示"
-          value={`${evidence.representation.media_type || '未知类型'} · ${
-            evidence.representation.origin === 'worktree' ? '工作树字节' : '已提交字节'
-          } · ${formatBytes(evidence.representation.byte_size)}`}
+          value={`${evidence.representation.media_type || '未知类型'} · ${representationOriginLabel(
+            evidence.representation.origin,
+          )} · ${formatBytes(evidence.representation.byte_size)}`}
         />
         <MetaItem
           label="内容摘要"

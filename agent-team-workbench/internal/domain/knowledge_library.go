@@ -169,8 +169,21 @@ type KnowledgeRequirementInput struct {
 	ContentDigest      string
 	ByteSize           int
 	PayloadJSON        string
-	CreatedAt          time.Time
+	// InputOrigin is where the frozen body came from: the referenced document
+	// ('content_ref') or the event's inline payload ('inline_payload').
+	InputOrigin string
+	// ReferenceError records that a referenced document was declared but could
+	// not be read. It survives even when an inline copy was accepted, so the
+	// gap is never lost.
+	ReferenceError string
+	CreatedAt      time.Time
 }
+
+// Requirement input origins.
+const (
+	RequirementOriginContentRef    = "content_ref"
+	RequirementOriginInlinePayload = "inline_payload"
+)
 
 // KnowledgeSnapshotBinding freezes one source inside one snapshot.
 type KnowledgeSnapshotBinding struct {

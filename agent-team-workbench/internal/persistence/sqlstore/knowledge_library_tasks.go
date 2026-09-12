@@ -149,11 +149,11 @@ func scanTask(row interface{ Scan(...any) error }) (*domain.KnowledgeWriteTask, 
 func (r *LibraryRepo) CreateRequirementInput(ctx context.Context, in *domain.KnowledgeRequirementInput) error {
 	_, err := r.db(ctx).ExecContext(ctx, `INSERT INTO knowledge_requirement_inputs
 		(id, library_id, event_id, source_id, requirement_id, requirement_version, title, content_ref,
-		 stored_path, content_digest, byte_size, payload_json, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 stored_path, content_digest, byte_size, payload_json, input_origin, reference_error, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID, in.LibraryID, nullString(in.EventID), in.SourceID, in.RequirementID,
 		in.RequirementVersion, in.Title, in.ContentRef, in.StoredPath, in.ContentDigest,
-		in.ByteSize, in.PayloadJSON, in.CreatedAt)
+		in.ByteSize, in.PayloadJSON, in.InputOrigin, in.ReferenceError, in.CreatedAt)
 	return err
 }
 
@@ -161,13 +161,14 @@ func (r *LibraryRepo) CreateRequirementInput(ctx context.Context, in *domain.Kno
 func (r *LibraryRepo) GetRequirementInput(ctx context.Context, libraryID, inputID string) (*domain.KnowledgeRequirementInput, error) {
 	row := r.db(ctx).QueryRowContext(ctx, `SELECT id, library_id, event_id, source_id, requirement_id,
 		requirement_version, title, content_ref, stored_path, content_digest, byte_size, payload_json,
-		created_at FROM knowledge_requirement_inputs WHERE library_id=? AND id=?`, libraryID, inputID)
+		input_origin, reference_error, created_at FROM knowledge_requirement_inputs
+		WHERE library_id=? AND id=?`, libraryID, inputID)
 	var in domain.KnowledgeRequirementInput
 	var eventID *string
 	var created scanTime
 	if err := row.Scan(&in.ID, &in.LibraryID, &eventID, &in.SourceID, &in.RequirementID,
 		&in.RequirementVersion, &in.Title, &in.ContentRef, &in.StoredPath, &in.ContentDigest,
-		&in.ByteSize, &in.PayloadJSON, &created); err != nil {
+		&in.ByteSize, &in.PayloadJSON, &in.InputOrigin, &in.ReferenceError, &created); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -495,10 +496,42 @@ func (r *LibraryRepo) ListPreparedPublications(ctx context.Context, libraryID st
 	return out, rows.Err()
 }
 
+// CommitPublication is the visibility commit point of one publish: the
+// journal row becomes committed and, in the same transaction, the library
+// starts pointing at that release. Both move together, so a reader can never
+// see a current release whose official files were not written.
 func (r *LibraryRepo) CommitPublication(ctx context.Context, taskID string) error {
-	_, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_publications
-		SET status='committed', committed_at=? WHERE task_id=?`, timeNow(), taskID)
-	return err
+	return r.store.InTx(ctx, func(ctx context.Context) error {
+		_, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_publications
+			SET status='committed', committed_at=? WHERE task_id=? AND status='prepared'`, timeNow(), taskID)
+		if err != nil {
+			return err
+		}
+		var libraryID, releaseID, snapshotID string
+		row := r.db(ctx).QueryRowContext(ctx, `SELECT p.library_id, p.release_id, COALESCE(r.snapshot_id,'')
+			FROM knowledge_publications p
+			JOIN knowledge_releases r ON r.id = p.release_id
+			WHERE p.task_id=?`, taskID)
+		if err := row.Scan(&libraryID, &releaseID, &snapshotID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		if strings.TrimSpace(releaseID) == "" {
+			return nil
+		}
+		now := timeNow()
+		if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
+			WHERE library_id=? AND id<>? AND status='published'`, libraryID, releaseID); err != nil {
+			return err
+		}
+		_, err = r.db(ctx).ExecContext(ctx, `UPDATE knowledge_libraries
+			SET current_release_id=?, current_snapshot_id=COALESCE(NULLIF(?,''), current_snapshot_id),
+			    index_revision=index_revision+1, version=version+1, updated_at=? WHERE id=?`,
+			releaseID, snapshotID, now, libraryID)
+		return err
+	})
 }
 
 func (r *LibraryRepo) AbandonPublication(ctx context.Context, taskID string) error {
@@ -756,16 +789,11 @@ func (r *LibraryRepo) publishLocked(ctx context.Context, in application.PublishI
 		totalAssertions, totalRelations, totalEvidence, len(in.Documents), releaseID); err != nil {
 		return nil, err
 	}
-	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_releases SET status='superseded'
-		WHERE library_id=? AND id<>? AND status='published'`, in.LibraryID, releaseID); err != nil {
-		return nil, err
-	}
-	if _, err := r.db(ctx).ExecContext(ctx, `UPDATE knowledge_libraries
-		SET current_release_id=?, current_snapshot_id=COALESCE(NULLIF(?,''), current_snapshot_id),
-		    index_revision=index_revision+1, version=version+1, updated_at=? WHERE id=?`,
-		releaseID, in.SnapshotID, now, in.LibraryID); err != nil {
-		return nil, err
-	}
+	// The release exists and its rows are consistent, but nothing points at it
+	// yet: the current-release pointer and the supersede of the previous
+	// release happen in CommitPublication, after the official Markdown has
+	// been written. A release whose files are missing is therefore not a
+	// version any reader can reach.
 	// The journal row records that this release exists, but it stays
 	// 'prepared' until the official Markdown has been written: the database
 	// rows and the files a human reads are two different artifacts, and a

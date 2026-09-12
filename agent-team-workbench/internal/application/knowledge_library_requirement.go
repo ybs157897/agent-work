@@ -51,6 +51,12 @@ type requirementDraft struct {
 	Digest        string
 	PayloadJSON   string
 	Extra         map[string]string
+	// Origin records where Text came from. An inline payload copy is a
+	// different input from the referenced document and is labelled as such.
+	Origin string
+	// ReferenceError is the reason a declared reference could not be read. It
+	// is kept even when an inline copy was accepted.
+	ReferenceError string
 	// Unresolved explains why no text could be accepted. A task without text
 	// documents the gap instead of guessing a requirement.
 	Unresolved string
@@ -87,10 +93,9 @@ func (s *Service) prepareRequirementDraft(ctx context.Context, workspaceID strin
 		draft.Extra = nil
 	}
 
-	var text string
-	if v := firstString(payload, requirementTextKeys...); v != "" {
-		text = v
-	}
+	inline := firstString(payload, requirementTextKeys...)
+	text := inline
+	draft.Origin = domain.RequirementOriginInlinePayload
 	// A referenced document is the authority when both are present, because a
 	// payload body is often only a summary of it.
 	if draft.ContentRef != "" {
@@ -99,14 +104,17 @@ func (s *Service) prepareRequirementDraft(ctx context.Context, workspaceID strin
 		case errors.Is(err, errRequirementRefRefused):
 			return nil, err
 		case err != nil:
-			// An authorized reference that is merely missing stays a recorded
-			// gap: the task must say the requirement body was not obtained
-			// rather than invent one.
+			// The reference was declared and could not be read. The failure is
+			// recorded either way, so an inline copy can never pass as the
+			// referenced original.
+			draft.ReferenceError = err.Error()
 			draft.Unresolved = err.Error()
 		case strings.TrimSpace(raw) == "":
-			draft.Unresolved = fmt.Sprintf("引用 %s 的内容为空", draft.ContentRef)
+			draft.ReferenceError = fmt.Sprintf("引用 %s 的内容为空", draft.ContentRef)
+			draft.Unresolved = draft.ReferenceError
 		default:
 			text = raw
+			draft.Origin = domain.RequirementOriginContentRef
 		}
 	}
 	if strings.TrimSpace(text) == "" {
@@ -179,11 +187,15 @@ func (s *Service) freezeRequirementInput(ctx context.Context, lib *domain.Knowle
 	if label == "" {
 		label = "v1"
 	}
+	origin := draft.Origin
+	if origin == "" {
+		origin = domain.RequirementOriginContentRef
+	}
 	stored, err := kl.StoreRequirementInput(requirementID, label, draft.Digest, []byte(draft.Text))
 	if err != nil {
 		return nil, err
 	}
-	source, err := s.ensureRequirementSource(ctx, lib, kl, requirementID)
+	source, err := s.ensureRequirementSource(ctx, lib, kl, requirementID, origin)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +203,8 @@ func (s *Service) freezeRequirementInput(ctx context.Context, lib *domain.Knowle
 		ID: domain.NewID("kreq_"), LibraryID: lib.ID, EventID: eventID, SourceID: source.ID,
 		RequirementID: requirementID, RequirementVersion: label, Title: draft.Title,
 		ContentRef: draft.ContentRef, StoredPath: stored, ContentDigest: "sha256:" + draft.Digest,
-		ByteSize: len(draft.Text), PayloadJSON: draft.PayloadJSON, CreatedAt: time.Now().UTC(),
+		ByteSize: len(draft.Text), PayloadJSON: draft.PayloadJSON, InputOrigin: origin,
+		ReferenceError: draft.ReferenceError, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.store.Library().CreateRequirementInput(ctx, input); err != nil {
 		return nil, err
@@ -202,8 +215,13 @@ func (s *Service) freezeRequirementInput(ctx context.Context, lib *domain.Knowle
 // ensureRequirementSource keeps one source row per imported requirement, so
 // evidence collected from its frozen text has a binding that the ledger, the
 // brief and the admin page can all name.
-func (s *Service) ensureRequirementSource(ctx context.Context, lib *domain.KnowledgeLibrary, kl knowledgelib.Library, requirementID string) (*domain.KnowledgeSource, error) {
+func (s *Service) ensureRequirementSource(ctx context.Context, lib *domain.KnowledgeLibrary, kl knowledgelib.Library, requirementID, origin string) (*domain.KnowledgeSource, error) {
+	// An inline payload copy is a separate source from the referenced file:
+	// evidence collected from it must not claim to quote the original document.
 	name := "requirement:" + requirementID
+	if origin == domain.RequirementOriginInlinePayload {
+		name = "requirement-inline:" + requirementID
+	}
 	sources, err := s.store.Library().ListSources(ctx, lib.ID)
 	if err != nil {
 		return nil, err
@@ -277,7 +295,7 @@ func requirementFromInput(input *domain.KnowledgeRequirementInput, staging strin
 	req := &knowledgelib.Requirement{
 		RequirementID: input.RequirementID, Title: input.Title, Version: input.RequirementVersion,
 		ContentRef: input.ContentRef, Digest: strings.TrimPrefix(input.ContentDigest, "sha256:"),
-		Text: text, Extra: extra,
+		Text: text, Extra: extra, Origin: input.InputOrigin, Unresolved: input.ReferenceError,
 	}
 	if strings.TrimSpace(staging) != "" {
 		req.Path = filepath.Join(staging, knowledgelib.RequirementFileName)

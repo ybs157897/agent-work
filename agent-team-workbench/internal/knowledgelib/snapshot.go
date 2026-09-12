@@ -415,7 +415,14 @@ func ReadBindingFile(ctx context.Context, runner GitRunner, b *Binding, relPath 
 	// fallback for a snapshot whose tree was already released.
 	if b.TreeDir != "" {
 		if raw, readErr := os.ReadFile(filepath.Join(b.TreeDir, filepath.FromSlash(clean))); readErr == nil {
-			return &BindingPath{Binding: b, Path: clean, Content: raw, Origin: "committed", Digest: DigestBytes(raw)}, nil
+			origin := "committed"
+			if b.SourceKind == "requirement" {
+				// A requirement input was frozen when the event was accepted;
+				// calling it a committed file would describe a repository
+				// state it never had.
+				origin = "frozen_requirement"
+			}
+			return &BindingPath{Binding: b, Path: clean, Content: raw, Origin: origin, Digest: DigestBytes(raw)}, nil
 		}
 	}
 	if b.RepoPath == "" {

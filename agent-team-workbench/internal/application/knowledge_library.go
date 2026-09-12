@@ -75,6 +75,37 @@ type KnowledgeTaskReceipt struct {
 	EnqueuedAt time.Time                  `json:"enqueued_at"`
 }
 
+// requirementEventTypes are the events that always describe a requirement
+// document, even when the body is delivered elsewhere.
+var requirementEventTypes = map[string]bool{
+	"requirement.imported": true,
+	"document.revised":     true,
+}
+
+// declaresRequirement reports whether an event claims to carry a requirement:
+// an explicit content reference, an inline body, a declared requirement
+// identity, or an event type that is a requirement import by definition.
+// Everything else is an ordinary code or workspace notification.
+func declaresRequirement(event *domain.KnowledgeLibraryEvent) bool {
+	if event == nil {
+		return false
+	}
+	if strings.TrimSpace(event.ContentRef) != "" {
+		return true
+	}
+	if requirementEventTypes[strings.TrimSpace(event.EventType)] {
+		return true
+	}
+	payload := decodeJSONObject(event.PayloadJSON)
+	if firstString(payload, requirementTextKeys...) != "" {
+		return true
+	}
+	if firstString(payload, "requirement_id", "req_id", "requirement", "requirement_version", "req_version") != "" {
+		return true
+	}
+	return strings.TrimSpace(subjectString(event.SubjectJSON, "requirement_id")) != ""
+}
+
 // mergeFocusJSON merges extra keys into a focus object, keeping the existing
 // fields and ignoring empty additions.
 func mergeFocusJSON(raw string, extra map[string]any) string {
@@ -471,12 +502,19 @@ func (s *Service) SubmitKnowledgeLibraryEvent(ctx context.Context, in KnowledgeL
 		ClientKey: clientKey, RequestDigest: digest,
 		Status: domain.KnowledgeEventAccepted, ReceivedAt: now, UpdatedAt: now,
 	}
-	// The requirement text is read and digested now, at acceptance: a queued
-	// task must document the text that was accepted, not whatever the
-	// referenced path happens to contain when the task reaches the head.
-	draft, err := s.prepareRequirementDraft(ctx, in.WorkspaceID, event)
-	if err != nil {
-		return nil, err
+	// A requirement body is only looked for when the caller actually declared
+	// one. A code or workspace notification carries no requirement, and
+	// treating it as a failed import would fill the brief with a gap nobody
+	// reported.
+	var draft *requirementDraft
+	if declaresRequirement(event) {
+		// The text is read and digested now, at acceptance: a queued task must
+		// document the text that was accepted, not whatever the referenced
+		// path happens to contain when the task reaches the head.
+		draft, err = s.prepareRequirementDraft(ctx, in.WorkspaceID, event)
+		if err != nil {
+			return nil, err
+		}
 	}
 	kl, err := s.libraryRoot(lib)
 	if err != nil {
@@ -1118,7 +1156,11 @@ func (s *Service) reindexProjection(ctx context.Context, lib *domain.KnowledgeLi
 	if err != nil {
 		return count, err
 	}
-	if err := s.materializeLibraryFiles(ctx, fresh, fresh.CurrentReleaseID); err != nil {
+	current, err := s.resolveRelease(ctx, fresh, fresh.CurrentReleaseID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return count, err
+	}
+	if err := s.materializeLibraryFiles(ctx, fresh, current); err != nil {
 		return count, err
 	}
 	return count, nil

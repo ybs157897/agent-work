@@ -1,3 +1,4 @@
+import { representationOriginLabel } from './knowledge.page';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -890,5 +891,13 @@ describe('资料库管理页 · 制品解析状态', () => {
     const payload = sourceCreatePayload(draft);
     expect(payload.usages?.[0]?.resolution_ref).toBeUndefined();
     expect(effectiveResolutionLabel('resolved', '  ')).toContain('登记声明值');
+  });
+});
+
+describe('需求输入证据的用语', () => {
+  it('需求冻结文本不被说成 Git 提交', () => {
+    expect(representationOriginLabel('frozen_requirement')).toBe('受理时冻结的需求原文');
+    expect(representationOriginLabel('committed')).toBe('已提交字节');
+    expect(representationOriginLabel('worktree')).toBe('工作树字节');
   });
 });

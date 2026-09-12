@@ -427,7 +427,7 @@ func TestKnowledgePublishMaterializesImmediately(t *testing.T) {
 func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 	ctx := context.Background()
 	h := newLibraryHarness(t)
-	publishInitializeRelease(t, h)
+	firstRelease := publishInitializeRelease(t, h)
 
 	// Obstruct the next write: the document target becomes a directory, so
 	// materialization fails while the database publish succeeds.
@@ -469,6 +469,56 @@ func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 	if !strings.Contains(task.LastError, "不一致") {
 		t.Fatalf("the failure must be recorded on the task: %q", task.LastError)
 	}
+	// The publish is not visible as a version until its files exist: the
+	// journal row is still prepared, and every reader-facing lookup must
+	// answer with the previous release.
+	var pubStatus string
+	var committedAt *string
+	if err := h.db.QueryRowContext(ctx, `SELECT status, committed_at FROM knowledge_publications
+		WHERE task_id=?`, task.ID).Scan(&pubStatus, &committedAt); err != nil {
+		t.Fatal(err)
+	}
+	if pubStatus != "prepared" || committedAt != nil {
+		t.Fatalf("an unmaterialized publish must stay prepared with no commit time: %s %v", pubStatus, committedAt)
+	}
+	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lib.CurrentReleaseID != firstRelease.ID {
+		t.Fatalf("the library must still point at the previous release %s, got %s", firstRelease.ID, lib.CurrentReleaseID)
+	}
+	visible, err := h.svc.ListKnowledgeReleases(ctx, h.wsID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range visible {
+		if rel.Seq > 1 {
+			t.Fatalf("a half-published release must not be listed as a version: %+v", rel)
+		}
+	}
+	current, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil || current.ID != firstRelease.ID {
+		t.Fatalf("the current release must stay %s: %+v %v", firstRelease.ID, current, err)
+	}
+	answer, err := h.svc.QueryKnowledgeLibrary(ctx, application.KnowledgeLibraryQuery{
+		WorkspaceID: h.wsID, Question: "订单服务是否发布取消事件",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Release == nil || answer.Release.ID != firstRelease.ID {
+		t.Fatalf("a query must answer from the last complete release: %+v", answer.Release)
+	}
+	for _, hit := range answer.Hits {
+		if strings.Contains(hit.Assertion.Statement, "物化失败版") {
+			t.Fatalf("an unmaterialized version must not be queryable: %+v", hit.Assertion)
+		}
+	}
+	pending := pendingReleaseID(t, h, task)
+	if _, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, pending); err == nil {
+		t.Fatal("a prepared release must not be readable by its ID")
+	}
 	// The retry budget must be spent on the harness step, not on a new model
 	// turn, and the release must not be published twice.
 	for i := 0; i < 6; i++ {
@@ -488,12 +538,20 @@ func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 	if blocked.BlockedReason == "" || !strings.Contains(blocked.LastError, "不一致") {
 		t.Fatalf("the block must explain itself: %+v", blocked)
 	}
-	releases, err := h.svc.ListKnowledgeReleases(ctx, h.wsID, 10)
-	if err != nil {
+	// The release row exists, but only because the publish happened: it must
+	// not be reachable, and the retries must not create a second one.
+	var releaseRows int
+	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM knowledge_releases WHERE library_id=?`,
+		lib.ID).Scan(&releaseRows); err != nil {
 		t.Fatal(err)
 	}
-	if len(releases) != 2 {
-		t.Fatalf("retrying the harness step must not publish extra releases: %d", len(releases))
+	if releaseRows != 2 {
+		t.Fatalf("retrying the harness step must not publish extra releases: %d", releaseRows)
+	}
+	if visible, err := h.svc.ListKnowledgeReleases(ctx, h.wsID, 10); err != nil {
+		t.Fatal(err)
+	} else if len(visible) != 1 {
+		t.Fatalf("only the last complete release may be listed: %+v", visible)
 	}
 
 	// Once the obstruction is gone, recovery finishes the same release: no new
@@ -513,11 +571,27 @@ func TestKnowledgeMaterializeFailureIsNotCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != len(releases) {
-		t.Fatalf("recovery must not add a release: %d vs %d", len(after), len(releases))
+	if len(after) != 2 {
+		t.Fatalf("recovery must commit the release it already published, not add one: %+v", after)
 	}
-	if got := libraryIndexRelease(t, h.libRoot); got != releases[0].ID {
-		t.Fatalf("recovered INDEX.md must name %s, got %s", releases[0].ID, got)
+	committed, err := h.svc.GetKnowledgeRelease(ctx, h.wsID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed.ID != pending {
+		t.Fatalf("recovery must switch to the same release %s, got %s", pending, committed.ID)
+	}
+	if got := libraryIndexRelease(t, h.libRoot); got != pending {
+		t.Fatalf("recovered INDEX.md must name %s, got %s", pending, got)
+	}
+	var pubAfter string
+	var committedAtAfter *string
+	if err := h.db.QueryRowContext(ctx, `SELECT status, committed_at FROM knowledge_publications
+		WHERE task_id=?`, blocked.ID).Scan(&pubAfter, &committedAtAfter); err != nil {
+		t.Fatal(err)
+	}
+	if pubAfter != "committed" || committedAtAfter == nil {
+		t.Fatalf("recovery must commit the publication: %s %v", pubAfter, committedAtAfter)
 	}
 }
 
@@ -732,6 +806,112 @@ func requirementDigestOf(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// TestKnowledgeOrdinaryEventsDoNotInventRequirements: a code or workspace
+// notification carries no requirement, so it must not produce a "requirement
+// not obtained" gap.
+func TestKnowledgeOrdinaryEventsDoNotInventRequirements(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	h.registerAllSources(t)
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "code.changed", Source: "git-hook", ClientKey: "plain-code",
+		Subject: map[string]any{"changed_paths": []any{"src/main/java/com/example/order/OrderService.java"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if head := h.headTask(t); head == nil || strings.Contains(head.FocusJSON, "requirement") {
+		t.Fatalf("a code change must not be parsed as a requirement: %+v", head)
+	}
+	h.tick(t)
+	task := h.headTask(t)
+	if task == nil || task.StagingPath == "" {
+		t.Fatalf("the code change must still be queued: %+v", task)
+	}
+	if strings.Contains(task.FocusJSON, "requirement") {
+		t.Fatalf("a code change must not be parsed as a requirement: %s", task.FocusJSON)
+	}
+	briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := string(briefRaw)
+	for _, forbidden := range []string{"本次需求原文", "需求的原文没有取到", "requirement_unresolved"} {
+		if strings.Contains(brief, forbidden) {
+			t.Fatalf("a code change must not invent a requirement gap (%q):\n%s", forbidden, brief)
+		}
+	}
+	if !strings.Contains(brief, "本次变更范围") {
+		t.Fatal("the code change must still reach the brief as a change scope")
+	}
+	// A workspace notification behaves the same way.
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "workspace.connected", Source: "admin", ClientKey: "plain-ws",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if head := h.headTask(t); strings.Contains(head.FocusJSON, "requirement") {
+		t.Fatalf("a workspace notification must not be parsed as a requirement: %s", head.FocusJSON)
+	}
+}
+
+// TestKnowledgeInlineRequirementKeepsItsGap: when the referenced document
+// cannot be read but the payload carries text, the text is a separate inline
+// source — the reference failure and the true origin must both survive.
+func TestKnowledgeInlineRequirementKeepsItsGap(t *testing.T) {
+	ctx := context.Background()
+	h := newLibraryHarness(t)
+	lib, err := h.svc.EnsureKnowledgeLibrary(ctx, h.wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(h.fixture.root, "REQ-KB-ACCEPT-03-missing.md")
+	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
+		WorkspaceID: h.wsID, EventType: "requirement.imported", Source: "business-harness",
+		ClientKey: "req-inline", ContentRef: missing,
+		Subject: map[string]any{"requirement_id": "REQ-KB-ACCEPT-03", "requirement_version": "v1"},
+		Payload: map[string]any{"title": "受理时限草稿", "text": "内联草稿：受理时限上限为 31 分钟。\n"},
+	}); err != nil {
+		t.Fatalf("an inline payload with an unreadable reference is still acceptable: %v", err)
+	}
+	task := h.headTask(t)
+	if task == nil || task.RequirementInputID == "" {
+		t.Fatalf("the inline body must be frozen as an input: %+v", task)
+	}
+	input, err := h.store.Library().GetRequirementInput(ctx, lib.ID, task.RequirementInputID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input.InputOrigin != domain.RequirementOriginInlinePayload {
+		t.Fatalf("the input must record that it is an inline copy: %+v", input)
+	}
+	if !strings.Contains(input.ReferenceError, "不可读") {
+		t.Fatalf("the reference failure must be kept: %q", input.ReferenceError)
+	}
+	source, err := h.store.Library().GetSource(ctx, lib.ID, input.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.Name != "requirement-inline:REQ-KB-ACCEPT-03" {
+		t.Fatalf("an inline copy is a separate source: %+v", source)
+	}
+	h.tick(t)
+	task = h.headTask(t)
+	briefRaw, err := os.ReadFile(filepath.Join(task.StagingPath, "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := string(briefRaw)
+	if !strings.Contains(brief, "引用的需求文档没有取到") {
+		t.Fatalf("the reference failure must be reported:\n%s", brief)
+	}
+	if !strings.Contains(brief, "内联文本") || !strings.Contains(brief, "31 分钟") {
+		t.Fatalf("the inline body must be handed over and labelled:\n%s", brief)
+	}
+	if !strings.Contains(brief, source.Name) {
+		t.Fatalf("the brief must name the inline binding: %s", source.Name)
+	}
+}
+
 // TestKnowledgeQueryCoverageIsHonest covers F4b: a search that returned every
 // hit must still be reported as partial when the release it read carries gaps
 // or when the matched statements have no evidence.
@@ -832,6 +1012,18 @@ func TestKnowledgeReindexFailureIsBounded(t *testing.T) {
 	if head := h.headTask(t); head == nil || head.ID != receipt.TaskID {
 		t.Fatalf("a blocked reindex must keep the queue head: %+v", head)
 	}
+}
+
+// pendingReleaseID reads the release a task published even though its
+// publication is not committed yet, which is exactly what must stay invisible.
+func pendingReleaseID(t *testing.T, h *libraryHarness, task *domain.KnowledgeWriteTask) string {
+	t.Helper()
+	var releaseID string
+	if err := h.db.QueryRowContext(context.Background(),
+		`SELECT release_id FROM knowledge_publications WHERE task_id=?`, task.ID).Scan(&releaseID); err != nil {
+		t.Fatal(err)
+	}
+	return releaseID
 }
 
 // TestKnowledgeIncrementalReleaseCountsWhatItContains: an incremental release

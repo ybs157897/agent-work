@@ -99,6 +99,10 @@ type Requirement struct {
 	// cites it, not the staging path, so the requirement's own bytes are
 	// collected as evidence.
 	Binding string `json:"binding,omitempty"`
+	// Origin says where the text came from: the referenced document or the
+	// event's inline payload. An inline copy must never be described as the
+	// referenced original.
+	Origin string `json:"origin,omitempty"`
 	// Unresolved records why the referenced text could not be read. A task
 	// with an unresolved requirement must say so instead of inventing text.
 	Unresolved string            `json:"unresolved,omitempty"`
@@ -216,6 +220,11 @@ func RenderBrief(in BriefInput) (string, error) {
 		if r.ContentRef != "" {
 			b.WriteString("- 原文引用：" + r.ContentRef + "\n")
 		}
+		if r.Origin == "inline_payload" {
+			b.WriteString("- 正文来源：事件 payload 内联文本（不是引用文档的内容）\n")
+		} else if r.Origin == "content_ref" {
+			b.WriteString("- 正文来源：引用文档（受理时已冻结）\n")
+		}
 		if r.Digest != "" {
 			b.WriteString("- 文本摘要（sha256）：`" + r.Digest + "`\n")
 		}
@@ -224,6 +233,26 @@ func RenderBrief(in BriefInput) (string, error) {
 		}
 		b.WriteString("\n")
 		switch {
+		case r.Unresolved != "" && strings.TrimSpace(r.Text) != "":
+			// A declared reference failed, but an inline copy was accepted.
+			// Both facts are stated: the gap stays visible and the text is
+			// never presented as the referenced original.
+			b.WriteString("**引用的需求文档没有取到**：" + r.Unresolved + "\n\n")
+			b.WriteString("下面的正文来自**事件 payload 的内联文本**，不是那份文档的内容；请在 coverage.gaps 里写明「引用文档未取到，本轮依据内联副本」。\n\n")
+			if r.Path != "" {
+				b.WriteString("内联副本另存为：`" + r.Path + "`（仅供阅读；证据必须引用下面的冻结绑定）。\n\n")
+			}
+			b.WriteString("```text\n" + r.Text + "\n```\n\n")
+			b.WriteString("处理要求：\n\n")
+			b.WriteString("- 把这段内联正文作为 `basis: source_statement`、`perspective: normative` 的条目记录，并在陈述里写明依据是内联副本而非引用文档。\n")
+			b.WriteString("- 需求是「要求」，不是「现状」：不要写「已实现」「已上线」，也不要写审批或发布状态字段。\n")
+			b.WriteString("- **需求条目必须登记证据**：")
+			if r.Binding != "" {
+				b.WriteString("binding 写 `" + r.Binding + "`")
+			} else {
+				b.WriteString("binding 写来源表里 `requirement-inline:` 开头的那一行")
+			}
+			b.WriteString("，`path` 写 `requirement.md`，locator 用 `source_text` 引用这份冻结的内联副本。\n\n")
 		case r.Unresolved != "":
 			b.WriteString("**这段需求的原文没有取到**：" + r.Unresolved + "\n")
 			b.WriteString("本轮不要凭标题猜测需求内容；按现有来源照常整理，并在 plan.json 的 coverage.gaps 里写明「需求原文缺失，无法核对」。\n\n")
