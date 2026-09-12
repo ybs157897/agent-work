@@ -434,7 +434,7 @@ describe('资料库管理页 · 来源与事件', () => {
       '未声明使用方 · com.example:common:1.4.2（登记声明值）',
     );
     // 真实构建解析出来的版本必须与人工登记值区分开。
-    expect(usageLine(usage({ artifact_resolution: 'resolved' }))).toContain('（构建解析值');
+    expect(usageLine(usage({ artifact_resolution: 'resolved' }))).toContain('声明为构建解析值');
     expect(usageLine(usage({ artifact_resolution: 'unknown' }))).toContain('（解析未知）');
     // 缺字段的旧数据按契约回落到 declared，绝不能冒充 resolved。
     expect(usageLine(usage({ artifact_resolution: undefined }))).toContain('（登记声明值）');
@@ -470,7 +470,7 @@ describe('资料库管理页 · 来源与事件', () => {
     // 解析语义必须在选择控件旁边说清楚。
     expect(html).toContain('登记声明值：人工填写，未经过构建/依赖解析核实');
     expect(html).toContain('解析未知：没有已知的依赖版本映射');
-    expect(html).toContain('必须填写可核查的解析依据');
+    expect(html).toContain('实际保存为：登记声明值（本版本无法核实；引用仅作备注）');
   });
 
   it('编辑态由已加载来源的使用方种子化：只改 default_ref 保存，两条使用方原样回传', async () => {
@@ -829,8 +829,11 @@ describe('资料库管理页 · 查询', () => {
 
 describe('资料库管理页 · 制品解析状态', () => {
   it('没有解析依据时明确说明会按登记声明值保存', () => {
-    expect(effectiveResolutionLabel('resolved', '')).toContain('没有解析依据');
-    expect(effectiveResolutionLabel('resolved', 'build:42')).toContain('必须填写可核查的解析依据');
+    // 本版本没有解析能力：填了引用也只是备注，不会变成已核实。
+    expect(effectiveResolutionLabel('resolved', '')).toContain('登记声明值');
+    expect(effectiveResolutionLabel('resolved', '')).toContain('未填引用');
+    expect(effectiveResolutionLabel('resolved', 'build:42')).toContain('登记声明值');
+    expect(effectiveResolutionLabel('resolved', 'build:42')).toContain('引用仅作备注');
   });
 
   it('resolved 行必须能填写解析依据，且依据随请求体回传', () => {

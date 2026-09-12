@@ -1563,8 +1563,17 @@ func TestKnowledgeSourceResolvedSurvivesNormalEdit(t *testing.T) {
 	if len(created.Usages) != 2 {
 		t.Fatalf("usages lost on create: %+v", created.Usages)
 	}
-	if created.Usages[0].ArtifactState() != "resolved" {
-		t.Fatalf("an evidence-backed resolution must be kept: %+v", created.Usages[0])
+	// No resolver exists in this build, so even a well-formed reference stays a
+	// claim: the effective state is a declaration and the reference is kept as
+	// an unverified note.
+	if created.Usages[0].ArtifactState() != "declared" {
+		t.Fatalf("no claim may become a verified state: %+v", created.Usages[0])
+	}
+	if created.Usages[0].ResolutionRef != "mvn-dependency-tree:order/target/tree.txt" {
+		t.Fatalf("the caller's reference must be preserved: %+v", created.Usages[0])
+	}
+	if !created.Usages[0].ResolutionDowngraded() {
+		t.Fatalf("the downgrade must be reported: %+v", created.Usages[0])
 	}
 	// An unsupported claim keeps its raw text but its effective state is the
 	// declaration it really is, and the downgrade stays visible.
@@ -1588,9 +1597,9 @@ func TestKnowledgeSourceResolvedSurvivesNormalEdit(t *testing.T) {
 	if updated.DefaultRef != "release" {
 		t.Fatalf("the edited field did not change: %+v", updated)
 	}
-	if len(updated.Usages) != 2 || updated.Usages[0].ArtifactState() != "resolved" ||
+	if len(updated.Usages) != 2 || updated.Usages[0].ArtifactState() != "declared" ||
 		updated.Usages[0].ResolutionRef != "mvn-dependency-tree:order/target/tree.txt" {
-		t.Fatalf("editing an unrelated field destroyed a verified record: %+v", updated.Usages)
+		t.Fatalf("editing an unrelated field destroyed the recorded declaration: %+v", updated.Usages)
 	}
 	// And the binding carries the basis forward.
 	if _, err := h.svc.SubmitKnowledgeLibraryEvent(ctx, application.KnowledgeLibraryEventInput{
@@ -1609,8 +1618,8 @@ func TestKnowledgeSourceResolvedSurvivesNormalEdit(t *testing.T) {
 			continue
 		}
 		if b.Consumer == "order-service" {
-			if b.ArtifactResolution != "resolved" || b.ArtifactResolutionRef == "" {
-				t.Fatalf("the binding lost its resolution basis: %+v", b)
+			if b.ArtifactResolution != "declared" || b.ArtifactResolutionRef == "" {
+				t.Fatalf("the binding must carry the declared state plus the caller's note: %+v", b)
 			}
 		}
 		if b.Consumer == "device-service" && b.ArtifactResolution != "declared" {

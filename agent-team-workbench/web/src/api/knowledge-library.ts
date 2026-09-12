@@ -35,11 +35,16 @@ export interface SourceUsage {
   consumer: string;
   artifact: string;
   environment?: string;
-  /** 有效状态：没有依据的 resolved 会被服务端降级为 declared。 */
+  /**
+   * 有效状态。本版本没有依赖解析能力，所以 resolved 永远不是有效状态：
+   * 服务端只会给出 declared / unknown。
+   */
   artifact_resolution?: ArtifactResolution;
-  /** resolved 的可核查依据；为空时服务端不会保存为 resolved。 */
+  /** 调用方声明的状态（可能强于有效状态），仅用于展示。 */
+  claimed_resolution?: ArtifactResolution;
+  /** 调用方给出的引用；未经解析核实，只作登记备注保留。 */
   resolution_ref?: string;
-  /** 服务端是否降级了本次提交的 resolved 声明。 */
+  /** 服务端是否把声明降级为登记值。 */
   downgraded?: boolean;
 }
 
@@ -550,8 +555,8 @@ export const normalizePaged = <T,>(raw: Paged<T> | null | undefined): Paged<T> =
 });
 
 /**
- * 解析标注：缺省与非法值一律落到 `declared`。人工登记的值不能被当成构建
- * 实际解析结果，所以这里绝不能默认成 `resolved`。
+ * 解析标注：缺省与非法值一律落到 `declared`，`resolved` 也不会被当成有效状态——
+ * 本版本没有依赖解析能力，人工登记的值不能被呈现为已核实。
  */
 export function artifactResolutionOf(
   usage: { artifact_resolution?: ArtifactResolution } | null | undefined,
@@ -567,7 +572,9 @@ function normalizeUsage(usage: SourceUsage | null | undefined): SourceUsage {
     artifact: typeof raw.artifact === 'string' ? raw.artifact : '',
     environment: typeof raw.environment === 'string' ? raw.environment : '',
     artifact_resolution: artifactResolutionOf(raw),
+    claimed_resolution: raw.claimed_resolution,
     resolution_ref: typeof raw.resolution_ref === 'string' ? raw.resolution_ref : '',
+    downgraded: raw.downgraded,
   };
 }
 

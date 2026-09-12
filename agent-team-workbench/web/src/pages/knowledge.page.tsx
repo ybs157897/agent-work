@@ -130,8 +130,8 @@ export const ARTIFACT_RESOLUTION_OPTIONS: { value: ArtifactResolution; label: st
   },
   {
     value: 'resolved',
-    label: '构建解析值（需要依据）',
-    hint: '构建解析值：必须填写可核查的解析依据（如依赖树/构建产物引用）；没有依据时会按登记声明值保存',
+    label: '声明为构建解析值（本版本无法核实）',
+    hint: '本版本没有依赖解析能力：即使填写引用，资料库也只能按「登记声明值」保存，引用只作备注',
   },
   {
     value: 'unknown',
@@ -140,10 +140,15 @@ export const ARTIFACT_RESOLUTION_OPTIONS: { value: ArtifactResolution; label: st
   },
 ];
 
-/** 服务端只在有可核查依据时才把声明保存为 resolved。 */
+/**
+ * 有效状态说明。本版本没有依赖解析能力，所以任何「已解析」声明都只能落成
+ * 登记声明值；引用不论是否填写都只是备注，不构成核实。
+ */
 export function effectiveResolutionLabel(resolution: ArtifactResolution, resolutionRef: string): string {
-  if (resolution === 'resolved' && resolutionRef.trim() === '') {
-    return '实际保存为：登记声明值（没有解析依据）';
+  if (resolution === 'resolved') {
+    return resolutionRef.trim() === ''
+      ? '实际保存为：登记声明值（本版本无法核实，且未填引用）'
+      : '实际保存为：登记声明值（本版本无法核实；引用仅作备注）';
   }
   return artifactResolutionHint(resolution);
 }
@@ -839,7 +844,7 @@ export function SourceForm({
                   {usage.artifact_resolution === 'resolved' ? (
                     <Field
                       label="解析依据"
-                      hint="必填：指向可核查的依赖解析结果（例如 mvn dependency:tree 的输出路径）；留空会按登记声明值保存"
+                      hint="可选备注：例如 mvn dependency:tree 的输出路径。本版本没有解析能力，填写引用也不会变成已核实"
                     >
                       <Input
                         value={usage.resolution_ref}

@@ -66,11 +66,16 @@ func TestLibrarySourceResolvedRequiresBasis(t *testing.T) {
 	if !usages[0].ResolutionDowngraded() {
 		t.Fatal("the downgrade must be visible to the caller")
 	}
-	if got := usages[1].ArtifactState(); got != "resolved" {
-		t.Fatalf("a resolved claim with a basis must stay resolved, got %q", got)
+	// Even with a reference, this build cannot verify a version: the claim is
+	// kept for display but the effective state stays a declaration.
+	if got := usages[1].ArtifactState(); got != "declared" {
+		t.Fatalf("without a resolver no claim may become a state, got %q", got)
 	}
-	if usages[1].ResolutionDowngraded() {
-		t.Fatal("a supported claim must not be reported as downgraded")
+	if !usages[1].ResolutionDowngraded() {
+		t.Fatal("the downgrade must be reported")
+	}
+	if usages[1].ResolutionRef != "mvn-dependency-tree:report.xml#/dependencies" {
+		t.Fatalf("the caller's reference must be preserved as a note: %+v", usages[1])
 	}
 	if got := usages[2].ArtifactState(); got != "declared" {
 		t.Fatalf("declared must stay declared, got %q", got)
@@ -84,13 +89,19 @@ func TestKnowledgeSourceUsageEffectiveState(t *testing.T) {
 		usage     domain.KnowledgeSourceUsage
 		wantState string
 		wantDown  bool
+		wantClaim string
 	}{
-		{name: "no artifact", usage: domain.KnowledgeSourceUsage{}, wantState: "unknown"},
-		{name: "declared default", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1"}, wantState: "declared"},
-		{name: "explicit unknown", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "unknown"}, wantState: "unknown"},
-		{name: "resolved without basis", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved"}, wantState: "declared", wantDown: true},
-		{name: "resolved with blank basis", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "   "}, wantState: "declared", wantDown: true},
-		{name: "resolved with basis", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "build:42"}, wantState: "resolved"},
+		{name: "no artifact", usage: domain.KnowledgeSourceUsage{}, wantState: "unknown", wantClaim: "declared"},
+		{name: "declared default", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1"}, wantState: "declared", wantClaim: "declared"},
+		{name: "explicit unknown", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "unknown"}, wantState: "declared", wantClaim: "unknown"},
+		{name: "resolved without ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved"}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
+		{name: "resolved with blank ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "   "}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
+		// A non-empty string is not evidence: made-up, foreign or stale
+		// references must not become a verified state either.
+		{name: "resolved with fake ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "fake"}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
+		{name: "resolved with foreign ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "mvn-dependency-tree:other-service/target/tree.txt"}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
+		{name: "resolved with wrong version ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "artifact:g:a:9.9.9"}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
+		{name: "resolved with plausible ref", usage: domain.KnowledgeSourceUsage{Artifact: "g:a:1", ArtifactResolution: "resolved", ResolutionRef: "build:42"}, wantState: "declared", wantDown: true, wantClaim: "resolved"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +110,9 @@ func TestKnowledgeSourceUsageEffectiveState(t *testing.T) {
 			}
 			if got := tc.usage.ResolutionDowngraded(); got != tc.wantDown {
 				t.Fatalf("downgraded = %v, want %v", got, tc.wantDown)
+			}
+			if got := tc.usage.ResolutionClaimed(); got != tc.wantClaim {
+				t.Fatalf("claim = %q, want %q", got, tc.wantClaim)
 			}
 		})
 	}

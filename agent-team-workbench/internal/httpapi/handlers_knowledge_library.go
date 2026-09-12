@@ -658,10 +658,14 @@ func sourceJSON(src *domain.KnowledgeSource) map[string]any {
 	for _, u := range src.Usages {
 		usages = append(usages, map[string]any{
 			"consumer": u.Consumer, "artifact": u.Artifact, "environment": u.Environment,
-			// artifact_resolution is the effective state: a 'resolved' claim
-			// without a basis is reported as the declared value it really is.
+			// artifact_resolution is the effective state this build can
+			// establish; claimed_resolution is what the caller asserted, and
+			// resolution_ref is kept only as an unverified note. Reporting the
+			// claim as a state would let a caller mint verification.
 			"artifact_resolution": u.ArtifactState(),
+			"claimed_resolution":  u.ResolutionClaimed(),
 			"resolution_ref":      u.ResolutionRef,
+			"resolution_note":     "引用未经解析核实，仅作登记备注",
 			"downgraded":          u.ResolutionDowngraded(),
 		})
 	}

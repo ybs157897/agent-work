@@ -1,9 +1,6 @@
 package domain
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 // ── Unified knowledge library ───────────────────────────────────────────
 //
@@ -63,26 +60,37 @@ type KnowledgeSourceUsage struct {
 	ResolutionRef string `json:"resolution_ref,omitempty"`
 }
 
-// ArtifactState is the *effective* state of the artifact claim. 'resolved' is
-// only reachable with a verifiable basis; everything else is a declaration the
-// library has not verified.
+// ArtifactState is the *effective* state of the artifact claim.
+//
+// This build has no dependency-resolution or build-artifact capability, so it
+// can never verify a version: every registered value is a declaration. A
+// caller may say 'resolved' and may attach a reference, but a string is not
+// evidence — a reference is only kept as an unverified note, and the effective
+// state stays 'declared'. Reporting otherwise would let any caller mint a
+// verified state by sending a field.
 func (u KnowledgeSourceUsage) ArtifactState() string {
 	if u.Artifact == "" {
-		return "unknown"
-	}
-	if u.ArtifactResolution == "resolved" && strings.TrimSpace(u.ResolutionRef) != "" {
-		return "resolved"
-	}
-	if u.ArtifactResolution == "unknown" {
 		return "unknown"
 	}
 	return "declared"
 }
 
-// ResolutionDowngraded reports whether the caller claimed 'resolved' without
-// the basis that would justify it.
+// ResolutionClaimed returns what the caller asserted, for display next to the
+// effective state. It is a claim, never a state.
+func (u KnowledgeSourceUsage) ResolutionClaimed() string {
+	switch u.ArtifactResolution {
+	case "resolved", "unknown":
+		return u.ArtifactResolution
+	default:
+		return "declared"
+	}
+}
+
+// ResolutionDowngraded reports whether the caller's claim is stronger than
+// what this build can establish. It is true for any 'resolved' claim, because
+// nothing in this build can verify a version.
 func (u KnowledgeSourceUsage) ResolutionDowngraded() bool {
-	return u.ArtifactResolution == "resolved" && strings.TrimSpace(u.ResolutionRef) == ""
+	return u.ResolutionClaimed() == "resolved"
 }
 
 // QualifiedName is the selector an evidence request uses to address this

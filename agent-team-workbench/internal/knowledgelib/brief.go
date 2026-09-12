@@ -193,6 +193,11 @@ func RenderBrief(in BriefInput) (string, error) {
 	b.WriteString("- `scope.conditions` 为空表示“没有记录到限定信息”，不表示无条件适用；明确的无条件声明要写出来。\n")
 	b.WriteString("- 关系块用 `kind: relation`，`from`/`to` 是 `{kind, id}`，`predicate` 取自受控词表：" + predicateList() + "。\n\n")
 
+	b.WriteString("关系块同样有必须有可无的字段，完整样例：\n\n")
+	b.WriteString(briefRelationSample)
+	b.WriteString("\n\n关系块的元数据**只有** `kind/id/from/predicate/to/perspective/basis/scope/evidence`：\n")
+	b.WriteString("`from` 与 `to` 已经指明了两个对象，所以关系块里**没有** `about`；解释写在「陈述」小节。\n")
+	b.WriteString("需要描述单个对象的结论（包括「某事件被某服务消费」这类对单个对象的判断）时改用 `kind: assertion` 并用 `about`。\n\n")
 	b.WriteString("### 5.2 `evidence.yaml`：证据定位请求\n\n")
 	b.WriteString("你只声明“去哪个来源、哪个文件的哪一段找证据”，内容、摘要和证据 ID 由程序采集。**不要**写 digest、hash、批准或校验结果。\n\n")
 	b.WriteString("```yaml\n")
@@ -298,6 +303,46 @@ func orDash(s string) string {
 	}
 	return s
 }
+
+// briefRelationSample is the other half of the record grammar. Without it the
+// writer has to infer the relation block's required fields, and a single
+// omitted field costs a whole repair turn.
+const briefRelationSample = "````markdown\n" + `---
+schema_version: kb-note/0.2-draft
+id: doc:order-cancel-flow
+kind: business.flow
+title: 订单取消到设备释放
+summary: 取消事件从订单服务到设备服务的连接。
+about: [entity:service:order-service, entity:service:device-service]
+---
+
+# 订单取消到设备释放
+
+## 知识条目
+
+### 订单服务发布取消事件
+
+` + "```yaml" + `
+kind: relation
+id: relation:order-publishes-cancel
+from: {kind: entity, id: entity:service:order-service}
+predicate: publishes
+to: {kind: entity, id: entity:event:order-cancelled-event}
+perspective: descriptive
+basis: code_static
+scope:
+  conditions:
+    - 源码中取消成功分支调用了事件发布方法。
+  environments: []
+evidence:
+  - evidence_id: ev-order-publish-call
+    role: supports
+` + "```" + `
+
+#### 陈述
+
+order-service 的取消分支构造 OrderCancelledEvent 并调用发布方法。
+` + "\n````"
 
 const briefSample = "````markdown\n" + `---
 schema_version: kb-note/0.2-draft

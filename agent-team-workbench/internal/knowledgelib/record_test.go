@@ -2,6 +2,8 @@ package knowledgelib
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -367,6 +369,50 @@ func TestRecordJSONUsesContractKeys(t *testing.T) {
 	for _, key := range []string{"schema_version", "\"id\"", "\"title\"", "\"kind\""} {
 		if !strings.Contains(string(front), key) {
 			t.Fatalf("frontmatter wire shape missing %s: %s", key, front)
+		}
+	}
+}
+
+// TestBriefCarriesBothRecordTemplates guards the writer's only source of truth
+// for the record grammar: a missing relation template costs a whole repair
+// turn, because the writer has to guess the required fields.
+func TestBriefCarriesBothRecordTemplates(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := RenderBrief(BriefInput{TaskID: "t1", TaskKind: TaskInitialize, LibraryRoot: dir, StagingDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "brief.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := string(raw)
+	for _, want := range []string{
+		"kind: assertion", "kind: relation",
+		"from: {kind: entity", "predicate:", "to: {kind: entity",
+		"关系块里**没有** `about`",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("brief is missing %q; the writer would have to guess it", want)
+		}
+	}
+	// The relation block's own metadata must not carry about, or the template
+	// would contradict the rule printed right below it. The document-level
+	// frontmatter about is a different thing and is allowed.
+	marker := "kind: relation\nid: relation:"
+	start := strings.Index(brief, marker)
+	if start < 0 {
+		t.Fatalf("relation metadata block not found in brief")
+	}
+	block := brief[start:]
+	if end := strings.Index(block, "```"); end >= 0 {
+		block = block[:end]
+	}
+	if strings.Contains(block, "about:") {
+		t.Fatalf("the relation template must not contain about:\n%s", block)
+	}
+	for _, want := range []string{"from:", "predicate:", "to:", "perspective:", "basis:", "scope:", "evidence:"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("the relation template is missing %q:\n%s", want, block)
 		}
 	}
 }
