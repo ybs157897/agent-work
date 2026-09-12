@@ -85,6 +85,14 @@ type QuestionRepo interface {
 	Get(ctx context.Context, id string) (*domain.QuestionRequest, error)
 	GetByProviderKey(ctx context.Context, runID, sessionRef, providerID string) (*domain.QuestionRequest, error)
 	ListPending(ctx context.Context, runID string) ([]*domain.QuestionRequest, error)
+	// ListPendingByRun 不过滤 run 自身状态的 pending 读取；ListPending 会对
+	// 终态 run 隐藏提问，终态收敛路径必须用它才能读到待收敛行。
+	ListPendingByRun(ctx context.Context, runID string) ([]*domain.QuestionRequest, error)
+	// ListStalePending 列出所有「run 已终态但仍 pending」的提问（启动存量对账）。
+	ListStalePending(ctx context.Context) ([]*domain.QuestionRequest, error)
+	// ExpirePendingByRun 把 run 名下仍 pending 的提问批量收敛为 expired，
+	// 返回受影响行数（幂等，重复执行命中 0 行）。
+	ExpirePendingByRun(ctx context.Context, runID string, now time.Time) (int, error)
 	Update(ctx context.Context, question *domain.QuestionRequest) error
 }
 

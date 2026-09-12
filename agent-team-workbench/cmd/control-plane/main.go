@@ -454,6 +454,15 @@ func run() error {
 		log.Printf("启动对账：%d 个无租约孤儿 run 已收敛到终态（lost/failed）", marked)
 	}
 
+	// 存量清扫：修复上线前已落终态的 run 名下仍 pending 的原生提问会被列表
+	// 查询的终态过滤永久隐藏且永不回收；启动时收敛为 expired（幂等，无 stale
+	// 行时不动数据、不发事件）。失败不阻断启动。
+	if expired, err := svc.ReconcileStaleQuestions(ctx); err != nil {
+		log.Printf("启动对账未完全成功: %v", err)
+	} else if expired > 0 {
+		log.Printf("启动对账：%d 个终态 run 名下仍 pending 的提问已收敛为 expired", expired)
+	}
+
 	// M4 wakeup 调度循环：每 tick 先生产到期 timer 唤醒（心跳自主唤醒），再消费全部
 	// 到期唤醒（timer/assignment/on_demand）→ 源门控/心跳 claim → 活跃 run 合并
 	//（instruction 经 InputForwarder 转发 steering）→ 模板渲染 → CreateRun。

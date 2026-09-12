@@ -85,6 +85,69 @@ func (r *QuestionRepo) ListPending(ctx context.Context, runID string) ([]*domain
 	return out, rows.Err()
 }
 
+// ListPendingByRun 列出 run 名下 status=pending 的提问，不过滤 run 自身状态。
+// ListPending 会对终态 run 隐藏提问（run 都结束了不该再让用户回答），因此 run
+// 落终态后的收敛路径必须用本方法才能读到待收敛行。
+func (r *QuestionRepo) ListPendingByRun(ctx context.Context, runID string) ([]*domain.QuestionRequest, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx),
+		`SELECT `+questionColumnsQualified+` FROM questions q
+         WHERE q.run_id=? AND q.status=?
+         ORDER BY q.created_at`, runID, domain.QuestionPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.QuestionRequest
+	for rows.Next() {
+		q := &domain.QuestionRequest{}
+		if err := r.scan(rows, q); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// ListStalePending 列出所有「run 已终态但仍 pending」的提问（启动存量对账用）。
+// 终态集合与 ListPending 的 NOT IN 保持同一份。
+func (r *QuestionRepo) ListStalePending(ctx context.Context) ([]*domain.QuestionRequest, error) {
+	rows, err := r.store.query(ctx, r.store.exec(ctx),
+		`SELECT `+questionColumnsQualified+` FROM questions q
+         JOIN execution_runs r ON r.id=q.run_id
+         WHERE q.status=?
+           AND r.status IN ('succeeded','interrupted','cancelled','lost','failed')
+         ORDER BY q.run_id, q.created_at`, domain.QuestionPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*domain.QuestionRequest
+	for rows.Next() {
+		q := &domain.QuestionRequest{}
+		if err := r.scan(rows, q); err != nil {
+			return nil, err
+		}
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+// ExpirePendingByRun 把一个 run 名下仍 pending 的提问批量收敛为 expired 并写
+// resolved_at，返回受影响行数；重复执行第二次命中 0 行（幂等）。
+func (r *QuestionRepo) ExpirePendingByRun(ctx context.Context, runID string, now time.Time) (int, error) {
+	result, err := r.store.execStmt(ctx, r.store.exec(ctx),
+		`UPDATE questions SET status=?, resolved_at=? WHERE run_id=? AND status=?`,
+		domain.QuestionExpired, timeParam(now), runID, domain.QuestionPending)
+	if err != nil {
+		return 0, r.store.mapErr(err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 func (r *QuestionRepo) Update(ctx context.Context, q *domain.QuestionRequest) error {
 	if q == nil || q.ID == "" {
 		return fmt.Errorf("question id required")
@@ -144,5 +207,3 @@ func valueString(value *string) string {
 	}
 	return *value
 }
-
-var _ = time.Time{}
