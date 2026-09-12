@@ -18,7 +18,6 @@ import (
 
 	workbenchcontracts "github.com/ybs/agent-team-workbench/contracts"
 	"github.com/ybs/agent-team-workbench/internal/domain"
-	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/scheduling"
 )
 
@@ -654,9 +653,8 @@ func (s *Service) executePlanStepsFrom(ctx context.Context, wi *domain.WorkItem,
 			if s.Knowledge == nil {
 				return s.failStepAndPlan(ctx, plan, st, i+1, "no_retriever")
 			}
-			results, err := s.Knowledge.Retrieve(ctx, knowledge.Query{
-				WorkspaceID: plan.WorkspaceID, RequesterAgentID: "plan:shared",
-				Corpus: t.corpus, Terms: t.terms, Limit: t.limit,
+			results, err := s.Knowledge.Retrieve(ctx, KnowledgeRetrieveQuery{
+				WorkspaceID: plan.WorkspaceID, Corpus: t.corpus, Terms: t.terms, Limit: t.limit,
 			})
 			if err != nil {
 				return s.failStepAndPlan(ctx, plan, st, i+1, err.Error())
@@ -1661,13 +1659,14 @@ func asPlanInt(raw any) (int, bool) {
 
 // knowledgeResultPayload 检索结果的结构化形态（consult_knowledge 执行后写入
 // 步骤 payload 的 results 键）：dispatch knowledge_from 以此为唯一输入源。
-func knowledgeResultPayload(results []knowledge.Result) []map[string]any {
+func knowledgeResultPayload(results []KnowledgeRetrieveResult) []map[string]any {
 	out := make([]map[string]any, 0, len(results))
 	for _, r := range results {
 		out = append(out, map[string]any{
-			"id": r.Entry.ID, "title": r.Entry.Title, "version": r.Entry.Version,
-			"body": r.Entry.Body, "snippet": r.Snippet, "score": r.Score,
-			"version_id": r.VersionID, "sources": r.Sources, "relations": r.Relations,
+			"id": r.AssertionID, "title": r.Title, "version": r.Version,
+			"body": r.Body, "snippet": r.Snippet, "score": r.Score,
+			"version_id": r.VersionID, "release_id": r.ReleaseID,
+			"document_id": r.DocumentID, "unknowns": r.Unknowns,
 			"coverage_status": r.CoverageStatus, "truncated": r.Truncated,
 		})
 	}

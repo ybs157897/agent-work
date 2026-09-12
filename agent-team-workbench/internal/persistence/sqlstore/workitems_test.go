@@ -98,10 +98,18 @@ func TestWorkItemChatListExcludesKnowledgeJobRecordsBeforePagination(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if err := store.KnowledgeJobs().Create(ctx, &domain.KnowledgeJob{
-		WorkspaceID: "ws_wk", RequestingAgentID: "human:shared", AgentProfileID: agent.ID,
-		WorkItemID: internal.ID, Mode: domain.KnowledgeJobInquiry, Status: domain.KnowledgeJobQueued,
-		Question: "internal", ClientKey: "internal-chat",
+	libraryID := "klib_wk"
+	if err := store.Library().CreateLibrary(ctx, &domain.KnowledgeLibrary{
+		ID: libraryID, WorkspaceID: "ws_wk", RootPath: t.TempDir(),
+		LibrarianAgentID: agent.ID, Enabled: true, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Library().CreateTaskWithEvent(ctx, &domain.KnowledgeWriteTask{
+		ID: "ktask_internal", LibraryID: libraryID, Seq: 1, Kind: "initialize",
+		Status: domain.KnowledgeTaskQueued, ViewID: "baseline", FocusJSON: "{}", PlanJSON: "{}",
+		CoverageJSON: "{}", DiagnosticsJSON: "[]", WorkItemID: internal.ID,
+		MaxAttempts: 3, MaxRepairAttempts: 2, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}

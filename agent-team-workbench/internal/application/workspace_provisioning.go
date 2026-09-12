@@ -83,7 +83,7 @@ func (s *Service) CreateWorkspaceWithProject(ctx context.Context, p CreateWorksp
 			if source.ID == p.Workspace.ID {
 				return fmt.Errorf("%w: source workspace must differ from target", domain.ErrValidation)
 			}
-			sourceCoordinator, sourceLibrarian, sourceKnowledgeConfig, err := s.sourceSystemConfiguration(ctx, source.ID)
+			sourceCoordinator, sourceLibrarian, err := s.sourceSystemConfiguration(ctx, source.ID)
 			if err != nil {
 				return err
 			}
@@ -148,16 +148,6 @@ func (s *Service) CreateWorkspaceWithProject(ctx context.Context, p CreateWorksp
 					return err
 				}
 			}
-			if sourceKnowledgeConfig != nil {
-				config := *sourceKnowledgeConfig
-				config.WorkspaceID = p.Workspace.ID
-				config.LibrarianAgentID = librarian.ID
-				config.Version = 1
-				config.CreatedAt, config.UpdatedAt = now, now
-				if err := s.store.KnowledgeJobs().CreateConfig(ctx, &config); err != nil {
-					return err
-				}
-			}
 			result.Workspace = p.Workspace
 			result.Pending = len(result.Agents) > 0
 			return nil
@@ -178,28 +168,22 @@ func (s *Service) CreateWorkspaceWithProject(ctx context.Context, p CreateWorksp
 	return result, nil
 }
 
-func (s *Service) sourceSystemConfiguration(ctx context.Context, workspaceID string) (*domain.TaskCoordinatorConfig, *domain.AgentProfile, *domain.KnowledgeLibrarianConfig, error) {
+func (s *Service) sourceSystemConfiguration(ctx context.Context, workspaceID string) (*domain.TaskCoordinatorConfig, *domain.AgentProfile, error) {
 	var coordinator *domain.TaskCoordinatorConfig
 	if current, err := s.store.TaskCoordinators().GetConfig(ctx, workspaceID); err == nil {
 		coordinator = current
 	} else if !errors.Is(err, domain.ErrNotFound) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	var librarian *domain.AgentProfile
 	if current, err := s.store.Agents().Get(ctx, domain.KnowledgeLibrarianAgentID(workspaceID)); err == nil {
 		librarian = current
 	} else if !errors.Is(err, domain.ErrNotFound) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	var knowledgeConfig *domain.KnowledgeLibrarianConfig
-	if current, err := s.store.KnowledgeJobs().GetConfig(ctx, workspaceID); err == nil {
-		knowledgeConfig = current
-	} else if !errors.Is(err, domain.ErrNotFound) {
-		return nil, nil, nil, err
-	}
-	return coordinator, librarian, knowledgeConfig, nil
+	return coordinator, librarian, nil
 }
 
 func copyCoordinatorConfig(target, source *domain.TaskCoordinatorConfig) {

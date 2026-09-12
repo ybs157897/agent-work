@@ -1,45 +1,15 @@
 # 模型注册表（models/registry.yaml 为真相源；Web 编辑会回写此文件）
 # API Key 存于 credentials.local.yaml，勿写密钥明文。
 providers:
-    - id: prov-kimi
-      label: Kimi
-      provider: moonshot
-      api: openai-responses
-      base_url: https://api.kimi.com/coding/v1
-      api_key_env: MOONSHOT_API_KEY
+    - id: prov-glm
+      label: glm
+      provider: glm
+      api: openai-completions
+      base_url: https://api.commandcode.ai/provider/v1
+      api_key_env: GLM_API_KEY
       models:
-        - id: kimi-2-7
-          display_name: Kimi K2.7 Code
-          model: kimi-k2.7-code
-          context_window: 256000
-        - id: kimi-k3
-          display_name: kimi-k3
-          model: kimi-k3
+        - id: glm-5-3-flash
+          display_name: deepseek-flash
+          model: deepseek/deepseek-v4.1-flash
           context_window: 1000000
-          notes: DSH 走 llm-pi-ai 路由；kimi CLI runtime 忽略 provider/base_url（用 CLI 自身配置）
-    - id: prov-deepseek-official
-      label: DeepSeek
-      provider: deepseek-official
-      api: openai-completions
-      base_url: https://token.wasu.cn/v1
-      api_key_env: DEEPSEEK_API_KEY
-      models:
-        - id: deepseek-v4-flash
-          display_name: DeepSeek V4 Flash
-          model: deepseek-v4-flash
-          notes: 默认模型；dsh_local runtime
-        - id: deepseek-v4-pro
-          display_name: DeepSeek V4 Pro
-          model: deepseek-v4-pro
-          notes: 高能力档位；复杂任务手动切换
-    - id: prov-openrouter
-      label: OpenRouter
-      provider: openrouter
-      api: openai-completions
-      base_url: https://openrouter.ai/api/v1
-      api_key_env: OPENROUTER_API_KEY
-      models:
-        - id: ox-alpha
-          display_name: OpenRouter Ox Alpha
-          model: ox-alpha
-          notes: OpenRouter 网关；DSH 走 llm-pi-ai 路由透传
+          max_tokens: 384000

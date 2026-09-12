@@ -4,29 +4,30 @@ package application_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ybs/agent-team-workbench/internal/application"
 	"github.com/ybs/agent-team-workbench/internal/domain"
-	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/persistence/sqlstore"
 	atwruntime "github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-// writeKnowledgeCorpus 在 root/prd 下落一条测试语料条目。
-func writeKnowledgeCorpus(t *testing.T, root string) {
-	t.Helper()
-	dir := filepath.Join(root, "prd")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "---\nid: prd-login\ntitle: 登录需求\nversion: 1\nstatus: effective\n---\n用户必须能用账号密码登录，失败三次后锁定十分钟。\n"
-	if err := os.WriteFile(filepath.Join(dir, "prd-login.md"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// stubLibraryRetriever stands in for the unified library read port. It returns
+// one published answer so the plan verb's injection path is exercised without
+// a full library fixture.
+type stubLibraryRetriever struct {
+	queries []application.KnowledgeRetrieveQuery
+}
+
+func (s *stubLibraryRetriever) Retrieve(_ context.Context, q application.KnowledgeRetrieveQuery) ([]application.KnowledgeRetrieveResult, error) {
+	s.queries = append(s.queries, q)
+	return []application.KnowledgeRetrieveResult{{
+		AssertionID: "assertion:login-policy", DocumentID: "doc:login", Title: "登录需求",
+		Version: 1, VersionID: "kdv_login", ReleaseID: "rel_1", Score: 9,
+		Body: "用户必须能用账号密码登录，失败三次后锁定十分钟。", Snippet: "账号密码登录",
+		CoverageStatus: "complete",
+	}}, nil
 }
 
 // TestConsultKnowledgeInjectsDispatch 验收 8a：consult_knowledge（tmp 语料 +
@@ -40,12 +41,7 @@ func TestConsultKnowledgeInjectsDispatch(t *testing.T) {
 	dispatcher := &captureDispatcher{}
 	svc := application.NewService(store, dispatcher, noopNotifier{}, atwruntime.NewRegistry())
 
-	root := t.TempDir()
-	writeKnowledgeCorpus(t, root)
-	retriever, err := knowledge.NewFileRetriever(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	retriever := &stubLibraryRetriever{}
 	svc.Knowledge = retriever
 
 	wsID, leadID, workerID := seedM2Env(t, ctx, store)
@@ -80,8 +76,11 @@ func TestConsultKnowledgeInjectsDispatch(t *testing.T) {
 		t.Fatalf("检索结果未落 step payload.results: %#v", stored.Steps[0].Payload["results"])
 	}
 	entry, _ := results[0].(map[string]any)
-	if entry["id"] != "prd-login" {
-		t.Fatalf("检索条目 id = %v，应为 prd-login", entry["id"])
+	if entry["id"] != "assertion:login-policy" {
+		t.Fatalf("检索条目 id = %v，应为 assertion:login-policy", entry["id"])
+	}
+	if entry["release_id"] != "rel_1" {
+		t.Fatalf("检索结果必须携带固定 release，实际 %v", entry["release_id"])
 	}
 	// dispatch 未带 knowledge_from：不注入。
 	firstRun, err := store.Runs().Get(ctx, stored.Steps[1].ResultRunID)
@@ -115,7 +114,7 @@ func TestConsultKnowledgeInjectsDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	instruction, _ := run.Input["instruction"].(string)
-	for _, want := range []string{"## 参考条目", "prd-login", "登录需求", "账号密码登录"} {
+	for _, want := range []string{"## 参考条目", "assertion:login-policy", "登录需求", "账号密码登录"} {
 		if !strings.Contains(instruction, want) {
 			t.Fatalf("dispatch instruction 缺少 %q:\n%s", want, instruction)
 		}

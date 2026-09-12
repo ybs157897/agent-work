@@ -81,11 +81,11 @@ type CreateRunParams struct {
 	// an authority token: public CreateRun callers must not be able to claim the
 	// root control line by copying a map.
 	coordinatorAdmission *coordinatorRunAdmission
-	// knowledgeJobID/knowledgeTurnSeq are application-internal markers for the
-	// librarian Harness.  They are intentionally unexported so a public Run
-	// caller cannot claim ownership of a knowledge job.
-	knowledgeJobID   string
-	knowledgeTurnSeq int64
+	// knowledgeTaskID/knowledgeTaskTurn are application-internal markers for
+	// the library Harness. They are intentionally unexported so a public Run
+	// caller cannot claim ownership of a knowledge write task.
+	knowledgeTaskID   string
+	knowledgeTaskTurn int64
 }
 
 type coordinatorRunAdmission struct {
@@ -593,22 +593,18 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 		// later Run request. Requirements after the first Run go through comments.
 		p.AcceptanceCriteria = append([]string(nil), wi.AcceptanceCriteria...)
 	}
-	// The librarian Harness is an application-owned protocol. Keep the
-	// persisted Agent persona unchanged, but replace the per-Run system prompt
-	// before BuildInput so the provider cannot prioritize an ordinary worker
-	// charter over the strict schema/coverage contract. The prompt then enters
-	// run.Input and therefore the existing ConfigDigest/session fingerprint.
-	if p.knowledgeJobID != "" {
+	// The library Harness is an application-owned protocol. Keep the
+	// persisted Agent identity unchanged, but replace the per-Run system
+	// prompt so the provider cannot prefer an ordinary worker charter over the
+	// staging contract. The prompt then enters run.Input and therefore the
+	// existing ConfigDigest/session fingerprint.
+	if p.knowledgeTaskID != "" {
 		if agent == nil || !agent.Kind.IsKnowledgeLibrarian() {
-			return nil, fmt.Errorf("%w: knowledge librarian Run requires the built-in Knowledge Librarian", domain.ErrValidation)
+			return nil, fmt.Errorf("%w: knowledge library Run requires the built-in library agent", domain.ErrValidation)
 		}
 		librarianAgent := *agent
-		librarianAgent.Instructions = knowledgeLibrarianPrompt()
-		librarianAgent.PromptVersion = KnowledgeLibrarianSchemaVersion
-		// Research/curation actions are control-plane operations. Give the
-		// librarian's per-Run policy a read-only sandbox while preserving the
-		// persisted Agent policy and ordinary worker Run behavior.
-		librarianAgent.Policy.Sandbox = "read-only"
+		librarianAgent.Instructions = KnowledgeLibrarianHarnessPrompt
+		librarianAgent.PromptVersion = KnowledgeLibrarianHarnessPromptVersion
 		agent = &librarianAgent
 	}
 	runInput := orchestrator.BuildInput(sourcePrompt(p.Instruction), p.AcceptanceCriteria, p.Requirements,
@@ -697,15 +693,14 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	r.Input["mode"] = orchestrator.EffectiveMode(p.RuntimePreference, agent)
 	r.Input["policy"] = orchestrator.PolicySnapshot(agent)
-	if p.knowledgeJobID != "" {
-		turnSeq := p.knowledgeTurnSeq
+	if p.knowledgeTaskID != "" {
+		turnSeq := p.knowledgeTaskTurn
 		if turnSeq < 1 {
 			turnSeq = 1
 		}
-		r.Input["knowledge_librarian"] = map[string]any{
-			"job_id": p.knowledgeJobID, "turn_seq": turnSeq,
-			"schema_version": KnowledgeLibrarianSchemaVersion,
-			"schema_digest":  KnowledgeLibrarianSchemaDigest,
+		r.Input["knowledge_library"] = map[string]any{
+			"task_id": p.knowledgeTaskID, "turn_seq": turnSeq,
+			"prompt_version": KnowledgeLibrarianHarnessPromptVersion,
 		}
 	}
 	if p.CoordinatorContext != nil {
@@ -717,9 +712,6 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 	}
 	if p.governanceContext != nil {
 		r.Input["governance"] = mapsCloneAny(p.governanceContext)
-	}
-	if err := s.AttachKnowledgeRunAccess(r, snapshot.ExecutionHostID); err != nil {
-		return nil, err
 	}
 	configDigest := orchestrator.ConfigDigest(r.Input)
 	// 会话指纹 = config digest ⊕ 执行上下文身份（RFC §4.8）：context 变化
@@ -1546,9 +1538,6 @@ func (s *Service) transitionRunLocked(ctx context.Context, r *domain.ExecutionRu
 		return err
 	}
 	evType := domain.EventRunStatusChanged
-	if err := s.enqueueKnowledgeRunCaptureLocked(ctx, r, wi); err != nil {
-		return err
-	}
 	switch to {
 	case domain.RunSucceeded:
 		evType = domain.EventRunCompleted
@@ -1659,9 +1648,6 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	if r != nil {
 		if r.Status.IsTerminal() {
 			s.dispatchedRuns.Delete(r.ID)
-			if err := s.CleanupKnowledgeRunAccess(context.WithoutCancel(ctx), r.ID); err != nil {
-				log.Printf("knowledge access: terminal cleanup for run %s failed: %v", r.ID, err)
-			}
 		}
 		s.notifier.Notify(r.WorkspaceID)
 	}
@@ -1674,7 +1660,7 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 	// 普通/worker Run 继续沿用既有一次性 fresh 自愈。自愈是决策点：输入证据
 	//（failure 家族/code）进 entered，触发与否与 heal_run_id 进 closed。
 	// maybeSelfHeal 只对 failed run 生效，调用与埋点都跟着这个生效区间走。
-	if r != nil && r.Status == domain.RunFailed && !isGovernedCoordinatorRun(r) && !isKnowledgeLibrarianRun(r) {
+	if r != nil && r.Status == domain.RunFailed && !isGovernedCoordinatorRun(r) && !isKnowledgeLibraryRun(r) {
 		s.journalSelfHealHook(ctx, j, r)
 	}
 	if r != nil {
@@ -1714,9 +1700,10 @@ func (s *Service) RecordRunStatus(ctx context.Context, runID string, to domain.R
 				return s.ProcessChatAnalysisTerminal(ctx, r.ID)
 			})
 		}
-		if marker, librarian := knowledgeLibrarianMarker(r); librarian && r.Status.IsTerminal() && marker.JobID != "" {
-			s.journalPostHook(ctx, j, r.ID, "maybeAdvanceKnowledgeLibrarian", func() (bool, error) {
-				return s.maybeAdvanceKnowledgeLibrarian(ctx, r)
+		if marker, library := knowledgeLibraryMarker(r); library && r.Status.IsTerminal() && marker.TaskID != "" {
+			s.journalPostHook(ctx, j, r.ID, "maybeAdvanceKnowledgeLibraryTask", func() (bool, error) {
+				s.notifyKnowledgeLibraryTerminal(ctx, r.WorkspaceID)
+				return true, nil
 			})
 		}
 	}
@@ -2664,23 +2651,6 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 	if run.Status != domain.RunReconnecting && run.Status != domain.RunLost {
 		return nil, fmt.Errorf("%w: only reconnecting/lost runs can resume", domain.ErrValidation)
 	}
-	if marker, librarian := knowledgeLibrarianMarker(run); librarian && run.Status == domain.RunLost {
-		job, jobErr := s.store.KnowledgeJobs().Get(ctx, marker.JobID)
-		if jobErr != nil {
-			return nil, jobErr
-		}
-		if job.CurrentRunID != run.ID {
-			return nil, fmt.Errorf("%w: lost librarian Run is no longer current", domain.ErrStateConflict)
-		}
-		if _, resumeErr := s.ResumeKnowledgeJob(ctx, marker.JobID); resumeErr != nil {
-			return nil, resumeErr
-		}
-		updatedJob, updatedErr := s.store.KnowledgeJobs().Get(ctx, marker.JobID)
-		if updatedErr != nil {
-			return nil, updatedErr
-		}
-		return s.store.Runs().Get(ctx, updatedJob.CurrentRunID)
-	}
 	// 能力协商：binding 未声明 resume=supported 则显式拒绝，不静默降级。
 	if run.RuntimeLabel != "" {
 		binding, err := s.store.Bindings().GetByLabel(ctx, run.WorkspaceID, run.RuntimeLabel)
@@ -2715,9 +2685,9 @@ func (s *Service) ResumeRun(ctx context.Context, runID string) (*domain.Executio
 			p.analysisBaseRevision = analysisBaseRevision(run)
 			p.analysisContext, _ = run.Input["analysis_context"].(string)
 		}
-		if marker, ok := knowledgeLibrarianMarker(run); ok {
-			p.knowledgeJobID = marker.JobID
-			p.knowledgeTurnSeq = marker.TurnSeq + 1
+		if marker, ok := knowledgeLibraryMarker(run); ok {
+			p.knowledgeTaskID = marker.TaskID
+			p.knowledgeTaskTurn = marker.TurnSeq + 1
 		}
 		if raw, ok := run.Input["acceptance_criteria"].([]any); ok {
 			for _, item := range raw {

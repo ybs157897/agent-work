@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"time"
 
@@ -450,10 +449,7 @@ func (s *Service) replayRunTerminalHooks(ctx context.Context, r *domain.Executio
 		return
 	}
 	s.dispatchedRuns.Delete(r.ID)
-	if err := s.CleanupKnowledgeRunAccess(context.WithoutCancel(ctx), r.ID); err != nil {
-		log.Printf("knowledge access: terminal remote cleanup for run %s failed: %v", r.ID, err)
-	}
-	if !isGovernedCoordinatorRun(r) && !isKnowledgeLibrarianRun(r) {
+	if !isGovernedCoordinatorRun(r) && !isKnowledgeLibraryRun(r) {
 		s.maybeSelfHeal(ctx, r)
 	}
 	if isChatAnalysisRun(r) {
@@ -471,8 +467,8 @@ func (s *Service) replayRunTerminalHooks(ctx context.Context, r *domain.Executio
 		s.maybeSettleGovernanceTurnQuota(ctx, r)
 		s.maybeSettleDispatch(ctx, r)
 	}
-	if isKnowledgeLibrarianRun(r) {
-		s.maybeAdvanceKnowledgeLibrarian(ctx, r)
+	if isKnowledgeLibraryRun(r) {
+		s.notifyKnowledgeLibraryTerminal(ctx, r.WorkspaceID)
 	}
 }
 

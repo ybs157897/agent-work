@@ -245,6 +245,17 @@ func (r *Registry) ProjectCanonicalKey(ctx context.Context, alias, expectedGener
 	return "project:" + hex.EncodeToString(sum[:]), nil
 }
 
+// AuthorizedRoot returns the local directory of one advertised mount alias.
+// The value is host-local trust state; it is never derived from a caller
+// supplied path, so callers can only reach directories the Host advertises.
+func (r *Registry) AuthorizedRoot(alias string) (string, error) {
+	m, _, err := r.canonicalMount(alias)
+	if err != nil {
+		return "", err
+	}
+	return m.Root, nil
+}
+
 func (r *Registry) canonicalMount(alias string) (*mount, string, error) {
 	if strings.TrimSpace(alias) == "" {
 		return nil, "", resolveErr(CodeMountNotAdvertised, "mount alias is required")

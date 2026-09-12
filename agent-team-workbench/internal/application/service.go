@@ -14,7 +14,6 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/agentwork/codexconfig"
 	"github.com/ybs/agent-team-workbench/internal/agentwork/kimiconfig"
 	"github.com/ybs/agent-team-workbench/internal/domain"
-	"github.com/ybs/agent-team-workbench/internal/knowledge"
 	"github.com/ybs/agent-team-workbench/internal/orchestrator"
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
@@ -47,18 +46,15 @@ type Service struct {
 	InputForwarder func(ctx context.Context, runID, instruction string) error
 	// ModelResolver 按 ref 查 models/ 注册表（装配层注入；nil 时跳过注册表层）。
 	ModelResolver orchestrator.ModelResolver
-	// Knowledge 知识语料检索器（M2 consult_knowledge 动词依赖，装配层注入，
+	// Knowledge 资料库检索器（M2 consult_knowledge 动词依赖，装配层注入，
 	// 与 ModelResolver 同风格）；nil 时该步骤响亮失败（error=no_retriever），
 	// 绝不静默降级。
-	Knowledge knowledge.Retriever
-	// KnowledgeEndpoint and KnowledgeCLIPath explicitly enable a Run-bound
-	// shell bridge on deployments that have installed the client executable.
-	// KnowledgeAccessDir is a local-only 0700 directory containing per-Run 0600
-	// capability files; no token is copied into Run.Input or instructions.
-	KnowledgeEndpoint  string
-	KnowledgeCLIPath   string
-	KnowledgeAccessDir string
-	chatSourceStore    ChatSourceStore
+	Knowledge KnowledgeLibraryRetriever
+	// knowledgeWorkspaceRoot resolves a workspace's authorized local root
+	// directory from the Host registry. It is a Host-local trust hook; a
+	// caller can never supply the path.
+	knowledgeWorkspaceRoot func(ctx context.Context, workspaceID string) (string, error)
+	chatSourceStore        ChatSourceStore
 	// analysisCodeResolver is the Host-local trust hook for validating code
 	// references reported by a Chat analysis. It returns a digest only; the
 	// filesystem path remains inside the resolver process.
@@ -1642,23 +1638,6 @@ func (s *Service) WorkItems(ctx context.Context, workspaceID string, f WorkItemF
 
 func (s *Service) WorkItem(ctx context.Context, id string) (*domain.WorkItem, error) {
 	return s.store.WorkItems().Get(ctx, id)
-}
-
-// IsKnowledgeJobWorkItem reports whether a WorkItem is an internal knowledge
-// Harness Chat record. The relation is authoritative; titles, roles, and
-// display strings are never used to classify a public conversation.
-func (s *Service) IsKnowledgeJobWorkItem(ctx context.Context, workItemID string) (bool, error) {
-	if strings.TrimSpace(workItemID) == "" {
-		return false, fmt.Errorf("%w: work_item_id required", domain.ErrValidation)
-	}
-	_, err := s.store.KnowledgeJobs().GetByWorkItem(ctx, workItemID)
-	if errors.Is(err, domain.ErrNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // WorkItemFieldPatch 普通字段修改；status 不允许任意 PATCH（走 commands）。

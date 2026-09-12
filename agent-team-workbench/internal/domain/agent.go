@@ -49,10 +49,13 @@ func (k AgentProfileKind) IsKnowledgeLibrarian() bool {
 }
 
 const (
-	KnowledgeLibrarianAgentIDPrefix     = "agent_knowledge_librarian_"
-	KnowledgeLibrarianChatPromptVersion = "knowledge-librarian-chat/v1"
-	KnowledgeLibrarianDisplayName       = "知识库管理员"
-	KnowledgeLibrarianRole              = "knowledge_librarian"
+	KnowledgeLibrarianAgentIDPrefix = "agent_knowledge_librarian_"
+	// KnowledgeLibrarianHarnessPromptVersion is the fixed prompt contract of
+	// the internal library agent. The SQLite protection trigger pins this
+	// value, so a changed contract must ship as a new migration.
+	KnowledgeLibrarianHarnessPromptVersion = "knowledge-harness/v2"
+	KnowledgeLibrarianDisplayName          = "资料库管理员"
+	KnowledgeLibrarianRole                 = "knowledge_librarian"
 )
 
 // KnowledgeLibrarianAgentID is the deterministic workspace-scoped identity

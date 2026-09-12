@@ -34,13 +34,10 @@ type Store interface {
 	DecisionEntries() DecisionRepo
 	// Search FTS 检索索引仓储（会话元模型 S4）。
 	Search() SearchRepo
-	// Knowledge is the authoritative item/version graph plus its published
-	// query index.  The repository enforces workspace/requester scope on reads;
-	// application commands enforce actor role before mutating it.
-	Knowledge() KnowledgeRepo
-	// KnowledgeJobs is the durable control state for multi-turn inquiry and
-	// curation Runs.  It never replaces the Run/lease/accounting authority.
-	KnowledgeJobs() KnowledgeJobRepo
+	// Library is the unified project knowledge library: Markdown documents,
+	// the source/evidence ledger, release-pinned reads and the single FIFO
+	// write queue for every persistent knowledge change.
+	Library() KnowledgeLibraryRepo
 	// Wakeups M4 唤醒调度端口：入队/查询/心跳/活跃 run（接口定义见 scheduling.Store，
 	// 该包只依赖 domain，充当双方共享的端口描述）。
 	Wakeups() scheduling.Store

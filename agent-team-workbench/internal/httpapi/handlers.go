@@ -235,7 +235,7 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), wi.ID); err != nil {
+	if internal, err := s.svc.IsKnowledgeLibraryWorkItem(r.Context(), wi.ID); err != nil {
 		fail(w, r, err)
 		return
 	} else if internal {
@@ -458,7 +458,7 @@ func (s *Server) handleAcceptWorkItem(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	wiID := r.PathValue("work_item_id")
 	s.idempotent(w, r, wiID, func() (int, []byte) {
-		if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), wiID); err != nil {
+		if internal, err := s.svc.IsKnowledgeLibraryWorkItem(r.Context(), wiID); err != nil {
 			return problemBytes(err)
 		} else if internal {
 			return problemBytes(domain.ErrNotFound)
@@ -545,7 +545,7 @@ func (s *Server) handleGetRunJournal(w http.ResponseWriter, r *http.Request) {
 // handleListWorkItemRuns 列出一个任务的全部 Run（对话轮次历史）。
 func (s *Server) handleListWorkItemRuns(w http.ResponseWriter, r *http.Request) {
 	workItemID := r.PathValue("work_item_id")
-	if internal, err := s.svc.IsKnowledgeJobWorkItem(r.Context(), workItemID); err != nil {
+	if internal, err := s.svc.IsKnowledgeLibraryWorkItem(r.Context(), workItemID); err != nil {
 		fail(w, r, err)
 		return
 	} else if internal {

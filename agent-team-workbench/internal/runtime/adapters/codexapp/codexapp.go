@@ -1380,10 +1380,6 @@ func codexArgsJSON(raw json.RawMessage) string {
 // Controls（ControlApproval）送达，非支持的服务端请求显式拒绝（禁止静默降级）。
 // 当前执行循环串行处理审批/工具回调（服务端在等待响应）。
 func (s *execStream) handleServerRequest(frame *rpcFrame) {
-	if frame.Method == "item/tool/call" {
-		s.handleKnowledgeDynamicTool(frame)
-		return
-	}
 	if !isApprovalMethod(frame.Method) {
 		_ = s.send(map[string]any{"id": *frame.ID, "error": map[string]any{
 			"code": -32601, "message": "unsupported server request: " + frame.Method,
@@ -1556,11 +1552,6 @@ func (s *execStream) requestThread() error {
 	if s.resumeThreadID != "" {
 		method = "thread/resume"
 		params["threadId"] = s.resumeThreadID
-	} else if tools := s.knowledgeDynamicTools(); tools != nil {
-		// Codex persists dynamicTools from thread/start and restores them on
-		// thread/resume. The v2 schema intentionally has no resume field; do
-		// not send an unknown field there or silently start a fresh thread.
-		params["dynamicTools"] = tools
 	}
 	_, err := s.request(method, params)
 	return err

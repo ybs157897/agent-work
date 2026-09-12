@@ -73,19 +73,6 @@ func TestCreateWorkspaceWithProjectCopiesSystemConfigurationWithoutBusinessState
 	if err != nil {
 		t.Fatal(err)
 	}
-	knowledgeConfig, err := svc.GetKnowledgeLibrarianConfig(ctx, sourceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	knowledgeConfig.Enabled = false
-	knowledgeConfig.AutoCollect = true
-	if _, err := svc.ConfigureKnowledgeLibrarian(ctx, sourceID, *knowledgeConfig); err != nil {
-		t.Fatal(err)
-	}
-	sourceKnowledgeConfig, err := store.KnowledgeJobs().GetConfig(ctx, sourceID)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	targetID := "ws_provision_target"
 	targetLocationID := "wsloc_provision_target"
@@ -147,18 +134,10 @@ func TestCreateWorkspaceWithProjectCopiesSystemConfigurationWithoutBusinessState
 	if targetLibrarian.ID == sourceLibrarian.ID || targetLibrarian.RuntimePreference.Preferred != sourceLibrarian.RuntimePreference.Preferred ||
 		targetLibrarian.RuntimePreference.AgentPreset != sourceLibrarian.RuntimePreference.AgentPreset ||
 		targetLibrarian.ModelOverride != sourceLibrarian.ModelOverride ||
-		targetLibrarian.Instructions != application.KnowledgeLibrarianChatPrompt ||
-		targetLibrarian.PromptVersion != domain.KnowledgeLibrarianChatPromptVersion || targetLibrarian.InstructionsEditable ||
-		targetLibrarian.PromptTemplate != "" || targetLibrarian.Policy.Sandbox != "read-only" || len(targetLibrarian.Policy.Tools) != 0 {
+		targetLibrarian.Instructions != application.KnowledgeLibrarianHarnessPrompt ||
+		targetLibrarian.PromptVersion != application.KnowledgeLibrarianHarnessPromptVersion || targetLibrarian.InstructionsEditable ||
+		targetLibrarian.PromptTemplate != "" || targetLibrarian.Policy.Sandbox != "workspace-write" || len(targetLibrarian.Policy.Tools) != 0 {
 		t.Fatalf("Knowledge Librarian config/identity boundary mismatch: source=%+v target=%+v", sourceLibrarian, targetLibrarian)
-	}
-	targetKnowledgeConfig, err := store.KnowledgeJobs().GetConfig(ctx, targetID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if targetKnowledgeConfig.LibrarianAgentID != targetLibrarian.ID || targetKnowledgeConfig.LibrarianAgentID == sourceKnowledgeConfig.LibrarianAgentID ||
-		targetKnowledgeConfig.Enabled != sourceKnowledgeConfig.Enabled || targetKnowledgeConfig.AutoCollect != sourceKnowledgeConfig.AutoCollect {
-		t.Fatalf("Knowledge Librarian policy was not copied with a target identity: source=%+v target=%+v", sourceKnowledgeConfig, targetKnowledgeConfig)
 	}
 
 	reloadedSvc := application.NewService(store, nil, noopNotifier{}, runtime.NewRegistry())
@@ -169,19 +148,15 @@ func TestCreateWorkspaceWithProjectCopiesSystemConfigurationWithoutBusinessState
 	if err != nil {
 		t.Fatal(err)
 	}
-	reloadedKnowledge, err := reloadedSvc.GetKnowledgeLibrarianConfig(ctx, targetID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if reloadedCoordinator.ModelRef != targetCoordinator.ModelRef || reloadedCoordinator.FallbackModelRef != targetCoordinator.FallbackModelRef ||
-		reloadedCoordinator.ReasoningEffort != targetCoordinator.ReasoningEffort || reloadedKnowledge.Enabled != targetKnowledgeConfig.Enabled ||
-		reloadedKnowledge.AutoCollect != targetKnowledgeConfig.AutoCollect {
-		t.Fatalf("Ensure/reload must retain inherited system configuration: coordinator=%+v knowledge=%+v", reloadedCoordinator, reloadedKnowledge)
+		reloadedCoordinator.ReasoningEffort != targetCoordinator.ReasoningEffort {
+		t.Fatalf("Ensure/reload must retain inherited system configuration: coordinator=%+v", reloadedCoordinator)
 	}
 
 	for _, table := range []string{
-		"work_items", "execution_runs", "task_sessions", "knowledge_items", "knowledge_versions", "knowledge_sources",
-		"knowledge_submissions", "knowledge_jobs", "knowledge_job_actions", "chat_sources", "chat_analyses",
+		"work_items", "execution_runs", "task_sessions", "knowledge_libraries", "knowledge_library_sources",
+		"knowledge_write_tasks", "knowledge_library_events", "knowledge_releases", "knowledge_documents",
+		"knowledge_assertions", "chat_sources", "chat_analyses",
 		"chat_analysis_attempts", "chat_analysis_revisions", "chat_analysis_answers", "chat_analysis_decisions",
 		"task_publication_drafts", "task_publications", "task_coordinator_states", "task_coordinator_events",
 	} {

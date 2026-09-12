@@ -13,36 +13,28 @@ import (
 	"github.com/ybs/agent-team-workbench/internal/runtime"
 )
 
-func TestEnsureBuiltinKnowledgeLibrarianIsIdempotentAndKeepsLegacyAgent(t *testing.T) {
+func seedLibrarianWorkspace(t *testing.T, ctx context.Context, store *sqlstore.Store, workspaceID string) time.Time {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := store.Workspaces().Create(ctx, &domain.Workspace{
+		ID: workspaceID, Name: workspaceID, Timezone: "UTC", Version: 1, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return now
+}
+
+// TestEnsureBuiltinKnowledgeLibrarianContract pins the one workspace-scoped
+// system library agent: deterministic identity, harness prompt, and a policy
+// that lets it write inside the workspace while the harness only ingests its
+// staging directory.
+func TestEnsureBuiltinKnowledgeLibrarianContract(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
 	store := sqlstore.New(db)
-	now := time.Now().UTC()
 	workspaceID := "ws_builtin_librarian"
-	if err := store.Workspaces().Create(ctx, &domain.Workspace{
-		ID: workspaceID, Name: "builtin", Timezone: "UTC", Version: 1,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	legacy := &domain.AgentProfile{
-		ID: "agent_legacy_librarian", WorkspaceID: workspaceID,
-		Name: "旧知识管理员", Role: "librarian",
-		RuntimePreference: domain.RuntimePreference{Preferred: "kimi_local", Fallbacks: []string{"mock"}, Mode: "plan"},
-		ModelOverride:     domain.ModelRef{Ref: "kimi-fast", Provider: "kimi", Model: "kimi-test"},
-		Availability:      domain.AgentEnabled, Presence: domain.PresenceIdle,
-		Version: 1, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := store.Agents().Create(ctx, legacy); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.KnowledgeJobs().CreateConfig(ctx, &domain.KnowledgeLibrarianConfig{
-		WorkspaceID: workspaceID, LibrarianAgentID: legacy.ID, Enabled: false,
-		Version: 1, CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	seedLibrarianWorkspace(t, ctx, store, workspaceID)
 	svc := application.NewService(store, nil, noopNotifier{}, runtime.NewRegistry())
 
 	first, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
@@ -51,11 +43,13 @@ func TestEnsureBuiltinKnowledgeLibrarianIsIdempotentAndKeepsLegacyAgent(t *testi
 	}
 	if first.ID != domain.KnowledgeLibrarianAgentID(workspaceID) ||
 		first.Kind != domain.AgentProfileKindKnowledgeLibrarian ||
-		first.Name != domain.KnowledgeLibrarianDisplayName || first.Role != domain.KnowledgeLibrarianRole ||
-		first.PromptVersion != domain.KnowledgeLibrarianChatPromptVersion || first.InstructionsEditable ||
-		first.Instructions == "" || first.RuntimePreference.Preferred != "kimi_local" ||
-		first.RuntimePreference.Mode != "default" || first.ModelOverride.Model != "kimi-test" {
-		t.Fatalf("builtin librarian profile mismatch: %+v", first)
+		first.PromptVersion != application.KnowledgeLibrarianHarnessPromptVersion ||
+		first.InstructionsEditable ||
+		first.Instructions != application.KnowledgeLibrarianHarnessPrompt ||
+		first.Policy.Sandbox != "workspace-write" ||
+		len(first.Policy.Tools) != 0 ||
+		first.Policy.ApprovalPolicy != "auto" {
+		t.Fatalf("builtin library agent profile mismatch: %+v", first)
 	}
 	second, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
 	if err != nil {
@@ -64,42 +58,65 @@ func TestEnsureBuiltinKnowledgeLibrarianIsIdempotentAndKeepsLegacyAgent(t *testi
 	if second.ID != first.ID || second.Version != first.Version {
 		t.Fatalf("EnsureBuiltinKnowledgeLibrarian is not idempotent: first=%+v second=%+v", first, second)
 	}
-	profiles, err := store.Agents().List(ctx, workspaceID)
+}
+
+// TestLibraryAgentPresentationOverlaysStaleText proves an existing workspace
+// receives the current harness prompt without a destructive data rewrite: the
+// SQLite protection trigger keeps the persisted row fixed while the read path
+// overlays the current contract.
+func TestLibraryAgentPresentationOverlaysStaleText(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	workspaceID := "ws_builtin_prompt_overlay"
+	seedLibrarianWorkspace(t, ctx, store, workspaceID)
+	svc := application.NewService(store, nil, noopNotifier{}, runtime.NewRegistry())
+	librarian, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("public Agent roster should include ordinary + builtin librarian, got %+v", profiles)
+	// Simulate a row written by an earlier build. Dropping the trigger here
+	// only lets the test construct that historical state.
+	if _, err := db.Exec(`DROP TRIGGER agent_profiles_knowledge_librarian_protected`); err != nil {
+		t.Fatal(err)
 	}
-	kept, err := store.Agents().Get(ctx, legacy.ID)
+	if _, err := db.Exec(`UPDATE agent_profiles SET instructions=? WHERE id=?`, "旧版管理员职责", librarian.ID); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Agents().Get(ctx, librarian.ID)
+	if err != nil || stored.Instructions == application.KnowledgeLibrarianHarnessPrompt {
+		t.Fatalf("fixture did not create a stale persisted prompt: %+v err=%v", stored, err)
+	}
+	fresh, err := svc.Agent(ctx, librarian.ID)
+	if err != nil || fresh.Instructions != application.KnowledgeLibrarianHarnessPrompt {
+		t.Fatalf("single-Agent read did not refresh the library agent prompt: %+v err=%v", fresh, err)
+	}
+	roster, err := svc.Agents(ctx, workspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept.Kind != domain.AgentProfileKindUser || kept.Name != legacy.Name {
-		t.Fatalf("legacy librarian must remain an ordinary Agent: %+v", kept)
+	var listed *domain.AgentProfile
+	for _, candidate := range roster {
+		if candidate.ID == librarian.ID {
+			listed = candidate
+			break
+		}
 	}
-	cfg, err := store.KnowledgeJobs().GetConfig(ctx, workspaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LibrarianAgentID != legacy.ID {
-		t.Fatalf("profile provisioning must not rewrite the knowledge config owned by the knowledge service: %+v", cfg)
+	if listed == nil || listed.Instructions != application.KnowledgeLibrarianHarnessPrompt {
+		t.Fatalf("agent roster did not refresh the library agent prompt: %+v", listed)
 	}
 }
 
+// TestUpdateBuiltinKnowledgeLibrarianOnlyChangesRuntimeAndModel keeps the
+// system identity immutable while allowing the operator to pick a runtime.
 func TestUpdateBuiltinKnowledgeLibrarianOnlyChangesRuntimeAndModel(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDB(t)
 	defer db.Close()
 	store := sqlstore.New(db)
-	now := time.Now().UTC()
 	workspaceID := "ws_builtin_librarian_patch"
-	if err := store.Workspaces().Create(ctx, &domain.Workspace{
-		ID: workspaceID, Name: "builtin patch", Timezone: "UTC", Version: 1,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	seedLibrarianWorkspace(t, ctx, store, workspaceID)
 	svc := application.NewService(store, nil, noopNotifier{}, runtime.NewRegistry())
 	librarian, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
 	if err != nil {
@@ -131,116 +148,13 @@ func TestUpdateBuiltinKnowledgeLibrarianOnlyChangesRuntimeAndModel(t *testing.T)
 	}
 }
 
-func TestBuiltinKnowledgeLibrarianCanOwnNaturalLanguageChatButCoordinatorCannot(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	defer db.Close()
-	store := sqlstore.New(db)
-	now := time.Now().UTC()
-	workspaceID := "ws_builtin_chat"
-	if err := store.Workspaces().Create(ctx, &domain.Workspace{
-		ID: workspaceID, Name: "builtin chat", Timezone: "UTC", Version: 1,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := application.SeedWorkspaceLocation(ctx, store, workspaceID); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Bindings().Create(ctx, &domain.RuntimeBinding{
-		ID: "rb_builtin_chat_mock", WorkspaceID: workspaceID, RuntimeLabel: "mock", AdapterID: "mock",
-		Provider: "mock", Model: "mock", Status: domain.BindingReady, Version: 1,
-		CreatedAt: now, UpdatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	svc := application.NewService(store, nil, noopNotifier{}, runtime.NewRegistry())
-	librarian, err := svc.EnsureBuiltinKnowledgeLibrarian(ctx, workspaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.UpdateAgent(ctx, librarian.ID, application.AgentPatch{
-		RuntimePreference: &domain.RuntimePreference{Preferred: "mock"}, ExpectedVersion: librarian.Version,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate a profile created by an earlier build. The production trigger
-	// protects the fixed prompt; dropping it here only lets the test construct
-	// that historical database state, so the application-level presentation
-	// overlay can be exercised without changing the migration contract.
-	if _, err := db.Exec(`DROP TRIGGER agent_profiles_knowledge_librarian_protected`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE agent_profiles SET instructions=? WHERE id=?`, "旧版管理员职责", librarian.ID); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := store.Agents().Get(ctx, librarian.ID)
-	if err != nil || stored.Instructions == application.KnowledgeLibrarianChatPrompt {
-		t.Fatalf("test fixture did not create stale persisted prompt: %+v err=%v", stored, err)
-	}
-	fresh, err := svc.Agent(ctx, librarian.ID)
-	if err != nil || fresh.Instructions != application.KnowledgeLibrarianChatPrompt {
-		t.Fatalf("single-Agent read did not refresh built-in prompt: %+v err=%v", fresh, err)
-	}
-	roster, err := svc.Agents(ctx, workspaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var listed *domain.AgentProfile
-	for _, candidate := range roster {
-		if candidate.ID == librarian.ID {
-			listed = candidate
-			break
+// TestLibraryAgentPromptStaysInternal asserts the harness prompt describes the
+// staging contract, which is what makes a fixed, checkable output possible.
+func TestLibraryAgentPromptStaysInternal(t *testing.T) {
+	prompt := application.KnowledgeLibrarianHarnessPrompt
+	for _, want := range []string{"brief.md", "plan.json", "evidence.yaml", "暂存目录"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("harness prompt must describe %q: %s", want, prompt)
 		}
-	}
-	if listed == nil || listed.Instructions != application.KnowledgeLibrarianChatPrompt {
-		t.Fatalf("Agent roster did not refresh built-in prompt: %+v", listed)
-	}
-	chat, err := svc.CreateWorkItem(ctx, workspaceID, application.CreateWorkItemParams{
-		Title: "管理员对话", RecordKind: domain.RecordKindChat, AgentProfileID: librarian.ID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	run, err := svc.CreateRun(ctx, chat.ID, application.CreateRunParams{
-		AgentProfileID: librarian.ID, Instruction: "请用自然语言说明你能做什么",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run.AgentProfileID != librarian.ID || run.Input["system_prompt"] != application.KnowledgeLibrarianChatPrompt {
-		t.Fatalf("builtin Chat must use the public natural-language persona: %+v", run.Input)
-	}
-	publicPrompt := run.Input["system_prompt"].(string)
-	for _, want := range []string{"产品、开发等智能体", "核对来源", "知识库页面用于浏览和搜索"} {
-		if !strings.Contains(publicPrompt, want) {
-			t.Fatalf("public librarian prompt missing user-facing guidance %q: %s", want, publicPrompt)
-		}
-	}
-	for _, internal := range []string{"命令行", "confirmed_requirement", "knowledge-librarian/v1", "JSON"} {
-		if strings.Contains(publicPrompt, internal) {
-			t.Fatalf("public librarian prompt must not expose internal term %q: %s", internal, publicPrompt)
-		}
-	}
-	if _, marked := run.Input["knowledge_librarian"]; marked {
-		t.Fatal("public librarian Chat must not masquerade as an internal JSON curation Run")
-	}
-
-	coordinator, err := store.TaskCoordinators().EnsureConfig(ctx, workspaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	coordinatorChat, err := svc.CreateWorkItem(ctx, workspaceID, application.CreateWorkItemParams{
-		Title: "非法 Coordinator Chat", RecordKind: domain.RecordKindChat, AgentProfileID: coordinator.AgentProfileID,
-	})
-	if err == nil {
-		if _, err = svc.CreateRun(ctx, coordinatorChat.ID, application.CreateRunParams{
-			AgentProfileID: coordinator.AgentProfileID, Instruction: "越过控制线",
-		}); err == nil {
-			t.Fatal("Task Coordinator must remain excluded from ordinary Chat")
-		}
-	}
-	if !errors.Is(err, domain.ErrValidation) {
-		t.Fatalf("Coordinator Chat must fail with validation, got %v", err)
 	}
 }

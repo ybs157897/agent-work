@@ -117,7 +117,7 @@ func (r *AgentRepo) Create(ctx context.Context, a *domain.AgentProfile) error {
 		a.InstructionsEditable = false
 		if a.PromptVersion == "" {
 			if kind == domain.AgentProfileKindKnowledgeLibrarian {
-				a.PromptVersion = domain.KnowledgeLibrarianChatPromptVersion
+				a.PromptVersion = domain.KnowledgeLibrarianHarnessPromptVersion
 			} else {
 				a.PromptVersion = domain.TaskCoordinatorPromptVersion
 			}

@@ -192,7 +192,7 @@ func (s *Server) validateWorkspaceRequestScope(r *http.Request) error {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	s.registerKnowledgeRoutes(mux)
+	s.registerKnowledgeLibraryRoutes(mux)
 	s.registerChatSourceRoutes(mux)
 	s.registerCodeWorkspaceRoutes(mux)
 

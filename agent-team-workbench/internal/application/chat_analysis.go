@@ -616,31 +616,51 @@ func (s *Service) validateOneChatAnalysisSource(ctx context.Context, run *domain
 	}
 }
 
+// validateKnowledgeAnalysisSource pins a Chat analysis citation to one
+// assertion of the published library release. The assertion must exist, its
+// document version must still be the current one, and the caller supplied
+// digest must match the content digest the library computed.
 func (s *Service) validateKnowledgeAnalysisSource(ctx context.Context, run *domain.ExecutionRun,
 	source chatanalysis.Source) error {
-	item, err := s.store.Knowledge().GetItem(ctx, run.WorkspaceID, run.AgentProfileID, source.Ref)
+	assertion, _, err := s.knowledgeExpandAssertion(ctx, run.WorkspaceID, "", source.Ref)
 	if err != nil {
 		return err
 	}
-	if item.Status != domain.KnowledgeStatusEffective || item.CurrentVersionID == "" {
-		return fmt.Errorf("%w: knowledge item %q is not currently effective", domain.ErrStateConflict, source.Ref)
+	if source.Version > 0 {
+		version, verr := s.knowledgeAssertionVersion(ctx, run.WorkspaceID, assertion.DocumentID, source.Version)
+		if verr != nil {
+			return verr
+		}
+		if version != assertion.DocumentVersionID {
+			return fmt.Errorf("%w: knowledge assertion %q version is not current", domain.ErrStateConflict, source.Ref)
+		}
 	}
-	version, err := s.store.Knowledge().GetVersion(ctx, run.WorkspaceID, run.AgentProfileID, item.CurrentVersionID)
-	if err != nil {
-		return err
-	}
-	if source.Version > 0 && source.Version != int(version.Version) {
-		return fmt.Errorf("%w: knowledge item %q version is not current", domain.ErrStateConflict, source.Ref)
-	}
-	computed, err := domain.ComputeKnowledgeContentDigest(version)
-	if err != nil || version.ContentDigest != computed {
-		return fmt.Errorf("%w: knowledge item %q stored digest is not self-consistent", domain.ErrStateConflict, source.Ref)
-	}
-	digest := strings.TrimPrefix(computed, "sha256:")
-	if !strings.EqualFold(digest, source.SHA256) {
-		return fmt.Errorf("%w: knowledge item %q digest mismatch", domain.ErrWorkspaceContextMismatch, source.Ref)
+	digest := strings.TrimPrefix(assertion.ContentDigest, "sha256:")
+	if digest == "" || !strings.EqualFold(digest, source.SHA256) {
+		return fmt.Errorf("%w: knowledge assertion %q digest mismatch", domain.ErrWorkspaceContextMismatch, source.Ref)
 	}
 	return nil
+}
+
+// knowledgeAssertionVersion resolves one document version number to its row
+// identity for citation checks.
+func (s *Service) knowledgeAssertionVersion(ctx context.Context, workspaceID, documentID string, version int) (string, error) {
+	lib, err := s.EnsureKnowledgeLibrary(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	doc, err := s.store.Library().GetDocument(ctx, lib.ID, documentID)
+	if err != nil {
+		return "", err
+	}
+	if doc.CurrentVersion != version {
+		return "", fmt.Errorf("%w: document %q version %d is not current", domain.ErrStateConflict, documentID, version)
+	}
+	v, _, _, err := s.store.Library().DocumentVersionDetail(ctx, documentID, version)
+	if err != nil {
+		return "", err
+	}
+	return v.ID, nil
 }
 
 type ChatAnalysisView struct {
