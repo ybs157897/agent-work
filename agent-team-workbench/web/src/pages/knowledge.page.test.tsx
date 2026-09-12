@@ -333,7 +333,7 @@ describe('资料库管理页 · tab 模型', () => {
 
   it('页面按 URL 的 tab 参数挂载对应面板', () => {
     const html = renderToStaticMarkup(
-      <MemoryRouter initialEntries={['/knowledge?tab=releases']}>
+      <MemoryRouter initialEntries={['/library?tab=releases']}>
         <KnowledgePage />
       </MemoryRouter>,
     );
@@ -345,7 +345,7 @@ describe('资料库管理页 · tab 模型', () => {
 
   it('默认进入资料库与来源面板', () => {
     const html = renderToStaticMarkup(
-      <MemoryRouter initialEntries={['/knowledge']}>
+      <MemoryRouter initialEntries={['/library']}>
         <KnowledgePage />
       </MemoryRouter>,
     );

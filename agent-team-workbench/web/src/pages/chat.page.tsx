@@ -430,7 +430,7 @@ export default function ChatPage() {
           </>
         )}
         {!agentId && legacyRecovery && <LegacyTaskIntakeRecoveryNotice recovery={legacyRecovery} onRestore={restoreLegacy} disabled={!agents.length} />}
-        <Link to="/knowledge" className="mt-auto flex shrink-0 items-center gap-tight border-t border-border-subtle px-snug py-base text-body text-text-secondary hover:text-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary/40">
+        <Link to="/library" className="mt-auto flex shrink-0 items-center gap-tight border-t border-border-subtle px-snug py-base text-body text-text-secondary hover:text-brand-primary focus-visible:ring-2 focus-visible:ring-brand-primary/40">
           <BookOpen className="h-4 w-4" aria-hidden />查看团队知识
         </Link>
       </aside>

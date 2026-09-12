@@ -93,7 +93,7 @@ function AnimatedRoutes() {
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/runs/:runId/journal" element={<RunJournalPage />} />
               <Route path="/models" element={<ModelsPage />} />
-              <Route path="/knowledge" element={<KnowledgePage />} />
+              <Route path="/library" element={<KnowledgePage />} />
               <Route path="/logs" element={<LogsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<NotFoundPage />} />
