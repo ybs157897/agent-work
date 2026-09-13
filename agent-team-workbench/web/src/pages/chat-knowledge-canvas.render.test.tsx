@@ -114,6 +114,20 @@ describe('产品知识画布的入口与引用渲染', () => {
     expect(html).toContain('产品智能体');
     expect(html).toContain('aria-label="产品知识画布"');
   });
+
+  it('画布工作区默认展示会话列表，收起状态由切换按钮给出', () => {
+    const html = renderChat(agent({}));
+    // 默认展开：CSS 的 :not([data-navigation-open="true"]) 隐藏规则不命中
+    expect(html).toContain('data-navigation-open="true"');
+    expect(html).toContain('对话（');
+    expect(html).toContain('aria-label="切换成员与会话列表"');
+    expect(html).toContain('aria-expanded="true"');
+  });
+
+  it('非画布页面的会话导航开合语义不变', () => {
+    const html = renderChat(agent({ id: 'a_dev', name: '开发智能体', role: 'developer' }));
+    expect(html).toContain('data-navigation-open="false"');
+  });
 });
 
 describe('画布引用在对话两端的渲染', () => {
