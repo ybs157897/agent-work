@@ -234,12 +234,15 @@ export default function ChatPage() {
   const codeEnabled = codeAvailable && !!workspaceId && (codeOverrides[codeKey]
     ?? (searchParams.get('canvas') === 'code' && searchParams.get('agent') === agentId ? true : false));
   const codeRunsLoaded = !conversationId || runsLoadedConversationId === conversationId;
-  // 知识画布专属产品（role=pm）的普通成员：默认进入，没有开关；其他角色没有任何入口。
+  // 知识画布专属产品（role=pm）的普通成员：默认进入；其他角色没有任何入口。
   const knowledgeEnabled = !!workspaceId && !!currentAgent && currentAgent.role === 'pm'
     && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
-  const navigationOpen = knowledgeEnabled ? !knowledgeNavDismissed : workspaceNavigationOpen;
+  // 画布可像代码工作台一样折叠/展开（视图状态，非功能开关）：折叠后对话占满全宽。
+  const [knowledgeCollapsed, setKnowledgeCollapsed] = useState(false);
+  const knowledgeVisible = knowledgeEnabled && !knowledgeCollapsed;
+  const navigationOpen = knowledgeVisible ? !knowledgeNavDismissed : workspaceNavigationOpen;
   const toggleNavigation = () => {
-    if (knowledgeEnabled) setKnowledgeNavDismissed((value) => !value);
+    if (knowledgeVisible) setKnowledgeNavDismissed((value) => !value);
     else setWorkspaceNavigationOpen((value) => !value);
   };
 
@@ -389,7 +392,7 @@ export default function ChatPage() {
   }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, workspaceId, ownsChatScope]);
 
   return (
-    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={navigationOpen}>
+    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeVisible ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={navigationOpen}>
       {/* 左栏：Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         {agentId && (
@@ -411,7 +414,7 @@ export default function ChatPage() {
 
       {/* 右侧对话区 */}
       <div className="chat-languagegui-main chat-split-host flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} knowledgeEnabled={knowledgeEnabled} navigationOpen={navigationOpen} onToggleNavigation={toggleNavigation} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
+        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} knowledgeEnabled={knowledgeEnabled} knowledgeVisible={knowledgeVisible} onToggleKnowledge={() => setKnowledgeCollapsed((value) => !value)} navigationOpen={navigationOpen} onToggleNavigation={toggleNavigation} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
@@ -637,7 +640,7 @@ export function KnowledgeReferenceChip({ reference, onRemove }: { reference: Kno
   );
 }
 
-function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, knowledgeEnabled, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, knowledgeEnabled, knowledgeVisible, onToggleKnowledge, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
   initialPrompt: string;
   chatTheme: WorkbenchTheme;
   onToggleTheme: () => void;
@@ -646,6 +649,8 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
   onToggleCode: () => void;
   codeRunsLoaded: boolean;
   knowledgeEnabled: boolean;
+  knowledgeVisible: boolean;
+  onToggleKnowledge: () => void;
   navigationOpen: boolean;
   onToggleNavigation: () => void;
   narrowPanel: 'document' | 'chat';
@@ -1334,20 +1339,21 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
           <button type="button" onClick={onToggleCode}>关闭代码</button>
         </div>
       )}
-      {knowledgeEnabled && (
+      {knowledgeVisible && (
         <div className="chat-split-tabs" role="group" aria-label="知识画布视图">
           <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>
           <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}><BookOpen className="h-4 w-4" aria-hidden />知识</button>
           <button type="button" aria-pressed={narrowPanel === 'chat'} onClick={() => onNarrowPanelChange('chat')}><MessageSquare className="h-4 w-4" aria-hidden />对话</button>
+          <button type="button" onClick={onToggleKnowledge}>折叠画布</button>
         </div>
       )}
-    <div className={`chat-split-layout flex flex-1 min-h-0 overflow-hidden${codeEnabled || knowledgeEnabled ? ' chat-split-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
+    <div className={`chat-split-layout flex flex-1 min-h-0 overflow-hidden${codeEnabled || knowledgeVisible ? ' chat-split-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
       {codeEnabled && workspaceId && agentId && (
         <section className="chat-split-document code-workspace-document" aria-label="Java 代码工作台">
           <CodeWorkspace workspaceId={workspaceId} agentId={agentId} conversationId={conversationId} latestRunId={latestRunId} runsLoaded={codeRunsLoaded} theme={chatTheme} />
         </section>
       )}
-      {knowledgeEnabled && workspaceId && agentId && (
+      {knowledgeVisible && workspaceId && agentId && (
         <section className="chat-split-document" aria-label="产品知识画布">
           <KnowledgeCanvas
             workspaceId={workspaceId}
@@ -1376,6 +1382,7 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
           <>
             {codeEnabled && <button type="button" onClick={onToggleNavigation} aria-label="切换成员与会话列表" title="成员与会话" aria-expanded={navigationOpen} className="chat-split-navigation-toggle"><PanelLeft className="h-4 w-4" aria-hidden /></button>}
             {codeAvailable && <button type="button" onClick={onToggleCode} aria-pressed={codeEnabled} aria-label={codeEnabled ? '关闭代码工作台' : '打开代码工作台'} className="chat-split-code-toggle"><Code2 className="h-4 w-4" aria-hidden />代码</button>}
+            {knowledgeEnabled && <button type="button" onClick={onToggleKnowledge} aria-pressed={knowledgeVisible} aria-label={knowledgeVisible ? '折叠知识画布' : '展开知识画布'} className="chat-split-code-toggle"><BookOpen className="h-4 w-4" aria-hidden />知识</button>}
             <button
               type="button"
               onClick={() => void startAnalysis()}

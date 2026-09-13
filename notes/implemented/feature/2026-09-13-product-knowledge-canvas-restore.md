@@ -14,6 +14,11 @@ knowledge API 与 knowledge_items 表）已不存在。本次按用户要求恢�
 停用成员）没有任何入口。旧的 localStorage `canvasPreference` 开关机制（含 `canReadAgentKnowledge`
 的 owner/admin 特赦）整套删除，不迁移——"专属于产品"就是字面意思。
 
+**同日追加（折叠/展开）**：用户要求画布与代码工作台一致可折叠——tabs 行「折叠画布」与对话头
+「知识」切换（`knowledgeCollapsed` 视图状态，折叠后对话占满全宽、侧栏回归常规宽度），会话
+列表默认展开、可收起。这是**视图状态**而非功能开关：pm 专属判定不变，非 pm 仍无任何入口，
+不写 URL、不做持久偏好。
+
 ## 放弃了什么
 
 - **按 Agent owner 过滤的文档列表**：新资料库是工作空间级发布物，没有 owner 概念。画布展示
