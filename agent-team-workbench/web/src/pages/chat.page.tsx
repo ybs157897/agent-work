@@ -225,6 +225,9 @@ export default function ChatPage() {
   const currentAgent = agents.find((agent) => agent.id === agentId);
   const [codeOverrides, setCodeOverrides] = useState<Record<string, boolean>>({});
   const [workspaceNavigationOpen, setWorkspaceNavigationOpen] = useState(false);
+  // 画布工作区默认展示会话列表（产品的会话记录要直接可见）；用户可经
+  // 「切换成员与会话列表」收起，收起选择本次页面生命周期内有效。
+  const [knowledgeNavDismissed, setKnowledgeNavDismissed] = useState(false);
   const [narrowPanel, setNarrowPanel] = useState<'document' | 'chat'>('document');
   const codeKey = `${workspaceId ?? ''}:${agentId ?? ''}:${conversationId ?? 'new'}`;
   const codeAvailable = workspaceProjectReady && !!currentAgent && currentAgent.role === 'developer' && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
@@ -234,6 +237,11 @@ export default function ChatPage() {
   // 知识画布专属产品（role=pm）的普通成员：默认进入，没有开关；其他角色没有任何入口。
   const knowledgeEnabled = !!workspaceId && !!currentAgent && currentAgent.role === 'pm'
     && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
+  const navigationOpen = knowledgeEnabled ? !knowledgeNavDismissed : workspaceNavigationOpen;
+  const toggleNavigation = () => {
+    if (knowledgeEnabled) setKnowledgeNavDismissed((value) => !value);
+    else setWorkspaceNavigationOpen((value) => !value);
+  };
 
   useEffect(() => {
     setLegacyRecovery(workspaceId ? readLegacyTaskIntakeRecovery(workspaceId) : null);
@@ -381,7 +389,7 @@ export default function ChatPage() {
   }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, workspaceId, ownsChatScope]);
 
   return (
-    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={workspaceNavigationOpen}>
+    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={navigationOpen}>
       {/* 左栏：Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         {agentId && (
@@ -403,7 +411,7 @@ export default function ChatPage() {
 
       {/* 右侧对话区 */}
       <div className="chat-languagegui-main chat-split-host flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} knowledgeEnabled={knowledgeEnabled} navigationOpen={workspaceNavigationOpen} onToggleNavigation={() => setWorkspaceNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
+        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} knowledgeEnabled={knowledgeEnabled} navigationOpen={navigationOpen} onToggleNavigation={toggleNavigation} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
