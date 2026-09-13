@@ -42,10 +42,31 @@ describe('TaskDraftPreview', () => {
     expect(html).toContain('/tasks/wi_task_1');
   });
 
-  it('does not offer a publishable empty state when no valid confirmed item exists', () => {
-    const html = renderToStaticMarkup(<TaskDraftPreview items={[]} decisions={[]} draft={null} analysisBlocked={true} loading={false} saving={false} publishing={false} error={null} {...handlers} />);
-    expect(html).toContain('当前没有可用于形成任务的有效产品确认');
-    expect(html).not.toContain('发布任务');
+  it('renders nothing when there is neither a draft nor a selectable item, whatever the analysis state', () => {
+    const blocked = renderToStaticMarkup(<TaskDraftPreview items={[]} decisions={[]} draft={null} analysisBlocked loading={false} saving={false} publishing={false} error={null} {...handlers} />);
+    const unblocked = renderToStaticMarkup(<TaskDraftPreview items={[]} decisions={[]} draft={null} analysisBlocked={false} loading={false} saving={false} publishing={false} error={null} {...handlers} />);
+    expect(blocked).toBe('');
+    expect(unblocked).toBe('');
+    expect(blocked).not.toContain('当前没有可用于形成任务的有效产品确认');
+    expect(blocked).not.toContain('发布任务');
+  });
+
+  it('offers draft formation once a confirmed item exists', () => {
+    const html = renderToStaticMarkup(<TaskDraftPreview items={items} decisions={decisions} draft={null} analysisBlocked={false} loading={false} saving={false} publishing={false} error={null} {...handlers} />);
+    expect(html).toContain('任务草案预览');
+    expect(html).toContain('发现 1 个当前有效的产品确认事项。');
+    expect(html).toContain('形成任务草案');
+    expect(html).not.toContain('保存任务草案');
+  });
+
+  it('keeps loading and error visible when there is nothing else to show', () => {
+    const pending = renderToStaticMarkup(<TaskDraftPreview items={[]} decisions={[]} draft={null} analysisBlocked={false} loading saving={false} publishing={false} error={null} {...handlers} />);
+    expect(pending).toContain('正在读取草案状态…');
+    const failed = renderToStaticMarkup(<TaskDraftPreview items={[]} decisions={[]} draft={null} analysisBlocked={false} loading={false} saving={false} publishing={false} error="草案状态读取失败" {...handlers} />);
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('草案状态读取失败');
+    expect(failed).toContain('重试');
+    expect(failed).not.toContain('当前没有可用于形成任务的有效产品确认');
   });
 
   it('disables editing and saving after publication', () => {
