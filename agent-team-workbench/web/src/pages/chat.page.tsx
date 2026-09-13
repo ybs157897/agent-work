@@ -1,4 +1,4 @@
-import { ArchiveRestore, BookOpen, Boxes, Code2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
+import { ArchiveRestore, BookOpen, Code2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Sun, X } from 'lucide-react';
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
@@ -16,7 +16,7 @@ import { ChatBottomDock } from '../components/chat/chat-bottom-dock';
 import { ArtifactShelf } from '../components/chat/artifact-shelf';
 import { ArtifactWorkspace } from '../components/chat/artifact-workspace';
 import { SwarmMemberWorkspace, isSameSwarmMemberSelection, type SwarmMemberSelection } from '../components/chat/swarm-member-workspace';
-import { PROMPT_LIBRARY, PromptBox, type PromptAttachment } from '../components/chat/prompt-box';
+import { PromptBox, type PromptAttachment } from '../components/chat/prompt-box';
 import { Avatar } from '../components/avatar';
 import { Button, EmptyState } from '../components/ui';
 import { SseStatusPill } from '../components/sse-status';
@@ -36,7 +36,7 @@ import { useRunsStore } from '../stores/runs.store';
 import { useNativeQuestionsStore } from '../stores/questions.store';
 import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
-import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
+import { isChatAgent, isUserManagedAgent } from '../utils/agent-scope';
 import { isChatPath } from '../utils/route-layout';
 import { buildCanvasMessage, referenceBelongsTo, restoreCanvasComposer, type KnowledgeCanvasReference } from '../utils/agent-knowledge-canvas';
 import './chat-knowledge-workspace.css';
@@ -194,7 +194,6 @@ export default function ChatPage() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
-  const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
   const [promptSeed, setPromptSeed] = useState<{ id: number; text: string } | null>(null);
   const [legacyRecovery, setLegacyRecovery] = useState<LegacyTaskIntakeRecovery | null>(null);
   const chatTheme = useWorkbenchThemeStore((state) => state.theme);
@@ -272,7 +271,6 @@ export default function ChatPage() {
     selectAgent(targetAgent.id);
     openConversation(null);
     setPromptSeed({ id: Date.now(), text: content });
-    setSidebarView('chats');
     setSearchParams(chatNavigationParams(targetAgent.id), { replace: true });
   };
 
@@ -336,7 +334,6 @@ export default function ChatPage() {
       pendingUrlConversationRef.current = null;
       startConversation(qAgent);
       setPromptSeed({ id: Date.now(), text: '' });
-      setSidebarView('chats');
       const next = new URLSearchParams(searchParams);
       next.delete('new');
       next.delete('c');
@@ -383,56 +380,19 @@ export default function ChatPage() {
     setSearchParams(next, { replace: true });
   }, [agentId, conversationId, freshConversation, searchParams, setSearchParams, workspaceId, ownsChatScope]);
 
-  const pick = (id: string) => {
-    selectAgent(id);
-    setSidebarView('chats');
-    setPromptSeed(null);
-    setWorkspaceNavigationOpen(false);
-    setSearchParams(chatNavigationParams(id), { replace: true });
-  };
   return (
     <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={workspaceNavigationOpen}>
-      {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
+      {/* 左栏：Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
-        <div className="shrink-0 border-b border-border-subtle/60 p-2">
-          <div className="mb-1 px-1 text-caption font-medium text-text-tertiary">选择要咨询的智能体</div>
-          <div className="flex flex-wrap gap-1">
-            {agents.map((a) => (
-              <button
-                key={a.id}
-                onClick={() => pick(a.id)}
-                title={`${a.name} · ${isKnowledgeLibrarianAgent(a) ? '系统内置' : a.role}`}
-                aria-label={`${a.name}（${isKnowledgeLibrarianAgent(a) ? '系统内置' : a.role}）`}
-                aria-pressed={agentId === a.id}
-                className={`chat-agent-chip !w-auto max-w-full gap-tight px-tight ${agentId === a.id ? 'chat-agent-chip-active' : ''}`}
-              >
-                <Avatar name={a.name} url={a.avatar} size={26} />
-                <span className="truncate text-caption text-text-primary">{a.name}</span>
-                {isKnowledgeLibrarianAgent(a) && <span className="text-caption text-text-tertiary">内置</span>}
-                {(a.presence === 'idle' || a.presence === 'busy') && (
-                  <span className={`absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-surface-sunken ${a.presence === 'busy' ? 'bg-status-warning' : 'bg-status-success'}`} aria-hidden />
-                )}
-              </button>
-            ))}
-          </div>
-        </div>
         {agentId && (
           <>
             {legacyRecovery && <LegacyTaskIntakeRecoveryNotice recovery={legacyRecovery} onRestore={restoreLegacy} disabled={!agents.length} />}
-            <ChatSidebarNav view={sidebarView} onChange={setSidebarView} />
-            {sidebarView === 'chats' && <ConversationList onPick={(id) => {
+            <ConversationList onPick={(id) => {
               setPromptSeed(null);
               setNarrowPanel('chat');
               openConversation(id);
               setSearchParams(chatNavigationParams(agentId, id ?? undefined), { replace: true });
-            }} />}
-            {sidebarView === 'library' && <SidebarLibrary onUse={(text) => {
-              openConversation(null);
-              setSearchParams(chatNavigationParams(agentId), { replace: true });
-              setPromptSeed({ id: Date.now(), text });
-              setSidebarView('chats');
-            }} />}
-            {sidebarView === 'apps' && <SidebarApps />}
+            }} />
           </>
         )}
         {!agentId && legacyRecovery && <LegacyTaskIntakeRecoveryNotice recovery={legacyRecovery} onRestore={restoreLegacy} disabled={!agents.length} />}
@@ -515,69 +475,6 @@ function ChatThemeToggle({ theme, onToggle }: { theme: WorkbenchTheme; onToggle:
     <button type="button" onClick={onToggle} className="inline-flex h-8 w-8 items-center justify-center rounded-button text-text-tertiary transition-colors hover:bg-surface-sunken hover:text-text-primary" aria-label={dark ? '切换到浅色模式' : '切换到暗色模式'} title={dark ? '浅色模式' : '暗色模式'} aria-pressed={dark}>
       {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
     </button>
-  );
-}
-
-type SidebarView = 'chats' | 'library' | 'apps';
-
-function ChatSidebarNav({ view, onChange }: { view: SidebarView; onChange: (view: SidebarView) => void }) {
-  const items: Array<{ id: SidebarView; label: string; icon: ReactNode }> = [
-    { id: 'chats', label: '对话', icon: <MessageSquare className="h-3.5 w-3.5" /> },
-    { id: 'library', label: 'Library', icon: <BookOpen className="h-3.5 w-3.5" /> },
-    { id: 'apps', label: 'Apps', icon: <Boxes className="h-3.5 w-3.5" /> },
-  ];
-  return (
-    <nav className="chat-sidebar-nav" aria-label="对话资源">
-      {items.map((item) => (
-        <button key={item.id} type="button" aria-pressed={view === item.id} onClick={() => onChange(item.id)} className={`chat-sidebar-nav-item${view === item.id ? ' chat-sidebar-nav-item-active' : ''}`}>
-          {item.icon}<span>{item.label}</span>
-        </button>
-      ))}
-    </nav>
-  );
-}
-
-function SidebarLibrary({ onUse }: { onUse: (prompt: string) => void }) {
-  return (
-    <section className="chat-sidebar-panel" aria-labelledby="chat-library-title">
-      <div className="chat-sidebar-panel-head">
-        <BookOpen className="h-4 w-4" aria-hidden />
-        <span id="chat-library-title">Prompt Library</span>
-      </div>
-      <p className="px-snug pb-tight text-caption leading-5 text-text-tertiary">选择一个模板，在新对话中继续编辑后发送。</p>
-      <div className="space-y-tight px-tight pb-snug">
-        {PROMPT_LIBRARY.map((item) => (
-          <button key={item.title} type="button" onClick={() => onUse(item.prompt)} className="w-full rounded-card border border-border-subtle bg-surface-raised px-snug py-tight text-left shadow-card transition-colors hover:border-brand-primary/30 hover:bg-brand-muted/20">
-            <span className="block text-caption font-medium text-text-primary">{item.title}</span>
-            <span className="mt-micro line-clamp-2 block text-caption leading-5 text-text-tertiary">{item.prompt}</span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function SidebarApps() {
-  return (
-    <section className="chat-sidebar-panel" aria-labelledby="chat-apps-title">
-      <div className="chat-sidebar-panel-head">
-        <Boxes className="h-4 w-4" aria-hidden />
-        <span id="chat-apps-title">Apps</span>
-      </div>
-      <div className="space-y-tight px-tight pb-snug">
-        <div className="chat-sidebar-app-card">
-          <span><strong>LanguageGUI v1</strong><small>结构化正文输出</small></span>
-          <b className="text-status-success">已启用</b>
-        </div>
-        <div className="chat-sidebar-app-card">
-          <span><strong>外部 Apps</strong><small>连接器与第三方服务</small></span>
-          <b className="text-text-tertiary">尚未配置</b>
-        </div>
-        <Link to="/agents" className="chat-sidebar-settings-link">
-          <Settings2 className="h-3.5 w-3.5" aria-hidden />在 Agent 配置中管理工具权限
-        </Link>
-      </div>
-    </section>
   );
 }
 

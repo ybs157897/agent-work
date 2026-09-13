@@ -95,7 +95,7 @@ describe('native question card visibility', () => {
   });
 });
 
-describe('对话 chips 数据源', () => {
+describe('对话左栏不再有智能体 chips', () => {
   beforeEach(() => {
     useWorkspaceStore.setState({ workspace: { id: 'ws_test', name: '测试工作区', timezone: 'Asia/Shanghai', version: 1 }, me: { user_id: 'u_test', name: 'Owner', role: 'owner', feature_flags: {} }, phase: 'ready' });
     useChatStore.setState({ agentId: 'agent_product', conversationId: null, conversations: [], runs: [], queue: [], pendingUsers: {}, runAlerts: {}, sending: false, sendError: null });
@@ -106,7 +106,7 @@ describe('对话 chips 数据源', () => {
     useChatStore.setState({ agentId: null, conversationId: null });
   });
 
-  it('停用成员不出现在可咨询的智能体 chips 里', () => {
+  it('不渲染 chips 区，停用成员也不会作为可选项出现', () => {
     useAgentsStore.setState({
       agents: [
         { id: 'agent_product', name: '产品智能体', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 },
@@ -114,8 +114,11 @@ describe('对话 chips 数据源', () => {
       ],
     });
     const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/chat?agent=agent_product']}><ChatPage /></MemoryRouter>);
-    expect(html).toContain('产品智能体');
+    expect(html).not.toContain('选择要咨询的智能体');
+    expect(html).not.toContain('chat-agent-chip');
     expect(html).not.toContain('停用成员');
     expect(html).not.toContain('agent_legacy');
+    // 当前 Agent 身份仍由对话头显示，深链选择没有被删掉
+    expect(html).toContain('产品智能体');
   });
 });
