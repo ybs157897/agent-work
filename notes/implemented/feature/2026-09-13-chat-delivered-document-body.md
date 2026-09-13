@@ -35,5 +35,8 @@ languagegui/v1 追加段新增 Delivered documents 规则，并收紧 file 块�
 - `go test -count=1 ./internal/orchestrator/`：契约文本片段断言（本次新增 6 条）通过。
 - `go test -count=1 ./internal/application/ -run TestSystemPromptInjection`：Chat system prompt 注入路径通过。
 - `go build ./...`、`go vet`、gofmt 干净。
-- 未执行：端到端验证「agent 真的按新契约把正文写进消息」需要重建后端并跑一轮新对话；历史消息不回溯改写，
-  既有那条对话的文件指针仍是死行。
+- 端到端（2026-09-13 交付窗口，合并后）：重建 `bin/control-plane` 并重启 8080，新开一轮对话
+  （`wi_01M2CBCKHK141P11S41CZS54QE`）要一份验收条件文档。该 run 的 input 快照确认四条新规则都进了
+  system prompt；最终消息以 4,960 字符正文完整给出文档（含 languagegui table 块），没有 file 块、
+  没有 `file://` 指针，界面按 Markdown 渲染。主树未被该轮改动。
+- 历史消息不回溯改写：既有那条对话的文件指针仍是死行；旧二进制留在 `bin/control-plane.built-at-e29a381` 以便回滚。
