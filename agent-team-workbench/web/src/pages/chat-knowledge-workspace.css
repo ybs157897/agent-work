@@ -1,0 +1,76 @@
+/*
+ * 产品知识画布在对话页里的壳层增强。分割布局（chat-split-*）、窄容器面板切换
+ * （data-active-panel）与容器查询由 code-workspace.css 提供，两个画布共用；
+ * 这里只保留知识画布专属的侧栏宽度与引用 chip。
+ */
+
+.chat-knowledge-page > .chat-languagegui-sidebar {
+  width: 192px;
+}
+
+.chat-knowledge-page:not([data-navigation-open="true"]) > .chat-languagegui-sidebar {
+  display: none;
+}
+
+.knowledge-chat-reference {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-tight);
+  margin-bottom: var(--space-tight);
+  padding: var(--space-tight);
+  border: 1px solid hsl(var(--color-border-subtle));
+  border-radius: var(--radius-card);
+  background: hsl(var(--color-surface-raised));
+  color: hsl(var(--color-text-secondary));
+  font-size: 12px;
+}
+
+.knowledge-chat-reference details {
+  flex: 1;
+  min-width: 0;
+}
+
+.knowledge-chat-reference summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-tight);
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.knowledge-chat-reference summary span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-chat-reference blockquote {
+  max-height: 144px;
+  overflow: auto;
+  margin: var(--space-tight) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-chat-reference > button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-tight);
+  padding: var(--space-micro) var(--space-tight);
+  border-radius: var(--radius-control);
+  font-size: 12px;
+  color: hsl(var(--color-text-secondary));
+}
+
+.knowledge-chat-reference > button:hover {
+  background: hsl(var(--color-surface-sunken));
+  color: hsl(var(--color-text-primary));
+}
+
+.knowledge-chat-reference summary:focus-visible,
+.knowledge-chat-reference > button:focus-visible {
+  outline: 2px solid hsl(var(--color-brand-primary));
+  outline-offset: 2px;
+}

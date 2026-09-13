@@ -227,6 +227,8 @@ export interface DocumentDetail {
   version: { id: string; version: number; content_digest: string; created_at: string; content_markdown: string };
   assertions: Assertion[];
   relations: Relation[];
+  /** 服务端在详情响应顶层回带本次读取所属的 release，用于固定引用版本。 */
+  release_id?: string;
   versions: DocumentVersionMeta[];
 }
 
@@ -495,9 +497,10 @@ export const listDocuments = (
     }),
   );
 
-export const getDocument = (workspaceId: string, documentId: string, releaseId?: string) =>
+/** `version` 透传服务端已支持的 ?version=N（读历史版本正文），缺省即当前版本。 */
+export const getDocument = (workspaceId: string, documentId: string, releaseId?: string, version?: number) =>
   apiFetch<DocumentDetail>(
-    withQuery(`${libraryRoot(workspaceId)}/documents/${segment(documentId)}`, { release_id: releaseId }),
+    withQuery(`${libraryRoot(workspaceId)}/documents/${segment(documentId)}`, { release_id: releaseId, version }),
   );
 
 export const getEvidence = async (workspaceId: string, evidenceId: string): Promise<Evidence> =>
