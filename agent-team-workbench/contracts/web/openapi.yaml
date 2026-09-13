@@ -1226,6 +1226,25 @@ paths:
       parameters: [{ name: path, in: query, required: true, schema: { type: string } }]
       responses: { "200": { content: { application/json: { schema: { type: object, required: [path, diff], properties: { path: { type: string }, diff: { type: string }, truncated: { type: boolean }, binary: { type: boolean } } } } } } }
 
+  /runs/{run_id}/file:
+    parameters: [{ $ref: "#/components/parameters/RunId" }]
+    get:
+      tags: [runs]
+      operationId: getRunFile
+      description: |
+        只读预览 Run 工作目录里的一个文本文件。path 必须是仓库相对路径，
+        服务端在 Run 执行上下文授权的仓库集合（自己的 checkout + 同一仓库的
+        worktree）内解析；绝对路径、`..` 逃逸、symlink 穿透与 .git 内部文件被拒。
+        响应不含宿主绝对路径。
+      parameters: [{ name: path, in: query, required: true, schema: { type: string } }]
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/RunFileContent" } } } }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { description: 文件超过预览大小上限, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "415": { description: 二进制或非 UTF-8 内容不支持预览, content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+
   /runs/{run_id}/commands/revert-changes:
     parameters: [{ $ref: "#/components/parameters/RunId" }]
     post:
@@ -4041,6 +4060,16 @@ components:
         created_at: { type: string, format: date-time }
         closed_at: { type: string, format: date-time, nullable: true }
 
+    RunFileContent:
+      type: object
+      description: Run 文件只读预览内容；path/name 均为仓库相对口径，不含宿主绝对路径
+      required: [path, name, mime, size, content]
+      properties:
+        path: { type: string }
+        name: { type: string }
+        mime: { type: string }
+        size: { type: integer }
+        content: { type: string }
     RunChanges:
       type: object
       required: [file_count, additions, deletions, files, state, can_revert, version]

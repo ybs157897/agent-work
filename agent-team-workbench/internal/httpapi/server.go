@@ -319,6 +319,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/artifacts/{artifact_id}/commands/accept", s.guard(security.PermApproval, s.handleAcceptArtifact))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/changes", s.guard(security.PermRead, s.handleRunChanges))
 	mux.HandleFunc("GET /api/v1/runs/{run_id}/changes/diff", s.guard(security.PermRead, s.handleRunChangeDiff))
+	mux.HandleFunc("GET /api/v1/runs/{run_id}/file", s.guard(security.PermRead, s.handleRunFile))
 	mux.HandleFunc("POST /api/v1/runs/{run_id}/commands/revert-changes", s.guard(security.PermRunControl, s.handleRevertRunChanges))
 
 	mux.HandleFunc("GET /api/v1/workspaces/{workspace_id}/runtime-bindings", s.guard(security.PermRead, s.handleListBindings))

@@ -54,7 +54,13 @@ type Service struct {
 	// directory from the Host registry. It is a Host-local trust hook; a
 	// caller can never supply the path.
 	knowledgeWorkspaceRoot func(ctx context.Context, workspaceID string) (string, error)
-	chatSourceStore        ChatSourceStore
+	// runFileRoots is the Host-local trust hook for read-only run file previews:
+	// given a run's execution context snapshot it returns the host directories that
+	// run may read (its own checkout plus the repository's other worktrees). The
+	// returned absolute paths never leave this process, and a caller can never
+	// supply one.
+	runFileRoots    func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot) ([]string, error)
+	chatSourceStore ChatSourceStore
 	// analysisCodeResolver is the Host-local trust hook for validating code
 	// references reported by a Chat analysis. It returns a digest only; the
 	// filesystem path remains inside the resolver process.
