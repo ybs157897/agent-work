@@ -205,6 +205,35 @@ recover only a missing outer `}` or `]}` before the same whitelist validation;
 incomplete block contents are never filled in. This is a display projection: stored messages and
 copied source text remain unchanged, and canonical blocks retain precedence.
 
+### Body-carried delivered documents
+
+A long answer that carries a complete document keeps its boundary. The
+explanation before the document stays in the transcript, and the document is
+rendered once in a `chat-document` surface: a semantic panel with the document
+title, a copy-original-Markdown action, a `.md` download, and a "read alone"
+action that opens the same Markdown in a right-hand Drawer. `MarkdownBody` and
+`Drawer` are reused; there is no second Markdown renderer and no second
+document store.
+
+Recognition is conservative and split-only. `projectDeliveredDocument`
+partitions the original text at the first top-level H1 that starts a block,
+requires at least two top-level sections (`h2`–`h6`), at least 800 characters
+of document body, and an explanation shorter than the document. It never
+rewrites or reorders text: `introMarkdown + documentMarkdown` is the original
+string, so a trailing explanation, later headings, and fenced code are
+preserved in place and no `#` inside a code fence is ever read as a heading.
+Short answers, heading-only replies, longer discussions, and messages with
+canonical content blocks that already own their position keep today's direct
+Markdown rendering. This is a display projection: stored messages and the
+message-level copy action remain the whole original text, while the panel's copy
+and download payloads are the document slice of that same original text.
+Streaming keeps the current throttled Markdown cadence and one caret.
+
+Task-list checkboxes are styled in both GFM shapes: the tight form
+(`li > input`) and the loose form (`li > p > input`). Styling only the tight
+form shows a bullet next to the checkbox and drops the paragraph rhythm inside
+loose items.
+
 The global light/dark mode also controls syntax and Mermaid contrast. Streaming
 uses the established throttled Markdown cadence and a single caret; reduced
 motion removes rotation and shimmer while preserving state text.
