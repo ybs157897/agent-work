@@ -54,7 +54,8 @@ export function TaskDraftPreview({
   onPublish: () => void;
   onRetry: () => void;
 }) {
-  if (!draft && items.length === 0 && !loading && !error && !analysisBlocked) return null;
+  // 没有草案也没有可选事项时不占位：空态文案对用户是噪音（analysisBlocked 不再豁免）。
+  if (!draft && items.length === 0 && !loading && !error) return null;
   const decisionByItem = new Map(decisions.map((decision) => [decision.item_id, decision]));
   const selectedCount = draft?.itemIds.length ?? 0;
   const canSave = Boolean(draft && draft.status !== 'published' && (draft.status !== 'failed' || draft.lastOperation === 'save') && selectedCount > 0 && draft.title.trim() && !analysisBlocked && !saving && !publishing);
@@ -77,7 +78,6 @@ export function TaskDraftPreview({
       {error && <div className="mt-tight flex items-start gap-micro text-caption text-status-error" role="alert"><AlertCircle className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" /><span>{error}</span><Button type="button" variant="ghost" size="sm" className="ml-auto shrink-0" onClick={onRetry}><RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />重试</Button></div>}
 
       {!draft && items.length > 0 && <div className="mt-tight rounded-button border border-border-subtle bg-surface-base px-snug py-tight"><p className="text-caption text-text-secondary">发现 {items.length} 个当前有效的产品确认事项。</p><Button type="button" variant="primary" size="sm" className="mt-tight" onClick={onOpen}>形成任务草案</Button></div>}
-      {!draft && items.length === 0 && !loading && <p className="mt-tight rounded-button border border-border-subtle bg-surface-base px-snug py-tight text-caption text-text-tertiary">当前没有可用于形成任务的有效产品确认。</p>}
 
       {draft && <div className="mt-tight space-y-tight">
         <fieldset disabled={saving || publishing || draft.status === 'published' || draft.status === 'failed'} aria-label="选择任务事项" className="space-y-tight">
