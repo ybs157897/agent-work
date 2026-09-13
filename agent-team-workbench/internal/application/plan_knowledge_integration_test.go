@@ -121,6 +121,66 @@ func TestConsultKnowledgeInjectsDispatch(t *testing.T) {
 	}
 }
 
+// TestConsultKnowledgeInjectsPublishedVersion 契约（防回归）：按生产装配
+// （Knowledge = NewKnowledgeLibraryRetriever）走真实已发布 release 时，参考条目
+// 必须带 release 固定的版本号与引用元数据；读端曾不填 hit.Version，导致这里
+// 写出并不存在的「v0」且 version_id 元数据永不输出。
+func TestConsultKnowledgeInjectsPublishedVersion(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	defer db.Close()
+	store := sqlstore.New(db)
+	svc := application.NewService(store, &captureDispatcher{}, noopNotifier{}, atwruntime.NewRegistry())
+
+	wsID, leadID, workerID := seedM2Env(t, ctx, store)
+	root := t.TempDir()
+	svc.SetKnowledgeWorkspaceRootResolver(func(context.Context, string) (string, error) { return root, nil })
+	lib, err := svc.EnsureKnowledgeLibrary(ctx, wsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := publishChatKnowledgeRelease(t, ctx, store, lib, "用户必须能用账号密码登录。")
+	pinned, err := store.Library().ReleaseDocumentVersion(ctx, release.ID, "kdoc_chat_login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Knowledge = svc.NewKnowledgeLibraryRetriever()
+
+	main, err := svc.CreateWorkItem(ctx, wsID, application.CreateWorkItemParams{Title: "主任务"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := svc.SubmitPlan(ctx, wsID, application.SubmitPlanParams{
+		WorkItemID: main.ID, AgentProfileID: leadID,
+		Steps: []application.PlanStepInput{
+			{Verb: "consult_knowledge", Payload: map[string]any{"corpus": "prd", "terms": []any{"登录"}}},
+			{Verb: "dispatch", Payload: map[string]any{
+				"agent_id": workerID, "title": "子任务", "instruction": "实现登录", "knowledge_from": 0,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.Plans().Get(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Runs().Get(ctx, stored.Steps[1].ResultRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instruction, _ := run.Input["instruction"].(string)
+	for _, want := range []string{"## 参考条目", "（v1）", pinned.ID, `"version_id":"` + pinned.ID + `"`} {
+		if !strings.Contains(instruction, want) {
+			t.Fatalf("参考条目缺少 %q:\n%s", want, instruction)
+		}
+	}
+	if strings.Contains(instruction, "（v0）") {
+		t.Fatalf("参考条目不得写出并不存在的版本 0:\n%s", instruction)
+	}
+}
+
 // TestConsultKnowledgeWithoutRetrieverFails 验收 8b：retriever=nil → step failed
 // error=no_retriever 且 plan failed（响亮失败，余下步骤 skipped、无子任务产生）。
 func TestConsultKnowledgeWithoutRetrieverFails(t *testing.T) {

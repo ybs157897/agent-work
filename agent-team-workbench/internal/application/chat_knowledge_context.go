@@ -26,9 +26,9 @@ func (s *Service) chatKnowledgeContext(ctx context.Context, workspaceID, instruc
 }
 
 // renderChatKnowledgeContext 把检索条目拼成注入文本：条目顺序即检索排序，
-// 不做二次排序，保证同一 release + 同一问题拼装字节稳定。读端当前不填充
-// hit.Version（SearchRelease 的零值），版本未知时省略版本括号——注入一个并
-// 不存在的「v0」比不写版本更糟，而版本号本身（v0 不存在）不是可推断的事实。
+// 不做二次排序，保证同一 release + 同一问题拼装字节稳定。版本号由读端从
+// release 固定的 document version 给出；万一缺失就省略括号——不写版本好过
+// 注入一个并不存在的「v0」。
 func renderChatKnowledgeContext(results []KnowledgeRetrieveResult) string {
 	if len(results) == 0 {
 		return ""
