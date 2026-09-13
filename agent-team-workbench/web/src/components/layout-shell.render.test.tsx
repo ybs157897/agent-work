@@ -1,7 +1,29 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentProfile } from '../api/types';
+import { useAgentsStore } from '../stores/agents.store';
 import { LayoutShell } from './layout-shell';
+
+// 静态渲染取不到 zustand 的 SSR 快照，按仓内既有做法让 hook 直接读当前 state。
+vi.mock('../stores/agents.store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../stores/agents.store')>();
+  return { ...actual, useAgentsStore: Object.assign((selector: (state: ReturnType<typeof actual.useAgentsStore.getState>) => unknown) => selector(actual.useAgentsStore.getState()), actual.useAgentsStore) };
+});
+
+const agent = (id: string, slug: string, name: string): AgentProfile => ({
+  id,
+  slug,
+  name,
+  role: 'pm',
+  skills: [],
+  availability: 'enabled',
+  presence: 'idle',
+  version: 1,
+});
+
+const ATLAS = agent('agent_atlas', 'atlas', '产品智能体');
+const FORGE = agent('agent_forge', 'forge', '开发智能体');
 
 function renderShell(path: string) {
   return renderToStaticMarkup(
@@ -11,8 +33,13 @@ function renderShell(path: string) {
   );
 }
 
+afterEach(() => {
+  useAgentsStore.setState({ agents: [], selectedAgentId: null });
+});
+
 describe('global chat navigation', () => {
   it('uses the existing Chat destination as the single conversation entry', () => {
+    useAgentsStore.setState({ agents: [ATLAS, FORGE] });
     const html = renderShell('/chat');
     expect(html).toMatch(/<a(?=[^>]*href="\/chat")(?=[^>]*aria-current="page")[^>]*>/);
     expect(html).toContain('对话');
@@ -47,5 +74,49 @@ describe('global chat navigation', () => {
     expect(html).toContain('知识库');
     expect(html).toContain('workbench-main-surface');
     expect(html).not.toContain('mesh-bg');
+  });
+});
+
+describe('featured agent entries', () => {
+  it('places the roster agents right after 对话 as deep links labelled with their display names', () => {
+    useAgentsStore.setState({ agents: [ATLAS, FORGE] });
+    const html = renderShell('/chat');
+    const positions = [
+      html.indexOf('href="/chat?agent=agent_atlas"'),
+      html.indexOf('href="/chat?agent=agent_forge"'),
+    ];
+    expect(positions[0]).toBeGreaterThan(html.indexOf('href="/chat"'));
+    expect(positions[1]).toBeGreaterThan(positions[0]);
+    expect(positions[1]).toBeLessThan(html.indexOf('href="/models"'));
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat\?agent=agent_atlas")[^>]*>.*?产品智能体/s);
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat\?agent=agent_forge")[^>]*>.*?开发智能体/s);
+  });
+
+  it('omits an entry whose slug is missing from the roster', () => {
+    useAgentsStore.setState({ agents: [ATLAS] });
+    const html = renderShell('/chat');
+    expect(html).toContain('href="/chat?agent=agent_atlas"');
+    expect(html).not.toContain('agent_forge');
+    expect(html).not.toContain('开发智能体');
+  });
+
+  it('renders no agent entry when the roster is empty', () => {
+    const html = renderShell('/chat');
+    expect(html).not.toContain('?agent=');
+  });
+
+  it('activates the routed agent entry and leaves 对话 without a second highlight', () => {
+    useAgentsStore.setState({ agents: [ATLAS, FORGE] });
+    const html = renderShell('/chat?agent=agent_atlas');
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat\?agent=agent_atlas")(?=[^>]*aria-current="page")[^>]*>/);
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat\?agent=agent_forge")(?![^>]*aria-current)[^>]*>/);
+    expect(html).not.toMatch(/<a(?=[^>]*href="\/chat")(?=[^>]*aria-current="page")[^>]*>/);
+  });
+
+  it('keeps 对话 highlighted for a conversation outside the featured roster', () => {
+    useAgentsStore.setState({ agents: [ATLAS, FORGE] });
+    const html = renderShell('/chat?agent=agent_knowledge_librarian_ws_1');
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat")(?=[^>]*aria-current="page")[^>]*>/);
+    expect(html).toMatch(/<a(?=[^>]*href="\/chat\?agent=agent_atlas")(?![^>]*aria-current)[^>]*>/);
   });
 });
