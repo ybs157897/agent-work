@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { MarkdownBody } from './markdown-body';
+import { DeliveredDocumentPanel } from './delivered-document-panel';
+import { projectDeliveredDocument } from '../../utils/delivered-document';
 import { normalizeBareLanguageGuiDocuments } from '../../utils/bare-languagegui';
 import type { ContentBlockDocument } from '../../utils/content-blocks';
 import {
@@ -49,6 +51,10 @@ export function AgentOutput({
   const standaloneContentBlocks = contentBlocks && languageGuiFenceCount === 0
     ? contentBlocks
     : undefined;
+  // 交付文档投影只切分 `displayText` 原文：前置解释留在原位，文档整体进独立面板。
+  // 识别是对整段文本单调的（文档只增长、前言一旦定界不再变化），因此流式期间
+  // 不会来回切换；未识别时完全维持原来的整篇 Markdown 直出。
+  const deliveredDocument = useMemo(() => projectDeliveredDocument(displayText), [displayText]);
   const lastCommitTrace = useRef('');
 
   useCommitEffect(() => {
@@ -79,15 +85,38 @@ export function AgentOutput({
   return (
     <>
       {displayText ? (
-        <div className="chat-prose">
-          <MarkdownBody
-            text={displayText}
-            streaming={streaming}
-            runId={runId}
-            messageId={messageId}
-          />
-          {showCaret && streaming && <span className="chat-stream-caret" aria-hidden />}
-        </div>
+        deliveredDocument ? (
+          <>
+            {deliveredDocument.introMarkdown ? (
+              <div className="chat-prose">
+                <MarkdownBody
+                  text={deliveredDocument.introMarkdown}
+                  streaming={streaming}
+                  runId={runId}
+                  messageId={messageId}
+                />
+              </div>
+            ) : null}
+            <DeliveredDocumentPanel
+              title={deliveredDocument.title}
+              markdown={deliveredDocument.documentMarkdown}
+              streaming={streaming}
+              showCaret={showCaret}
+              runId={runId}
+              messageId={messageId}
+            />
+          </>
+        ) : (
+          <div className="chat-prose">
+            <MarkdownBody
+              text={displayText}
+              streaming={streaming}
+              runId={runId}
+              messageId={messageId}
+            />
+            {showCaret && streaming && <span className="chat-stream-caret" aria-hidden />}
+          </div>
+        )
       ) : null}
       {standaloneContentBlocks && (
         <ContentBlockList

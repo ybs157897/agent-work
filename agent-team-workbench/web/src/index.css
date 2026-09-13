@@ -2098,6 +2098,55 @@
   @apply overflow-x-auto whitespace-pre-wrap break-words rounded-card border border-border-subtle bg-surface-sunken p-snug text-caption leading-relaxed text-text-primary;
 }
 
+/* 正文携带的完整交付文档：独立边界 + 阅读入口，正文排版沿用 .chat-prose。 */
+.chat-document {
+  @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-card;
+}
+
+.chat-prose + .chat-document {
+  margin-top: 0.85em;
+}
+
+.chat-document-head {
+  @apply flex flex-wrap items-center gap-snug border-b border-border-subtle bg-surface-sunken/45 px-base py-snug;
+}
+
+.chat-document-icon {
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-button border border-border-subtle bg-surface-raised text-brand-primary;
+}
+
+.chat-document-title {
+  @apply min-w-0 truncate text-body font-semibold leading-5 text-text-primary;
+}
+
+.chat-document-meta {
+  @apply mt-micro truncate text-caption leading-5 text-text-tertiary;
+}
+
+.chat-document-actions {
+  @apply flex shrink-0 flex-wrap items-center justify-end gap-tight;
+}
+
+.chat-document-action {
+  @apply inline-flex shrink-0 items-center gap-1 rounded-button border border-border-subtle bg-surface-raised px-2 py-1 text-caption font-medium text-brand-primary transition-colors hover:border-brand-primary/30 hover:bg-brand-muted/25;
+}
+
+.chat-document-body {
+  @apply px-base py-snug;
+}
+
+.chat-document-prose {
+  @apply min-w-0;
+}
+
+.chat-document-reader {
+  @apply px-base py-snug;
+}
+
+.chat-document-reader-prose {
+  @apply min-w-0;
+}
+
 .chat-content-event {
   @apply flex min-w-0 items-center gap-base;
 }
