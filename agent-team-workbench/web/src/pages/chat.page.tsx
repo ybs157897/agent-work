@@ -1,4 +1,4 @@
-import { ArchiveRestore, BookOpen, Boxes, Code2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun } from 'lucide-react';
+import { ArchiveRestore, BookOpen, Boxes, Code2, GitBranch, ListChecks, LoaderCircle, MessageSquare, Moon, PanelLeft, PanelRight, Pin, PinOff, Plus, Search, Settings2, Sun, X } from 'lucide-react';
 import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { AgentTranscriptReader } from '../components/chat/transcript-view';
@@ -7,6 +7,7 @@ import { ChatDecisionPanel } from '../components/chat/chat-decision-panel';
 import { TaskDraftPreview } from '../components/chat/task-draft-preview';
 import { ChatSourceShelf } from '../components/chat/chat-source-shelf';
 import { CodeWorkspace } from '../components/code-workspace/code-workspace';
+import { KnowledgeCanvas } from '../components/knowledge-canvas/knowledge-canvas';
 import { FileChangesCard } from '../components/chat/file-changes-card';
 import { RunErrorBanner } from '../components/chat/run-error-banner';
 import { NativeQuestionCard } from '../components/chat/native-question-card';
@@ -37,6 +38,8 @@ import type { WorkItem } from '../api/types';
 import { REPLY_TIMEOUT_MS } from '../utils/chat-errors';
 import { isChatAgent, isKnowledgeLibrarianAgent, isUserManagedAgent } from '../utils/agent-scope';
 import { isChatPath } from '../utils/route-layout';
+import { buildCanvasMessage, referenceBelongsTo, restoreCanvasComposer, type KnowledgeCanvasReference } from '../utils/agent-knowledge-canvas';
+import './chat-knowledge-workspace.css';
 import { deriveChatDock } from '../utils/derive-chat-dock';
 import {
   buildTranscriptSegments,
@@ -229,6 +232,9 @@ export default function ChatPage() {
   const codeEnabled = codeAvailable && !!workspaceId && (codeOverrides[codeKey]
     ?? (searchParams.get('canvas') === 'code' && searchParams.get('agent') === agentId ? true : false));
   const codeRunsLoaded = !conversationId || runsLoadedConversationId === conversationId;
+  // 知识画布专属产品（role=pm）的普通成员：默认进入，没有开关；其他角色没有任何入口。
+  const knowledgeEnabled = !!workspaceId && !!currentAgent && currentAgent.role === 'pm'
+    && currentAgent.availability === 'enabled' && isUserManagedAgent(currentAgent);
 
   useEffect(() => {
     setLegacyRecovery(workspaceId ? readLegacyTaskIntakeRecovery(workspaceId) : null);
@@ -385,7 +391,7 @@ export default function ChatPage() {
     setSearchParams(chatNavigationParams(id), { replace: true });
   };
   return (
-    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}`} data-theme={chatTheme} data-navigation-open={workspaceNavigationOpen}>
+    <div className={`chat-languagegui-skin flex h-full min-h-0 w-full overflow-hidden${codeEnabled ? ' chat-code-page' : ''}${knowledgeEnabled ? ' chat-knowledge-page' : ''}`} data-theme={chatTheme} data-navigation-open={workspaceNavigationOpen}>
       {/* 左栏：Agent 切换排 + 独立 Chat 记录列表 */}
       <aside className="chat-languagegui-sidebar flex min-h-0 w-64 shrink-0 flex-col border-r border-border-subtle bg-surface-sunken">
         <div className="shrink-0 border-b border-border-subtle/60 p-2">
@@ -437,7 +443,7 @@ export default function ChatPage() {
 
       {/* 右侧对话区 */}
       <div className="chat-languagegui-main chat-split-host flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
-        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} navigationOpen={workspaceNavigationOpen} onToggleNavigation={() => setWorkspaceNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
+        {agentId ? <ConversationPane key={`${workspaceId}:${generation}:${agentId}:${promptSeed?.id ?? 'chat'}`} initialPrompt={conversationId ? '' : promptSeed?.text ?? ''} chatTheme={chatTheme} onToggleTheme={changeChatTheme} codeAvailable={codeAvailable} codeEnabled={codeEnabled} onToggleCode={toggleCode} codeRunsLoaded={codeRunsLoaded} knowledgeEnabled={knowledgeEnabled} navigationOpen={workspaceNavigationOpen} onToggleNavigation={() => setWorkspaceNavigationOpen((value) => !value)} narrowPanel={narrowPanel} onNarrowPanelChange={setNarrowPanel} /> : (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <ChatChrome
               left={<span className="text-body font-semibold text-text-primary">对话</span>}
@@ -709,7 +715,24 @@ function ConversationGroup({
   );
 }
 
-function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
+/** 画布引用在输入框上方的可移除 chip：标题 + 版本 + 可展开摘录。 */
+export function KnowledgeReferenceChip({ reference, onRemove }: { reference: KnowledgeCanvasReference; onRemove: () => void }) {
+  return (
+    <div className="knowledge-chat-reference" role="status" aria-label="待发送的知识引用">
+      <details>
+        <summary>
+          <BookOpen className="h-4 w-4 shrink-0" aria-hidden />
+          <span>{reference.title} · 第 {reference.version} 版</span>
+        </summary>
+        {reference.heading ? <p className="mt-micro text-text-tertiary">{reference.heading}</p> : null}
+        <blockquote>{reference.quote}</blockquote>
+      </details>
+      <button type="button" onClick={onRemove} aria-label="移除知识引用"><X className="h-4 w-4" aria-hidden /></button>
+    </div>
+  );
+}
+
+function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailable, codeEnabled, onToggleCode, codeRunsLoaded, knowledgeEnabled, navigationOpen, onToggleNavigation, narrowPanel, onNarrowPanelChange }: {
   initialPrompt: string;
   chatTheme: WorkbenchTheme;
   onToggleTheme: () => void;
@@ -717,12 +740,14 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
   codeEnabled: boolean;
   onToggleCode: () => void;
   codeRunsLoaded: boolean;
+  knowledgeEnabled: boolean;
   navigationOpen: boolean;
   onToggleNavigation: () => void;
   narrowPanel: 'document' | 'chat';
   onNarrowPanelChange: (panel: 'document' | 'chat') => void;
 }) {
   const workspaceId = useWorkspaceStore((state) => state.workspace?.id);
+  const workspaceName = useWorkspaceStore((state) => state.workspace?.name);
   const switchingWorkspace = useWorkspaceStore((state) => state.switching);
   const agentId = useChatStore((s) => s.agentId);
   const conversationId = useChatStore((s) => s.conversationId);
@@ -812,6 +837,13 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
   const [composer, setComposerState] = useState<ChatComposerDraft>(initialPrompt
     ? { draft: initialPrompt }
     : savedComposer ?? { draft: '' });
+  // 画布引用是会话内的临时草稿（不落持久化）：发送时折进消息，发送失败按原样回到 chip。
+  const [knowledgeReference, setKnowledgeReferenceState] = useState<KnowledgeCanvasReference | null>(null);
+  const knowledgeReferenceRef = useRef<KnowledgeCanvasReference | null>(null);
+  const setKnowledgeReference = useCallback((reference: KnowledgeCanvasReference | null) => {
+    knowledgeReferenceRef.current = reference;
+    setKnowledgeReferenceState(reference);
+  }, []);
   const [composerAttachments, setComposerAttachments] = useState<readonly PromptAttachment[]>([]);
   const [attachmentSendPending, setAttachmentSendPending] = useState(false);
   const attachmentSendPendingRef = useRef(false);
@@ -867,6 +899,11 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
   }, [initialPrompt]);
 
   const agent = agents.find((a) => a.id === agentId);
+  // 画布选的引用进 composer chip；窄容器下顺手切到对话面，用户立刻能接着写问题。
+  const onKnowledgeReference = useCallback((reference: KnowledgeCanvasReference) => {
+    setKnowledgeReference(reference);
+    onNarrowPanelChange('chat');
+  }, [onNarrowPanelChange, setKnowledgeReference]);
   const conversation = conversations.find((c) => c.id === conversationId);
   const runIds = useMemo(() => runs.map((r) => r.id), [runs]);
   // 本会话全部成果（watchRun 已按 run 拉取，artifact 事件驱动刷新）。
@@ -1301,16 +1338,19 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
     const messageText = text || options.fallbackText || '';
     if (!messageText && composerAttachments.length === 0) return false;
     if (codeEnabled) onNarrowPanelChange('chat');
+    const reference = knowledgeReference && workspaceId && agentId && referenceBelongsTo(knowledgeReference, workspaceId, agentId) ? knowledgeReference : null;
+    const message = buildCanvasMessage(messageText, reference);
     const attachmentInputs: ChatAttachmentInput[] = composerAttachments.map((attachment) => ({ key: attachment.key, file: attachment.file }));
     if (attachmentInputs.length > 0) {
       attachmentSendPendingRef.current = true;
       setAttachmentSendPending(true);
     }
     setComposerState({ draft: '' });
+    setKnowledgeReference(null);
     if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, conversationId, { composer: { draft: '' }, queue: useChatStore.getState().queue });
     let retained = false;
     try {
-      retained = await send(messageText, attachmentInputs, options.outputContract ? { outputContract: options.outputContract } : undefined);
+      retained = await send(message, attachmentInputs, options.outputContract ? { outputContract: options.outputContract } : undefined);
       if (retained) {
         if (options.clearAttachmentsAfterSend && attachmentInputs.length > 0) setAttachmentClearRequest((value) => value + 1);
         const activeConversationId = useChatStore.getState().conversationId;
@@ -1325,13 +1365,21 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
         setAttachmentSendPending(false);
       }
     }
-    if (!retained) setComposerState((current) => {
-      const restoredText = current.draft ? `${text}\n\n${current.draft}` : text;
-      const next = { ...current, draft: restoredText };
-      const recoveryConversationId = useChatStore.getState().conversationId;
-      if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, recoveryConversationId, { composer: next, queue: useChatStore.getState().queue });
-      return next;
-    });
+    if (!retained) {
+      // 失败恢复：引用 chip 与问题一起回来；若期间已选新引用，旧引用折回文本不丢证据。
+      const restored = restoreCanvasComposer(
+        { draft: '', reference: knowledgeReferenceRef.current },
+        { draft: text, reference },
+      );
+      setKnowledgeReference(restored.reference);
+      setComposerState((current) => {
+        const restoredText = current.draft ? `${restored.draft}\n\n${current.draft}` : restored.draft;
+        const next = { ...current, draft: restoredText };
+        const recoveryConversationId = useChatStore.getState().conversationId;
+        if (workspaceId && agentId) writeChatWorkspaceState(workspaceId, agentId, recoveryConversationId, { composer: next, queue: useChatStore.getState().queue });
+        return next;
+      });
+    }
     return retained;
   };
 
@@ -1381,10 +1429,29 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
           <button type="button" onClick={onToggleCode}>关闭代码</button>
         </div>
       )}
-    <div className={`chat-split-layout flex flex-1 min-h-0 overflow-hidden${codeEnabled ? ' chat-split-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
+      {knowledgeEnabled && (
+        <div className="chat-split-tabs" role="group" aria-label="知识画布视图">
+          <button type="button" onClick={onToggleNavigation} aria-expanded={navigationOpen} aria-label="切换成员与会话列表"><PanelLeft className="h-4 w-4" aria-hidden /></button>
+          <button type="button" aria-pressed={narrowPanel === 'document'} onClick={() => { setWorkspaceOpen(false); setSelectedSwarmMember(null); onNarrowPanelChange('document'); }}><BookOpen className="h-4 w-4" aria-hidden />知识</button>
+          <button type="button" aria-pressed={narrowPanel === 'chat'} onClick={() => onNarrowPanelChange('chat')}><MessageSquare className="h-4 w-4" aria-hidden />对话</button>
+        </div>
+      )}
+    <div className={`chat-split-layout flex flex-1 min-h-0 overflow-hidden${codeEnabled || knowledgeEnabled ? ' chat-split-layout-active' : ''}`} data-active-panel={narrowPanel} data-inspector={workspaceOpen || !!selectedMember}>
       {codeEnabled && workspaceId && agentId && (
         <section className="chat-split-document code-workspace-document" aria-label="Java 代码工作台">
           <CodeWorkspace workspaceId={workspaceId} agentId={agentId} conversationId={conversationId} latestRunId={latestRunId} runsLoaded={codeRunsLoaded} theme={chatTheme} />
+        </section>
+      )}
+      {knowledgeEnabled && workspaceId && agentId && (
+        <section className="chat-split-document" aria-label="产品知识画布">
+          <KnowledgeCanvas
+            workspaceId={workspaceId}
+            workspaceName={workspaceName}
+            agentId={agentId}
+            agentName={agent?.name ?? ''}
+            onReference={onKnowledgeReference}
+            refreshKey={latestRun && TERMINAL.has(latestRun.status) ? `${latestRun.id}:${latestRun.status}` : ''}
+          />
         </section>
       )}
       <div className="chat-languagegui-main chat-split-conversation flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -1586,6 +1653,9 @@ function ConversationPane({ initialPrompt, chatTheme, onToggleTheme, codeAvailab
             error={sourcesError}
             onRetry={() => conversationId && void refreshSources(conversationId)}
           />
+          {knowledgeReference && (
+            <KnowledgeReferenceChip reference={knowledgeReference} onRemove={() => setKnowledgeReference(null)} />
+          )}
           <PromptBox
             draft={draft}
             onDraftChange={setDraft}
