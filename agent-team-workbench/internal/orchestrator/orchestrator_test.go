@@ -102,6 +102,13 @@ func TestApplyOutputContractKeepsInstructionAndSystemPromptStable(t *testing.T) 
 		`emit a metric block`,
 		`path/to/file.ts:42`,
 		`blocks carry the detail, prose carries the reasoning`,
+		// 交付型文档口径（2026-09-13）：正文承载文档，落盘只是留痕。
+		`A file block only reports that a file exists`,
+		`never emit local or protocol URLs (file:, data:, blob:)`,
+		`Delivered documents are the exception`,
+		`Saving a file is a repo record, not a delivery`,
+		`never replace the document body with a file name, a path, or`,
+		`The body-lightness rules above do not apply to it.`,
 	} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("LanguageGUI contract 缺少 %q: %q", fragment, prompt)
