@@ -199,6 +199,18 @@ describe('资料库 HTTP 客户端', () => {
     expect(fetch.mock.calls.every((call) => call[1].method === 'GET')).toBe(true);
   });
 
+  it('读取历史版本正文时把 version 透传给服务端', async () => {
+    const fetch = stub();
+    await getDocument('ws_1', 'doc_1', undefined, 3);
+    await getDocument('ws_1', 'doc_1', 'rel_2', 2);
+    await getDocument('ws_1', 'doc_1');
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      `${ROOT}/documents/doc_1?version=3`,
+      `${ROOT}/documents/doc_1?release_id=rel_2&version=2`,
+      `${ROOT}/documents/doc_1`,
+    ]);
+  });
+
   it('文档列表把搜索、分类、分页与 release 一起编码', async () => {
     const fetch = stub();
     await listDocuments('ws_1', { release_id: 'rel_1', q: '退款窗口', kind: 'rule', limit: 20, cursor: 'doc_20' });
