@@ -7,6 +7,19 @@
 | Codex | [v0.149.0](https://github.com/openai/codex/releases/tag/rust-v0.149.0) | `codex/darwin-arm64`, `codex/windows-amd64` |
 | Kimi | [v0.38.0](https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%400.38.0) | `kimi/darwin-arm64`, `kimi/windows-amd64` |
 
+> ⚠️ **本机 `kimi/darwin-arm64/kimi` 是本地打补丁的构建，不是官方发布包。**
+>
+> 基于官方 `@moonshot-ai/kimi-code@0.38.0`（commit `0999454bd`）源码加了「结构化最终输出」补丁：
+> `kimi -p --json` / `--output-schema`，以及 kap-server 的 `output_contract` 请求字段。
+> 版本号仍是 `0.38.0`（刻意与官方 tag 一致）。
+>
+> - SHA-256：`7afed09696e83f07b029413f93523a0f10ce951c455b5a0a854e7eba790ebe94`
+> - 构建与补丁说明：`/Users/yin/Documents/ybs/code/kimi-structured-output-build/`（见 `DELIVERY.md`、`/Users/yin/Documents/ybs/code/kimi-code/LOCAL-MODIFICATIONS.md`）
+> - 回滚原件：`/Users/yin/Documents/ybs/code/kimi-structured-output-build/artifacts/rollback/kimi-0.38.0-official-darwin-arm64.bak`
+>   （SHA-256 `92bf3b4b6643e7c4cc12c82e5680cc5b54a5a6768a301de815e5e9a02d2184bb`）
+>
+> **注意**：该路径由 Git LFS 跟踪（见根 `.gitattributes`）。执行 `git lfs pull` 或重新 checkout 会**静默还原为官方二进制**，本地补丁丢失；要恢复需从上面的产物目录重新复制。
+
 ## 目录布局
 
 ```text
