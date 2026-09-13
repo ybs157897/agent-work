@@ -38,6 +38,7 @@ import type {
   RunEvent,
   RunChanges,
   RunChangeDiff,
+  RunFileContent,
   RunJournal,
   RuntimeBinding,
   SearchKind,
@@ -505,6 +506,10 @@ export const getRunJournal = (runId: string) => apiFetch<RunJournal>(`/runs/${ru
 
 export const getRunChangeDiff = (runId: string, path: string) =>
   apiFetch<RunChangeDiff>(`/runs/${runId}/changes/diff?${new URLSearchParams({ path }).toString()}`);
+
+/** Run 文件只读预览：只传仓库相对路径，服务端在授权仓库集合内解析。 */
+export const getRunFile = (runId: string, path: string) =>
+  apiFetch<RunFileContent>(`/runs/${runId}/file?${new URLSearchParams({ path }).toString()}`);
 
 export const revertRunChanges = (runId: string, idempotencyKey: string) =>
   apiFetch<RunChanges>(`/runs/${runId}/commands/revert-changes`, {

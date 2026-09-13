@@ -163,6 +163,11 @@ func run() error {
 	svc.SetPublicationBaselineResolver(func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot) (domain.ProjectBaseline, error) {
 		return localRegistry.ResolveProjectBaseline(ctx, snapshot)
 	})
+	// 只读文件预览的可读根只从本机受信 registry 派生：Run 自己的 checkout，
+	// 加上同一仓库的主工作树与链接 worktree。调用方只能给仓库相对路径。
+	svc.SetRunFileRootsResolver(func(ctx context.Context, snapshot *domain.ExecutionContextSnapshot) ([]string, error) {
+		return localRegistry.ReadableRoots(snapshot)
+	})
 	dshGateway := dsh.NewGateway(dsh.GatewayConfig{
 		BaseURL: env("ATW_DSH_GATEWAY_URL", ""),
 		Port:    atoiEnv("ATW_DSH_GATEWAY_PORT", 3090),

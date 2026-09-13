@@ -66,14 +66,14 @@ export function ContentBlockList({
           resetKey={`${block.id ?? index}-${block.type}`}
           fallback={<div className="chat-content-block-fallback" role="alert">此内容块暂时无法显示</div>}
         >
-          <ContentBlockRenderer block={block} />
+          <ContentBlockRenderer block={block} runId={trace?.runId} />
         </MarkdownErrorBoundary>
       ))}
     </div>
   );
 }
 
-export function ContentBlockRenderer({ block }: { block: ContentBlock }) {
+export function ContentBlockRenderer({ block, runId }: { block: ContentBlock; runId?: string }) {
   switch (block.type) {
     case 'metric':
       return <MetricBlock block={block} />;
@@ -86,7 +86,7 @@ export function ContentBlockRenderer({ block }: { block: ContentBlock }) {
         </Suspense>
       );
     case 'file':
-      return <FileBlock block={block} />;
+      return <FileBlock block={block} runId={runId} />;
     case 'event':
       return <EventBlock block={block} />;
     case 'image':
