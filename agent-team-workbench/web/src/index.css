@@ -1183,20 +1183,32 @@
   margin-top: 0.25em;
 }
 
-.chat-prose li:has(> input[type='checkbox']) {
+/* GFM 任务清单有两种渲染形态：紧列表里 input 直接挂在 li 下，松列表（条目含
+   空行或多段）多包一层 p。只匹配 li > input 会让松列表漏掉去符号与缩进，
+   出现项目符号 + 复选框的双 marker。 */
+.chat-prose li:has(> input[type='checkbox']),
+.chat-prose li:has(> p > input[type='checkbox']) {
   margin-left: -1.25em;
   list-style: none;
 }
 
-.chat-prose li > input[type='checkbox'] {
+.chat-prose li > input[type='checkbox'],
+.chat-prose li > p > input[type='checkbox'] {
   margin-right: 0.55em;
   accent-color: hsl(var(--color-brand-primary));
   transform: translateY(-1px);
   vertical-align: middle;
 }
 
-.chat-prose li:has(> input[type='checkbox']:checked) {
+.chat-prose li:has(> input[type='checkbox']:checked),
+.chat-prose li:has(> p > input[type='checkbox']:checked) {
   color: hsl(var(--color-text-tertiary));
+}
+
+/* 松列表把条目内容包进 <p>，`.chat-prose > * + *` 够不到 li 内部的段落，
+   条目内的多段（如验收条件的「判定：」段）会贴在一起。 */
+.chat-prose li > p + p {
+  margin-top: 0.6em;
 }
 
 .chat-prose dt {
@@ -2096,6 +2108,55 @@
 
 .chat-file-preview-text {
   @apply overflow-x-auto whitespace-pre-wrap break-words rounded-card border border-border-subtle bg-surface-sunken p-snug text-caption leading-relaxed text-text-primary;
+}
+
+/* 正文携带的完整交付文档：独立边界 + 阅读入口，正文排版沿用 .chat-prose。 */
+.chat-document {
+  @apply overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-card;
+}
+
+.chat-prose + .chat-document {
+  margin-top: 0.85em;
+}
+
+.chat-document-head {
+  @apply flex flex-wrap items-center gap-snug border-b border-border-subtle bg-surface-sunken/45 px-base py-snug;
+}
+
+.chat-document-icon {
+  @apply inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-button border border-border-subtle bg-surface-raised text-brand-primary;
+}
+
+.chat-document-title {
+  @apply min-w-0 truncate text-body font-semibold leading-5 text-text-primary;
+}
+
+.chat-document-meta {
+  @apply mt-micro truncate text-caption leading-5 text-text-tertiary;
+}
+
+.chat-document-actions {
+  @apply flex shrink-0 flex-wrap items-center justify-end gap-tight;
+}
+
+.chat-document-action {
+  @apply inline-flex shrink-0 items-center gap-1 rounded-button border border-border-subtle bg-surface-raised px-2 py-1 text-caption font-medium text-brand-primary transition-colors hover:border-brand-primary/30 hover:bg-brand-muted/25;
+}
+
+.chat-document-body {
+  @apply px-base py-snug;
+}
+
+.chat-document-prose {
+  @apply min-w-0;
+}
+
+.chat-document-reader {
+  @apply px-base py-snug;
+}
+
+.chat-document-reader-prose {
+  @apply min-w-0;
 }
 
 .chat-content-event {
