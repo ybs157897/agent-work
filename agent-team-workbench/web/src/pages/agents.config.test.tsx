@@ -62,3 +62,41 @@ describe('管理员配置入口', () => {
     expect(html).not.toContain('系统提示词');
   });
 });
+
+describe('停用成员的展示面', () => {
+  const named = (id: string, name: string, availability: AgentProfile['availability']): AgentProfile => ({
+    id, name, role: 'developer', skills: [], availability, presence: 'idle', version: 1,
+  });
+  const roster = [named('legacy', '停用成员', 'disabled'), named('worker', '在岗成员', 'enabled')];
+
+  it('可用成员留在主列表，停用成员收进默认收起的折叠区并带计数', () => {
+    useAgentsStore.setState({ agents: [...roster, named('legacy-2', '停用成员二', 'disabled')] });
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/agents']}><AgentsPage /></MemoryRouter>);
+    const disclosure = html.indexOf('<details');
+    expect(disclosure).toBeGreaterThan(-1);
+    expect(html.slice(0, disclosure)).toContain('在岗成员');
+    expect(html.slice(0, disclosure)).not.toContain('停用成员');
+    expect(html.slice(disclosure)).toContain('已停用（2）');
+    expect(html.slice(disclosure)).toContain('停用成员');
+    expect(html.slice(disclosure)).toContain('停用成员二');
+    expect(html).not.toMatch(/<details[^>]*\sopen=""/);
+    // 默认选中第一个可用成员，不停在被停用的成员上
+    expect(html).toContain('value="在岗成员"');
+  });
+
+  it('?agent=<停用成员> 直达仍选中该项并默认展开折叠区', () => {
+    useAgentsStore.setState({ agents: roster });
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/agents?agent=legacy']}><AgentsPage /></MemoryRouter>);
+    expect(html).toMatch(/<details[^>]*\sopen=""/);
+    expect(html).toContain('已停用（1）');
+    expect(html).toContain('value="停用成员"');
+    expect(html).toContain('调度已停用');
+  });
+
+  it('没有停用成员时不渲染折叠区', () => {
+    useAgentsStore.setState({ agents: [named('worker', '在岗成员', 'enabled')] });
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/agents']}><AgentsPage /></MemoryRouter>);
+    expect(html).not.toContain('<details');
+    expect(html).not.toContain('调度已停用');
+  });
+});

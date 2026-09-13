@@ -155,7 +155,8 @@ function SidebarContents() {
 
   const routedAgentId = new URLSearchParams(location.search).get('agent');
   const featuredItems = FEATURED_AGENT_NAV.flatMap(({ slug, icon }) => {
-    const agent = agents.find((candidate) => candidate.slug === slug);
+    // 直达入口只在成员可对话时出现：停用成员发不出 Run，入口点了也是死路。
+    const agent = agents.find((candidate) => candidate.slug === slug && candidate.availability !== 'disabled');
     if (!agent) return [];
     return [{
       to: `/chat?agent=${encodeURIComponent(agent.id)}`,

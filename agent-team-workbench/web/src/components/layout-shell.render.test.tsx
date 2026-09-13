@@ -105,6 +105,14 @@ describe('featured agent entries', () => {
     expect(html).not.toContain('?agent=');
   });
 
+  it('omits a disabled agent entry because it can no longer start a run', () => {
+    useAgentsStore.setState({ agents: [{ ...ATLAS, availability: 'disabled' }, FORGE] });
+    const html = renderShell('/chat');
+    expect(html).not.toContain('agent_atlas');
+    expect(html).not.toContain('产品智能体');
+    expect(html).toContain('href="/chat?agent=agent_forge"');
+  });
+
   it('activates the routed agent entry and leaves 对话 without a second highlight', () => {
     useAgentsStore.setState({ agents: [ATLAS, FORGE] });
     const html = renderShell('/chat?agent=agent_atlas');

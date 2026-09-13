@@ -156,18 +156,30 @@ export default function AgentsPage() {
     () => agents.filter(isConfigurableAgent),
     [agents],
   );
+  const enabledAgents = useMemo(
+    () => configurableAgents.filter((agent) => agent.availability !== 'disabled'),
+    [configurableAgents],
+  );
+  const disabledAgents = useMemo(
+    () => configurableAgents.filter((agent) => agent.availability === 'disabled'),
+    [configurableAgents],
+  );
   const refresh = useAgentsStore((s) => s.refresh);
   const workspace = useWorkspaceStore((s) => s.workspace);
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedId = searchParams.get('agent');
   const [addOpen, setAddOpen] = useState(false);
   const [reloading, setReloading] = useState(false);
+  /** 停用折叠区：默认收起；深链选中的是被停用成员时默认展开，让选中项可见。 */
+  const [disabledSectionToggled, setDisabledSectionToggled] = useState<boolean | null>(null);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const selected = configurableAgents.find((a) => a.id === selectedId) ?? configurableAgents[0] ?? null;
+  // 深链（含停用成员）优先；没有定向选择时默认落在第一个可用成员上。
+  const selected = configurableAgents.find((a) => a.id === selectedId) ?? enabledAgents[0] ?? configurableAgents[0] ?? null;
+  const disabledSectionOpen = disabledSectionToggled ?? selected?.availability === 'disabled';
 
   const selectAgent = (id: string) => {
     setSearchParams((previous) => {
@@ -219,30 +231,35 @@ export default function AgentsPage() {
             ) : undefined
           }
         >
-          {configurableAgents.map((agent) => {
-            const disabled = agent.availability === 'disabled';
-            return (
-              <ConfigSidebarItem
-                key={agent.id}
-                active={selected?.id === agent.id}
-                disabled={disabled}
-                onClick={() => selectAgent(agent.id)}
-                leading={
-                  <div className="relative shrink-0">
-                    <ConfigAvatar label={agent.name} tone={disabled ? 'muted' : 'brand'} />
-                    {!disabled ? (
-                      <span
-                        className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-status-success ring-2 ring-surface-raised"
-                        title="已启用"
-                      />
-                    ) : null}
-                  </div>
-                }
-                title={agent.name}
-                subtitle={isKnowledgeLibrarianAgent(agent) ? '系统内置 · 知识库管理员' : `${ROLE_LABEL[agent.role] ?? agent.role}${agent.slug ? ` · ${agent.slug}` : ''}`}
-              />
-            );
-          })}
+          {enabledAgents.map((agent) => (
+            <AgentSidebarItem
+              key={agent.id}
+              agent={agent}
+              active={selected?.id === agent.id}
+              onSelect={() => selectAgent(agent.id)}
+            />
+          ))}
+          {disabledAgents.length > 0 ? (
+            <details
+              className="mt-tight border-t border-border-subtle pt-tight"
+              open={disabledSectionOpen}
+              onToggle={(event) => setDisabledSectionToggled(event.currentTarget.open)}
+            >
+              <summary className="cursor-pointer list-none px-snug py-tight text-caption font-medium text-text-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/40">
+                已停用（{disabledAgents.length}）
+              </summary>
+              <div className="space-y-micro pt-micro">
+                {disabledAgents.map((agent) => (
+                  <AgentSidebarItem
+                    key={agent.id}
+                    agent={agent}
+                    active={selected?.id === agent.id}
+                    onSelect={() => selectAgent(agent.id)}
+                  />
+                ))}
+              </div>
+            </details>
+          ) : null}
         </ConfigSidebar>
 
         <ConfigMain>
@@ -256,6 +273,31 @@ export default function AgentsPage() {
 
       <AddAgentModal open={addOpen} onClose={() => setAddOpen(false)} />
     </ConfigPage>
+  );
+}
+
+/** 侧栏成员项：停用成员保留灰态与「重新启用」入口（点开后由配置面板的调度开关恢复）。 */
+function AgentSidebarItem({ agent, active, onSelect }: { agent: AgentProfile; active: boolean; onSelect: () => void }) {
+  const disabled = agent.availability === 'disabled';
+  return (
+    <ConfigSidebarItem
+      active={active}
+      disabled={disabled}
+      onClick={onSelect}
+      leading={
+        <div className="relative shrink-0">
+          <ConfigAvatar label={agent.name} tone={disabled ? 'muted' : 'brand'} />
+          {!disabled ? (
+            <span
+              className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-status-success ring-2 ring-surface-raised"
+              title="已启用"
+            />
+          ) : null}
+        </div>
+      }
+      title={agent.name}
+      subtitle={isKnowledgeLibrarianAgent(agent) ? '系统内置 · 知识库管理员' : `${ROLE_LABEL[agent.role] ?? agent.role}${agent.slug ? ` · ${agent.slug}` : ''}`}
+    />
   );
 }
 

@@ -19,6 +19,8 @@ export default function DashboardPage() {
   const agents = useAgentsStore((s) => s.agents);
   const workItems = useTasksStore((s) => s.items);
   const navigate = useNavigate();
+  // 速览卡的主操作是「与该 Agent 对话」；停用成员发不出 Run，不在此当作可用成员列出。
+  const chatAgents = agents.filter((agent) => agent.availability !== 'disabled');
   const chatPath = (agentId: string) => workspace?.id
     ? `/chat?ws=${encodeURIComponent(workspace.id)}&agent=${encodeURIComponent(agentId)}`
     : `/chat?agent=${encodeURIComponent(agentId)}`;
@@ -60,7 +62,7 @@ export default function DashboardPage() {
           title="Agent 状态速览"
           description={
             <div className="grid grid-cols-1 gap-snug sm:grid-cols-2" role="list" aria-label="Agent 状态列表">
-              {agents.map((agent) => {
+              {chatAgents.map((agent) => {
                 const currentTask = workItems.find(
                   (t) => t.agent_profile_id === agent.id && t.status === 'in_progress',
                 );
@@ -89,7 +91,7 @@ export default function DashboardPage() {
                   </button>
                 );
               })}
-              {agents.length === 0 && (
+              {chatAgents.length === 0 && (
                 <EmptyState
                   className="col-span-full"
                   icon={<Bot className="h-5 w-5" />}
