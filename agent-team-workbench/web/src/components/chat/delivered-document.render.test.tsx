@@ -132,6 +132,32 @@ describe('AssistantTurn · 正文交付文档阅读面', () => {
     expect(html).not.toContain('三处计数口径');
   });
 
+  it('文档中段的 canonical 块留在原位：前后内容顺序不变', () => {
+    const document = [
+      '# 《中间块》验收条件',
+      '',
+      '## 第一节',
+      '',
+      `BLOCK-BEFORE ${'正文段落。'.repeat(80)}`,
+      '',
+      '```languagegui',
+      '{"version":"languagegui/v1","blocks":[{"type":"table","title":"原始表格"}]}',
+      '```',
+      '',
+      '## 第二节',
+      '',
+      `BLOCK-AFTER ${'补充说明。'.repeat(80)}`,
+      '',
+    ].join('\n');
+    const html = renderToStaticMarkup(<AssistantTurn text={document} contentBlocks={canonical} />);
+    const blockIndex = html.indexOf('data-content-block="metric"');
+    expect(html.match(/data-delivered-document/g)).toHaveLength(1);
+    expect(html.match(/data-content-block="metric"/g)).toHaveLength(1);
+    expect(html.indexOf('BLOCK-BEFORE')).toBeLessThan(blockIndex);
+    expect(blockIndex).toBeLessThan(html.indexOf('BLOCK-AFTER'));
+    expect(html).not.toContain('原始表格');
+  });
+
   it('流式期间面板稳定：只保留一个光标且不重复文档', () => {
     const html = renderToStaticMarkup(<AssistantTurn text={DELIVERED} streaming />);
     expect(html.match(/data-delivered-document/g)).toHaveLength(1);
