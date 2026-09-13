@@ -72,12 +72,17 @@ describe('产品知识画布的入口与引用渲染', () => {
     expect(html).toContain('aria-label="产品知识画布"');
     expect(html).toContain('aria-label="知识画布视图"');
     expect(html).toContain('只读画布');
+    // 画布可折叠/展开：tabs 行与对话头各有一个切换，默认处于展开态
+    expect(html).toContain('折叠画布');
+    expect(html).toContain('aria-label="折叠知识画布"');
+    expect(html).toContain('aria-pressed="true"');
   });
 
   it('非 pm 的普通成员没有任何画布入口', () => {
     const html = renderChat(agent({ id: 'a_dev', name: '开发智能体', role: 'developer' }));
     expect(html).not.toContain('知识画布');
     expect(html).not.toContain('chat-knowledge-page');
+    expect(html).not.toContain('折叠画布');
   });
 
   it('系统成员即使角色是 pm 也不进画布', () => {
