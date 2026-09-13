@@ -62,6 +62,8 @@ export interface FileBlock extends ContentBlockBase {
     size?: string;
     mime?: string;
     status?: 'ready' | 'draft' | 'processing' | 'failed' | 'accepted';
+    /** 仓库相对路径：站内只读预览用它取内容；服务端在授权仓库集合内解析。 */
+    path?: string;
     url?: string;
   }>;
 }
@@ -300,15 +302,37 @@ function parseFile(value: Record<string, unknown>): FileBlock | null {
       ? item.status as NonNullable<FileBlock['files'][number]['status']>
       : undefined;
     const url = safeUrl(item.url);
+    const previewPath = repoRelativePath(item.path);
     files.push({
       name,
       ...(size ? { size } : {}),
       ...(mime ? { mime } : {}),
       ...(status ? { status } : {}),
+      ...(previewPath ? { path: previewPath } : {}),
       ...(url ? { url } : {}),
     });
   }
   return files.length ? { type: 'file', ...base(value), files } : null;
+}
+
+/**
+ * 只接受干净的仓库相对路径：绝对路径、回退段、协议 URL 一律丢弃（服务端还会再判一次）。
+ * 前端这一层只决定“要不要渲染打开动作”，不承担信任边界。
+ */
+export function repoRelativePath(value: unknown): string | undefined {
+  const candidate = text(value, 512);
+  if (!candidate || candidate.startsWith('/') || candidate.startsWith('\\')) return undefined;
+  const segments = candidate.split(/[\\/]+/);
+  if (segments.some((segment) => segment === '..' || segment === '')) return undefined;
+  if (segments[0] === '.git') return undefined;
+  return segments.join('/');
+}
+
+/** 文件行的可预览路径：显式 path 优先；历史消息用含路径分隔符的展示名兜底。 */
+export function previewPathOf(file: { name: string; path?: string }): string | undefined {
+  const explicit = repoRelativePath(file.path);
+  if (explicit) return explicit;
+  return file.name.includes('/') ? repoRelativePath(file.name) : undefined;
 }
 
 function parseEvent(value: Record<string, unknown>): EventBlock | null {

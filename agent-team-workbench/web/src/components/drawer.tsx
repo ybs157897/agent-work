@@ -43,6 +43,9 @@ export function Drawer({
   const { panelRef, closeButtonRef } = useDialogInteraction(dialogOpen, onClose);
   const exitTransition = reducedMotion ? { duration: 0 } : { duration: workbenchMotion.duration.fast, ease: workbenchMotion.easeOut };
   const taskSkin = skin === 'task' ? 'plane-board min-h-0 bg-surface-raised' : '';
+  // 服务端渲染（render 测试走 react-dom/server）没有 document：抽屉是纯客户端
+  // 浮层，此时渲染 null，客户端挂载后再进 portal。
+  if (typeof document === 'undefined') return null;
 
   return createPortal(
     open || dialogOpen ? (

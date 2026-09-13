@@ -2073,6 +2073,31 @@
   @apply inline-flex shrink-0 items-center gap-1 rounded-button border border-border-subtle bg-surface-raised px-2 py-1 text-caption font-medium text-brand-primary no-underline transition-colors hover:border-brand-primary/30 hover:bg-brand-muted/25;
 }
 
+/* Run 文件只读预览抽屉：路径与大小是元信息，正文沿用聊天阅读排版。 */
+.chat-file-preview {
+  @apply flex min-h-0 flex-col gap-snug;
+}
+
+.chat-file-preview-status {
+  @apply flex items-center gap-tight py-base text-body text-text-secondary;
+}
+
+.chat-file-preview-meta {
+  @apply flex flex-wrap items-center gap-tight border-b border-border-subtle pb-tight text-caption text-text-tertiary;
+}
+
+.chat-file-preview-path {
+  @apply min-w-0 max-w-full truncate font-mono text-caption text-text-secondary;
+}
+
+.chat-file-preview-prose {
+  @apply pt-tight;
+}
+
+.chat-file-preview-text {
+  @apply overflow-x-auto whitespace-pre-wrap break-words rounded-card border border-border-subtle bg-surface-sunken p-snug text-caption leading-relaxed text-text-primary;
+}
+
 .chat-content-event {
   @apply flex min-w-0 items-center gap-base;
 }

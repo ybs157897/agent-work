@@ -1123,6 +1123,18 @@ export interface RunChangeDiff {
   binary?: boolean;
 }
 
+/**
+ * Run 文件只读预览内容：path/name 都是仓库相对口径，服务端从不下发宿主绝对路径。
+ * 路径在 Run 执行上下文授权的仓库集合（自己的 checkout + 同一仓库的 worktree）内解析。
+ */
+export interface RunFileContent {
+  path: string;
+  name: string;
+  mime: string;
+  size: number;
+  content: string;
+}
+
 /** SSE Canonical Event Envelope（contracts/events/asyncapi.yaml） */
 export interface CanonicalEvent {
   contract_version: string;
