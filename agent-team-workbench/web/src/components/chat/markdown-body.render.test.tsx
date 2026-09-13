@@ -89,6 +89,29 @@ describe('MarkdownBody · LeAgent 内容覆盖', () => {
     expect(html).not.toContain('language-languagegui');
   });
 
+  it('完整表格缺少外层闭合符时最终渲染为表格，流式仍保留源码', () => {
+    const source = JSON.stringify({
+      version: 'languagegui/v1',
+      blocks: [{
+        type: 'table', title: '已整理文档清单',
+        columns: [{ key: 'path', label: '文档' }, { key: 'scope', label: '覆盖内容' }],
+        rows: [{ path: 'content/business/flows/order-cancel-to-device-release.md', scope: '订单取消 → 设备占用释放' }],
+      }],
+    }).slice(0, -2);
+    const text = `上方说明。\n\n\`\`\`languagegui\n${source}\n\`\`\`\n\n下方说明。`;
+    const html = render(text);
+    expect(html).toContain('data-content-block="table"');
+    expect(html).toContain('order-cancel-to-device-release.md');
+    expect(html).toContain('订单取消 → 设备占用释放');
+    expect(html).toContain('<p>上方说明。</p>');
+    expect(html).toContain('<p>下方说明。</p>');
+    expect(html).not.toContain('chat-code-panel');
+    const streaming = renderToStaticMarkup(<MarkdownBody text={text} streaming />);
+    expect(streaming).not.toContain('data-content-block="table"');
+    expect(streaming).toContain('chat-code-panel');
+    expect(render(text.replace('```languagegui', '```json'))).toContain('chat-code-panel');
+  });
+
   it('坏 JSON 回落代码面板；完整的流式 fence 直接生成 Widget', () => {
     const invalid = render('```languagegui\n{bad json}\n```');
     expect(invalid).toContain('chat-code-panel');

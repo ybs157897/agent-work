@@ -17,7 +17,10 @@ describe('ContentBlockList', () => {
     const html = renderToStaticMarkup(<LanguageGuiFence source={source} fallback={<code>raw-json</code>} />);
     expect(html).toContain('data-content-block-version="languagegui/v1"');
     expect(html).toContain('十道题汇总');
-    expect(html).toContain('<table class="chat-content-table">');
+    expect(html).toContain('<table class="chat-content-table" role="table">');
+    expect(html).toContain('scope="col" role="columnheader"');
+    expect(html).toContain('class="chat-content-table-field" aria-hidden="true">答案</span>');
+    expect(html).toContain('class="chat-content-table-value">x = 3</span>');
     expect(html).not.toContain('raw-json');
   });
 
@@ -84,7 +87,7 @@ describe('ContentBlockList', () => {
       expect(html).toContain(`data-content-block="${type}"`);
     }
     expect(html).toContain('<dl class="chat-content-metric-grid">');
-    expect(html).toContain('<table class="chat-content-table">');
+    expect(html).toContain('<table class="chat-content-table" role="table">');
     expect(html).toContain('正在加载图表');
     expect(html).toContain('aria-label="文件列表"');
     expect(html).toContain('aria-label="2026 年 8 月 28 日"');

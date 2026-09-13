@@ -11,6 +11,6 @@ export function LanguageGuiFence({
   fallback: ReactNode;
   trace?: ContentBlockTraceContext;
 }) {
-  const document = parseLanguageGuiFenceDocument(source);
+  const document = parseLanguageGuiFenceDocument(source, { recoverEnvelope: trace?.mode !== 'streaming' });
   return document ? <ContentBlockList document={document} trace={trace} /> : <>{fallback}</>;
 }

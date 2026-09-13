@@ -534,7 +534,10 @@ export function parseContentBlockDocument(input: unknown): ContentBlockDocument 
  * a valid, fully whitelisted `blocks` envelope. Infer v1 only for that exact
  * omission; explicit unknown versions and arbitrary JSON remain rejected.
  */
-export function parseLanguageGuiFenceDocument(input: unknown): ContentBlockDocument | null {
+export function parseLanguageGuiFenceDocument(
+  input: unknown,
+  { recoverEnvelope = true }: { recoverEnvelope?: boolean } = {},
+): ContentBlockDocument | null {
   const strict = parseContentBlockDocument(input);
   if (strict) return strict;
   let value = input;
@@ -543,7 +546,13 @@ export function parseLanguageGuiFenceDocument(input: unknown): ContentBlockDocum
     try {
       value = JSON.parse(input) as unknown;
     } catch {
-      return null;
+      // Only close the outer envelope after complete blocks. Never repair a
+      // row, string or block body, or interpret a streaming prefix as final.
+      if (!recoverEnvelope) return null;
+      const source = input.trimEnd();
+      const suffix = source.endsWith('}') ? ']}' : source.endsWith(']') ? '}' : null;
+      if (!suffix) return null;
+      return parseContentBlockDocument(source + suffix);
     }
   }
   const envelope = record(value);

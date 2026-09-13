@@ -176,6 +176,35 @@ describe('parseContentBlockDocument', () => {
 });
 
 describe('content block URL and fence safety', () => {
+  const completeTable = JSON.stringify({
+    version: CONTENT_BLOCK_VERSION,
+    blocks: [{
+      type: 'table', title: '已整理文档清单',
+      columns: [{ key: 'path', label: '文档' }, { key: 'scope', label: '覆盖内容' }],
+      rows: [{ path: 'content/business/flows/order-cancel-to-device-release.md', scope: '引号 "、括号 }] 与反斜线 \\ 均为正文' }],
+    }],
+  });
+
+  it.each([1, 2])('recovers only missing outer envelope delimiters (%i) in final fences', (missing) => {
+    const source = completeTable.slice(0, -missing);
+    expect(parseContentBlockDocument(source)).toBeNull();
+    expect(parseLanguageGuiFenceDocument(source)).toEqual(parseContentBlockDocument(completeTable));
+    expect(parseLanguageGuiFenceDocument(`${source}\n\t`)).toEqual(parseContentBlockDocument(completeTable));
+  });
+
+  it.each([
+    completeTable.slice(0, -3),
+    completeTable.slice(0, -5),
+    `${completeTable.slice(0, -2)},`,
+    completeTable.slice(0, -2).replace('languagegui/v1', 'languagegui/v2'),
+    completeTable.slice(0, -2).replace('"type":"table"', '"type":"unknown"'),
+    completeTable.slice(0, -2).replace('"path":', '"path" '),
+    '{"version":"languagegui/v1","blocks":[{"type":"metric","items":[{"label":"x","value":12',
+    `${' '.repeat(250_000)}${completeTable.slice(0, -2)}`,
+  ])('rejects malformed contents, truncated blocks and unknown protocols (case %#)', (source) => {
+    expect(parseLanguageGuiFenceDocument(source)).toBeNull();
+  });
+
   it('infers v1 only when an explicit languagegui fence omits its redundant version', () => {
     const source = JSON.stringify({
       blocks: [{
