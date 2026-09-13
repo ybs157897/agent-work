@@ -67,11 +67,11 @@ func TestCodeWorkspaceHTTPIsDeveloperReadOnlyAndSessionBound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	dev := &domain.AgentProfile{ID: "agent_code_developer", WorkspaceID: ws.ID, Name: "Forge", Role: "developer", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: now, UpdatedAt: now}
+	dev := &domain.AgentProfile{ID: "agent_code_developer", WorkspaceID: ws.ID, Name: "开发智能体", Role: "developer", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: now, UpdatedAt: now}
 	if err := store.Agents().Create(ctx, dev); err != nil {
 		t.Fatal(err)
 	}
-	pm := &domain.AgentProfile{ID: "agent_code_pm", WorkspaceID: ws.ID, Name: "Nova", Role: "pm", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: now, UpdatedAt: now}
+	pm := &domain.AgentProfile{ID: "agent_code_pm", WorkspaceID: ws.ID, Name: "产品智能体", Role: "pm", Availability: domain.AgentEnabled, Presence: domain.PresenceIdle, Version: 1, CreatedAt: now, UpdatedAt: now}
 	if err := store.Agents().Create(ctx, pm); err != nil {
 		t.Fatal(err)
 	}
