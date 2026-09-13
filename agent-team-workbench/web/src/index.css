@@ -1183,20 +1183,32 @@
   margin-top: 0.25em;
 }
 
-.chat-prose li:has(> input[type='checkbox']) {
+/* GFM 任务清单有两种渲染形态：紧列表里 input 直接挂在 li 下，松列表（条目含
+   空行或多段）多包一层 p。只匹配 li > input 会让松列表漏掉去符号与缩进，
+   出现项目符号 + 复选框的双 marker。 */
+.chat-prose li:has(> input[type='checkbox']),
+.chat-prose li:has(> p > input[type='checkbox']) {
   margin-left: -1.25em;
   list-style: none;
 }
 
-.chat-prose li > input[type='checkbox'] {
+.chat-prose li > input[type='checkbox'],
+.chat-prose li > p > input[type='checkbox'] {
   margin-right: 0.55em;
   accent-color: hsl(var(--color-brand-primary));
   transform: translateY(-1px);
   vertical-align: middle;
 }
 
-.chat-prose li:has(> input[type='checkbox']:checked) {
+.chat-prose li:has(> input[type='checkbox']:checked),
+.chat-prose li:has(> p > input[type='checkbox']:checked) {
   color: hsl(var(--color-text-tertiary));
+}
+
+/* 松列表把条目内容包进 <p>，`.chat-prose > * + *` 够不到 li 内部的段落，
+   条目内的多段（如验收条件的「判定：」段）会贴在一起。 */
+.chat-prose li > p + p {
+  margin-top: 0.6em;
 }
 
 .chat-prose dt {
