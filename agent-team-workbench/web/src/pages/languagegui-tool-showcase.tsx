@@ -81,29 +81,24 @@ export const LANGUAGEGUI_TOOL_ITEMS: ChatMessage[] = [
 export const LANGUAGEGUI_SWARM_PROJECTION: SwarmProjection = {
   id: 'languagegui-demo-swarm',
   runtime: 'kimi',
-  title: '架构评审 · 四路并行',
-  total: 4,
+  title: '架构评审 · 三路并行',
+  total: 3,
   status: 'running',
   startedAt: '2026-08-29T08:00:00.000Z',
   members: [
     {
-      id: 'demo-atlas', index: 1, name: 'Atlas', status: 'completed',
+      id: 'demo-atlas', index: 1, name: '产品智能体', status: 'completed',
       description: '定位 application 与 adapters 的耦合点',
       summary: '已定位两个高风险依赖方向。', updatedAt: '2026-08-29T08:00:18.000Z',
     },
     {
-      id: 'demo-forge', index: 2, name: 'Forge', status: 'running',
+      id: 'demo-forge', index: 2, name: '开发智能体', status: 'running',
       description: '核对 ModuleRunner 终态与 resume 自愈',
       updatedAt: '2026-08-29T08:00:24.000Z',
     },
     {
-      id: 'demo-pixel', index: 3, name: 'Pixel', status: 'waiting',
-      description: '检查 Chat 投影和无障碍边界', reason: '等待运行时事件样本',
-      updatedAt: '2026-08-29T08:00:25.000Z',
-    },
-    {
-      id: 'demo-sentinel', index: 4, name: 'Sentinel', status: 'failed',
-      description: '复核负向保证', error: '演示失败：证据尚未齐套',
+      id: 'demo-librarian', index: 3, name: '资料库管理员', status: 'failed',
+      description: '核对知识来源与版本印记', error: '演示失败：证据尚未齐套',
       updatedAt: '2026-08-29T08:00:26.000Z',
     },
   ],

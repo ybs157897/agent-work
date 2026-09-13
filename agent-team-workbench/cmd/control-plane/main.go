@@ -626,11 +626,8 @@ func seed(ctx context.Context, svc *application.Service, store application.Store
 	log.Printf("seed: 创建演示 workspace %s", ws.ID)
 
 	roles := []application.CreateAgentParams{
-		{Name: "Nova", Role: "pm", Skills: []string{"需求分析", "优先级管理"}},
-		{Name: "Atlas", Role: "architect", Skills: []string{"系统设计", "契约评审"}},
-		{Name: "Pixel", Role: "ui", Skills: []string{"交互设计", "视觉规范"}},
-		{Name: "Forge", Role: "developer", Skills: []string{"Go", "React", "测试"}},
-		{Name: "Sentinel", Role: "reviewer", Skills: []string{"代码评审", "验收"}},
+		{Name: "产品智能体", Role: "pm", Skills: []string{"需求分析", "PRD 撰写", "竞品调研"}},
+		{Name: "开发智能体", Role: "developer", Skills: []string{"Go", "React", "测试"}},
 	}
 	var devID string
 	for _, p := range roles {

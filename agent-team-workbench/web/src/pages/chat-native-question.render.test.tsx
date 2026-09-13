@@ -58,7 +58,7 @@ describe('native question card visibility', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
     useWorkspaceStore.setState({ workspace: { id: 'ws_test', name: '测试工作区', timezone: 'Asia/Shanghai', version: 1 }, me: { user_id: 'u_test', name: 'Owner', role: 'owner', feature_flags: {} }, phase: 'ready' });
-    useAgentsStore.setState({ agents: [{ id: 'agent_product', name: 'Nova', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 }] });
+    useAgentsStore.setState({ agents: [{ id: 'agent_product', name: '产品智能体', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 }] });
     useChatStore.setState({ agentId: 'agent_product', conversationId: 'wi_1', conversations: [], runs: [], queue: [], pendingUsers: {}, runAlerts: {}, sending: false, sendError: null });
     useNativeQuestionsStore.setState({ itemsByRun: {}, loadingByRun: {}, errorByRun: {}, submittingByQuestion: {} });
   });
@@ -92,5 +92,30 @@ describe('native question card visibility', () => {
   it('没有待答问题时不渲染提问卡', () => {
     useChatStore.setState({ runs: [run('run_q', 'running')] });
     expect(render()).not.toContain('data-testid="native-question-');
+  });
+});
+
+describe('对话 chips 数据源', () => {
+  beforeEach(() => {
+    useWorkspaceStore.setState({ workspace: { id: 'ws_test', name: '测试工作区', timezone: 'Asia/Shanghai', version: 1 }, me: { user_id: 'u_test', name: 'Owner', role: 'owner', feature_flags: {} }, phase: 'ready' });
+    useChatStore.setState({ agentId: 'agent_product', conversationId: null, conversations: [], runs: [], queue: [], pendingUsers: {}, runAlerts: {}, sending: false, sendError: null });
+  });
+
+  afterEach(() => {
+    useAgentsStore.getState().reset();
+    useChatStore.setState({ agentId: null, conversationId: null });
+  });
+
+  it('停用成员不出现在可咨询的智能体 chips 里', () => {
+    useAgentsStore.setState({
+      agents: [
+        { id: 'agent_product', name: '产品智能体', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 },
+        { id: 'agent_legacy', name: '停用成员', role: 'developer', skills: [], availability: 'disabled', presence: 'offline', version: 1 },
+      ],
+    });
+    const html = renderToStaticMarkup(<MemoryRouter initialEntries={['/chat?agent=agent_product']}><ChatPage /></MemoryRouter>);
+    expect(html).toContain('产品智能体');
+    expect(html).not.toContain('停用成员');
+    expect(html).not.toContain('agent_legacy');
   });
 });

@@ -13,6 +13,11 @@ export function isUserManagedAgent(agent: Pick<AgentProfile, 'is_system' | 'kind
   return !agent.is_system && !isTaskCoordinatorAgent(agent) && !isKnowledgeLibrarianAgent(agent);
 }
 
-export function isChatAgent(agent: Pick<AgentProfile, 'is_system' | 'kind'>): boolean {
+/**
+ * 可进入对话的 Agent：身份允许，且未被停用。停用成员发起的 CreateRun 会被
+ * 拒（agent 已停用），所以它不该出现在对话 chips、@ 提及或对话深链里。
+ */
+export function isChatAgent(agent: Pick<AgentProfile, 'is_system' | 'kind' | 'availability'>): boolean {
+  if (agent.availability === 'disabled') return false;
   return isUserManagedAgent(agent) || isKnowledgeLibrarianAgent(agent);
 }

@@ -23,6 +23,17 @@ Date: 2026-09-06
 
 实现状态（2026-09-06）：知识 SQLite/版本发布、Run-bound Harness、候选收件箱和查询关系闭环已有自动化及真实模型/浏览器验证，见[验收记录](../review/knowledge-librarian-acceptance.md)。远程 Worker 的工具注册与凭据传输未实现。功能验收通过不等于知识内容对任意问题已经完备。
 
+### 1.1 Chat 预取
+
+任务模式下由 Plan 的 `consult_knowledge` 显式预取；Chat 模式没有 plan，普通智能体与用户单聊时由应用层在 Run 创建时自动预取一次，使对话能读到资料库的已发布内容：
+
+- 触发范围仅限 Chat 记录（`record_kind=chat`）且执行者是普通 Agent。task 记录、系统 Task Coordinator 和资料库管理员自身的 Chat Run 都不预取。
+- 检索词取当轮用户 instruction，固定条数上限，经与 `consult_knowledge` 相同的读端查询已发布 release；未发布任何版本或未命中时结果为空，等同于不预取。
+- 命中结果按确定性格式拼成文本，写入 `run.Input["knowledge_context"]`，在 Run 创建时冻结，随 ConfigDigest/session 指纹一起固化；运行时在当轮输入末尾以「[资料库检索]」节拼入（同一拼装点覆盖 native resume、历史回放和轮换会话）。
+- 该文本是只读参考资料：首部声明不授予权限、不覆盖系统指令与用户指令，检索覆盖只针对声明的知识范围，partial/missing/conflict 不得当成完整答案。它不赋予执行者任何知识库写入能力。
+- retry、redo 和续跑复用已持久化的 run input，不重新检索；同一 Run 的参考资料因此不会在重放中漂移。
+- 检索失败（资料库不可用等）只记录日志并跳过注入，不阻塞对话创建。`run.Input` 是内部冻结快照，该键不进 HTTP 契约。
+
 ## 2. 身份与范围
 
 ### 2.1 人和管理界面

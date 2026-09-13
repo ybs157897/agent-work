@@ -904,6 +904,12 @@ func (r *LibraryRepo) SearchRelease(ctx context.Context, libraryID, releaseID st
 			}
 			out = append(out, scored{hit: domain.KnowledgeQueryHit{
 				Assertion: a, Document: *doc,
+				// 命中项必须报出 release 固定的 document version：调用方
+				// （预取注入、引用元数据）据此标注「这条来自哪一版」，零值
+				// 会让上层拼出并不存在的 v0。只填已知事实，不猜其他字段。
+				Version: domain.KnowledgeDocumentVersion{
+					ID: versionID, DocumentID: meta.documentID, LibraryID: libraryID, Version: meta.version,
+				},
 				Score: score, Snippet: snippet,
 			}, score: score})
 		}
@@ -936,8 +942,12 @@ type versionMeta struct {
 }
 
 func (r *LibraryRepo) releaseVersionSet(ctx context.Context, releaseID string) (map[string]versionMeta, []string, error) {
-	rows, err := r.db(ctx).QueryContext(ctx, `SELECT document_version_id, document_id, is_removed
-		FROM knowledge_release_documents WHERE release_id=? ORDER BY document_id`, releaseID)
+	// 版本号随成员行一起取回：命中项要报出的是 release 固定的那一版，而不是
+	// 文档行的当期版本。成员行按外键必然指向一个已存在的版本行。
+	rows, err := r.db(ctx).QueryContext(ctx, `SELECT rd.document_version_id, rd.document_id, rd.is_removed, dv.version
+		FROM knowledge_release_documents rd
+		JOIN knowledge_document_versions dv ON dv.id = rd.document_version_id
+		WHERE rd.release_id=? ORDER BY rd.document_id`, releaseID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -946,14 +956,14 @@ func (r *LibraryRepo) releaseVersionSet(ctx context.Context, releaseID string) (
 	var order []string
 	for rows.Next() {
 		var versionID, documentID string
-		var removed int
-		if err := rows.Scan(&versionID, &documentID, &removed); err != nil {
+		var removed, version int
+		if err := rows.Scan(&versionID, &documentID, &removed, &version); err != nil {
 			return nil, nil, err
 		}
 		if removed == 1 {
 			continue
 		}
-		out[versionID] = versionMeta{documentID: documentID}
+		out[versionID] = versionMeta{documentID: documentID, version: version}
 		order = append(order, versionID)
 	}
 	return out, order, rows.Err()

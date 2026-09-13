@@ -163,17 +163,17 @@ describe('TaskRunOutput', () => {
 
   it('历史请求失败显示错误和当前 Agent 重试入口，不伪装为加载中', () => {
     runStoreState.historyErrors = { run_1: '输入与结果加载失败，请重试' };
-    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="Nova" />);
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="产品智能体" />);
     expect(html).toContain('role="alert"');
     expect(html).toContain('输入与结果加载失败，请重试');
-    expect(html).toContain('重试加载 Nova 的输入与输出');
+    expect(html).toContain('重试加载 产品智能体 的输入与输出');
     expect(html).not.toContain('加载中');
     expect(html).not.toContain('未返回可展示的最终结果');
   });
 
   it('成功请求但没有正文时显示空结果，区别于网络错误', () => {
     runStoreState.timelines = { run_1: [] };
-    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="Nova" />);
+    const html = renderToStaticMarkup(<TaskRunOutput run={card().runs[0]} agentName="产品智能体" />);
     expect(html).toContain('本次执行未返回可展示的最终结果');
     expect(html).not.toContain('重试加载');
   });

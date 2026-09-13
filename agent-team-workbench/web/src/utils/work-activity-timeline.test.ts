@@ -35,7 +35,7 @@ describe('projectWorkActivityTimeline', () => {
           updatedAt: '2026-01-01T00:01:25Z',
         },
       },
-      metadataByRun: { r1: { agent: 'Nova' } },
+      metadataByRun: { r1: { agent: '产品智能体' } },
     });
     expect(result.map((item) => item.kind)).toEqual(['user', 'work-timeline', 'assistant']);
     const timeline = result[1];
@@ -44,7 +44,7 @@ describe('projectWorkActivityTimeline', () => {
       expect(timeline.items.map((item) => item.kind)).toEqual(['thinking', 'assistant']);
       expect(timeline.items[1]).toMatchObject({ kind: 'assistant', msg: { text: '中间说明' } });
       expect(timeline.items[1]).not.toHaveProperty('streaming');
-      expect(timeline.metadata).toEqual({ agent: 'Nova' });
+      expect(timeline.metadata).toEqual({ agent: '产品智能体' });
       expect(timeline.createdAt).toBe('2026-01-01T00:00:00Z');
       expect(timeline.updatedAt).toBe('2026-01-01T00:01:25Z');
     }

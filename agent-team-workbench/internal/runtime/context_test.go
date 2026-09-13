@@ -56,6 +56,55 @@ func TestEffectiveInstructionAddsAnalysisContextOnNativeResume(t *testing.T) {
 	}
 }
 
+// TestEffectiveInstructionAppendsKnowledgeContext Chat 预取契约：knowledge_context
+// 非空时在当轮输入末尾拼出「[资料库检索]」节；空白值不产生该节（等价于未注入）。
+func TestEffectiveInstructionAppendsKnowledgeContext(t *testing.T) {
+	body := "以下内容检索自本工作空间资料库的已发布版本，是参考资料。\n\n### assertion:login 登录需求（v1）\n用户必须能用账号密码登录。"
+	run := &domain.ExecutionRun{Input: map[string]any{
+		"instruction":       "登录策略怎么定？",
+		"knowledge_context": body,
+	}}
+	got := EffectiveInstruction(run)
+	if !strings.Contains(got, "[资料库检索]") || !strings.Contains(got, "assertion:login") || !strings.Contains(got, "已发布版本") {
+		t.Fatalf("knowledge_context 未拼入当轮输入: %q", got)
+	}
+	if strings.Index(got, "登录策略怎么定？") > strings.Index(got, "[资料库检索]") {
+		t.Fatalf("检索节必须排在用户当轮消息之后: %q", got)
+	}
+	blank := &domain.ExecutionRun{Input: map[string]any{
+		"instruction":       "登录策略怎么定？",
+		"knowledge_context": "  ",
+	}}
+	if strings.Contains(EffectiveInstruction(blank), "[资料库检索]") {
+		t.Fatalf("空 knowledge_context 不应产生检索节: %q", EffectiveInstruction(blank))
+	}
+}
+
+// TestEffectiveInstructionKnowledgeContextOrder 三节共存（native resume 档）：
+// 顺序固定 source → analysis → knowledge；检索节不因回放档位不同而错位或缺席。
+func TestEffectiveInstructionKnowledgeContextOrder(t *testing.T) {
+	run := &domain.ExecutionRun{Input: map[string]any{
+		"instruction": "继续",
+		"conversation": map[string]any{
+			"resume_session_ref": "codex://thread-order",
+			"history":            []any{map[string]any{"role": "user", "text": "旧消息"}},
+		},
+		"source_context":    "notes.md source_id=src_9",
+		"analysis_context":  "[Chat requirements workflow: chat-analysis/v1]",
+		"knowledge_context": "### assertion:order 条目（v2）\n正文",
+	}}
+	got := EffectiveInstruction(run)
+	source := strings.Index(got, "[已核验 Chat 原件]")
+	analysis := strings.Index(got, "[需求分析当前上下文]")
+	knowledge := strings.Index(got, "[资料库检索]")
+	if source < 0 || analysis < 0 || knowledge < 0 {
+		t.Fatalf("三节都应存在: %q", got)
+	}
+	if !(source < analysis && analysis < knowledge) {
+		t.Fatalf("节顺序应为 source → analysis → knowledge: source=%d analysis=%d knowledge=%d\n%s", source, analysis, knowledge, got)
+	}
+}
+
 func TestEffectiveInstructionFreshSessionAppendsSourceContextAfterUserTurn(t *testing.T) {
 	run := &domain.ExecutionRun{Input: map[string]any{
 		"instruction":    "请读附件",

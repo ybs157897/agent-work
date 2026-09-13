@@ -181,6 +181,14 @@ func appendSourceContext(run *domain.ExecutionRun, instruction string) string {
 			assembled += "\n\n[需求分析当前上下文]\n" + analysisContext
 		}
 	}
+	knowledgeContext, _ := run.Input["knowledge_context"].(string)
+	if strings.TrimSpace(knowledgeContext) != "" {
+		if strings.TrimSpace(assembled) == "" {
+			assembled = "[资料库检索]\n" + knowledgeContext
+		} else {
+			assembled += "\n\n[资料库检索]\n" + knowledgeContext
+		}
+	}
 	return assembled
 }
 

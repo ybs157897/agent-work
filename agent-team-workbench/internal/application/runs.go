@@ -618,6 +618,15 @@ func (s *Service) createRunLocked(ctx context.Context, workItemID string, p Crea
 			}
 		}
 	}
+	// Chat 模式的普通智能体在 Run 创建时预取资料库已发布版本的检索结果：只读
+	// 参考资料，创建时冻结进 run.Input（随 ConfigDigest/session 指纹走），retry/
+	// redo/续跑复用持久化 input 而不重新检索。task 模式、系统 agent（Coordinator、
+	// 资料库管理员自身）不注入；检索失败只降级为不注入，不阻塞对话。
+	if !taskRecord && agent != nil && !agent.Kind.IsSystem() {
+		if knowledgeContext := s.chatKnowledgeContext(ctx, wi.WorkspaceID, p.Instruction); knowledgeContext != "" {
+			runInput["knowledge_context"] = knowledgeContext
+		}
+	}
 	if quotaAdmission != nil {
 		runInput["quota_admission"] = quotaAdmission
 	}

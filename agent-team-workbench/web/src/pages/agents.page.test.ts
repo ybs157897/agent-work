@@ -58,13 +58,13 @@ describe('formatTokenCount', () => {
 
 describe('createAgentNotice', () => {
   it('surfaces pending external sync instead of claiming full success', () => {
-    expect(createAgentNotice({ config_sync_pending: true }, 'Forge')).toEqual({
+    expect(createAgentNotice({ config_sync_pending: true }, '开发智能体')).toEqual({
       kind: 'warning',
-      message: '已创建 Agent Forge，外部配置同步待完成；修复条件后请重载配置',
+      message: '已创建 Agent 开发智能体，外部配置同步待完成；修复条件后请重载配置',
     });
   });
 
   it('keeps the normal success notice for an applied bundle', () => {
-    expect(createAgentNotice({}, 'Forge')).toEqual({ kind: 'success', message: '已添加 Agent Forge' });
+    expect(createAgentNotice({}, '开发智能体')).toEqual({ kind: 'success', message: '已添加 Agent 开发智能体' });
   });
 });

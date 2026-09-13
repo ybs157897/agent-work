@@ -1,9 +1,10 @@
-import { BookOpen, Bot, Cpu, KanbanSquare, Layers3, LayoutDashboard, MessageSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
+import { BookOpen, Bot, Code2, Compass, Cpu, KanbanSquare, Layers3, LayoutDashboard, MessageSquare, ScrollText, Settings, type LucideIcon } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import React from 'react';
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { SseStatusPill } from './sse-status';
 import { WorkspaceSelector } from './workspace-selector';
+import { useAgentsStore } from '../stores/agents.store';
 import { useWorkspaceStore } from '../stores/workspace.store';
 import { applyWorkbenchTheme, useWorkbenchThemeStore } from '../stores/workbench-theme.store';
 import { isChatPath, isTasksPath, mainContentClassName } from '../utils/route-layout';
@@ -18,6 +19,15 @@ const NAV_ITEMS = [
   { to: '/library', icon: BookOpen, label: '知识库' },
   { to: '/logs', icon: ScrollText, label: '日志' },
   { to: '/settings', icon: Settings, label: '设置' },
+];
+
+/**
+ * 高频直达对话的两个智能体入口，插在「对话」之后。slug 是查找键：找不到就
+ * 不渲染该入口，显示名取 DB 投影的 agent.name。
+ */
+const FEATURED_AGENT_NAV = [
+  { slug: 'atlas', icon: Compass },
+  { slug: 'forge', icon: Code2 },
 ];
 
 const BREADCRUMBS: Record<string, string> = {
@@ -132,6 +142,36 @@ function workspaceRoute(pathname: string, search: string, hash: string, workspac
 
 function SidebarContents() {
   const me = useWorkspaceStore((state) => state.me);
+  const workspace = useWorkspaceStore((state) => state.workspace);
+  const agents = useAgentsStore((state) => state.agents);
+  const refreshAgents = useAgentsStore((state) => state.refresh);
+  const location = useLocation();
+
+  // bootstrap 已 hydrate Agent 列表；Workspace 就绪而列表为空时补一次拉取。
+  useEffect(() => {
+    if (!workspace?.id || agents.length > 0) return;
+    void refreshAgents();
+  }, [agents.length, refreshAgents, workspace?.id]);
+
+  const routedAgentId = new URLSearchParams(location.search).get('agent');
+  const featuredItems = FEATURED_AGENT_NAV.flatMap(({ slug, icon }) => {
+    // 直达入口只在成员可对话时出现：停用成员发不出 Run，入口点了也是死路。
+    const agent = agents.find((candidate) => candidate.slug === slug && candidate.availability !== 'disabled');
+    if (!agent) return [];
+    return [{
+      to: `/chat?agent=${encodeURIComponent(agent.id)}`,
+      icon,
+      label: agent.name,
+      active: location.pathname === '/chat' && routedAgentId === agent.id,
+    }];
+  });
+  const navItems = NAV_ITEMS.flatMap((item) => {
+    const active = navPathActive(location.pathname, item.to, item.end);
+    const entry = { to: item.to, icon: item.icon, label: item.label, active };
+    if (item.to !== '/chat') return [entry];
+    // 「对话」是通用入口：路由里选中名册智能体时高亮交给该智能体入口，避免双高亮。
+    return [{ ...entry, active: active && !featuredItems.some((featured) => featured.active) }, ...featuredItems];
+  });
 
   return (
     <>
@@ -151,7 +191,7 @@ function SidebarContents() {
       </div>
 
       <nav className="flex-1 space-y-micro overflow-y-auto px-tight py-base" aria-label="主导航">
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <NavItem key={item.to} {...item} />
         ))}
       </nav>
@@ -171,41 +211,42 @@ function SidebarContents() {
   );
 }
 
+/** 侧栏项激活判定：沿用 NavLink 的 path 匹配语义，end 表示只认精确路径。 */
+function navPathActive(pathname: string, to: string, end?: boolean): boolean {
+  const path = pathname.toLowerCase();
+  const target = to.toLowerCase();
+  return path === target || (!end && target !== '/' && path.startsWith(`${target}/`));
+}
+
 function NavItem({
   to,
   icon: Icon,
   label,
-  end,
+  active,
 }: {
   to: string;
   icon: LucideIcon;
   label: string;
-  end?: boolean;
+  active: boolean;
 }) {
   return (
-    <NavLink
+    <Link
       to={to}
-      end={end}
-      className={({ isActive }) =>
-        `group relative flex min-h-10 items-center gap-snug rounded-button px-snug py-tight text-body transition-colors duration-motion focus-visible:ring-offset-sidebar ${
-          isActive
-            ? 'bg-sidebar-hover text-text-on-sidebar-active'
-            : 'text-text-on-sidebar hover:bg-sidebar-hover hover:text-text-on-sidebar-active'
-        }`
-      }
+      aria-current={active ? 'page' : undefined}
+      className={`group relative flex min-h-10 items-center gap-snug rounded-button px-snug py-tight text-body transition-colors duration-motion focus-visible:ring-offset-sidebar ${
+        active
+          ? 'bg-sidebar-hover text-text-on-sidebar-active'
+          : 'text-text-on-sidebar hover:bg-sidebar-hover hover:text-text-on-sidebar-active'
+      }`}
     >
-      {({ isActive }) => (
-        <>
-          {isActive ? <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-brand-primary" aria-hidden="true" /> : null}
-          <Icon
-            strokeWidth={1.6}
-            className={`h-[18px] w-[18px] shrink-0 ${
-              isActive ? 'text-brand-primary' : 'text-text-on-sidebar group-hover:text-text-on-sidebar-active'
-            }`}
-          />
-          <span className="min-w-0 truncate whitespace-nowrap">{label}</span>
-        </>
-      )}
-    </NavLink>
+      {active ? <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-full bg-brand-primary" aria-hidden="true" /> : null}
+      <Icon
+        strokeWidth={1.6}
+        className={`h-[18px] w-[18px] shrink-0 ${
+          active ? 'text-brand-primary' : 'text-text-on-sidebar group-hover:text-text-on-sidebar-active'
+        }`}
+      />
+      <span className="min-w-0 truncate whitespace-nowrap">{label}</span>
+    </Link>
   );
 }
