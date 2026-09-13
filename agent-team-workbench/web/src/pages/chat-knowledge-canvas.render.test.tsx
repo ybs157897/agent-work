@@ -90,6 +90,30 @@ describe('产品知识画布的入口与引用渲染', () => {
     expect(html).not.toContain('知识画布');
     expect(html).not.toContain('chat-knowledge-page');
   });
+
+  it('左栏只剩对话列表：没有 chips、对话资源 tabs、Library 与 Apps 占位面板', () => {
+    const html = renderChat(agent({}));
+    expect(html).not.toContain('选择要咨询的智能体');
+    expect(html).not.toContain('对话资源');
+    expect(html).not.toContain('Prompt Library');
+    expect(html).not.toContain('>Library<');
+    expect(html).not.toContain('>Apps<');
+    expect(html).not.toContain('外部 Apps');
+    expect(html).not.toContain('在 Agent 配置中管理工具权限');
+    expect(html).not.toContain('chat-agent-chip');
+    expect(html).not.toContain('chat-sidebar-nav');
+    // 保留项：搜索框、新对话按钮、底部「查看团队知识」
+    expect(html).toContain('chat-conversation-search');
+    expect(html).toContain('新对话');
+    expect(html).toContain('查看团队知识');
+    expect(html).toContain('href="/library"');
+  });
+
+  it('?agent=<id> 深链照常选中该成员并显示在对话头', () => {
+    const html = renderChat(agent({ id: 'a_pm', name: '产品智能体' }));
+    expect(html).toContain('产品智能体');
+    expect(html).toContain('aria-label="产品知识画布"');
+  });
 });
 
 describe('画布引用在对话两端的渲染', () => {

@@ -2926,64 +2926,6 @@ a.chat-review-location:hover,
 
 /* ---- LanguageGUI layout primitives: compact controls and reading surfaces ---- */
 
-/* 左栏 Agent 切换排：头像 chip，选中用品牌微剂量描边 */
-.chat-agent-chip {
-  @apply relative inline-flex h-9 w-9 items-center justify-center rounded-lg border border-transparent transition-colors hover:border-border-subtle hover:bg-surface-raised/70;
-}
-
-.chat-agent-chip-active {
-  @apply border-brand-primary/40 bg-brand-muted/50;
-}
-
-.chat-sidebar-nav {
-  @apply space-y-micro border-b border-border-subtle/60 px-tight py-tight;
-}
-
-.chat-sidebar-nav-item {
-  @apply flex w-full items-center gap-tight rounded-button border border-transparent px-tight py-tight text-left text-caption text-text-secondary transition-colors hover:border-border-subtle hover:bg-surface-raised/65 hover:text-text-primary;
-}
-
-.chat-sidebar-nav-item-active {
-  @apply border-brand-primary/20 bg-brand-muted/45 font-medium text-text-primary;
-}
-
-.chat-sidebar-panel {
-  @apply min-h-0 flex-1 overflow-y-auto;
-}
-
-.chat-sidebar-panel-head {
-  @apply flex items-center gap-tight px-snug py-snug text-caption font-semibold text-text-primary;
-}
-
-.chat-sidebar-app-card {
-  @apply flex items-center justify-between gap-tight rounded-card border border-border-subtle bg-surface-raised px-snug py-tight shadow-card;
-}
-
-.chat-sidebar-app-card > span {
-  @apply min-w-0;
-}
-
-.chat-sidebar-app-card strong,
-.chat-sidebar-app-card small {
-  @apply block truncate text-caption;
-}
-
-.chat-sidebar-app-card strong {
-  @apply font-medium text-text-primary;
-}
-
-.chat-sidebar-app-card small {
-  @apply mt-micro text-text-tertiary;
-}
-
-.chat-sidebar-app-card b {
-  @apply shrink-0 text-caption font-medium;
-}
-
-.chat-sidebar-settings-link {
-  @apply flex items-center gap-tight rounded-button border border-border-subtle px-tight py-tight text-caption text-text-secondary no-underline transition-colors hover:bg-surface-raised hover:text-brand-primary;
-}
-
 .chat-conversation-search {
   @apply flex h-8 items-center gap-tight rounded-button border border-border-subtle bg-surface-raised px-tight shadow-card focus-within:border-brand-primary/35 focus-within:ring-2 focus-within:ring-brand-primary/15;
 }
