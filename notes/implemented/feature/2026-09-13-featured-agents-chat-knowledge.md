@@ -34,3 +34,23 @@ knowledgeAppendix 会拼出并不存在的 v0，「引用与关联」元数据�
   拼装点，只需把取值从 run.Input 换成检索调用；实时工具面仍不复活，除非预取语义被证伪。
 - 团队需要第三个业务角色时：在 `agents/<slug>/` 落 bundle 即恢复导入，不需要任何代码改动；
   侧栏入口要扩到第三个角色时再抽象「slug → 入口」配置表，当前两个入口不提前泛化。
+
+## 验证
+
+2026-09-13 按 [pre-merge ego 配方](../process/2026-09-13-pre-merge-ego-verification.md) 在 `:8090`
+隔离实例（主库一致快照 + 0066 迁移 + 隔离仓 registry + 真实凭据）完成真实浏览器验证，主树 8080 全程未动：
+
+1. 侧栏渲染「产品智能体/开发智能体」两个入口（slug 定位），点击直达 `/chat?agent=<atlas id>`，
+   仅该入口 `aria-current="page"`，「对话」不双高亮；dashboard 速览只列三个启用成员。
+2. 配置页主列表恰为产品/开发/知识库管理员三卡（importer 已将 atlas/forge 改名），「已停用（3）」
+   折叠区默认收起，内为 Nova/Pixel/Sentinel（0066 迁移置停用）；chat chips 不含停用成员。
+3. 知识注入真实链路：隔离仓内嵌套小 git 仓造「星轨罗盘」来源文档 → 注册来源 → initialize →
+   资料管理员真实模型 run 完成并发布 release（4 条断言）→ UI 向产品智能体提问 → 新 run 的
+   `input.knowledge_context` 含两条断言全文与「（v1）」真实版本号（SearchRelease 修复的生产路径证据），
+   run succeeded，回答引用 42 小时/极光钟摆、88 µT/静默领航并复述未知项纪律。
+4. 负向：资料库管理员自己的 chat run `knowledge_context IS NULL`（注入范围不含系统 agent）。
+
+排障事实（后续使用者参考）：来源 repo_path 必须指向 **git 仓库目录**（文件路径报 "not readable"）、
+必须在 workspace root 之内（"outside the workspace root"）、且树导出不得超 freeze 上限
+（整仓 clone 超限，嵌套小仓解决）；macOS 下 registry root 用 `/tmp/...` 与 EvalSymlinks 后的
+`/private/tmp/...` 不一致时也会不可读。
