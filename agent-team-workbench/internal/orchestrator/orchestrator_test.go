@@ -102,14 +102,15 @@ func TestApplyOutputContractKeepsInstructionAndSystemPromptStable(t *testing.T) 
 		`emit a metric block`,
 		`path/to/file.ts:42`,
 		`blocks carry the detail, prose carries the reasoning`,
-		// 交付型文档口径（2026-09-13）：落盘 + file 块给仓库相对路径，点开即读。
+		// 交付型文档口径（2026-09-13）：正文 md 与带 path 的文件卡都算交付。
 		`A file block points at a real file`,
 		`set its path field to the repository-relative POSIX path`,
 		`a file row without a path carries no action at all`,
 		`Never emit local or protocol URLs (file:, data:, blob:)`,
 		`Delivered documents:`,
-		`the reader opens it rendered in the UI`,
-		`Only when no readable file can exist`,
+		`either in the answer body or archived in the repository`,
+		`The body-lightness rules above do not apply to the document itself`,
+		`The one delivery that never works is a pointer the reader cannot open`,
 	} {
 		if !strings.Contains(prompt, fragment) {
 			t.Fatalf("LanguageGUI contract 缺少 %q: %q", fragment, prompt)
