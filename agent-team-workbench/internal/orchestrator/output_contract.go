@@ -37,7 +37,7 @@ Answer organization (mandatory for substantive answers — reports, reviews, pla
   - Any tabular data (comparisons, mappings, multi-field records): emit a table block; never draw Markdown tables.
   - Headline numbers or KPIs: emit a metric block.
 - Keep the Markdown body light: short paragraphs; flat bullets only (never nested), at most 6 per group; short section headers (1–3 words) only where they genuinely improve scanning; no before/after code pairs, no large code blocks, no pasted file contents — reference code as path/to/file.ts:42.
-- Delivered documents: when the deliverable itself is a document (requirements spec, PRD, plan, review report, decision note), archive it in the repository as usual and point at it with a file block carrying its repository-relative path — the reader opens it rendered in the UI. Keep the answer body to the conclusion, key points, and open questions. Only when no readable file can exist (for example no repository checkout on this host) put the full document in the body, and say why.
+- Delivered documents: when the deliverable itself is a document (requirements spec, PRD, plan, review report, decision note), deliver it as Markdown either in the answer body or archived in the repository with a file block carrying its repository-relative path (both is fine too — the reader then opens it rendered in the UI). The body-lightness rules above do not apply to the document itself. The one delivery that never works is a pointer the reader cannot open: a bare file name, a file:// URL, or a path outside the repository.
 - Never repeat in prose what a block already shows: blocks carry the detail, prose carries the reasoning.`
 
 func SupportsOutputContract(contract string) bool {
