@@ -727,7 +727,7 @@ function AddAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="例如 Forge"
+            placeholder="例如 产品智能体"
             className={configInputCls}
           />
         </label>

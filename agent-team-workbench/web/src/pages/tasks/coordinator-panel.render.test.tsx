@@ -27,14 +27,14 @@ const snapshot: CoordinatorSnapshot = {
   progress: 0.5,
   completed_steps: 1,
   total_steps: 2,
-  current_agent: { id: 'agent_atlas', name: 'Atlas', role: '开发' },
+  current_agent: { id: 'agent_atlas', name: '产品智能体', role: '开发' },
   next_action: '退避后重试当前步骤',
   next_action_at: '2026-08-30T01:03:00Z',
   attempts: [
     {
       id: 'attempt_2',
       run_id: 'run_2',
-      agent: { id: 'agent_atlas', name: 'Atlas' },
+      agent: { id: 'agent_atlas', name: '产品智能体' },
       status: 'waiting_retry',
       attempt: 2,
       max_attempts: 4,
@@ -71,7 +71,7 @@ describe('CoordinatorPanel', () => {
     expect(html).toContain('任务统筹');
     expect(html).toContain('等待自动重试');
     expect(html).toContain('1/2 步');
-    expect(html).toContain('Atlas');
+    expect(html).toContain('产品智能体');
     expect(html).toContain('退避后重试当前步骤');
     expect(html).toContain('计划于');
     expect(html).toContain('Worker 响应超时');

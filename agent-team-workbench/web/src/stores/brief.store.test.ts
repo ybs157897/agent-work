@@ -26,7 +26,7 @@ const brief = (overrides: Partial<DeliveryBrief> = {}): DeliveryBrief => ({
   work_item: workItem,
   acceptance_criteria: ['登录成功', '错误有提示'],
   conclusion: { coordinator_status: 'waiting_user', stage: 'acceptance', summary: '已完成', next_action: '等待验收', version: 7 },
-  attempts: [{ attempt: 1, role: 'worker', run_id: 'run_1', agent_name: 'Atlas', status: 'succeeded', started_at: null, finished_at: null, retry_of: null, failure: null }],
+  attempts: [{ attempt: 1, role: 'worker', run_id: 'run_1', agent_name: '产品智能体', status: 'succeeded', started_at: null, finished_at: null, retry_of: null, failure: null }],
   runs: [{ run: { id: 'run_1', work_item_id: 'wi_root', status: 'succeeded', version: 3, created_at: '', updated_at: '' }, summary: '一次成功', evidence: [{ id: 'ev_1', source_kind: 'run_status', source_id: 'run_1', label: '运行成功', status: 'passed', trust: 'control_plane', occurred_at: '2026-08-30T01:00:00Z' }], truncated: false }],
   changes: { run_id: 'run_1', files: [{ path: 'src/a.ts', added: 3, deleted: 1, status: 'modified' }], total_files: 1, total_added: 3, total_deleted: 1, truncated: false },
   artifacts: [],

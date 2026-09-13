@@ -30,7 +30,7 @@ const brief: DeliveryBrief = {
     version: 7,
   },
   attempts: [
-    { attempt: 1, role: 'worker', run_id: 'run_1', agent_name: 'Atlas', status: 'failed', started_at: null, finished_at: null, retry_of: null, failure: { code: 'tool_failed', message: '测试超时', retryable: true } },
+    { attempt: 1, role: 'worker', run_id: 'run_1', agent_name: '产品智能体', status: 'failed', started_at: null, finished_at: null, retry_of: null, failure: { code: 'tool_failed', message: '测试超时', retryable: true } },
     { attempt: 2, role: 'evaluation', run_id: 'run_2', agent_name: 'Eval', status: 'succeeded', started_at: null, finished_at: '2026-08-30T01:00:00Z', retry_of: 'run_1', failure: null },
   ],
   runs: [

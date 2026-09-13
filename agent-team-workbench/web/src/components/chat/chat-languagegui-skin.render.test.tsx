@@ -31,7 +31,7 @@ describe('production chat LanguageGUI skin', () => {
     const html = renderToStaticMarkup(
       <div className="chat-languagegui-skin">
         <div className="chat-thread">
-          <AgentTranscriptReader segments={segments} onFork={() => undefined} agent={{ name: 'Atlas' }} />
+          <AgentTranscriptReader segments={segments} onFork={() => undefined} agent={{ name: '产品智能体' }} />
         </div>
         <div className="chat-composer-stack" />
       </div>,
@@ -78,7 +78,7 @@ describe('production chat LanguageGUI skin', () => {
         contentBlocks: document,
       },
     }];
-    const html = renderToStaticMarkup(<AgentTranscriptReader segments={segments} agent={{ name: 'Atlas' }} />);
+    const html = renderToStaticMarkup(<AgentTranscriptReader segments={segments} agent={{ name: '产品智能体' }} />);
     expect(html).toContain('<p>这里是摘要。</p>');
     expect(html.match(/data-content-block="metric"/g)).toHaveLength(1);
     expect(html).not.toContain('language-languagegui');

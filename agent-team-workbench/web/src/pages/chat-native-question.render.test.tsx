@@ -58,7 +58,7 @@ describe('native question card visibility', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
     useWorkspaceStore.setState({ workspace: { id: 'ws_test', name: '测试工作区', timezone: 'Asia/Shanghai', version: 1 }, me: { user_id: 'u_test', name: 'Owner', role: 'owner', feature_flags: {} }, phase: 'ready' });
-    useAgentsStore.setState({ agents: [{ id: 'agent_product', name: 'Nova', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 }] });
+    useAgentsStore.setState({ agents: [{ id: 'agent_product', name: '产品智能体', role: 'pm', skills: [], availability: 'enabled', presence: 'idle', version: 1 }] });
     useChatStore.setState({ agentId: 'agent_product', conversationId: 'wi_1', conversations: [], runs: [], queue: [], pendingUsers: {}, runAlerts: {}, sending: false, sendError: null });
     useNativeQuestionsStore.setState({ itemsByRun: {}, loadingByRun: {}, errorByRun: {}, submittingByQuestion: {} });
   });

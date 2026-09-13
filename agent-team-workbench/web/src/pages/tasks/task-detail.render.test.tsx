@@ -5,7 +5,7 @@ import type { WorkItem } from '../../api/types';
 vi.mock('./dispatch-timeline', () => ({
   DispatchTimeline: () => (
     <section aria-label="Agent 输入与输出">
-      <article>Forge · 输入 · 最终输出</article>
+      <article>开发智能体 · 输入 · 最终输出</article>
     </section>
   ),
 }));
@@ -46,7 +46,7 @@ describe('TaskPeekContent', () => {
     expect(html).toContain('打回总任务');
     expect(html).toContain('待验收');
     expect(html).not.toContain('进行中');
-    expect(html).toContain('Forge · 输入 · 最终输出');
+    expect(html).toContain('开发智能体 · 输入 · 最终输出');
     expect(html).not.toContain('不在详情重复展示');
     expect(html).not.toContain('子任务');
     expect(html).not.toContain('任务属性');
@@ -58,7 +58,7 @@ describe('TaskPeekContent', () => {
   it('子任务不渲染任何验收或操作，只等待跳转到总任务', () => {
     const html = renderToStaticMarkup(
       <TaskPeekContent
-        task={{ ...root, id: 'wi_child', parent_id: root.id, title: 'Forge 子任务' }}
+        task={{ ...root, id: 'wi_child', parent_id: root.id, title: '开发智能体 子任务' }}
         accepting={false}
         onAccept={() => undefined}
         onReturn={() => undefined}

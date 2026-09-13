@@ -35,7 +35,8 @@ const agent = (id: string, name: string): AgentProfile => ({
 
 describe('TaskCard projection', () => {
   it('待验收状态进入可访问名称，头像最多四个并显示溢出数', () => {
-    const participants = ['Nova', 'Pixel', 'Forge', 'Atlas', 'Sentinel'].map((name, index) =>
+    // 名册只有产品/开发两个普通智能体，这里补足到 5 个参与者覆盖头像上限与溢出。
+    const participants = ['产品智能体', '开发智能体', 'Worker A', 'Worker B', 'Worker C'].map((name, index) =>
       agent(`agent-${index}`, name));
 
     const html = renderToStaticMarkup(
@@ -48,11 +49,11 @@ describe('TaskCard projection', () => {
     );
 
     expect(html).toContain('状态 待验收');
-    expect(html).toContain('参与 Agent Nova、Pixel、Forge、Atlas、Sentinel');
-    expect(html).toContain('title="参与 Agent：Nova、Pixel、Forge、Atlas、Sentinel"');
-    expect(html.match(/aria-label="(Nova|Pixel|Forge|Atlas)"/g)).toHaveLength(4);
+    expect(html).toContain('参与 Agent 产品智能体、开发智能体、Worker A、Worker B、Worker C');
+    expect(html).toContain('title="参与 Agent：产品智能体、开发智能体、Worker A、Worker B、Worker C"');
+    expect(html.match(/aria-label="(产品智能体|开发智能体|Worker A|Worker B)"/g)).toHaveLength(4);
     expect(html).toContain('>+1</span>');
-    expect(html).not.toContain('aria-label="Sentinel"');
+    expect(html).not.toContain('aria-label="Worker C"');
     expect(html).toContain('未设置截止日');
     expect(html).not.toContain('lucide-calendar');
   });

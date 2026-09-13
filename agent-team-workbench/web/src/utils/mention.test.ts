@@ -49,9 +49,9 @@ describe('mentionableAgents', () => {
   it('停用 Agent 不进入 @ 提及候选', () => {
     expect(
       mentionableAgents([
-        { name: 'Atlas', availability: 'enabled' },
-        { name: 'Forge', availability: 'disabled' },
+        { name: '产品智能体', availability: 'enabled' },
+        { name: '开发智能体', availability: 'disabled' },
       ]),
-    ).toEqual([{ name: 'Atlas', availability: 'enabled' }]);
+    ).toEqual([{ name: '产品智能体', availability: 'enabled' }]);
   });
 });

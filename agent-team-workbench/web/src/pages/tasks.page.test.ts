@@ -145,19 +145,19 @@ describe('taskParticipantsByRoot', () => {
     const participants = taskParticipantsByRoot(
       [grandchildB, systemChild, coordinatorKindChild, childARepeat, root, childA],
       [
-        agent('agent-b', 'Pixel'),
+        agent('agent-b', '产品智能体'),
         agent('agent-system', 'Task Coordinator', true),
         agent('agent-coordinator-kind', 'Legacy Coordinator', false, 'task_coordinator'),
-        agent('agent-a', 'Forge'),
+        agent('agent-a', '开发智能体'),
       ],
     );
 
-    expect(participants.get(root.id)?.map((item) => item.name)).toEqual(['Forge', 'Pixel']);
+    expect(participants.get(root.id)?.map((item) => item.name)).toEqual(['开发智能体', '产品智能体']);
   });
 
   it('兼容直接绑定非系统 Worker 的历史根任务', () => {
     const root = { ...wi('legacy-root', '2026-08-23T01:00:00Z'), agent_profile_id: 'agent-a' };
-    expect(taskParticipantsByRoot([root], [agent('agent-a', 'Forge')]).get(root.id)?.[0].name).toBe('Forge');
+    expect(taskParticipantsByRoot([root], [agent('agent-a', '开发智能体')]).get(root.id)?.[0].name).toBe('开发智能体');
   });
 
   it('缺父、循环父链和未知 Agent 都不会污染根任务头像', () => {
@@ -167,7 +167,7 @@ describe('taskParticipantsByRoot', () => {
     const loopB = { ...wi('loop-b', '2026-08-23T04:00:00Z', 'loop-a'), agent_profile_id: 'agent-a' };
     const unknown = { ...wi('unknown', '2026-08-23T05:00:00Z', root.id), agent_profile_id: 'missing-agent' };
 
-    expect(taskParticipantsByRoot([root, orphan, loopA, loopB, unknown], [agent('agent-a', 'Forge')]).size).toBe(0);
+    expect(taskParticipantsByRoot([root, orphan, loopA, loopB, unknown], [agent('agent-a', '开发智能体')]).size).toBe(0);
   });
 });
 
