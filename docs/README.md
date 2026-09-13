@@ -42,6 +42,10 @@
 
 - [`review/2026-09-02-loopx-native-governance-completion-audit.md`](review/2026-09-02-loopx-native-governance-completion-audit.md)：WP0–WP7、R0–R8、AC-01–AC-15 的完成证据、最终补漏、1440/1024 浏览器截图与外部 gate；截图资产位于 [`review/assets/`](review/assets/)。
 
+### 索引
+
+- [`knowledge-map.md`](knowledge-map.md)：仓库知识地图——知识资产分布与权威边界、检索入口，以及缺口/冲突的裁决对账；基线 `main @ 531c59d`，跨基线引用前先核对当前提交。
+
 ## 外部参考
 
 [`references/`](references/) 中的 Codex、Kimi、ZCode 与 ClawTeam 资料描述外部系统或版本锁定的逆向结果，不是本项目当前实现的事实源。提示词原文保存在 [`archive/prompt-library/`](archive/prompt-library/)；项目内的对照分析见 [`references/cli-prompt-engineering.md`](references/cli-prompt-engineering.md)。
