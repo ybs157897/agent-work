@@ -43,5 +43,11 @@ git worktree」集合里解析，路径经 `secureJoin`（拒绝对路径、`..`
 - `go test -count=1 ./internal/httpapi/`：路由 ↔ `contracts/web/openapi.yaml` 双向对账通过。
 - `web`：`pnpm tsc -b && pnpm test && pnpm lint` 全绿；新增 file 块打开动作、历史消息路径兜底、越界路径
   不产生动作、problem code 文案映射的定向断言。
-- 端到端：待合并重建后在用户那条真实对话上点开
-  `notes/proposed/feature/2026-09-13-taskboard-title-search.md` 验证抽屉渲染（本 note 落地时记录结果）。
+- 干跑（不触碰运行中的服务，只读真实 `workbench.db` + 真实 `host-registry.yaml`）：用户那条对话的 Run
+  `run_01M2C9FS5VS5E6N48MMR536XZQ` 解析同一路径得到 10,456 B `text/markdown`，内容确为那份需求文档；
+  `../secret.md`、`/etc/passwd`、`.git/config`、缺失路径分别得到 invalid/invalid/invalid/not found。
+  该文件在任务 worktree 里，证明「同仓库 worktree 计入可读集合」按预期生效。
+- 端到端（2026-09-13 交付窗口，合并后）：重建 `bin/control-plane` 与 `web/dist` 并重启 8080，在用户那条真实
+  对话（`wi_01M2C9FS5HTWMDD61KH6VTF6G2`）里点开同一文件行：抽屉标题栏显示仓库相对路径、10.2 KB、
+  `text/markdown`，正文按 Markdown 渲染出 5,176 字符（任务看板按标题搜索 / 背景 / 现状核对（改动前事实）/
+  需求规格 / 验收条件 / 决策与理由，含表格）。历史消息靠展示名兜底的打开动作也一并验证。
